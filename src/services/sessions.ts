@@ -6,9 +6,9 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import type { Message, Session } from '../types';
+import type { Message, Session, SearchResult } from '../types';
 
-const SESSIONS_DIR = path.join(process.env.HOME || '~', '.remoteclaw', 'sessions');
+export const SESSIONS_DIR = path.join(process.env.HOME || '~', '.remoteclaw', 'sessions');
 
 export class SessionManager {
   private sessions: Map<string, Session> = new Map();
@@ -167,6 +167,49 @@ export class SessionManager {
     this.saveSessionMeta(session);
 
     return true;
+  }
+
+  getSession(sessionId: string): Session | null {
+    return this.sessions.get(sessionId) ?? null;
+  }
+
+  getActiveSessionId(): string | null {
+    return this.activeSessionId;
+  }
+
+  getSessionDir(sessionId: string): string {
+    return path.join(SESSIONS_DIR, sessionId);
+  }
+
+  searchTranscripts(query: string): SearchResult[] {
+    const results: SearchResult[] = [];
+    const lowerQuery = query.toLowerCase();
+
+    for (const session of this.sessions.values()) {
+      for (const message of session.messages) {
+        if (message.role === 'system') continue;
+        const lowerContent = message.content.toLowerCase();
+        const matchIndex = lowerContent.indexOf(lowerQuery);
+        if (matchIndex !== -1) {
+          results.push({
+            sessionId: session.id,
+            sessionName: session.name,
+            sessionUpdatedAt: session.updatedAt,
+            message,
+            matchIndex,
+          });
+        }
+      }
+    }
+
+    results.sort((a, b) => {
+      if (a.sessionUpdatedAt !== b.sessionUpdatedAt) {
+        return b.sessionUpdatedAt - a.sessionUpdatedAt;
+      }
+      return b.message.timestamp - a.message.timestamp;
+    });
+
+    return results;
   }
 
   getContextSummary(maxMessages = 10): string {

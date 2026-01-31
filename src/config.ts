@@ -7,11 +7,18 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+export interface BillingOverride {
+  mode: 'api' | 'subscription';
+  plan?: string;
+  monthlyPrice?: number;
+}
+
 export interface RemoteClawConfig {
   gatewayUrl: string;
   gatewayToken?: string;
   defaultModel?: string;
   agentId?: string;
+  billing?: Record<string, BillingOverride>;
 }
 
 const CONFIG_DIR = path.join(process.env.HOME || '~', '.remoteclaw');
@@ -77,5 +84,18 @@ export function resolveGatewayConfig(flags: CliFlags): RemoteClawConfig {
       flags.model
       || fileConfig.defaultModel,
     agentId: fileConfig.agentId || DEFAULT_CONFIG.agentId,
+    billing: fileConfig.billing,
   };
+}
+
+const DEFAULT_BILLING: BillingOverride = { mode: 'api' };
+
+/**
+ * Get billing override for a provider, defaulting to API mode
+ */
+export function getBillingForProvider(
+  config: RemoteClawConfig,
+  provider: string,
+): BillingOverride {
+  return config.billing?.[provider] ?? DEFAULT_BILLING;
 }

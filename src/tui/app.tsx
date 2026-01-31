@@ -6,23 +6,29 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { render, Box, Text, useInput, useApp, useStdout } from 'ink';
-import type { RemoteClawOptions, Message, UsageStats } from '../types.js';
+import type { RemoteClawOptions, Message, UsageStats, ModelStatus } from '../types.js';
 import { StatusBar, ShortcutBar } from './components/StatusBar';
 import { ChatView } from './components/ChatView.js';
 import { InputArea } from './components/InputArea.js';
 import { ModelPicker } from './components/ModelPicker.js';
 import type { Model } from './components/ModelPicker.js';
-import { TranscriptView } from './components/TranscriptView';
+import { TranscriptHub } from './components/TranscriptHub';
 import { ChatService } from '../services/chat';
+import type { ProviderInfo } from '../services/chat';
 import { getStatus as getTailscaleStatus } from '../services/tailscale';
 import type { TailscaleStatus } from '../services/tailscale';
 import { SessionManager, getSessionManager } from '../services/sessions';
+import { spawnNewTerminalWindow } from '../services/terminal.js';
+import { loadConfig, getBillingForProvider } from '../config.js';
+import type { BillingOverride } from '../config.js';
 import {
   MODEL_REGISTRY,
   MODEL_BY_ID,
   ALIAS_TO_MODEL_ID,
   getModelAlias,
   getModelPricing,
+  getProviderKey,
+  formatPricingLabel,
   buildUnknownModelInfo,
 } from '../models.js';
 import type { ModelInfo } from '../models.js';
@@ -34,6 +40,7 @@ interface AppProps {
 function App({ options }: AppProps) {
   const { exit } = useApp();
   const { stdout } = useStdout();
+  const [savedConfig, setSavedConfig] = useState(() => loadConfig());
 
   const [dimensions, setDimensions] = useState({
     width: stdout?.columns ?? 80,
@@ -86,6 +93,9 @@ function App({ options }: AppProps) {
   const [sessionName, setSessionName] = useState('Session 1');
   const [showTranscript, setShowTranscript] = useState(false);
 
+  const [modelStatus, setModelStatus] = useState<ModelStatus>('unknown');
+  const probeAbortRef = useRef<AbortController | null>(null);
+
   const [usage, setUsage] = useState<UsageStats>({
     todaySpend: 0,
     averageDailySpend: 0,
@@ -94,6 +104,39 @@ function App({ options }: AppProps) {
       outputPer1M: 0.28,
     },
   });
+
+  const probeCurrentModel = useCallback((modelId: string) => {
+    probeAbortRef.current?.abort();
+    const controller = new AbortController();
+    probeAbortRef.current = controller;
+
+    setModelStatus('checking');
+
+    chatServiceRef.current?.probeModel(modelId, controller.signal).then(result => {
+      if (controller.signal.aborted) return;
+      if (result.ok) {
+        setModelStatus('ok');
+        const alias = getModelAlias(modelId);
+        const msg: Message = {
+          id: `probe-ok-${Date.now()}`,
+          role: 'system',
+          content: `${alias} is responding. Ready.`,
+          timestamp: Date.now(),
+        };
+        setMessages(prev => [...prev, msg]);
+      } else {
+        setModelStatus({ error: result.reason });
+        setError(result.reason);
+        const msg: Message = {
+          id: `probe-fail-${Date.now()}`,
+          role: 'system',
+          content: `Model probe failed: ${result.reason}`,
+          timestamp: Date.now(),
+        };
+        setMessages(prev => [...prev, msg]);
+      }
+    });
+  }, []);
 
   // Initialize services
   useEffect(() => {
@@ -147,9 +190,11 @@ function App({ options }: AppProps) {
   // Available models
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>(MODEL_REGISTRY);
 
-  // Check gateway status, discover models, fetch usage
+  // Check gateway status, discover models, fetch providers, fetch usage
   useEffect(() => {
     let modelsDiscovered = false;
+    let initialProbed = false;
+    let providersFetched = false;
 
     const checkGatewayAndUsage = async () => {
       if (!chatServiceRef.current) return;
@@ -177,6 +222,30 @@ function App({ options }: AppProps) {
             modelsDiscovered = true;
           }
 
+          if (!providersFetched) {
+            providersFetched = true;
+            const providers = await chatServiceRef.current.getProviders();
+            if (providers && providers.length > 0) {
+              setSavedConfig(prev => {
+                const localBilling = prev.billing ?? {};
+                const gatewayBilling: Record<string, BillingOverride> = {};
+                for (const p of providers) {
+                  gatewayBilling[p.id] = p.billing;
+                }
+                // Local config overrides gateway (user can always manually override)
+                return {
+                  ...prev,
+                  billing: { ...gatewayBilling, ...localBilling },
+                };
+              });
+            }
+          }
+
+          if (!initialProbed) {
+            initialProbed = true;
+            probeCurrentModel(currentModel);
+          }
+
           const todayUsage = await chatServiceRef.current.getCostUsage(1);
           const weekUsage = await chatServiceRef.current.getCostUsage(7);
 
@@ -201,13 +270,16 @@ function App({ options }: AppProps) {
   }, []);
 
   // Build picker model list
-  const pickerModels: Model[] = availableModels.map(m => ({
-    id: m.id,
-    label: `${m.emoji} ${m.name}`,
-    preset: m.tier,
-    provider: m.provider,
-    pricingLabel: `$${m.pricing.input}/$${m.pricing.output}`,
-  }));
+  const pickerModels: Model[] = availableModels.map(m => {
+    const providerBilling = getBillingForProvider(savedConfig, getProviderKey(m.id));
+    return {
+      id: m.id,
+      label: `${m.emoji} ${m.name}`,
+      preset: m.tier,
+      provider: m.provider,
+      pricingLabel: formatPricingLabel(m, providerBilling),
+    };
+  });
 
   // Keyboard shortcuts
   useInput((input, key) => {
@@ -227,14 +299,8 @@ function App({ options }: AppProps) {
     }
 
     if (input === 'n' && key.ctrl) {
-      // Create new session in-place
-      const newSession = sessionManagerRef.current?.createSession();
-      if (newSession) {
-        setMessages([]);
-        setSessionName(newSession.name);
-        setCurrentModel(newSession.model);
-        chatServiceRef.current?.setModel(newSession.model);
-      }
+      // Spawn a new terminal window with fresh RemoteClaw instance
+      spawnNewTerminalWindow(options);
       setTimeout(() => {
         setInputText(prev => prev.replace(/n/g, ''));
       }, 10);
@@ -294,13 +360,15 @@ function App({ options }: AppProps) {
       const systemMsg: Message = {
         id: Date.now().toString(),
         role: 'system',
-        content: `Switched to ${alias}. Ready.`,
+        content: `Switched to ${alias}. Checking connection...`,
         timestamp: Date.now(),
       };
       setMessages(prev => [...prev, systemMsg]);
       setInputText('');
+      setError(null);
 
       chatServiceRef.current.setModelOverride(resolvedModel).catch(() => {});
+      probeCurrentModel(resolvedModel);
       return;
     }
 
@@ -341,7 +409,7 @@ function App({ options }: AppProps) {
           role: 'assistant',
           content: fullContent,
           timestamp: Date.now(),
-          model: currentModel,
+          model: chatServiceRef.current?.lastResponseModel ?? currentModel,
         };
 
         setMessages(prev => [...prev, assistantMessage]);
@@ -357,6 +425,11 @@ function App({ options }: AppProps) {
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
       setError(errorMessage);
+
+      const modelErrorPattern = /\b(40[1349]|429|5\d{2})\b/;
+      if (modelErrorPattern.test(errorMessage)) {
+        setModelStatus({ error: errorMessage });
+      }
 
       const errorMsg: Message = {
         id: (Date.now() + 1).toString(),
@@ -382,22 +455,29 @@ function App({ options }: AppProps) {
     const systemMsg: Message = {
       id: Date.now().toString(),
       role: 'system',
-      content: `Switched to ${alias}. Ready.`,
+      content: `Switched to ${alias}. Checking connection...`,
       timestamp: Date.now(),
     };
     setMessages(prev => [...prev, systemMsg]);
+    setError(null);
 
     chatServiceRef.current?.setModelOverride(modelId).catch(() => {});
-  }, [currentModel]);
+    probeCurrentModel(modelId);
+  }, [currentModel, probeCurrentModel]);
 
   // Layout calculations
   const headerHeight = 3;
   const inputSeparatorHeight = 1;
-  const inputBlankHeight = 1;
-  const inputHeight = 1;
   const shortcutBarHeight = 2;
   const errorHeight = error ? 1 : 0;
-  const chatHeight = Math.max(3, terminalHeight - headerHeight - inputSeparatorHeight - inputBlankHeight - inputHeight - shortcutBarHeight - errorHeight);
+
+  // Dynamic input height: expand to fit wrapped text
+  const inputPadding = 4; // paddingX=1 on outer box + paddingX=1 inside InputArea = 2+2
+  const promptWidth = 2;  // "> "
+  const availableInputWidth = Math.max(1, terminalWidth - inputPadding - promptWidth);
+  const inputHeight = Math.max(1, Math.ceil((inputText.length + 1) / availableInputWidth));
+
+  const chatHeight = Math.max(3, terminalHeight - headerHeight - inputSeparatorHeight - inputHeight - shortcutBarHeight - errorHeight);
 
   const layoutKey = `${terminalWidth}x${terminalHeight}-${resizeKey}`;
 
@@ -408,7 +488,9 @@ function App({ options }: AppProps) {
           gatewayStatus={gatewayStatus}
           tailscaleStatus={tailscaleStatus}
           model={currentModel}
+          modelStatus={modelStatus}
           usage={usage}
+          billing={getBillingForProvider(savedConfig, getProviderKey(currentModel))}
           sessionName={sessionName}
           terminalWidth={terminalWidth}
         />
@@ -430,9 +512,12 @@ function App({ options }: AppProps) {
             maxHeight={chatHeight}
           />
         ) : showTranscript ? (
-          <TranscriptView
-            messages={messages}
-            sessionName={sessionName}
+          <TranscriptHub
+            currentMessages={messages}
+            currentSessionName={sessionName}
+            sessionManager={sessionManagerRef.current!}
+            maxHeight={chatHeight}
+            terminalWidth={terminalWidth}
             onClose={() => setShowTranscript(false)}
           />
         ) : (
@@ -451,9 +536,7 @@ function App({ options }: AppProps) {
         <Text dimColor>{'─'.repeat(terminalWidth)}</Text>
       </Box>
 
-      <Box height={1} />
-
-      <Box height={1} paddingX={1}>
+      <Box height={inputHeight} paddingX={1}>
         <InputArea
           value={inputText}
           onChange={setInputText}

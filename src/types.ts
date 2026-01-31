@@ -26,6 +26,16 @@ export interface Message {
   model?: string;
 }
 
+export type ModelStatus = 'unknown' | 'checking' | 'ok' | { error: string };
+
+export interface SearchResult {
+  sessionId: string;
+  sessionName: string;
+  sessionUpdatedAt: number;
+  message: Message;
+  matchIndex: number;
+}
+
 export interface UsageStats {
   quotaUsed?: number;
   quotaTotal?: number;

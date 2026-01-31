@@ -23,9 +23,23 @@ export interface ChatResponse {
   };
 }
 
+export type ModelProbeResult =
+  | { ok: true; actualModel?: string }
+  | { ok: false; code: number; reason: string; actualModel?: string };
+
+function parseModelError(status: number, body: string, model: string): string {
+  if (status === 401) return 'Authentication failed. Check your API key or gateway token.';
+  if (status === 403) return 'Access denied. Account may lack permission.';
+  if (status === 404) return `Model "${model}" not found on this gateway.`;
+  if (status === 429) return 'Rate limited or out of credits.';
+  if (status >= 500) return 'Server issues. Provider may be down.';
+  return `Unexpected error (${status}): ${body.slice(0, 120)}`;
+}
+
 export class ChatService {
   private config: ChatServiceConfig;
   private sessionKey: string;
+  lastResponseModel: string | undefined;
 
   constructor(config: ChatServiceConfig) {
     this.config = config;
@@ -126,6 +140,7 @@ export class ChatService {
 
     const decoder = new TextDecoder();
     let buffer = '';
+    this.lastResponseModel = undefined;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -142,6 +157,9 @@ export class ChatService {
 
           try {
             const parsed = JSON.parse(data);
+            if (!this.lastResponseModel && parsed.model) {
+              this.lastResponseModel = parsed.model;
+            }
             const content = parsed.choices?.[0]?.delta?.content;
             if (content) yield content;
           } catch {
@@ -185,6 +203,68 @@ export class ChatService {
       return data.data?.map(m => m.id) ?? null;
     } catch {
       return null;
+    }
+  }
+
+  async probeModel(model?: string, signal?: AbortSignal): Promise<ModelProbeResult> {
+    const targetModel = model ?? this.config.model ?? 'moltbot';
+    try {
+      const timeoutSignal = AbortSignal.timeout(30000);
+      const combinedController = new AbortController();
+
+      const onAbort = () => combinedController.abort();
+      timeoutSignal.addEventListener('abort', onAbort);
+      signal?.addEventListener('abort', onAbort);
+
+      const response = await fetch(`${this.config.gatewayUrl}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(this.config.gatewayToken && {
+            'Authorization': `Bearer ${this.config.gatewayToken}`,
+          }),
+          'x-moltbot-agent-id': this.config.agentId,
+          'x-moltbot-session-key': this.sessionKey,
+        },
+        body: JSON.stringify({
+          model: targetModel,
+          messages: [{ role: 'user', content: 'hi' }],
+          max_tokens: 1,
+          stream: false,
+        }),
+        signal: combinedController.signal,
+      });
+
+      timeoutSignal.removeEventListener('abort', onAbort);
+      signal?.removeEventListener('abort', onAbort);
+
+      if (!response.ok) {
+        const body = await response.text();
+        return { ok: false, code: response.status, reason: parseModelError(response.status, body, targetModel) };
+      }
+
+      const data = await response.json() as { model?: string };
+      const actualModel = data.model;
+
+      if (actualModel && actualModel !== targetModel) {
+        return {
+          ok: false,
+          code: 0,
+          reason: `Model mismatch: requested "${targetModel}" but gateway routed to "${actualModel}". The model may not be configured on this gateway.`,
+          actualModel,
+        };
+      }
+
+      return { ok: true, actualModel };
+    } catch (err: unknown) {
+      if (signal?.aborted) {
+        return { ok: false, code: 0, reason: 'Probe cancelled.' };
+      }
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        return { ok: false, code: 0, reason: 'Model timed out (30s). May be overloaded.' };
+      }
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      return { ok: false, code: 0, reason: msg };
     }
   }
 
@@ -238,6 +318,36 @@ export class ChatService {
       return null;
     }
   }
+
+  async getProviders(): Promise<ProviderInfo[] | null> {
+    try {
+      const response = await fetch(`${this.config.gatewayUrl}/api/providers`, {
+        method: 'GET',
+        headers: {
+          ...(this.config.gatewayToken && {
+            'Authorization': `Bearer ${this.config.gatewayToken}`,
+          }),
+        },
+        signal: AbortSignal.timeout(5000),
+      });
+
+      if (!response.ok) return null;
+
+      const data = await response.json() as { providers?: ProviderInfo[] };
+      return data.providers ?? null;
+    } catch {
+      return null;
+    }
+  }
+}
+
+export interface ProviderInfo {
+  id: string;
+  billing: {
+    mode: 'api' | 'subscription';
+    plan?: string;
+    monthlyPrice?: number;
+  };
 }
 
 export interface CostUsageResult {

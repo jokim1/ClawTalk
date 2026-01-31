@@ -8,6 +8,7 @@
 
 import { Command } from 'commander';
 import { loadConfig, saveConfig, resolveGatewayConfig, getConfigPath } from './config.js';
+import type { BillingOverride } from './config.js';
 import { ChatService } from './services/chat.js';
 import { getStatus as getTailscaleStatus } from './services/tailscale.js';
 import { launchRemoteClaw } from './tui/app.js';
@@ -65,11 +66,10 @@ program
           console.error(`Tailscale is connected but the gateway is unreachable at ${resolved.gatewayUrl}`);
           console.error(`  - Is the Moltbot gateway running on the remote machine?`);
           console.error(`  - Can you reach it? curl ${resolved.gatewayUrl}/health`);
+          if (!resolved.gatewayToken) {
+            console.error('  - Do you need an auth token? remoteclaw config --token <token>');
+          }
           break;
-      }
-
-      if (!resolved.gatewayToken) {
-        console.error('\nDo you need an auth token? Run: remoteclaw config --token <token>');
       }
       console.error(`\nConfig file: ${getConfigPath()}`);
       console.error('Set gateway:  remoteclaw config --gateway <url>');
@@ -92,6 +92,7 @@ const configCmd = program
   .option('-g, --gateway <url>', 'Set gateway URL')
   .option('-t, --token <token>', 'Set gateway auth token')
   .option('-m, --model <model>', 'Set default model')
+  .option('--billing <spec>', 'Set billing for a provider (provider:mode[:plan[:price]], e.g. anthropic:subscription:Max:200)')
   .option('--show', 'Show current configuration')
   .action((opts) => {
     const config = loadConfig();
@@ -112,18 +113,56 @@ const configCmd = program
       updated = true;
     }
 
+    if (opts.billing) {
+      const parts = (opts.billing as string).split(':');
+      const provider = parts[0];
+      const mode = parts[1] as 'api' | 'subscription';
+
+      if (!provider || !['api', 'subscription'].includes(mode)) {
+        console.error('Invalid billing spec. Format: provider:mode[:plan[:price]]');
+        console.error('  mode must be "api" or "subscription"');
+        console.error('  Example: anthropic:subscription:Max:200');
+        process.exit(1);
+      }
+
+      if (!config.billing) config.billing = {};
+
+      if (mode === 'api') {
+        delete config.billing[provider];
+        if (Object.keys(config.billing).length === 0) delete config.billing;
+      } else {
+        const override: BillingOverride = { mode };
+        if (parts[2]) override.plan = parts[2];
+        if (parts[3]) override.monthlyPrice = Number(parts[3]);
+        config.billing[provider] = override;
+      }
+
+      updated = true;
+    }
+
     if (updated) {
       saveConfig(config);
       console.log('Configuration saved.\n');
     }
 
     // Always show config after update, or when --show is passed, or when no flags given
-    if (updated || opts.show || (!opts.gateway && !opts.token && !opts.model)) {
+    if (updated || opts.show || (!opts.gateway && !opts.token && !opts.model && !opts.billing)) {
       console.log(`Config file: ${getConfigPath()}\n`);
       console.log(`  Gateway URL:   ${config.gatewayUrl}`);
       console.log(`  Gateway Token: ${config.gatewayToken ? '********' : '(not set)'}`);
       console.log(`  Default Model: ${config.defaultModel || '(not set)'}`);
       console.log(`  Agent ID:      ${config.agentId || 'remoteclaw'}`);
+      if (config.billing && Object.keys(config.billing).length > 0) {
+        console.log(`  Billing:`);
+        for (const [provider, b] of Object.entries(config.billing)) {
+          const details = b.mode === 'subscription'
+            ? `${b.plan ?? 'Sub'} $${b.monthlyPrice ?? '?'}/mo`
+            : 'API (per-token)';
+          console.log(`    ${provider}: ${details}`);
+        }
+      } else {
+        console.log(`  Billing:       (default API pricing)`);
+      }
       console.log('');
     }
   });

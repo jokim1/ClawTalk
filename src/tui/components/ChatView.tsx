@@ -8,6 +8,7 @@ import React, { useMemo } from 'react';
 import { Box, Text } from 'ink';
 import type { Message } from '../../types';
 import { getModelAlias } from '../../models.js';
+import { estimateMessageLines } from '../utils.js';
 
 interface ChatViewProps {
   messages: Message[];
@@ -16,44 +17,6 @@ interface ChatViewProps {
   modelAlias?: string;
   maxHeight?: number;
   terminalWidth?: number;
-}
-
-function estimateMessageLines(content: string, width: number): number {
-  if (!content) return 3;
-
-  const usableWidth = Math.max(15, Math.floor(width * 0.5));
-  const paragraphs = content.split('\n');
-  let contentLines = 0;
-
-  for (const para of paragraphs) {
-    if (!para.trim()) {
-      contentLines += 1;
-      continue;
-    }
-
-    const words = para.split(/\s+/);
-    let currentLineLength = 0;
-    let paraLines = 1;
-
-    for (const word of words) {
-      const wordLength = word.length;
-
-      if (wordLength > usableWidth) {
-        const wordWraps = Math.ceil(wordLength / usableWidth);
-        paraLines += wordWraps - 1;
-        currentLineLength = wordLength % usableWidth || usableWidth;
-      } else if (currentLineLength + wordLength + 1 > usableWidth) {
-        paraLines++;
-        currentLineLength = wordLength;
-      } else {
-        currentLineLength += wordLength + 1;
-      }
-    }
-
-    contentLines += paraLines;
-  }
-
-  return 1 + contentLines + 2;
 }
 
 export function ChatView({ messages, isProcessing, streamingContent, modelAlias, maxHeight = 20, terminalWidth = 80 }: ChatViewProps) {

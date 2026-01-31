@@ -54,7 +54,7 @@ export const MODEL_REGISTRY: ModelInfo[] = [
     provider: 'Anthropic',
     name: 'Claude Sonnet 4.5',
     shortAlias: 'Sonnet',
-    emoji: '⚖️',
+    emoji: '⚖️ ',
     tier: 'balanced',
     pricing: { input: 3, output: 15 },
     aliases: ['sonnet'],
@@ -95,7 +95,7 @@ export const MODEL_REGISTRY: ModelInfo[] = [
     provider: 'OpenAI',
     name: 'GPT-4o',
     shortAlias: 'GPT-4o',
-    emoji: '⚖️',
+    emoji: '⚖️ ',
     tier: 'balanced',
     pricing: { input: 2.50, output: 10 },
     aliases: ['gpt4o'],
@@ -163,6 +163,22 @@ export const ALIAS_TO_MODEL_ID: Record<string, string> =
   Object.fromEntries(
     MODEL_REGISTRY.flatMap(m => m.aliases.map(a => [a, m.id]))
   );
+
+/** Extract the provider key from a model ID (e.g. "anthropic" from "anthropic/claude-opus-4-5") */
+export function getProviderKey(modelId: string): string {
+  return modelId.split('/')[0] ?? modelId;
+}
+
+/** Format a pricing label for the model picker */
+export function formatPricingLabel(
+  model: ModelInfo,
+  billing?: { mode: 'api' | 'subscription'; plan?: string },
+): string {
+  if (billing?.mode === 'subscription') {
+    return `${billing.plan ?? 'Sub'} plan`;
+  }
+  return `$${model.pricing.input}/$${model.pricing.output}`;
+}
 
 /** Get short alias for a model (for status bar display) */
 export function getModelAlias(modelId: string): string {
