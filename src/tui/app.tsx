@@ -82,6 +82,7 @@ function App({ options }: AppProps) {
 
   // State
   const [currentModel, setCurrentModel] = useState(options.model ?? 'deepseek/deepseek-chat');
+  const currentModelRef = useRef(currentModel);
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
   const [showModelPicker, setShowModelPicker] = useState(false);
@@ -173,6 +174,7 @@ function App({ options }: AppProps) {
 
   // Update model pricing when model changes
   useEffect(() => {
+    currentModelRef.current = currentModel;
     if (chatServiceRef.current) {
       chatServiceRef.current.setModel(currentModel);
 
@@ -243,7 +245,7 @@ function App({ options }: AppProps) {
 
           if (!initialProbed) {
             initialProbed = true;
-            probeCurrentModel(currentModel);
+            probeCurrentModel(currentModelRef.current);
           }
 
           const todayUsage = await chatServiceRef.current.getCostUsage(1);
