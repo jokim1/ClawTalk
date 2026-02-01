@@ -93,6 +93,10 @@ const configCmd = program
   .option('-t, --token <token>', 'Set gateway auth token')
   .option('-m, --model <model>', 'Set default model')
   .option('--billing <spec>', 'Set billing for a provider (provider:mode[:plan[:price]], e.g. anthropic:subscription:Max:200)')
+  .option('--voice-auto-send', 'Auto-send after voice transcription (skip editing)')
+  .option('--voice-auto-play', 'Auto-play TTS for assistant responses')
+  .option('--voice-tts-voice <voice>', 'TTS voice (e.g. nova, alloy, echo, shimmer)')
+  .option('--no-voice-auto-play', 'Disable TTS auto-play')
   .option('--show', 'Show current configuration')
   .action((opts) => {
     const config = loadConfig();
@@ -140,6 +144,18 @@ const configCmd = program
       updated = true;
     }
 
+    if (opts.voiceAutoSend !== undefined || opts.voiceAutoPlay !== undefined || opts.voiceTtsVoice) {
+      if (!config.voice) config.voice = {};
+      if (opts.voiceAutoSend !== undefined) config.voice.autoSend = true;
+      if (opts.voiceAutoPlay === false) {
+        config.voice.autoPlay = false;
+      } else if (opts.voiceAutoPlay === true || opts.voiceAutoPlay !== undefined) {
+        config.voice.autoPlay = true;
+      }
+      if (opts.voiceTtsVoice) config.voice.ttsVoice = opts.voiceTtsVoice;
+      updated = true;
+    }
+
     if (updated) {
       saveConfig(config);
       console.log('Configuration saved.\n');
@@ -162,6 +178,13 @@ const configCmd = program
         }
       } else {
         console.log(`  Billing:       (default API pricing)`);
+      }
+      if (config.voice) {
+        console.log(`  Voice:`);
+        console.log(`    Auto-send:   ${config.voice.autoSend ? 'on' : 'off'}`);
+        console.log(`    Auto-play:   ${config.voice.autoPlay !== false ? 'on' : 'off'}`);
+        if (config.voice.ttsVoice) console.log(`    TTS voice:   ${config.voice.ttsVoice}`);
+        if (config.voice.ttsSpeed) console.log(`    TTS speed:   ${config.voice.ttsSpeed}`);
       }
       console.log('');
     }

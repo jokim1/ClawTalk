@@ -61,3 +61,15 @@ export interface UsageStats {
   };
   rateLimits?: RateLimitInfo;
 }
+
+export type VoiceMode = 'idle' | 'recording' | 'transcribing' | 'synthesizing' | 'playing';
+
+export interface VoiceState {
+  mode: VoiceMode;
+  enabled: boolean;
+  sttAvailable: boolean;
+  ttsAvailable: boolean;
+  autoSend: boolean;
+  autoPlay: boolean;
+  error?: string;
+}

@@ -6,7 +6,7 @@
 
 import React from 'react';
 import { Box, Text } from 'ink';
-import type { UsageStats, ModelStatus, RateLimitWindow } from '../../types';
+import type { UsageStats, ModelStatus, RateLimitWindow, VoiceMode } from '../../types';
 import type { TailscaleStatus } from '../../services/tailscale';
 import type { BillingOverride } from '../../config.js';
 import { getModelAlias } from '../../models.js';
@@ -39,9 +39,11 @@ interface StatusBarProps {
   billing?: BillingOverride;
   sessionName?: string;
   terminalWidth?: number;
+  voiceMode?: VoiceMode;
+  voiceEnabled?: boolean;
 }
 
-export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleStatus, billing, sessionName, terminalWidth = 80 }: StatusBarProps) {
+export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleStatus, billing, sessionName, terminalWidth = 80, voiceMode, voiceEnabled }: StatusBarProps) {
   const modelName = getModelAlias(model);
 
   const modelColor: string = modelStatus === 'checking' ? 'yellow'
@@ -73,6 +75,24 @@ export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleS
           <Text dimColor>GW:</Text><Text color={gatewayColor}>{gateway} </Text>
           <Text dimColor>TS:</Text><Text color={tsColor}>{tsIcon} </Text>
           <Text dimColor>M:</Text><Text color={modelColor} bold>{modelName}{modelIndicator}</Text>
+
+          {voiceEnabled ? (
+            <Text>
+              <Text dimColor>  V:</Text>
+              <Text color={
+                voiceMode === 'recording' ? 'red' :
+                voiceMode === 'transcribing' || voiceMode === 'synthesizing' ? 'yellow' :
+                voiceMode === 'playing' ? 'magenta' :
+                'green'
+              }>
+                {voiceMode === 'recording' ? '● REC' :
+                 voiceMode === 'transcribing' ? '◐ STT' :
+                 voiceMode === 'synthesizing' ? '◐ TTS' :
+                 voiceMode === 'playing' ? '♪ PLAY' :
+                 '●'}
+              </Text>
+            </Text>
+          ) : null}
 
           {isSubscription ? (
             (() => {
@@ -143,9 +163,10 @@ export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleS
 
 interface ShortcutBarProps {
   terminalWidth?: number;
+  voiceEnabled?: boolean;
 }
 
-export function ShortcutBar({ terminalWidth = 80 }: ShortcutBarProps) {
+export function ShortcutBar({ terminalWidth = 80, voiceEnabled }: ShortcutBarProps) {
   return (
     <Box flexDirection="column" width="100%">
       <Box>
@@ -169,6 +190,12 @@ export function ShortcutBar({ terminalWidth = 80 }: ShortcutBarProps) {
           <Text inverse> ^T </Text>
           <Text> Transcript  </Text>
         </Box>
+        {voiceEnabled ? (
+          <Box>
+            <Text inverse> ^V </Text>
+            <Text> Voice  </Text>
+          </Box>
+        ) : null}
         <Box>
           <Text inverse> ^C </Text>
           <Text> Exit</Text>

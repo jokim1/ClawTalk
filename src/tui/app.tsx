@@ -6,7 +6,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { render, Box, Text, useInput, useApp, useStdout } from 'ink';
-import type { RemoteClawOptions, Message, UsageStats, ModelStatus } from '../types.js';
+import type { RemoteClawOptions, Message, UsageStats, ModelStatus, VoiceState } from '../types.js';
 import { StatusBar, ShortcutBar } from './components/StatusBar';
 import { ChatView } from './components/ChatView.js';
 import { InputArea } from './components/InputArea.js';
@@ -19,6 +19,7 @@ import { getStatus as getTailscaleStatus } from '../services/tailscale';
 import type { TailscaleStatus } from '../services/tailscale';
 import { SessionManager, getSessionManager } from '../services/sessions';
 import { spawnNewTerminalWindow } from '../services/terminal.js';
+import { VoiceService } from '../services/voice.js';
 import { loadConfig, getBillingForProvider } from '../config.js';
 import type { BillingOverride } from '../config.js';
 import {
@@ -79,6 +80,7 @@ function App({ options }: AppProps) {
   // Service refs
   const chatServiceRef = useRef<ChatService | null>(null);
   const sessionManagerRef = useRef<SessionManager | null>(null);
+  const voiceServiceRef = useRef<VoiceService | null>(null);
 
   // State
   const [currentModel, setCurrentModel] = useState(options.model ?? 'deepseek/deepseek-chat');
@@ -105,6 +107,18 @@ function App({ options }: AppProps) {
       outputPer1M: 0.28,
     },
   });
+
+  // Voice state
+  const [voiceState, setVoiceState] = useState<VoiceState>({
+    mode: 'idle',
+    enabled: false,
+    sttAvailable: false,
+    ttsAvailable: false,
+    autoSend: savedConfig.voice?.autoSend ?? false,
+    autoPlay: savedConfig.voice?.autoPlay ?? true,
+  });
+  const voiceStateRef = useRef(voiceState);
+  useEffect(() => { voiceStateRef.current = voiceState; }, [voiceState]);
 
   const probeCurrentModel = useCallback((modelId: string) => {
     probeAbortRef.current?.abort();
@@ -148,6 +162,11 @@ function App({ options }: AppProps) {
       model: currentModel,
     });
 
+    voiceServiceRef.current = new VoiceService({
+      gatewayUrl: options.gatewayUrl,
+      gatewayToken: options.gatewayToken,
+    });
+
     sessionManagerRef.current = getSessionManager();
 
     let session;
@@ -172,6 +191,11 @@ function App({ options }: AppProps) {
       chatServiceRef.current.setModel(session.model);
       chatServiceRef.current.setModelOverride(session.model).catch(() => {});
     }
+
+    // Cleanup voice service on unmount
+    return () => {
+      voiceServiceRef.current?.cleanup();
+    };
   }, []);
 
   // Update model pricing when model changes
@@ -199,6 +223,7 @@ function App({ options }: AppProps) {
     let modelsDiscovered = false;
     let initialProbed = false;
     let providersFetched = false;
+    let voiceChecked = false;
 
     const checkGatewayAndUsage = async () => {
       if (!chatServiceRef.current) return;
@@ -242,6 +267,22 @@ function App({ options }: AppProps) {
                   billing: { ...gatewayBilling, ...localBilling },
                 };
               });
+            }
+          }
+
+          if (!voiceChecked) {
+            voiceChecked = true;
+            const soxOk = voiceServiceRef.current?.checkSoxInstalled() ?? false;
+            if (soxOk) {
+              const caps = await voiceServiceRef.current?.fetchCapabilities();
+              if (caps) {
+                setVoiceState(prev => ({
+                  ...prev,
+                  enabled: caps.stt.available || caps.tts.available,
+                  sttAvailable: caps.stt.available,
+                  ttsAvailable: caps.tts.available,
+                }));
+              }
             }
           }
 
@@ -292,12 +333,96 @@ function App({ options }: AppProps) {
     };
   });
 
+  // Voice: stop recording, transcribe, and handle result
+  const handleStopAndTranscribe = useCallback(async () => {
+    if (!voiceServiceRef.current) return;
+
+    const stopResult = voiceServiceRef.current.stopRecording();
+    if (!stopResult.ok) {
+      setVoiceState(prev => ({ ...prev, mode: 'idle' }));
+      setError(stopResult.error);
+      return;
+    }
+
+    setVoiceState(prev => ({ ...prev, mode: 'transcribing' }));
+
+    try {
+      const result = await voiceServiceRef.current.transcribe(stopResult.tempPath);
+
+      if (!result.text.trim()) {
+        setVoiceState(prev => ({ ...prev, mode: 'idle' }));
+        setError('No speech detected');
+        return;
+      }
+
+      setVoiceState(prev => ({ ...prev, mode: 'idle' }));
+
+      if (voiceStateRef.current.autoSend) {
+        sendMessageRef.current?.(result.text);
+      } else {
+        setInputText(result.text);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Transcription failed';
+      setVoiceState(prev => ({ ...prev, mode: 'idle' }));
+      setError(msg);
+    }
+  }, []);
+
+  // Ref to sendMessage to avoid stale closure in voice handler (pattern from MoltbotTerminator)
+  const sendMessageRef = useRef<((text: string) => Promise<void>) | null>(null);
+
   // Keyboard shortcuts
   useInput((input, key) => {
     if (showModelPicker || showTranscript) return;
 
+    // Escape: cancel voice recording
+    if (key.escape) {
+      if (voiceStateRef.current.mode === 'recording') {
+        voiceServiceRef.current?.stopRecording();
+        setVoiceState(prev => ({ ...prev, mode: 'idle' }));
+        return;
+      }
+      if (voiceStateRef.current.mode === 'playing') {
+        voiceServiceRef.current?.stopPlayback();
+        setVoiceState(prev => ({ ...prev, mode: 'idle' }));
+        return;
+      }
+    }
+
     if (input === 'c' && key.ctrl) {
+      voiceServiceRef.current?.cleanup();
       exit();
+      return;
+    }
+
+    if (input === 'v' && key.ctrl) {
+      if (!voiceStateRef.current.enabled || !voiceStateRef.current.sttAvailable) return;
+      if (isProcessing) return;
+
+      const mode = voiceStateRef.current.mode;
+
+      if (mode === 'idle') {
+        // Start recording
+        const result = voiceServiceRef.current?.startRecording();
+        if (result?.ok) {
+          setVoiceState(prev => ({ ...prev, mode: 'recording' }));
+          setError(null);
+        } else {
+          setError(result?.error ?? 'Failed to start recording');
+        }
+      } else if (mode === 'recording') {
+        // Stop and transcribe
+        handleStopAndTranscribe();
+      } else if (mode === 'playing') {
+        // Stop playback
+        voiceServiceRef.current?.stopPlayback();
+        setVoiceState(prev => ({ ...prev, mode: 'idle' }));
+      }
+
+      setTimeout(() => {
+        setInputText(prev => prev.replace(/v/g, ''));
+      }, 10);
       return;
     }
 
@@ -433,6 +558,28 @@ function App({ options }: AppProps) {
 
         setMessages(prev => [...prev, assistantMessage]);
         sessionManagerRef.current?.addMessage(assistantMessage);
+
+        // TTS: speak assistant response if autoPlay is enabled
+        const vs = voiceStateRef.current;
+        if (vs.autoPlay && vs.ttsAvailable && voiceServiceRef.current?.canPlayback) {
+          setVoiceState(prev => ({ ...prev, mode: 'synthesizing' }));
+          voiceServiceRef.current.synthesize(
+            fullContent,
+            savedConfig.voice?.ttsVoice,
+            savedConfig.voice?.ttsSpeed,
+          )
+            .then(audioPath => {
+              setVoiceState(prev => ({ ...prev, mode: 'playing' }));
+              return voiceServiceRef.current!.playAudio(audioPath);
+            })
+            .then(() => {
+              setVoiceState(prev => ({ ...prev, mode: 'idle' }));
+            })
+            .catch(() => {
+              // TTS errors are non-fatal — text response is already visible
+              setVoiceState(prev => ({ ...prev, mode: 'idle' }));
+            });
+        }
       }
       setStreamingContent('');
 
@@ -461,7 +608,10 @@ function App({ options }: AppProps) {
       setIsProcessing(false);
       setStreamingContent('');
     }
-  }, [isProcessing, messages, currentModel]);
+  }, [isProcessing, messages, currentModel, savedConfig.voice]);
+
+  // Keep sendMessage ref current for voice handler (avoids stale closure)
+  useEffect(() => { sendMessageRef.current = sendMessage; }, [sendMessage]);
 
   // Handle model selection from picker
   const selectModel = useCallback(async (modelId: string) => {
@@ -512,6 +662,8 @@ function App({ options }: AppProps) {
           billing={getBillingForProvider(savedConfig, getProviderKey(currentModel))}
           sessionName={sessionName}
           terminalWidth={terminalWidth}
+          voiceMode={voiceState.mode}
+          voiceEnabled={voiceState.enabled}
         />
       </Box>
 
@@ -561,11 +713,12 @@ function App({ options }: AppProps) {
           onChange={setInputText}
           onSubmit={sendMessage}
           disabled={isProcessing}
+          voiceMode={voiceState.mode}
         />
       </Box>
 
       <Box height={2}>
-        <ShortcutBar terminalWidth={terminalWidth} />
+        <ShortcutBar terminalWidth={terminalWidth} voiceEnabled={voiceState.enabled} />
       </Box>
     </Box>
   );

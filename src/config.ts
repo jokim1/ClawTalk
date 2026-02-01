@@ -13,12 +13,20 @@ export interface BillingOverride {
   monthlyPrice?: number;
 }
 
+export interface VoiceConfig {
+  autoSend?: boolean;
+  autoPlay?: boolean;
+  ttsVoice?: string;
+  ttsSpeed?: number;
+}
+
 export interface RemoteClawConfig {
   gatewayUrl: string;
   gatewayToken?: string;
   defaultModel?: string;
   agentId?: string;
   billing?: Record<string, BillingOverride>;
+  voice?: VoiceConfig;
 }
 
 const CONFIG_DIR = path.join(process.env.HOME || '~', '.remoteclaw');
