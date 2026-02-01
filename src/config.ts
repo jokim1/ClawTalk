@@ -27,6 +27,7 @@ export interface RemoteClawConfig {
   agentId?: string;
   billing?: Record<string, BillingOverride>;
   voice?: VoiceConfig;
+  anthropicApiKey?: string;
 }
 
 const CONFIG_DIR = path.join(process.env.HOME || '~', '.remoteclaw');
@@ -70,6 +71,7 @@ export interface CliFlags {
   gateway?: string;
   token?: string;
   model?: string;
+  anthropicKey?: string;
 }
 
 /**
@@ -93,6 +95,10 @@ export function resolveGatewayConfig(flags: CliFlags): RemoteClawConfig {
       || fileConfig.defaultModel,
     agentId: fileConfig.agentId || DEFAULT_CONFIG.agentId,
     billing: fileConfig.billing,
+    anthropicApiKey:
+      flags.anthropicKey
+      || process.env.ANTHROPIC_API_KEY
+      || fileConfig.anthropicApiKey,
   };
 }
 

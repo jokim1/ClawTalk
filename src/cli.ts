@@ -23,11 +23,13 @@ program
   .option('-t, --token <token>', 'Gateway authentication token')
   .option('-m, --model <model>', 'Model to use (e.g. anthropic/claude-sonnet-4-5)')
   .option('-s, --session <name>', 'Session name to resume or create')
+  .option('--anthropic-key <key>', 'Anthropic API key (for direct rate limit fetching)')
   .action(async (opts) => {
     const resolved = resolveGatewayConfig({
       gateway: opts.gateway,
       token: opts.token,
       model: opts.model,
+      anthropicKey: opts.anthropicKey,
     });
 
     // Auto-persist gateway/token to config when provided via CLI
@@ -82,6 +84,7 @@ program
       gatewayToken: resolved.gatewayToken,
       model: opts.model || resolved.defaultModel,
       sessionName: opts.session,
+      anthropicApiKey: resolved.anthropicApiKey,
     });
   });
 
@@ -97,6 +100,7 @@ const configCmd = program
   .option('--voice-auto-play', 'Auto-play TTS for assistant responses')
   .option('--voice-tts-voice <voice>', 'TTS voice (e.g. nova, alloy, echo, shimmer)')
   .option('--no-voice-auto-play', 'Disable TTS auto-play')
+  .option('--anthropic-key <key>', 'Set Anthropic API key (for direct rate limit fetching)')
   .option('--show', 'Show current configuration')
   .action((opts) => {
     const config = loadConfig();
@@ -156,6 +160,11 @@ const configCmd = program
       updated = true;
     }
 
+    if (opts.anthropicKey) {
+      config.anthropicApiKey = opts.anthropicKey;
+      updated = true;
+    }
+
     if (updated) {
       saveConfig(config);
       console.log('Configuration saved.\n');
@@ -168,6 +177,7 @@ const configCmd = program
       console.log(`  Gateway Token: ${config.gatewayToken ? '********' : '(not set)'}`);
       console.log(`  Default Model: ${config.defaultModel || '(not set)'}`);
       console.log(`  Agent ID:      ${config.agentId || 'remoteclaw'}`);
+      console.log(`  Anthropic Key: ${config.anthropicApiKey ? '********' : '(not set)'}`);
       if (config.billing && Object.keys(config.billing).length > 0) {
         console.log(`  Billing:`);
         for (const [provider, b] of Object.entries(config.billing)) {

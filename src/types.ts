@@ -7,6 +7,7 @@ export interface RemoteClawOptions {
   gatewayToken?: string;
   model?: string;
   sessionName?: string;
+  anthropicApiKey?: string;
 }
 
 export interface Session {
