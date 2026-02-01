@@ -17,7 +17,7 @@ interface InputAreaProps {
   voiceMode?: VoiceMode;
 }
 
-export function InputArea({ value, onChange, onSubmit, voiceMode }: InputAreaProps) {
+export function InputArea({ value, onChange, onSubmit, disabled, voiceMode }: InputAreaProps) {
   if (voiceMode === 'recording') {
     return (
       <Box paddingX={1}>
@@ -52,6 +52,15 @@ export function InputArea({ value, onChange, onSubmit, voiceMode }: InputAreaPro
         <Text color="magenta">♪ </Text>
         <Text color="magenta">Speaking...</Text>
         <Text dimColor>  ^V stop</Text>
+      </Box>
+    );
+  }
+
+  if (disabled) {
+    return (
+      <Box paddingX={1}>
+        <Text color="yellow">&gt; </Text>
+        <Text dimColor>Waiting for response...</Text>
       </Box>
     );
   }

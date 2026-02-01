@@ -6,7 +6,14 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 import type { Message, Session, SearchResult } from '../types';
+import { DEFAULT_MODEL } from '../constants.js';
+
+/** Validate that a session ID is safe for use as a directory name. */
+function isValidSessionId(id: string): boolean {
+  return /^[\w-]+$/.test(id) && !id.includes('..');
+}
 
 export const SESSIONS_DIR = path.join(process.env.HOME || '~', '.remoteclaw', 'sessions');
 
@@ -29,6 +36,7 @@ export class SessionManager {
     try {
       const dirs = fs.readdirSync(SESSIONS_DIR);
       for (const dir of dirs) {
+        if (!isValidSessionId(dir)) continue;
         const sessionPath = path.join(SESSIONS_DIR, dir);
         const metaPath = path.join(sessionPath, 'metadata.json');
 
@@ -57,7 +65,7 @@ export class SessionManager {
             const session: Session = {
               id: dir,
               name: meta.name || dir,
-              model: meta.model || 'deepseek/deepseek-chat',
+              model: meta.model || DEFAULT_MODEL,
               messages,
               createdAt: meta.createdAt || Date.now(),
               updatedAt: meta.updatedAt || Date.now(),
@@ -75,11 +83,11 @@ export class SessionManager {
   }
 
   createSession(name?: string, model?: string): Session {
-    const id = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const id = `session-${Date.now()}-${randomUUID().slice(0, 8)}`;
     const session: Session = {
       id,
       name: name || `Session ${this.sessions.size + 1}`,
-      model: model || 'deepseek/deepseek-chat',
+      model: model || DEFAULT_MODEL,
       messages: [],
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -147,8 +155,12 @@ export class SessionManager {
 
   deleteSession(sessionId: string): boolean {
     if (!this.sessions.has(sessionId)) return false;
+    if (!isValidSessionId(sessionId)) return false;
 
     const sessionPath = path.join(SESSIONS_DIR, sessionId);
+    const resolved = path.resolve(sessionPath);
+    if (!resolved.startsWith(path.resolve(SESSIONS_DIR))) return false;
+
     try {
       fs.rmSync(sessionPath, { recursive: true });
     } catch {
@@ -228,20 +240,6 @@ export class SessionManager {
       .join('\n\n');
 
     return `Previous conversation summary:\n\n${summary}`;
-  }
-
-  private saveSession(session: Session): void {
-    const sessionPath = path.join(SESSIONS_DIR, session.id);
-
-    if (!fs.existsSync(sessionPath)) {
-      fs.mkdirSync(sessionPath, { recursive: true });
-    }
-
-    this.saveSessionMeta(session);
-
-    const transcriptPath = path.join(sessionPath, 'transcript.jsonl');
-    const lines = session.messages.map(m => JSON.stringify(m)).join('\n');
-    fs.writeFileSync(transcriptPath, lines + (lines ? '\n' : ''));
   }
 
   private saveSessionMeta(session: Session): void {

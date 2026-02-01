@@ -34,6 +34,7 @@ import {
   buildUnknownModelInfo,
 } from '../models.js';
 import type { ModelInfo } from '../models.js';
+import { DEFAULT_MODEL, GATEWAY_POLL_INTERVAL_MS, INPUT_CLEANUP_DELAY_MS, RESIZE_DEBOUNCE_MS, isGatewaySentinel } from '../constants.js';
 
 interface AppProps {
   options: RemoteClawOptions;
@@ -85,7 +86,7 @@ function App({ options }: AppProps) {
   const anthropicRLRef = useRef<AnthropicRateLimitService | null>(null);
 
   // State
-  const [currentModel, setCurrentModel] = useState(options.model ?? 'deepseek/deepseek-chat');
+  const [currentModel, setCurrentModel] = useState(options.model ?? DEFAULT_MODEL);
   const currentModelRef = useRef(currentModel);
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
@@ -341,7 +342,7 @@ function App({ options }: AppProps) {
     };
 
     checkGatewayAndUsage();
-    const interval = setInterval(checkGatewayAndUsage, 30000);
+    const interval = setInterval(checkGatewayAndUsage, GATEWAY_POLL_INTERVAL_MS);
     return () => clearInterval(interval);
   }, []);
 
@@ -582,15 +583,7 @@ function App({ options }: AppProps) {
         setStreamingContent(fullContent);
       }
 
-      const trimmedResponse = fullContent.trim();
-      const isNoReply = !trimmedResponse ||
-        trimmedResponse === 'NO_REPLY' ||
-        trimmedResponse === 'NO_REPL' ||
-        trimmedResponse === 'HEARTBEAT_OK' ||
-        trimmedResponse.startsWith('NO_REP') ||
-        trimmedResponse.startsWith('HEARTBEAT');
-
-      if (!isNoReply) {
+      if (!isGatewaySentinel(fullContent)) {
         const assistantMessage: Message = {
           id: (Date.now() + 1).toString(),
           role: 'assistant',
@@ -625,11 +618,6 @@ function App({ options }: AppProps) {
         }
       }
       setStreamingContent('');
-
-      setUsage(prev => ({
-        ...prev,
-        todaySpend: (prev.todaySpend ?? 0) + 0.01,
-      }));
 
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';

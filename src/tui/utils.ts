@@ -68,7 +68,8 @@ export function formatSessionTime(ts: number): string {
 
 export function exportTranscript(messages: Message[], sessionName: string): string {
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const filename = `transcript-${sessionName.replace(/\s+/g, '-')}-${timestamp}.txt`;
+  const safeName = path.basename(sessionName.replace(/\s+/g, '-').replace(/[/\\]/g, '_'));
+  const filename = `transcript-${safeName}-${timestamp}.txt`;
   const filepath = path.join(process.env.HOME || '~', filename);
 
   let content = `Transcript: ${sessionName}\n`;

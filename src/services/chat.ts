@@ -4,7 +4,17 @@
  * Handles communication with remote Moltbot gateway for LLM chat
  */
 
+import { randomUUID } from 'crypto';
 import type { Message, RateLimitInfo } from '../types.js';
+import {
+  CHAT_TIMEOUT_MS,
+  HEALTH_CHECK_TIMEOUT_MS,
+  MODEL_LIST_TIMEOUT_MS,
+  MODEL_PROBE_TIMEOUT_MS,
+  COST_USAGE_TIMEOUT_MS,
+  RATE_LIMIT_TIMEOUT_MS,
+  PROVIDER_LIST_TIMEOUT_MS,
+} from '../constants.js';
 
 export interface ChatServiceConfig {
   gatewayUrl: string;
@@ -43,36 +53,52 @@ export class ChatService {
 
   constructor(config: ChatServiceConfig) {
     this.config = config;
-    this.sessionKey = `remoteclaw-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    this.sessionKey = `remoteclaw-${randomUUID()}`;
   }
 
-  async sendMessage(
-    userMessage: string,
-    history: Message[] = []
-  ): Promise<ChatResponse> {
-    const messages = [
+  /** Build standard auth headers for gateway requests. */
+  private authHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {};
+    if (this.config.gatewayToken) {
+      headers['Authorization'] = `Bearer ${this.config.gatewayToken}`;
+    }
+    return headers;
+  }
+
+  /** Build chat completion headers (auth + content type + agent/session). */
+  private chatHeaders(): Record<string, string> {
+    return {
+      'Content-Type': 'application/json',
+      ...this.authHeaders(),
+      'x-moltbot-agent-id': this.config.agentId,
+      'x-moltbot-session-key': this.sessionKey,
+    };
+  }
+
+  /** Map message history to the OpenAI-compatible format. */
+  private buildMessages(userMessage: string, history: Message[]) {
+    return [
       ...history.map(m => ({
         role: m.role as 'user' | 'assistant' | 'system',
         content: m.content,
       })),
       { role: 'user' as const, content: userMessage },
     ];
+  }
 
+  async sendMessage(
+    userMessage: string,
+    history: Message[] = []
+  ): Promise<ChatResponse> {
     const response = await fetch(`${this.config.gatewayUrl}/v1/chat/completions`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(this.config.gatewayToken && {
-          'Authorization': `Bearer ${this.config.gatewayToken}`,
-        }),
-        'x-moltbot-agent-id': this.config.agentId,
-        'x-moltbot-session-key': this.sessionKey,
-      },
+      headers: this.chatHeaders(),
       body: JSON.stringify({
         model: this.config.model ?? 'moltbot',
-        messages,
+        messages: this.buildMessages(userMessage, history),
         stream: false,
       }),
+      signal: AbortSignal.timeout(CHAT_TIMEOUT_MS),
     });
 
     if (!response.ok) {
@@ -105,29 +131,15 @@ export class ChatService {
     userMessage: string,
     history: Message[] = []
   ): AsyncGenerator<string, void, unknown> {
-    const messages = [
-      ...history.map(m => ({
-        role: m.role as 'user' | 'assistant' | 'system',
-        content: m.content,
-      })),
-      { role: 'user' as const, content: userMessage },
-    ];
-
     const response = await fetch(`${this.config.gatewayUrl}/v1/chat/completions`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(this.config.gatewayToken && {
-          'Authorization': `Bearer ${this.config.gatewayToken}`,
-        }),
-        'x-moltbot-agent-id': this.config.agentId,
-        'x-moltbot-session-key': this.sessionKey,
-      },
+      headers: this.chatHeaders(),
       body: JSON.stringify({
         model: this.config.model ?? 'moltbot',
-        messages,
+        messages: this.buildMessages(userMessage, history),
         stream: true,
       }),
+      signal: AbortSignal.timeout(CHAT_TIMEOUT_MS),
     });
 
     if (!response.ok) {
@@ -163,7 +175,7 @@ export class ChatService {
             const content = parsed.choices?.[0]?.delta?.content;
             if (content) yield content;
           } catch {
-            // Skip invalid JSON
+            // Skip invalid SSE JSON chunks
           }
         }
       }
@@ -174,7 +186,7 @@ export class ChatService {
     try {
       const response = await fetch(`${this.config.gatewayUrl}/health`, {
         method: 'GET',
-        signal: AbortSignal.timeout(3000),
+        signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS),
       });
       return response.ok;
     } catch {
@@ -186,12 +198,8 @@ export class ChatService {
     try {
       const response = await fetch(`${this.config.gatewayUrl}/v1/models`, {
         method: 'GET',
-        headers: {
-          ...(this.config.gatewayToken && {
-            'Authorization': `Bearer ${this.config.gatewayToken}`,
-          }),
-        },
-        signal: AbortSignal.timeout(5000),
+        headers: this.authHeaders(),
+        signal: AbortSignal.timeout(MODEL_LIST_TIMEOUT_MS),
       });
 
       if (!response.ok) return null;
@@ -208,24 +216,17 @@ export class ChatService {
 
   async probeModel(model?: string, signal?: AbortSignal): Promise<ModelProbeResult> {
     const targetModel = model ?? this.config.model ?? 'moltbot';
+    const timeoutSignal = AbortSignal.timeout(MODEL_PROBE_TIMEOUT_MS);
+    const combinedController = new AbortController();
+    const onAbort = () => combinedController.abort();
+
+    timeoutSignal.addEventListener('abort', onAbort);
+    signal?.addEventListener('abort', onAbort);
+
     try {
-      const timeoutSignal = AbortSignal.timeout(30000);
-      const combinedController = new AbortController();
-
-      const onAbort = () => combinedController.abort();
-      timeoutSignal.addEventListener('abort', onAbort);
-      signal?.addEventListener('abort', onAbort);
-
       const response = await fetch(`${this.config.gatewayUrl}/v1/chat/completions`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(this.config.gatewayToken && {
-            'Authorization': `Bearer ${this.config.gatewayToken}`,
-          }),
-          'x-moltbot-agent-id': this.config.agentId,
-          'x-moltbot-session-key': this.sessionKey,
-        },
+        headers: this.chatHeaders(),
         body: JSON.stringify({
           model: targetModel,
           messages: [{ role: 'user', content: 'hi' }],
@@ -234,9 +235,6 @@ export class ChatService {
         }),
         signal: combinedController.signal,
       });
-
-      timeoutSignal.removeEventListener('abort', onAbort);
-      signal?.removeEventListener('abort', onAbort);
 
       if (!response.ok) {
         const body = await response.text();
@@ -265,6 +263,9 @@ export class ChatService {
       }
       const msg = err instanceof Error ? err.message : 'Unknown error';
       return { ok: false, code: 0, reason: msg };
+    } finally {
+      timeoutSignal.removeEventListener('abort', onAbort);
+      signal?.removeEventListener('abort', onAbort);
     }
   }
 
@@ -278,9 +279,7 @@ export class ChatService {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(this.config.gatewayToken && {
-            'Authorization': `Bearer ${this.config.gatewayToken}`,
-          }),
+          ...this.authHeaders(),
         },
         body: JSON.stringify({
           tool: 'session_status',
@@ -304,12 +303,8 @@ export class ChatService {
     try {
       const response = await fetch(`${this.config.gatewayUrl}/api/cost-usage?days=${days}`, {
         method: 'GET',
-        headers: {
-          ...(this.config.gatewayToken && {
-            'Authorization': `Bearer ${this.config.gatewayToken}`,
-          }),
-        },
-        signal: AbortSignal.timeout(5000),
+        headers: this.authHeaders(),
+        signal: AbortSignal.timeout(COST_USAGE_TIMEOUT_MS),
       });
 
       if (!response.ok) return null;
@@ -324,12 +319,8 @@ export class ChatService {
       const query = provider ? `?provider=${encodeURIComponent(provider)}` : '';
       const response = await fetch(`${this.config.gatewayUrl}/api/rate-limits${query}`, {
         method: 'GET',
-        headers: {
-          ...(this.config.gatewayToken && {
-            'Authorization': `Bearer ${this.config.gatewayToken}`,
-          }),
-        },
-        signal: AbortSignal.timeout(5000),
+        headers: this.authHeaders(),
+        signal: AbortSignal.timeout(RATE_LIMIT_TIMEOUT_MS),
       });
 
       if (!response.ok) return null;
@@ -343,12 +334,8 @@ export class ChatService {
     try {
       const response = await fetch(`${this.config.gatewayUrl}/api/providers`, {
         method: 'GET',
-        headers: {
-          ...(this.config.gatewayToken && {
-            'Authorization': `Bearer ${this.config.gatewayToken}`,
-          }),
-        },
-        signal: AbortSignal.timeout(5000),
+        headers: this.authHeaders(),
+        signal: AbortSignal.timeout(PROVIDER_LIST_TIMEOUT_MS),
       });
 
       if (!response.ok) return null;

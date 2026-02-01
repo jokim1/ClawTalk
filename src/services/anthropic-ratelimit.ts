@@ -7,6 +7,7 @@
  */
 
 import type { RateLimitInfo } from '../types.js';
+import { ANTHROPIC_RL_TIMEOUT_MS } from '../constants.js';
 
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -32,7 +33,7 @@ export class AnthropicRateLimitService {
           max_tokens: 1,
           messages: [{ role: 'user', content: '.' }],
         }),
-        signal: AbortSignal.timeout(10000),
+        signal: AbortSignal.timeout(ANTHROPIC_RL_TIMEOUT_MS),
       });
 
       // Headers are present on both 200 and 429 responses

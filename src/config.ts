@@ -56,14 +56,15 @@ export function loadConfig(): RemoteClawConfig {
 
 export function saveConfig(config: RemoteClawConfig): void {
   if (!fs.existsSync(CONFIG_DIR)) {
-    fs.mkdirSync(CONFIG_DIR, { recursive: true });
+    fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
   }
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
-  // Restrict permissions (token stored in plaintext)
+  // Restrict permissions (secrets stored in plaintext)
   try {
+    fs.chmodSync(CONFIG_DIR, 0o700);
     fs.chmodSync(CONFIG_PATH, 0o600);
   } catch {
-    // Ignore chmod errors on platforms that don't support it
+    process.stderr.write('Warning: could not set restrictive permissions on config file\n');
   }
 }
 
