@@ -19,6 +19,13 @@ export const VOICE_SYNTHESIZE_TIMEOUT_MS = 30_000;
 export const SOX_DETECT_TIMEOUT_MS = 3_000;
 export const ANTHROPIC_RL_TIMEOUT_MS = 10_000;
 
+// --- Context Window ---
+export const MAX_CONTEXT_MESSAGES = 50;
+
+// --- Response Size Limits ---
+export const MAX_RESPONSE_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
+export const MAX_STREAM_BUFFER_BYTES = 64 * 1024;         // 64 KB per SSE buffer
+
 // --- Polling ---
 export const GATEWAY_POLL_INTERVAL_MS = 30_000;
 

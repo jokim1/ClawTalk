@@ -13,20 +13,20 @@
 | VULN-01 | **HIGH** | `services/terminal.ts` | 62-70, 84-86 | Command Injection | Incomplete AppleScript escaping (missing newline escape) | FIXED |
 | VULN-02 | **HIGH** | `services/terminal.ts` | 25-29, 73-74 | Command Injection | Unescaped `process.argv` in shell script generation | FIXED |
 | VULN-03 | **MEDIUM** | `services/terminal.ts` | 36-38 | Credential Exposure | Token visible in process list and shell history | FIXED |
-| VULN-04 | **MEDIUM** | `services/chat.ts`, `services/voice.ts` | multiple | SSRF | No URL validation on gateway URL | OPEN |
+| VULN-04 | **MEDIUM** | `services/chat.ts`, `services/voice.ts` | multiple | SSRF | No URL validation on gateway URL | FIXED |
 | VULN-05 | **MEDIUM** | `config.ts` | 57-68 | Credential Storage | Plaintext secrets with silently-failing chmod; directory permissions not set | FIXED |
-| VULN-08 | **MEDIUM** | `services/chat.ts` | 153-168 | Input Validation | ANSI escape sequence injection from gateway responses | OPEN |
-| VULN-11 | **HIGH** | `config.ts` | 37 | Network Security | No warning for HTTP on non-localhost URLs | OPEN |
+| VULN-08 | **MEDIUM** | `services/chat.ts` | 153-168 | Input Validation | ANSI escape sequence injection from gateway responses | FIXED |
+| VULN-11 | **HIGH** | `config.ts` | 37 | Network Security | No warning for HTTP on non-localhost URLs | FIXED |
 | VULN-13 | **MEDIUM** | `services/chat.ts` | 49-76, 104-131 | DoS | No timeout on main chat request methods | FIXED |
 | VULN-14 | **MEDIUM** | `tui/utils.ts` | 69-87 | Path Traversal | Session name used in export filename without sanitization | FIXED |
-| VULN-18 | **MEDIUM** | `services/chat.ts` | 78-81 | Info Disclosure | Full gateway error bodies exposed to user | OPEN |
-| VULN-20 | **MEDIUM** | `tui/app.tsx`, `services/sessions.ts` | 90, 53-59 | DoS | Unbounded message accumulation in memory and requests | OPEN |
-| VULN-09 | **LOW** | `services/chat.ts` | 78-101 | DoS | No size limit on non-streaming responses | OPEN |
+| VULN-18 | **MEDIUM** | `services/chat.ts` | 78-81 | Info Disclosure | Full gateway error bodies exposed to user | FIXED |
+| VULN-20 | **MEDIUM** | `tui/app.tsx`, `services/sessions.ts` | 90, 53-59 | DoS | Unbounded message accumulation in memory and requests | FIXED |
+| VULN-09 | **LOW** | `services/chat.ts` | 78-101 | DoS | No size limit on non-streaming responses | FIXED |
 | VULN-10 | **LOW** | `services/sessions.ts` | 31 | Path Traversal | Directory names read from disk used as paths | FIXED |
 | VULN-15 | **LOW** | `services/sessions.ts` | 151-153 | Path Traversal | Recursive delete with disk-sourced session IDs | FIXED |
-| VULN-16 | **LOW** | `package.json` | 22 | Dependencies | Outdated React 17 | OPEN |
-| VULN-21 | **LOW** | `services/chat.ts` | 142-170 | DoS | Unbounded streaming buffer | OPEN |
-| VULN-22 | **LOW** | `services/voice.ts` | 54, 121, 248 | Resource Leak | Orphaned temp files on crash | OPEN |
+| VULN-16 | **LOW** | `package.json` | 22 | Dependencies | Outdated React 17 | DEFERRED |
+| VULN-21 | **LOW** | `services/chat.ts` | 142-170 | DoS | Unbounded streaming buffer | FIXED |
+| VULN-22 | **LOW** | `services/voice.ts` | 54, 121, 248 | Resource Leak | Orphaned temp files on crash | FIXED |
 | VULN-24 | **LOW** | `services/sessions.ts`, `services/chat.ts` | 78, 46 | Weak Crypto | `Math.random()` for session identifiers | FIXED |
 
 ---
@@ -147,9 +147,9 @@ Messages grow without bound in memory and the full history is sent as context wi
 
 **Fix:** Validate resolved path starts with `SESSIONS_DIR` before `rmSync`.
 
-### VULN-16: React 17 is Outdated (LOW)
+### VULN-16: React 17 is Outdated (LOW) — DEFERRED
 
-Constrained by `ink@3.x`. Consider upgrading when possible.
+Constrained by `ink@3.x` which uses CommonJS. Upgrading to `ink@4` (React 18) requires migrating the entire project from CommonJS to ESM (`module: "NodeNext"`, `"type": "module"` in package.json). This is a substantial architectural change beyond the scope of a security fix. React 17.0.2 has no known unpatched CVEs. Will revisit when the project undergoes an ESM migration.
 
 ### VULN-21: Unbounded Streaming Buffer (LOW)
 

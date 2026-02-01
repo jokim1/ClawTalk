@@ -57,6 +57,26 @@ export class VoiceService implements IVoiceService {
 
   constructor(config: VoiceServiceConfig) {
     this.config = config;
+    this.cleanStaleTempFiles();
+  }
+
+  /** Remove orphaned temp files from previous sessions/crashes. */
+  private cleanStaleTempFiles(): void {
+    try {
+      const tmpDir = os.tmpdir();
+      const entries = fs.readdirSync(tmpDir);
+      for (const entry of entries) {
+        if (entry.startsWith('remoteclaw-voice-') || entry.startsWith('remoteclaw-tts-')) {
+          try {
+            fs.unlinkSync(path.join(tmpDir, entry));
+          } catch (err) {
+            console.debug('Stale temp file removal failed:', err);
+          }
+        }
+      }
+    } catch (err) {
+      console.debug('Stale temp file scan failed:', err);
+    }
   }
 
   // --- Sox detection ---

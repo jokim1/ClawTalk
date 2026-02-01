@@ -33,6 +33,28 @@ export interface RemoteClawConfig {
 const CONFIG_DIR = path.join(process.env.HOME || '~', '.remoteclaw');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 
+/** Validate that a gateway URL is a well-formed HTTP(S) URL. */
+export function validateGatewayUrl(urlString: string): { ok: true; warnings: string[] } | { ok: false; error: string } {
+  let parsed: URL;
+  try {
+    parsed = new URL(urlString);
+  } catch {
+    return { ok: false, error: `Invalid gateway URL: "${urlString}". Must be a valid HTTP(S) URL.` };
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return { ok: false, error: `Gateway URL must use http:// or https:// (got "${parsed.protocol}")` };
+  }
+
+  const warnings: string[] = [];
+  const isLocalhost = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '::1';
+  if (parsed.protocol === 'http:' && !isLocalhost) {
+    warnings.push(`Warning: Gateway URL uses HTTP on non-localhost address (${parsed.hostname}). Auth tokens will be sent in plaintext.`);
+  }
+
+  return { ok: true, warnings };
+}
+
 const DEFAULT_CONFIG: RemoteClawConfig = {
   gatewayUrl: 'http://127.0.0.1:18789',
   agentId: 'remoteclaw',
@@ -82,12 +104,23 @@ export interface CliFlags {
 export function resolveGatewayConfig(flags: CliFlags): RemoteClawConfig {
   const fileConfig = loadConfig();
 
+  const gatewayUrl =
+    flags.gateway
+    || process.env.REMOTECLAW_GATEWAY_URL
+    || fileConfig.gatewayUrl
+    || DEFAULT_CONFIG.gatewayUrl;
+
+  const urlCheck = validateGatewayUrl(gatewayUrl);
+  if (!urlCheck.ok) {
+    process.stderr.write(`${urlCheck.error}\n`);
+  } else {
+    for (const w of urlCheck.warnings) {
+      process.stderr.write(`${w}\n`);
+    }
+  }
+
   return {
-    gatewayUrl:
-      flags.gateway
-      || process.env.REMOTECLAW_GATEWAY_URL
-      || fileConfig.gatewayUrl
-      || DEFAULT_CONFIG.gatewayUrl,
+    gatewayUrl,
     gatewayToken:
       flags.token
       || process.env.REMOTECLAW_GATEWAY_TOKEN

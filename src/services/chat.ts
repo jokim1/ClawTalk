@@ -15,6 +15,9 @@ import {
   COST_USAGE_TIMEOUT_MS,
   RATE_LIMIT_TIMEOUT_MS,
   PROVIDER_LIST_TIMEOUT_MS,
+  MAX_CONTEXT_MESSAGES,
+  MAX_RESPONSE_BODY_BYTES,
+  MAX_STREAM_BUFFER_BYTES,
 } from '../constants.js';
 import {
   validateChatResponse,
@@ -47,6 +50,40 @@ export interface ChatResponse {
 export type ModelProbeResult =
   | { ok: true; actualModel?: string }
   | { ok: false; code: number; reason: string; actualModel?: string };
+
+/** Read a response body with a size limit to prevent memory exhaustion. */
+async function readLimitedBody(response: Response, maxBytes: number): Promise<string> {
+  const contentLength = response.headers.get('content-length');
+  if (contentLength && parseInt(contentLength, 10) > maxBytes) {
+    throw new Error(`Response too large (${contentLength} bytes, max ${maxBytes})`);
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) return '';
+
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    totalBytes += value.byteLength;
+    if (totalBytes > maxBytes) {
+      reader.cancel();
+      throw new Error(`Response exceeded ${maxBytes} byte limit`);
+    }
+    chunks.push(value);
+  }
+
+  const decoder = new TextDecoder();
+  return chunks.map(c => decoder.decode(c, { stream: true })).join('') + decoder.decode();
+}
+
+/** Strip ANSI escape sequences to prevent terminal injection from gateway responses. */
+function stripAnsi(text: string): string {
+  // Matches: ESC[ ... final byte, ESC] ... ST, and other CSI/OSC sequences
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/[\u001b\u009b][\[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nq-uy=><~]/g, '');
+}
 
 function parseModelError(status: number, body: string, model: string): string {
   if (status === 401) return 'Authentication failed. Check your API key or gateway token.';
@@ -86,10 +123,11 @@ export class ChatService implements IChatService {
     };
   }
 
-  /** Map message history to the OpenAI-compatible format. */
+  /** Map message history to the OpenAI-compatible format, truncating to avoid unbounded growth. */
   private buildMessages(userMessage: string, history: Message[]) {
+    const recent = history.slice(-MAX_CONTEXT_MESSAGES);
     return [
-      ...history.map(m => ({
+      ...recent.map(m => ({
         role: m.role as 'user' | 'assistant' | 'system',
         content: m.content,
       })),
@@ -113,16 +151,16 @@ export class ChatService implements IChatService {
     });
 
     if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`Gateway error (${response.status}): ${error}`);
+      const error = await readLimitedBody(response, MAX_RESPONSE_BODY_BYTES);
+      throw new Error(`Gateway error (${response.status}): ${error.slice(0, 200)}`);
     }
 
-    const raw = await response.json();
+    const raw = JSON.parse(await readLimitedBody(response, MAX_RESPONSE_BODY_BYTES));
     const data = validateChatResponse(raw);
     if (!data) throw new Error('Invalid chat completion response');
 
     return {
-      content: data.choices?.[0]?.message?.content ?? '',
+      content: stripAnsi(data.choices?.[0]?.message?.content ?? ''),
       model: data.model,
       usage: data.usage ? {
         promptTokens: data.usage.prompt_tokens ?? 0,
@@ -149,7 +187,7 @@ export class ChatService implements IChatService {
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(`Gateway error (${response.status}): ${error}`);
+      throw new Error(`Gateway error (${response.status}): ${error.slice(0, 200)}`);
     }
 
     const reader = response.body?.getReader();
@@ -164,6 +202,10 @@ export class ChatService implements IChatService {
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
+      if (buffer.length > MAX_STREAM_BUFFER_BYTES) {
+        reader.cancel();
+        throw new Error('Streaming buffer exceeded size limit');
+      }
       const lines = buffer.split('\n');
       buffer = lines.pop() ?? '';
 
@@ -179,7 +221,7 @@ export class ChatService implements IChatService {
               this.lastResponseModel = parsed.model;
             }
             const content = parsed.choices?.[0]?.delta?.content;
-            if (content) yield content;
+            if (content) yield stripAnsi(content);
           } catch (err) {
             console.debug('SSE parse error (expected for partial chunks):', err);
           }

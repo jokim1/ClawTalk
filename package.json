@@ -12,7 +12,14 @@
     "dev": "tsc --watch",
     "start": "node dist/cli.js"
   },
-  "keywords": ["moltbot", "terminal", "tui", "ai", "llm", "remote"],
+  "keywords": [
+    "moltbot",
+    "terminal",
+    "tui",
+    "ai",
+    "llm",
+    "remote"
+  ],
   "author": "Joseph Kim",
   "license": "MIT",
   "dependencies": {
