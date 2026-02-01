@@ -351,9 +351,17 @@ function App({ options }: AppProps) {
 
     const trimmedText = text.trim();
 
-    // Handle /model command
-    if (trimmedText.startsWith('/model')) {
-      const modelArg = trimmedText.slice(6).trim();
+    // Handle /model command or bare alias commands (e.g. /opus, /deep, /sonnet)
+    const bareAlias = trimmedText.startsWith('/') ? trimmedText.slice(1).toLowerCase() : null;
+    const bareAliasModel = bareAlias ? ALIAS_TO_MODEL_ID[bareAlias] : undefined;
+
+    if (trimmedText.startsWith('/model') || bareAliasModel) {
+      let modelArg: string;
+      if (bareAliasModel) {
+        modelArg = bareAlias!;
+      } else {
+        modelArg = trimmedText.slice(6).trim();
+      }
 
       if (!modelArg) {
         setInputText('');
