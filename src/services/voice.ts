@@ -193,6 +193,40 @@ export class VoiceService implements IVoiceService {
     return { ok: true, tempPath, durationMs };
   }
 
+  // --- Volume level ---
+
+  /** Read the tail of the active WAV file and compute RMS volume (0-100). */
+  getRecordingLevel(): number {
+    if (!this.recordingPath) return 0;
+    try {
+      const fd = fs.openSync(this.recordingPath, 'r');
+      const stat = fs.fstatSync(fd);
+      const WAV_HEADER = 44;
+      // Read last ~3200 bytes (100ms of 16kHz 16-bit mono)
+      const bytesToRead = 3200;
+      const start = Math.max(WAV_HEADER, stat.size - bytesToRead);
+      const length = stat.size - start;
+      if (length < 4) { fs.closeSync(fd); return 0; }
+
+      const buf = Buffer.alloc(length);
+      fs.readSync(fd, buf, 0, length, start);
+      fs.closeSync(fd);
+
+      // Parse 16-bit signed LE samples and compute RMS
+      const sampleCount = Math.floor(length / 2);
+      let sumSquares = 0;
+      for (let i = 0; i < sampleCount; i++) {
+        const sample = buf.readInt16LE(i * 2);
+        sumSquares += sample * sample;
+      }
+      const rms = Math.sqrt(sumSquares / sampleCount);
+      // Scale so normal speech (~3000-8000 RMS) maps to ~50-70%
+      return Math.min(100, Math.round((rms / 32768) * 300));
+    } catch {
+      return 0;
+    }
+  }
+
   // --- Transcription (STT) ---
 
   async transcribe(audioPath: string): Promise<TranscriptionResult> {

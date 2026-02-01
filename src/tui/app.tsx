@@ -410,6 +410,7 @@ function App({ options }: AppProps) {
           onSubmit={handleSubmit}
           disabled={chat.isProcessing}
           voiceMode={voice.voiceMode}
+          volumeLevel={voice.volumeLevel}
         />
       </Box>
 

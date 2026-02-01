@@ -15,14 +15,31 @@ interface InputAreaProps {
   onSubmit: (value: string) => void;
   disabled: boolean;
   voiceMode?: VoiceMode;
+  volumeLevel?: number;
 }
 
-export function InputArea({ value, onChange, onSubmit, disabled, voiceMode }: InputAreaProps) {
+function VolumeMeter({ level }: { level: number }) {
+  const barWidth = 12;
+  const filled = Math.min(barWidth, Math.round((level / 100) * barWidth));
+  const empty = barWidth - filled;
+  const color = level > 90 ? 'red' : level > 70 ? 'yellow' : 'green';
+  return (
+    <>
+      <Text dimColor>  [</Text>
+      <Text color={color}>{'█'.repeat(filled)}</Text>
+      <Text dimColor>{'░'.repeat(empty)}</Text>
+      <Text dimColor>]</Text>
+    </>
+  );
+}
+
+export function InputArea({ value, onChange, onSubmit, disabled, voiceMode, volumeLevel }: InputAreaProps) {
   if (voiceMode === 'recording') {
     return (
       <Box paddingX={1}>
         <Text color="red">● </Text>
         <Text color="red" bold>Recording...</Text>
+        <VolumeMeter level={volumeLevel ?? 0} />
         <Text dimColor>  ^V send  Esc cancel</Text>
       </Box>
     );

@@ -5,7 +5,7 @@
  * and TTS playback (synthesizing → playing → idle).
  */
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import type { MutableRefObject, Dispatch, SetStateAction } from 'react';
 import type { VoiceMode, VoiceReadiness } from '../../types.js';
 import type { VoiceService } from '../../services/voice.js';
@@ -28,14 +28,30 @@ const READINESS_HINTS: Record<string, string> = {
   'no-stt': 'Voice not available — gateway has no speech-to-text provider configured. Set OPENAI_API_KEY on the gateway server.',
 };
 
+const VOLUME_POLL_MS = 150;
+
 export function useVoice(opts: UseVoiceOpts) {
   const [voiceMode, setVoiceMode] = useState<VoiceMode>('idle');
+  const [volumeLevel, setVolumeLevel] = useState(0);
   const voiceModeRef = useRef(voiceMode);
   voiceModeRef.current = voiceMode;
 
   // Keep opts current via ref for stable callbacks
   const optsRef = useRef(opts);
   optsRef.current = opts;
+
+  // Poll volume level during recording
+  useEffect(() => {
+    if (voiceMode !== 'recording') {
+      setVolumeLevel(0);
+      return;
+    }
+    const interval = setInterval(() => {
+      const level = optsRef.current.voiceServiceRef.current?.getRecordingLevel() ?? 0;
+      setVolumeLevel(level);
+    }, VOLUME_POLL_MS);
+    return () => clearInterval(interval);
+  }, [voiceMode]);
 
   const stopAndTranscribe = useCallback(async () => {
     const { voiceServiceRef, sendMessageRef, onInputText, setError, voiceConfig } = optsRef.current;
@@ -139,6 +155,7 @@ export function useVoice(opts: UseVoiceOpts) {
 
   return {
     voiceMode,
+    volumeLevel,
     autoSend: opts.voiceConfig?.autoSend ?? true,
     autoPlay: opts.voiceConfig?.autoPlay ?? true,
     handleVoiceToggle,

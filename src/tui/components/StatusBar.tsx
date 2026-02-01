@@ -161,8 +161,12 @@ export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleS
         </Box>
 
         <Box>
+          <Text color={
+            voiceReadiness === 'ready' ? 'green' :
+            voiceReadiness === 'checking' ? 'yellow' : 'red'
+          }>🎤</Text>
           {sessionName ? (
-            <Text dimColor>{sessionName}</Text>
+            <Text dimColor>  {sessionName}</Text>
           ) : null}
         </Box>
       </Box>
