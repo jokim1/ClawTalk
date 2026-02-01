@@ -96,12 +96,17 @@ function App({ options }: AppProps) {
 
   const speakResponseRef = useRef<((text: string) => void) | null>(null);
 
+  // --- Pricing ref (kept current for session cost calculation) ---
+
+  const pricingRef = useRef({ inputPer1M: 0.14, outputPer1M: 0.28 });
+
   // --- Hooks ---
 
   const chat = useChat(
     chatServiceRef, sessionManagerRef, currentModelRef,
     setError, speakResponseRef,
     (err) => setModelStatus({ error: err }),
+    pricingRef,
   );
 
   const gateway = useGateway(
@@ -202,6 +207,7 @@ function App({ options }: AppProps) {
     if (chatServiceRef.current) {
       chatServiceRef.current.setModel(currentModel);
       const p = getModelPricing(currentModel);
+      pricingRef.current = { inputPer1M: p.input, outputPer1M: p.output };
       gateway.setUsage(prev => ({
         ...prev,
         modelPricing: { inputPer1M: p.input, outputPer1M: p.output },
@@ -344,7 +350,7 @@ function App({ options }: AppProps) {
           tailscaleStatus={gateway.tailscaleStatus}
           model={currentModel}
           modelStatus={modelStatus}
-          usage={gateway.usage}
+          usage={{ ...gateway.usage, sessionCost: chat.sessionCost }}
           billing={getBillingForProvider(savedConfig, getProviderKey(currentModel))}
           sessionName={sessionName}
           terminalWidth={terminalWidth}

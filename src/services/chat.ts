@@ -98,6 +98,7 @@ export class ChatService implements IChatService {
   private config: ChatServiceConfig;
   private sessionKey: string;
   lastResponseModel: string | undefined;
+  lastResponseUsage: { promptTokens: number; completionTokens: number } | undefined;
 
   constructor(config: ChatServiceConfig) {
     this.config = config;
@@ -181,6 +182,7 @@ export class ChatService implements IChatService {
         model: this.config.model ?? 'moltbot',
         messages: this.buildMessages(userMessage, history),
         stream: true,
+        stream_options: { include_usage: true },
       }),
       signal: AbortSignal.timeout(CHAT_TIMEOUT_MS),
     });
@@ -196,6 +198,7 @@ export class ChatService implements IChatService {
     const decoder = new TextDecoder();
     let buffer = '';
     this.lastResponseModel = undefined;
+    this.lastResponseUsage = undefined;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -219,6 +222,12 @@ export class ChatService implements IChatService {
             if (!parsed) continue;
             if (!this.lastResponseModel && parsed.model) {
               this.lastResponseModel = parsed.model;
+            }
+            if (parsed.usage) {
+              this.lastResponseUsage = {
+                promptTokens: parsed.usage.prompt_tokens ?? 0,
+                completionTokens: parsed.usage.completion_tokens ?? 0,
+              };
             }
             const content = parsed.choices?.[0]?.delta?.content;
             if (content) yield stripAnsi(content);

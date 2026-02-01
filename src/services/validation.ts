@@ -31,6 +31,7 @@ export function validateChatResponse(data: unknown): {
 export function validateSSEChunk(data: unknown): {
   model?: string;
   choices?: Array<{ delta?: { content?: string } }>;
+  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
 } | null {
   if (!isObject(data)) return null;
   return data as ReturnType<typeof validateSSEChunk>;

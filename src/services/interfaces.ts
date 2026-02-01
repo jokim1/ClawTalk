@@ -12,6 +12,7 @@ import type { VoiceCapabilities, TranscriptionResult } from './voice.js';
 /** Gateway chat and model operations. */
 export interface IChatService {
   lastResponseModel: string | undefined;
+  lastResponseUsage: { promptTokens: number; completionTokens: number } | undefined;
 
   sendMessage(userMessage: string, history?: Message[]): Promise<ChatResponse>;
   streamMessage(userMessage: string, history?: Message[]): AsyncGenerator<string, void, unknown>;

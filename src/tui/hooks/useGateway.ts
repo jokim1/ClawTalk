@@ -123,12 +123,14 @@ export function useGateway(
         const todayUsage = await chatService.getCostUsage(1);
         const weekUsage = await chatService.getCostUsage(7);
         if (todayUsage || weekUsage) {
+          const weekTotal = weekUsage?.totals?.totalCost;
+          const dailyAvg = weekTotal ? weekTotal / 7 : undefined;
           setUsage(prev => ({
             ...prev,
             todaySpend: todayUsage?.totals?.totalCost ?? prev.todaySpend ?? 0,
-            averageDailySpend: weekUsage?.totals?.totalCost
-              ? weekUsage.totals.totalCost / 7
-              : prev.averageDailySpend ?? 0,
+            weeklySpend: weekTotal ?? prev.weeklySpend ?? 0,
+            averageDailySpend: dailyAvg ?? prev.averageDailySpend ?? 0,
+            monthlyEstimate: dailyAvg !== undefined ? dailyAvg * 30 : prev.monthlyEstimate ?? 0,
           }));
         }
 

@@ -60,12 +60,14 @@ export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleS
   const tsIcon = tailscaleStatus === 'connected' ? '●' : '○';
   const tsColor = tailscaleStatus === 'connected' ? 'green' : tailscaleStatus === 'checking' ? 'yellow' : 'red';
 
-  const todayCost = usage.todaySpend !== undefined ? `$${usage.todaySpend.toFixed(2)}` : '$0.00';
-  const avgCost = usage.averageDailySpend !== undefined ? `$${usage.averageDailySpend.toFixed(2)}` : '$0.00';
+  const todayCost = `$${(usage.todaySpend ?? 0).toFixed(2)}`;
+  const weeklyCost = `$${(usage.weeklySpend ?? 0).toFixed(2)}`;
+  const monthlyCost = `$${Math.round(usage.monthlyEstimate ?? 0)}`;
+  const sessCost = `$${(usage.sessionCost ?? 0).toFixed(2)}`;
 
   const hasApiCost = usage.modelPricing !== undefined && !isSubscription;
   const apiCost = hasApiCost
-    ? `$${usage.modelPricing!.inputPer1M}/$${usage.modelPricing!.outputPer1M} per 1M`
+    ? `$${usage.modelPricing!.inputPer1M}/$${usage.modelPricing!.outputPer1M}`
     : null;
 
   return (
@@ -138,13 +140,22 @@ export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleS
             <>
               {hasApiCost ? (
                 <>
-                  <Text dimColor>  API: </Text>
+                  <Text dimColor>  </Text>
                   <Text>{apiCost}</Text>
                 </>
               ) : null}
-              <Text dimColor>  Today: </Text>
+              <Text dimColor>  Today </Text>
               <Text>{todayCost}</Text>
-              <Text dimColor> (Avg {avgCost})</Text>
+              <Text dimColor>  Wk </Text>
+              <Text>{weeklyCost}</Text>
+              <Text dimColor>  ~Mo </Text>
+              <Text>{monthlyCost}</Text>
+              {(usage.sessionCost ?? 0) > 0 ? (
+                <>
+                  <Text dimColor>  Sess </Text>
+                  <Text>{sessCost}</Text>
+                </>
+              ) : null}
             </>
           )}
         </Box>

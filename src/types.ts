@@ -55,7 +55,10 @@ export interface UsageStats {
   quotaTotal?: number;
   quotaResetAt?: number;
   todaySpend?: number;
+  weeklySpend?: number;
+  monthlyEstimate?: number;
   averageDailySpend?: number;
+  sessionCost?: number;
   modelPricing?: {
     inputPer1M: number;
     outputPer1M: number;

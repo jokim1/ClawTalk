@@ -2,7 +2,7 @@
  * Chat message sending and streaming state hook
  *
  * Manages message history, streaming content, processing state,
- * and the sendMessage async function.
+ * session cost accumulation, and the sendMessage async function.
  */
 
 import { useState, useCallback, useRef } from 'react';
@@ -13,6 +13,11 @@ import type { SessionManager } from '../../services/sessions.js';
 import { isGatewaySentinel } from '../../constants.js';
 import { createMessage } from '../helpers.js';
 
+export interface ModelPricing {
+  inputPer1M: number;
+  outputPer1M: number;
+}
+
 export function useChat(
   chatServiceRef: MutableRefObject<ChatService | null>,
   sessionManagerRef: MutableRefObject<SessionManager | null>,
@@ -20,10 +25,12 @@ export function useChat(
   setError: Dispatch<SetStateAction<string | null>>,
   speakResponseRef: MutableRefObject<((text: string) => void) | null>,
   onModelError: (error: string) => void,
+  pricingRef: MutableRefObject<ModelPricing>,
 ) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [streamingContent, setStreamingContent] = useState('');
+  const [sessionCost, setSessionCost] = useState(0);
 
   // Refs for values needed inside the stable sendMessage callback
   const isProcessingRef = useRef(false);
@@ -65,6 +72,17 @@ export function useChat(
         sessionManagerRef.current?.addMessage(assistantMsg);
         speakResponseRef.current?.(fullContent);
       }
+
+      // Accumulate session cost from token usage
+      const usage = chatService.lastResponseUsage;
+      if (usage) {
+        const pricing = pricingRef.current;
+        const cost =
+          (usage.promptTokens * pricing.inputPer1M / 1_000_000) +
+          (usage.completionTokens * pricing.outputPer1M / 1_000_000);
+        setSessionCost(prev => prev + cost);
+      }
+
       setStreamingContent('');
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
@@ -92,5 +110,6 @@ export function useChat(
     streamingContent,
     sendMessage,
     sendMessageRef,
+    sessionCost,
   };
 }
