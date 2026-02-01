@@ -29,8 +29,7 @@ export function ChatView({ messages, isProcessing, streamingContent, modelAlias,
     const processingLines = isProcessing ? 3 : 0;
     totalLines += processingLines;
 
-    const reservedForIndicator = 1;
-    const availableHeight = maxHeight - reservedForIndicator;
+    const availableHeight = maxHeight;
 
     const result: Message[] = [];
 
@@ -38,7 +37,9 @@ export function ChatView({ messages, isProcessing, streamingContent, modelAlias,
       const msg = messages[i];
       const msgLines = estimateMessageLines(msg.content, terminalWidth);
 
-      if (totalLines + msgLines > availableHeight) {
+      // Reserve 1 line for the "... N earlier messages ..." indicator if we'd skip messages
+      const indicatorLine = (i > 0) ? 1 : 0;
+      if (totalLines + msgLines + indicatorLine > availableHeight) {
         break;
       }
 
