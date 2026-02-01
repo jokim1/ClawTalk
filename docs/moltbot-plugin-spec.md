@@ -180,13 +180,45 @@ The RemoteClaw client already has the consumer code built:
 
 ---
 
-## Plugin config suggestion
+## Architecture: Rate-limit header capture
 
-The plugin should accept config for billing mode per provider, since moltbot can't always infer this automatically:
+Moltbot's plugin API doesn't expose upstream provider response headers to plugins. To capture Anthropic's `anthropic-ratelimit-*` headers, the plugin runs a lightweight reverse proxy on a separate port (default `18793`).
+
+### Request flow
+
+```
+RemoteClaw → moltbot:18789 → plugin-proxy:18793 → api.anthropic.com
+                                    ↑
+                            captures rate-limit
+                            headers here
+```
+
+### Setup required
+
+After installing the plugin, update your moltbot Anthropic provider config to route through the proxy:
+
+```json
+{
+  "anthropic": {
+    "baseUrl": "http://localhost:18793"
+  }
+}
+```
+
+The proxy transparently forwards all requests to Anthropic's API and passes responses back unchanged. The only side effect is that it reads and caches the rate-limit headers from each response.
+
+**Note:** This proxy only applies to providers where you want rate-limit tracking (typically Anthropic for Max subscribers). Other providers (DeepSeek, OpenAI, etc.) continue to connect directly.
+
+---
+
+## Plugin config
+
+The plugin accepts config for billing mode per provider, since moltbot can't always infer this automatically:
 
 ```json
 {
   "remoteclaw": {
+    "proxyPort": 18793,
     "providers": {
       "anthropic": {
         "billing": "subscription",
