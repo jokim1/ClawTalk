@@ -150,9 +150,13 @@ export function useGateway(
       }
     };
 
-    poll();
+    // Defer first poll to next macrotask so all useEffects (including
+    // service initialization in app.tsx) complete first. Without this,
+    // chatServiceRef/voiceServiceRef are null on first poll, causing
+    // voice readiness to stay stuck at 'checking' for 30s.
+    const initial = setTimeout(poll, 0);
     const interval = setInterval(poll, GATEWAY_POLL_INTERVAL_MS);
-    return () => clearInterval(interval);
+    return () => { clearTimeout(initial); clearInterval(interval); };
   }, []);
 
   return { gatewayStatus, tailscaleStatus, usage, setUsage, availableModels, voiceCaps };
