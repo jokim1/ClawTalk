@@ -120,19 +120,11 @@ export function useGateway(
           cbRef.current.onInitialProbe(currentModelRef.current);
         }
 
+        // Collect all usage updates before applying — React 17 doesn't
+        // batch setState in async functions, so multiple setUsage calls
+        // cause multiple Ink re-renders (visible as flicker).
         const todayUsage = await chatService.getCostUsage(1);
         const weekUsage = await chatService.getCostUsage(7);
-        if (todayUsage || weekUsage) {
-          const weekTotal = weekUsage?.totals?.totalCost;
-          const dailyAvg = weekTotal ? weekTotal / 7 : undefined;
-          setUsage(prev => ({
-            ...prev,
-            todaySpend: todayUsage?.totals?.totalCost ?? prev.todaySpend ?? 0,
-            weeklySpend: weekTotal ?? prev.weeklySpend ?? 0,
-            averageDailySpend: dailyAvg ?? prev.averageDailySpend ?? 0,
-            monthlyEstimate: dailyAvg !== undefined ? dailyAvg * 30 : prev.monthlyEstimate ?? 0,
-          }));
-        }
 
         const provider = getProviderKey(currentModelRef.current);
         let rateLimits = await chatService.getRateLimits(provider);
@@ -140,7 +132,18 @@ export function useGateway(
           const bareModel = currentModelRef.current.replace(/^anthropic\//, '');
           rateLimits = await anthropicRLRef.current.fetchRateLimits(bareModel);
         }
-        if (rateLimits) setUsage(prev => ({ ...prev, rateLimits }));
+
+        // Single setUsage call — one render instead of two
+        const weekTotal = weekUsage?.totals?.totalCost;
+        const dailyAvg = weekTotal ? weekTotal / 7 : undefined;
+        setUsage(prev => ({
+          ...prev,
+          todaySpend: todayUsage?.totals?.totalCost ?? prev.todaySpend ?? 0,
+          weeklySpend: weekTotal ?? prev.weeklySpend ?? 0,
+          averageDailySpend: dailyAvg ?? prev.averageDailySpend ?? 0,
+          monthlyEstimate: dailyAvg !== undefined ? dailyAvg * 30 : prev.monthlyEstimate ?? 0,
+          ...(rateLimits ? { rateLimits } : {}),
+        }));
       } catch (err) {
         console.debug('Gateway poll failed:', err);
         setGatewayStatus('offline');
