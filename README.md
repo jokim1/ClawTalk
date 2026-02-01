@@ -1,6 +1,16 @@
 # RemoteClaw
 
-A terminal UI for chatting with LLMs through a [Moltbot](https://github.com/jokim1/moltbot) gateway. Switch between models from multiple providers (Anthropic, OpenAI, DeepSeek, Google, Moonshot) with a single keypress, track costs and rate limits in real time, and manage conversation sessions — all from your terminal.
+A terminal UI for remote terminal chatting with LLMs through a [Moltbot](https://github.com/jokim1/moltbot) gateway. 
+
+So you can remote into your Moltbot from your terminal on your Mac/PC/whatever.
+
+Switch between models from multiple providers (Anthropic, OpenAI, DeepSeek, Google, Moonshot) with a single keypress, track costs and rate limits in real time, and manage conversation sessions — all from your terminal. Also, store, search, all of your terminal chat history as well. You're welcome bruh.
+
+TLDR:
+1. Install the moltbot plugin on your gateway server (e.g., moltbot plugini add remoteclaw-gateway or drop it in the plugin dir)
+2. Install RemoteClaw on your computer (e.g., npm install -g @jokim1/remoteclaw)
+3. Configure RemoteClaw to point at your gateway (remoteclaw config --gateway http://... --token ...)
+4. Done - RemoteClaw auto-discovers providers and rate limits fromm the plugin
 
 Built with React + [Ink](https://github.com/vadimdemedes/ink) by [Claude Opus 4.5](https://anthropic.com) and [Joseph Kim](https://github.com/jokim1).
 
