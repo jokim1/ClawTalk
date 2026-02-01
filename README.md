@@ -7,8 +7,8 @@ Remote into your Moltbot from your terminal on your Mac/PC/whatever. Switch betw
 Built with React + [Ink](https://github.com/vadimdemedes/ink) by [Claude Opus 4.5](https://anthropic.com) and [Joseph Kim](https://github.com/jokim1).
 
 ```
-GW:● TS:● M:Deep  API: $0.14/$0.28 per 1M  Today: $0.42 (Avg $0.31)  Session 3
-─────────────────────────────────────────────────────────────────────────────────
+GW:● TS:● M:Deep  V:●  $0.14/$0.28  Today $0.42  Wk $2.17  ~Mo $9  Sess $0.03  🎤  Session 3
+──────────────────────────────────────────────────────────────────────────────────────────────────
 You:
   explain quicksort in one sentence
 
@@ -18,7 +18,7 @@ Deep:
   partition independently.
 
 > _
-─────────────────────────────────────────────────────────────────────────────────
+──────────────────────────────────────────────────────────────────────────────────────────────────
  ^Q  Model   ^N  New   ^L  Clear   ^T  Transcript   ^V  Voice   ^C  Exit
 ```
 
@@ -32,15 +32,13 @@ There are two pieces:
 Your server (running Moltbot) holds all the API keys and talks to the LLM providers. RemoteClaw connects to it over HTTP and gives you a nice terminal UI.
 
 ```
-Your machine                       Your server                     LLM providers
-┌──────────────┐                  ┌──────────────────┐            ┌───────────┐
-│  RemoteClaw   │───── HTTP ─────▶│  Moltbot          │───── API ─▶│ Anthropic │
-│  (terminal)   │                 │  + Gateway plugin  │            │ OpenAI    │
-│               │◀── responses ───│                    │            │ DeepSeek  │
-│               │                 │  Holds API keys    │            │ Google    │
-└──────────────┘                  └──────────────────┘            └───────────┘
-       │
-  Tailscale (optional, for remote access)
+Your machine                         Your server                     LLM providers
+┌──────────────┐                    ┌──────────────────┐            ┌───────────┐
+│  RemoteClaw   │── Tailscale VPN ─▶│  Moltbot          │───── API ─▶│ Anthropic │
+│  (terminal)   │   (100.x.x.x)    │  + Gateway plugin  │            │ OpenAI    │
+│               │◀── responses ─────│                    │            │ DeepSeek  │
+│               │                   │  Holds API keys    │            │ Google    │
+└──────────────┘                    └──────────────────┘            └───────────┘
 ```
 
 ## Setup
@@ -49,9 +47,53 @@ Your machine                       Your server                     LLM providers
 
 Install the [RemoteClawGateway](https://github.com/jokim1/RemoteClawGateway) plugin on your Moltbot instance. See that repo's README for instructions.
 
-Once the plugin is running, you'll have a gateway URL (e.g. `http://your-server:18789`) and optionally an auth token.
+Once the plugin is running, you'll have a gateway URL (e.g. `http://100.x.x.x:18789`) and optionally an auth token.
 
-### Step 2: Install RemoteClaw (on your machine)
+### Step 2: Set up Tailscale (on both machines)
+
+RemoteClaw uses [Tailscale](https://tailscale.com) to securely connect your local machine to your server. Tailscale creates a private mesh VPN — each device gets a stable `100.x.x.x` IP address that works from anywhere, without port forwarding or firewall configuration.
+
+**On your server (where Moltbot runs):**
+
+1. Install Tailscale: https://tailscale.com/download
+2. Start Tailscale and log in:
+   ```bash
+   sudo tailscale up
+   ```
+3. Note your server's Tailscale IP:
+   ```bash
+   tailscale ip -4
+   # Example output: 100.85.123.45
+   ```
+
+**On your local machine (where you'll run RemoteClaw):**
+
+1. Install Tailscale:
+   ```bash
+   # macOS
+   brew install tailscale
+   # Then start the service:
+   brew services start tailscale
+
+   # Or download from: https://tailscale.com/download
+   ```
+2. Log in with the same Tailscale account:
+   ```bash
+   tailscale up
+   ```
+3. Verify you can reach your server:
+   ```bash
+   # Replace with your server's Tailscale IP from above
+   ping 100.85.123.45
+   ```
+
+Once both machines are on the same Tailscale network, your server's gateway (e.g. `http://100.85.123.45:18789`) is reachable from your machine as if it were on the local network.
+
+RemoteClaw monitors Tailscale status and shows it in the status bar (`TS:●`). If Tailscale isn't connected, RemoteClaw tells you exactly what's wrong — not installed, daemon not running, or not logged in.
+
+> **Note:** If your server is on the same local network (or is localhost), you can skip Tailscale and use the local IP directly. Tailscale is for remote access from anywhere.
+
+### Step 3: Install RemoteClaw (on your machine)
 
 ```bash
 npm install -g @jokim1/remoteclaw
@@ -69,11 +111,11 @@ npm link
 
 Requires **Node.js 20+**.
 
-### Step 3: Point RemoteClaw at your gateway
+### Step 4: Point RemoteClaw at your gateway
 
 ```bash
-# Set your gateway URL
-remoteclaw config --gateway http://your-server:18789
+# Set your gateway URL (use your server's Tailscale IP)
+remoteclaw config --gateway http://100.85.123.45:18789
 
 # Set auth token (if your gateway requires one)
 remoteclaw config --token your-token-here
@@ -82,24 +124,24 @@ remoteclaw config --token your-token-here
 remoteclaw config --model deepseek/deepseek-chat
 ```
 
-### Step 4: Run it
+### Step 5: Run it
 
 ```bash
 remoteclaw
 ```
 
-RemoteClaw connects to your gateway, discovers available models, and drops you into the chat.
+RemoteClaw connects to your gateway over Tailscale, discovers available models, and drops you into the chat.
 
 ## Features
 
 - **Multi-model chat** — talk to Claude, GPT, DeepSeek, Gemini, Kimi, and more through one interface
 - **Model health probing** — when you switch models, RemoteClaw verifies the model is responding before you use it
 - **Model mismatch detection** — if the gateway silently routes to a different model, RemoteClaw warns you
-- **Cost tracking** — shows today's spend and 7-day average for API-billed providers
-- **Rate limit monitoring** — for subscription plans (e.g. Anthropic Max), shows usage progress and reset countdown
-- **Voice input/output** — push-to-talk speech input and auto-play speech output (requires [SoX](https://sox.sourceforge.net/) and gateway voice support)
+- **Cost tracking** — shows today's spend, weekly total, monthly estimate, and per-session cost for API-billed providers
+- **Rate limit monitoring** — for subscription plans (e.g. Anthropic Max), shows usage progress bar and reset countdown
+- **Voice input/output** — push-to-talk speech input with live volume meter and auto-play speech output (requires [SoX](https://sox.sourceforge.net/) and gateway voice support)
 - **Session persistence** — conversations saved to disk, browsable and searchable across sessions
-- **Tailscale-aware** — detects Tailscale status for diagnosing connectivity
+- **Tailscale-aware** — monitors Tailscale VPN status for connectivity diagnostics
 
 ## Keyboard shortcuts
 
@@ -146,26 +188,27 @@ Models not in this list are auto-discovered from the gateway at runtime.
 ## Status bar
 
 ```
-GW:● TS:● M:Deep  API: $0.14/$0.28 per 1M  Today: $1.23 (Avg $0.87)  Session 1
+GW:● TS:● M:Deep  V:●  $0.14/$0.28  Today $1.23  Wk $8.61  ~Mo $37  Sess $0.08  🎤  Session 1
 ```
 
 | Indicator | Meaning |
 |-----------|---------|
 | `GW:●` | Gateway: green = online, yellow = connecting, red = offline |
-| `TS:●` | Tailscale: green = connected, red = not running |
+| `TS:●` | Tailscale: green = connected, yellow = checking, red = not running |
 | `M:Deep` | Model: green = verified, yellow = checking, red = error |
 | `V:●` | Voice: green = ready, red = recording, yellow = processing, magenta = playing |
+| `🎤` | Mic readiness: green = ready, yellow = checking, red = unavailable |
 
 ### Billing display
 
-**API providers** show per-token pricing and daily spend:
+**API providers** show per-token pricing, daily spend, weekly total, monthly estimate, and session cost:
 ```
-M:Deep  API: $0.14/$0.28 per 1M  Today: $1.23 (Avg $0.87)
+$0.14/$0.28  Today $1.23  Wk $8.61  ~Mo $37  Sess $0.08
 ```
 
-**Subscription providers** (e.g. Anthropic Max) show a rate-limit bar:
+**Subscription providers** (e.g. Anthropic Max) show a rate-limit progress bar:
 ```
-M:Opus  Max Pro  ████░░░░░░ 12% wk  Resets 3d 20h
+Max Pro  ████░░░░░░ 12% wk  Resets 3d 20h
 ```
 
 ## Voice
@@ -190,7 +233,7 @@ sudo pacman -S sox
 
 ### How it works
 
-1. Press **Ctrl+V** to start recording (status bar shows `V:● REC`)
+1. Press **Ctrl+V** to start recording — the input area shows a live volume meter
 2. Press **Ctrl+V** again to stop and send for transcription
 3. Transcribed text is sent immediately (auto-send is on by default)
 4. When the assistant responds, the response is automatically spoken aloud
@@ -213,6 +256,48 @@ remoteclaw config --voice-tts-voice nova
 ```
 
 If SoX isn't installed or the gateway doesn't support voice, pressing Ctrl+V shows a diagnostic message explaining what's needed.
+
+## Tailscale
+
+RemoteClaw is designed for remote access — your server holds the API keys and runs the Moltbot gateway, and you connect to it from your laptop, phone, or any other machine. [Tailscale](https://tailscale.com) makes this easy.
+
+### What Tailscale does
+
+Tailscale creates a private mesh VPN between your devices. Each device gets a stable IP address (like `100.85.123.45`) that works from anywhere — at home, at a coffee shop, on a plane. No port forwarding, no DNS, no firewall rules.
+
+Your server's gateway runs on a local port (e.g. `18789`). With Tailscale, you access it at `http://100.85.123.45:18789` from any of your devices.
+
+### How RemoteClaw uses Tailscale
+
+RemoteClaw checks Tailscale status on startup and continuously while running:
+
+- **On startup** — if the gateway is unreachable, RemoteClaw checks Tailscale and tells you exactly what's wrong:
+  - `Tailscale is not installed` — with install instructions
+  - `Tailscale daemon is not running` — with the command to start it
+  - `Tailscale is not authenticated` — tells you to run `tailscale up`
+  - `Tailscale is connected but gateway unreachable` — suggests checking the server
+
+- **While running** — the status bar shows `TS:●` (green = connected, red = disconnected). If Tailscale drops, you'll see it immediately.
+
+### Tailscale status indicators
+
+| Status | Indicator | Meaning |
+|--------|-----------|---------|
+| Connected | `TS:●` (green) | VPN tunnel active, gateway reachable |
+| Checking | `TS:●` (yellow) | Status being verified |
+| Not connected | `TS:○` (red) | Not installed, not running, or not logged in |
+
+### Without Tailscale
+
+If your server is on the same local network or is localhost, you don't need Tailscale. Just point RemoteClaw at the local address:
+
+```bash
+remoteclaw config --gateway http://192.168.1.50:18789
+# or
+remoteclaw config --gateway http://localhost:18789
+```
+
+RemoteClaw will still show Tailscale status, but it won't affect connectivity.
 
 ## Billing configuration
 
@@ -311,26 +396,35 @@ Press **Ctrl+T** to open the transcript browser:
 
 ```
 src/
-├── cli.ts                    # CLI entry point and commands
-├── config.ts                 # Configuration management
-├── models.ts                 # Model registry and metadata
-├── types.ts                  # TypeScript type definitions
+├── cli.ts                     # CLI entry point and commands
+├── config.ts                  # Configuration management
+├── constants.ts               # Shared constants
+├── models.ts                  # Model registry and metadata
+├── types.ts                   # TypeScript type definitions
 ├── services/
-│   ├── chat.ts               # Gateway API client
-│   ├── sessions.ts           # Session persistence
-│   ├── voice.ts              # Voice recording, transcription, playback
+│   ├── chat.ts                # Gateway API client
+│   ├── interfaces.ts          # Service interfaces
+│   ├── validation.ts          # SSE chunk validation
+│   ├── sessions.ts            # Session persistence
+│   ├── voice.ts               # Voice recording, transcription, playback
 │   ├── anthropic-ratelimit.ts # Direct Anthropic rate limit fetching
-│   ├── tailscale.ts          # Tailscale status detection
-│   └── terminal.ts           # Terminal window spawning
+│   ├── tailscale.ts           # Tailscale status detection
+│   └── terminal.ts            # Terminal window spawning
 └── tui/
-    ├── app.tsx               # Main application component
-    ├── utils.ts              # TUI utilities
+    ├── app.tsx                # Main application component
+    ├── commands.ts            # Slash command registry
+    ├── helpers.ts             # Input helpers
+    ├── utils.ts               # TUI utilities
+    ├── hooks/
+    │   ├── useChat.ts         # Chat state and message handling
+    │   ├── useGateway.ts      # Gateway polling and status
+    │   └── useVoice.ts        # Voice mode state machine
     └── components/
-        ├── StatusBar.tsx     # Status bar and shortcut bar
-        ├── ChatView.tsx      # Chat message display
-        ├── InputArea.tsx     # Text input / voice state display
-        ├── ModelPicker.tsx   # Model selection UI
-        └── TranscriptHub.tsx # Session transcript browser
+        ├── StatusBar.tsx      # Status bar and shortcut bar
+        ├── ChatView.tsx       # Chat message display
+        ├── InputArea.tsx      # Text input / voice state display
+        ├── ModelPicker.tsx    # Model selection UI
+        └── TranscriptHub.tsx  # Session transcript browser
 ```
 
 ## Development
