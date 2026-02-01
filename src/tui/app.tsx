@@ -116,7 +116,7 @@ function App({ options }: AppProps) {
     readiness: 'checking',
     sttAvailable: false,
     ttsAvailable: false,
-    autoSend: savedConfig.voice?.autoSend ?? false,
+    autoSend: savedConfig.voice?.autoSend ?? true,
     autoPlay: savedConfig.voice?.autoPlay ?? true,
   });
   const voiceStateRef = useRef(voiceState);
