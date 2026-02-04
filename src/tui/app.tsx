@@ -91,6 +91,7 @@ function App({ options }: AppProps) {
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showTranscript, setShowTranscript] = useState(false);
   const [sessionName, setSessionName] = useState('Session 1');
+  const [chatScrollOffset, setChatScrollOffset] = useState(0);
 
   // --- TTS bridge ref (useChat → useVoice) ---
 
@@ -139,6 +140,15 @@ function App({ options }: AppProps) {
   // Wire TTS: when chat receives an assistant response, speak it
   speakResponseRef.current = voice.speakResponse;
 
+  // Auto-scroll to bottom when new messages arrive
+  const prevMessageCountRef = useRef(chat.messages.length);
+  useEffect(() => {
+    if (chat.messages.length > prevMessageCountRef.current) {
+      setChatScrollOffset(0); // Scroll to bottom
+    }
+    prevMessageCountRef.current = chat.messages.length;
+  }, [chat.messages.length]);
+
   // --- Service initialization ---
 
   useEffect(() => {
@@ -186,7 +196,7 @@ function App({ options }: AppProps) {
 
   // --- Model management ---
 
-  const probeCurrentModel = useCallback((modelId: string) => {
+  const probeCurrentModel = useCallback((modelId: string, previousModel?: string) => {
     probeAbortRef.current?.abort();
     const controller = new AbortController();
     probeAbortRef.current = controller;
@@ -202,6 +212,12 @@ function App({ options }: AppProps) {
         setModelStatus({ error: result.reason });
         setError(result.reason);
         chat.setMessages(prev => [...prev, createMessage('system', `Model probe failed: ${result.reason}`)]);
+        // Revert to previous model on probe failure
+        if (previousModel) {
+          setCurrentModel(previousModel);
+          chatServiceRef.current?.setModel(previousModel);
+          sessionManagerRef.current?.setSessionModel(previousModel);
+        }
       }
     });
   }, []);
@@ -220,6 +236,7 @@ function App({ options }: AppProps) {
   }, [currentModel]);
 
   const switchModel = useCallback((modelId: string) => {
+    const previousModel = chatServiceRef.current?.getModel();
     setCurrentModel(modelId);
     chatServiceRef.current?.setModel(modelId);
     sessionManagerRef.current?.setSessionModel(modelId);
@@ -228,7 +245,7 @@ function App({ options }: AppProps) {
     setError(null);
 
     chatServiceRef.current?.setModelOverride(modelId).catch(() => {});
-    probeCurrentModel(modelId);
+    probeCurrentModel(modelId, previousModel);
   }, [probeCurrentModel]);
 
   const selectModel = useCallback((modelId: string) => {
@@ -395,6 +412,9 @@ function App({ options }: AppProps) {
             modelAlias={getModelAlias(currentModel)}
             maxHeight={chatHeight}
             terminalWidth={terminalWidth}
+            scrollOffset={chatScrollOffset}
+            onScroll={setChatScrollOffset}
+            isActive={!showModelPicker && !showTranscript}
           />
         )}
       </Box>
