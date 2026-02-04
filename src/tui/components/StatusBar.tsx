@@ -52,11 +52,22 @@ export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleS
   const modelIndicator = modelStatus === 'checking' ? ' ◐' : '';
   const isSubscription = billing?.mode === 'subscription';
 
-  const gateway = gatewayStatus === 'online' ? '●' : gatewayStatus === 'connecting' ? '◐' : '○';
+  // Icons and colors
+  const gwIcon = gatewayStatus === 'online' ? '●' : gatewayStatus === 'connecting' ? '◐' : '○';
+  const gwColor = gatewayStatus === 'online' ? 'green' : gatewayStatus === 'connecting' ? 'yellow' : 'red';
+
   const tsIcon = tailscaleStatus === 'connected' ? '●' : '○';
+  const tsColor = tailscaleStatus === 'connected' ? 'green' : tailscaleStatus === 'checking' ? 'yellow' : 'red';
+
+  const modelColor = modelStatus === 'checking' ? 'yellow' : modelStatus === 'ok' ? 'green'
+    : typeof modelStatus === 'object' ? 'red' : 'cyan';
+
   const micIcon = voiceReadiness === 'ready' ? '●' : voiceReadiness === 'checking' ? '◐' : '○';
+  const micColor = voiceReadiness === 'ready' ? 'green' : voiceReadiness === 'checking' ? 'yellow' : 'red';
+
   const isVoiceActive = voiceMode === 'playing' || voiceMode === 'synthesizing';
   const ttsIcon = isVoiceActive ? (voiceMode === 'playing' ? '♪' : '◐') : ttsEnabled ? '●' : '○';
+  const ttsColor = isVoiceActive ? (voiceMode === 'playing' ? 'magenta' : 'yellow') : ttsEnabled ? 'green' : 'gray';
 
   // Build cost/billing section
   let billingText = '';
@@ -84,26 +95,30 @@ export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleS
     billingText = parts.join('  ');
   }
 
-  // Build fixed-width line: pad to exact terminal width to prevent layout shifts
-  const leftPart = `GW:${gateway} TS:${tsIcon} M:${modelName}${modelIndicator}  ${billingText}`;
-  const rightPart = `V:${ttsIcon} Mic:${micIcon}  ${sessionName ?? ''}`;
-  const gap = Math.max(2, terminalWidth - leftPart.length - rightPart.length - 2);
-
-  // Create exact-width string (prevents Yoga from recalculating layout)
-  let fullLine = ' ' + leftPart + ' '.repeat(gap) + rightPart + ' ';
-  if (fullLine.length > terminalWidth) {
-    fullLine = fullLine.slice(0, terminalWidth);
-  } else if (fullLine.length < terminalWidth) {
-    fullLine = fullLine + ' '.repeat(terminalWidth - fullLine.length);
-  }
+  // Calculate gap for right-alignment
+  const leftLen = `GW:${gwIcon} TS:${tsIcon} M:${modelName}${modelIndicator}  ${billingText}`.length;
+  const rightLen = `V:${ttsIcon} Mic:${micIcon}  ${sessionName ?? ''}`.length;
+  const gap = Math.max(2, terminalWidth - leftLen - rightLen - 2);
 
   const separator = '─'.repeat(terminalWidth);
 
-  // Render as raw text lines - no flexbox, no dynamic layout
-  // Using a single Text with newlines is more stable than multiple Box elements
   return (
-    <Box width={terminalWidth} height={3}>
-      <Text>{'\n' + fullLine + '\n' + separator}</Text>
+    <Box flexDirection="column" width={terminalWidth} height={3}>
+      <Box height={2}>
+        <Text> </Text>
+        <Text dimColor>GW:</Text><Text color={gwColor}>{gwIcon} </Text>
+        <Text dimColor>TS:</Text><Text color={tsColor}>{tsIcon} </Text>
+        <Text dimColor>M:</Text><Text color={modelColor} bold>{modelName}{modelIndicator}</Text>
+        <Text>  </Text>
+        <Text dimColor>{billingText}</Text>
+        <Text>{' '.repeat(gap)}</Text>
+        <Text dimColor>V:</Text><Text color={ttsColor}>{ttsIcon} </Text>
+        <Text dimColor>Mic:</Text><Text color={micColor}>{micIcon}</Text>
+        <Text dimColor>  {sessionName ?? ''} </Text>
+      </Box>
+      <Box height={1}>
+        <Text dimColor>{separator}</Text>
+      </Box>
     </Box>
   );
 }
