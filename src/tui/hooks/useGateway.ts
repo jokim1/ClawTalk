@@ -7,9 +7,10 @@
 
 import { useState, useEffect, useRef } from 'react';
 import type { MutableRefObject } from 'react';
-import type { UsageStats, VoiceReadiness } from '../../types.js';
+import type { UsageStats, VoiceReadiness, RealtimeVoiceCapabilities } from '../../types.js';
 import type { ChatService } from '../../services/chat.js';
 import type { VoiceService } from '../../services/voice.js';
+import type { RealtimeVoiceService } from '../../services/realtime-voice.js';
 import type { AnthropicRateLimitService } from '../../services/anthropic-ratelimit.js';
 import type { BillingOverride } from '../../config.js';
 import { getStatus as getTailscaleStatus } from '../../services/tailscale.js';
@@ -41,6 +42,7 @@ interface GatewayState {
   availableModels: ModelInfo[];
   usage: UsageStats;
   voiceCaps: VoiceCaps;
+  realtimeVoiceCaps: RealtimeVoiceCapabilities | null;
   isInitialized: boolean;
 }
 
@@ -58,12 +60,14 @@ const initialState: GatewayState = {
     sttAvailable: false,
     ttsAvailable: false,
   },
+  realtimeVoiceCaps: null,
   isInitialized: false,
 };
 
 export function useGateway(
   chatServiceRef: MutableRefObject<ChatService | null>,
   voiceServiceRef: MutableRefObject<VoiceService | null>,
+  realtimeVoiceServiceRef: MutableRefObject<RealtimeVoiceService | null>,
   anthropicRLRef: MutableRefObject<AnthropicRateLimitService | null>,
   currentModelRef: MutableRefObject<string>,
   callbacks: Callbacks,
@@ -93,6 +97,7 @@ export function useGateway(
     let initialProbed = false;
     let providersFetched = false;
     let voiceChecked = false;
+    let realtimeVoiceChecked = false;
 
     const poll = async () => {
       const chatService = chatServiceRef.current;
@@ -171,6 +176,18 @@ export function useGateway(
             } else {
               updates.voiceCaps = { readiness: 'ready', sttAvailable: caps.stt.available, ttsAvailable: caps.tts.available };
               voiceChecked = true;
+            }
+          }
+        }
+
+        // Check realtime voice capabilities
+        if (!realtimeVoiceChecked) {
+          const realtimeService = realtimeVoiceServiceRef.current;
+          if (realtimeService) {
+            const realtimeCaps = await realtimeService.fetchCapabilities();
+            if (realtimeCaps) {
+              updates.realtimeVoiceCaps = realtimeCaps;
+              realtimeVoiceChecked = true;
             }
           }
         }
@@ -254,6 +271,7 @@ export function useGateway(
     setUsage,
     availableModels: state.availableModels,
     voiceCaps: state.voiceCaps,
+    realtimeVoiceCaps: state.realtimeVoiceCaps,
     isInitialized: state.isInitialized,
   };
 }

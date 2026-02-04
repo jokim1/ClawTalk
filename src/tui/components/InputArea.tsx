@@ -7,7 +7,7 @@
 import React from 'react';
 import { Box, Text } from 'ink';
 import { MultiLineInput } from './MultiLineInput.js';
-import type { VoiceMode } from '../../types.js';
+import type { VoiceMode, RealtimeVoiceState } from '../../types.js';
 
 interface InputAreaProps {
   value: string;
@@ -18,6 +18,10 @@ interface InputAreaProps {
   volumeLevel?: number;
   width?: number;
   isActive?: boolean;
+  // Realtime voice props
+  realtimeState?: RealtimeVoiceState;
+  userTranscript?: string;
+  aiTranscript?: string;
 }
 
 function VolumeMeter({ level }: { level: number }) {
@@ -35,14 +39,46 @@ function VolumeMeter({ level }: { level: number }) {
   );
 }
 
-export function InputArea({ value, onChange, onSubmit, disabled, voiceMode, volumeLevel, width = 80, isActive = true }: InputAreaProps) {
-  if (voiceMode === 'liveTalk') {
+export function InputArea({
+  value,
+  onChange,
+  onSubmit,
+  disabled,
+  voiceMode,
+  volumeLevel,
+  width = 80,
+  isActive = true,
+  realtimeState,
+  userTranscript,
+  aiTranscript,
+}: InputAreaProps) {
+  // Realtime live chat mode with transcripts
+  if (voiceMode === 'liveChat') {
+    const isAISpeaking = realtimeState === 'aiSpeaking';
+    const dotColor = isAISpeaking ? 'cyan' : 'green';
+
     return (
-      <Box paddingX={1}>
-        <Text color="cyan">● </Text>
-        <Text color="cyan" bold>Live Talk...</Text>
-        <VolumeMeter level={volumeLevel ?? 0} />
-        <Text dimColor>  ^T to end</Text>
+      <Box flexDirection="column">
+        {/* Live transcripts */}
+        {userTranscript && (
+          <Box paddingX={1}>
+            <Text color="green" bold>You: </Text>
+            <Text color="green">{userTranscript}</Text>
+          </Box>
+        )}
+        {aiTranscript && (
+          <Box paddingX={1}>
+            <Text color="cyan" bold>AI: </Text>
+            <Text color="cyan">{aiTranscript}</Text>
+          </Box>
+        )}
+        {/* Status bar */}
+        <Box paddingX={1}>
+          <Text color={dotColor}>● </Text>
+          <Text color="cyan" bold>Live Chat...</Text>
+          <VolumeMeter level={volumeLevel ?? 0} />
+          <Text dimColor>  ^C to end</Text>
+        </Box>
       </Box>
     );
   }

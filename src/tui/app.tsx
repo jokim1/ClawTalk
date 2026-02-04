@@ -24,6 +24,7 @@ import type { TalkManager } from '../services/talks';
 import type { Talk } from '../types.js';
 import { spawnNewTerminalWindow } from '../services/terminal.js';
 import { VoiceService } from '../services/voice.js';
+import { RealtimeVoiceService } from '../services/realtime-voice.js';
 import { AnthropicRateLimitService } from '../services/anthropic-ratelimit.js';
 import { loadConfig, getBillingForProvider } from '../config.js';
 import type { BillingOverride } from '../config.js';
@@ -39,6 +40,7 @@ import { dispatchCommand } from './commands.js';
 import { useGateway } from './hooks/useGateway.js';
 import { useChat } from './hooks/useChat.js';
 import { useVoice } from './hooks/useVoice.js';
+import { useRealtimeVoice } from './hooks/useRealtimeVoice.js';
 
 interface AppProps {
   options: RemoteClawOptions;
@@ -82,6 +84,7 @@ function App({ options }: AppProps) {
   const sessionManagerRef = useRef<SessionManager | null>(null);
   const talkManagerRef = useRef<TalkManager | null>(null);
   const voiceServiceRef = useRef<VoiceService | null>(null);
+  const realtimeVoiceServiceRef = useRef<RealtimeVoiceService | null>(null);
   const anthropicRLRef = useRef<AnthropicRateLimitService | null>(null);
 
   // --- Shared state ---
@@ -120,7 +123,7 @@ function App({ options }: AppProps) {
   );
 
   const gateway = useGateway(
-    chatServiceRef, voiceServiceRef, anthropicRLRef, currentModelRef,
+    chatServiceRef, voiceServiceRef, realtimeVoiceServiceRef, anthropicRLRef, currentModelRef,
     {
       onInitialProbe: (model) => {
         // Skip if a probe was already triggered (e.g., by switchModel)
@@ -147,6 +150,12 @@ function App({ options }: AppProps) {
     setError,
   });
 
+  const realtimeVoice = useRealtimeVoice({
+    realtimeServiceRef: realtimeVoiceServiceRef,
+    capabilities: gateway.realtimeVoiceCaps,
+    setError,
+  });
+
   // Wire TTS: when chat receives an assistant response, speak it
   speakResponseRef.current = voice.speakResponse;
 
@@ -170,6 +179,11 @@ function App({ options }: AppProps) {
     });
 
     voiceServiceRef.current = new VoiceService({
+      gatewayUrl: options.gatewayUrl,
+      gatewayToken: options.gatewayToken,
+    });
+
+    realtimeVoiceServiceRef.current = new RealtimeVoiceService({
       gatewayUrl: options.gatewayUrl,
       gatewayToken: options.gatewayToken,
     });
@@ -215,7 +229,10 @@ function App({ options }: AppProps) {
       chatServiceRef.current.setModelOverride(session.model).catch(() => {});
     }
 
-    return () => { voiceServiceRef.current?.cleanup(); };
+    return () => {
+      voiceServiceRef.current?.cleanup();
+      realtimeVoiceServiceRef.current?.cleanup();
+    };
   }, []);
 
   // --- Model management ---
@@ -436,7 +453,19 @@ function App({ options }: AppProps) {
     if (input === 'c' && key.ctrl) {
       if (chat.isProcessing) {
         setError('Cannot start chat while processing');
+      } else if (realtimeVoice.isActive) {
+        // End realtime session
+        realtimeVoice.endSession();
+      } else if (gateway.realtimeVoiceCaps?.available) {
+        // Start realtime session
+        realtimeVoice.startSession().then(success => {
+          if (!success) {
+            // Fall back to legacy live talk mode
+            voice.handleLiveTalk?.();
+          }
+        });
       } else {
+        // Fall back to legacy live talk mode
         voice.handleLiveTalk?.();
       }
       cleanInputChar(setInputText, 'c');
@@ -558,6 +587,12 @@ function App({ options }: AppProps) {
             maxHeight={chatHeight}
             terminalWidth={terminalWidth}
             onClose={() => setShowTranscript(false)}
+            onNewChat={() => { setShowTranscript(false); handleNewChat(); }}
+            onToggleTts={() => { voice.handleTtsToggle?.(); }}
+            onOpenTalks={() => { setShowTranscript(false); setShowTalks(true); }}
+            onOpenSettings={() => { setShowTranscript(false); setShowSettings(true); }}
+            onExit={() => { voiceServiceRef.current?.cleanup(); exit(); }}
+            setError={setError}
           />
         ) : showTalks ? (
           <TalksHub
@@ -579,6 +614,15 @@ function App({ options }: AppProps) {
         ) : showSettings ? (
           <SettingsPicker
             onClose={() => setShowSettings(false)}
+            onNewChat={() => { setShowSettings(false); handleNewChat(); }}
+            onToggleTts={() => { voice.handleTtsToggle?.(); }}
+            onOpenTalks={() => { setShowSettings(false); setShowTalks(true); }}
+            onOpenHistory={() => { setShowSettings(false); setShowTranscript(true); }}
+            onExit={() => { voiceServiceRef.current?.cleanup(); realtimeVoiceServiceRef.current?.cleanup(); exit(); }}
+            setError={setError}
+            realtimeVoiceCaps={gateway.realtimeVoiceCaps}
+            realtimeProvider={realtimeVoice.provider}
+            onRealtimeProviderChange={realtimeVoice.setProvider}
           />
         ) : (
           <ChatView
@@ -605,10 +649,13 @@ function App({ options }: AppProps) {
           onChange={setInputText}
           onSubmit={handleSubmit}
           disabled={chat.isProcessing}
-          voiceMode={voice.voiceMode}
+          voiceMode={realtimeVoice.isActive ? 'liveChat' : voice.voiceMode}
           volumeLevel={voice.volumeLevel}
           width={terminalWidth - 2}
           isActive={!showModelPicker && !showTranscript && !showTalks && !showSettings}
+          realtimeState={realtimeVoice.state}
+          userTranscript={realtimeVoice.userTranscript}
+          aiTranscript={realtimeVoice.aiTranscript}
         />
       </Box>
 

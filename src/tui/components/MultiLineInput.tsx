@@ -110,12 +110,16 @@ export function MultiLineInput({
         return;
       }
 
-      // Regular character input
-      // Filter out control characters but allow normal typing
-      if (input && !key.ctrl && !key.meta && input.length === 1 && input.charCodeAt(0) >= 32) {
-        const newValue = value.slice(0, cursorPos) + input + value.slice(cursorPos);
-        onChange(newValue);
-        setCursorPos(cursorPos + 1);
+      // Regular character input (including pasted text)
+      // Filter out control characters but allow normal typing and paste
+      if (input && !key.ctrl && !key.meta) {
+        // Filter out any control characters from the input
+        const printable = input.split('').filter(c => c.charCodeAt(0) >= 32).join('');
+        if (printable.length > 0) {
+          const newValue = value.slice(0, cursorPos) + printable + value.slice(cursorPos);
+          onChange(newValue);
+          setCursorPos(cursorPos + printable.length);
+        }
       }
     },
     { isActive }

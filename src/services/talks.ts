@@ -140,6 +140,17 @@ export class TalkManager {
     }
   }
 
+  /** Remove a talk from Saved Talks (still appears in History). */
+  unsaveTalk(talkId: string): boolean {
+    const talk = this.talks.get(talkId);
+    if (!talk) return false;
+
+    talk.isSaved = false;
+    this.persistTalk(talk);
+
+    return true;
+  }
+
   /** Generate and save AI context markdown for a talk. */
   updateContextMd(talkId: string, messages: Message[]): void {
     const talk = this.talks.get(talkId);

@@ -20,6 +20,12 @@ interface TranscriptHubProps {
   maxHeight: number;
   terminalWidth: number;
   onClose: () => void;
+  onNewChat: () => void;
+  onToggleTts: () => void;
+  onOpenTalks: () => void;
+  onOpenSettings: () => void;
+  onExit: () => void;
+  setError: (error: string) => void;
 }
 
 export function TranscriptHub({
@@ -29,6 +35,12 @@ export function TranscriptHub({
   maxHeight,
   terminalWidth,
   onClose,
+  onNewChat,
+  onToggleTts,
+  onOpenTalks,
+  onOpenSettings,
+  onExit,
+  setError,
 }: TranscriptHubProps) {
   const [mode, setMode] = useState<HubMode>('list');
   const [previousMode, setPreviousMode] = useState<HubMode>('list');
@@ -134,9 +146,34 @@ export function TranscriptHub({
 
   // Keyboard handling
   useInput((input, key) => {
-    // Global: Ctrl+T always closes
+    // Global shortcuts
     if (input === 't' && key.ctrl) {
-      onClose();
+      onOpenTalks();
+      return;
+    }
+    if (input === 'n' && key.ctrl) {
+      onNewChat();
+      return;
+    }
+    if (input === 'v' && key.ctrl) {
+      onToggleTts();
+      return;
+    }
+    if (input === 'h' && key.ctrl) {
+      onClose(); // Already in History
+      return;
+    }
+    if (input === 's' && key.ctrl) {
+      onOpenSettings();
+      return;
+    }
+    if (input === 'x' && key.ctrl) {
+      onExit();
+      return;
+    }
+    // ^C and ^P - voice not available outside Talk
+    if ((input === 'c' || input === 'p') && key.ctrl) {
+      setError('You can only use voice input in a Talk!');
       return;
     }
 

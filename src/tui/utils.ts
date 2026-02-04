@@ -68,6 +68,21 @@ export function formatSessionTime(ts: number): string {
   return `${dayOfWeek} ${dateStr} ${time}`;
 }
 
+export function formatUpdatedTime(ts: number): string {
+  const now = Date.now();
+  const diff = now - ts;
+  const oneDayMs = 24 * 60 * 60 * 1000;
+  const date = new Date(ts);
+
+  if (diff < oneDayMs) {
+    // Within past day: show time
+    return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+  } else {
+    // More than a day ago: show date
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  }
+}
+
 export function exportTranscript(messages: Message[], sessionName: string): string {
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const safeName = path.basename(sessionName.replace(/\s+/g, '-').replace(/[/\\]/g, '_'));

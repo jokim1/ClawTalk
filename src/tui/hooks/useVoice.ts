@@ -72,9 +72,9 @@ export function useVoice(opts: UseVoiceOpts) {
   const optsRef = useRef(opts);
   optsRef.current = opts;
 
-  // Poll volume level during recording, and detect early recording failure
+  // Poll volume level during recording/liveChat, and detect early recording failure
   useEffect(() => {
-    if (voiceMode !== 'recording') {
+    if (voiceMode !== 'recording' && voiceMode !== 'liveChat') {
       setVolumeLevel(0);
       return;
     }
@@ -165,7 +165,7 @@ export function useVoice(opts: UseVoiceOpts) {
     const { voiceServiceRef } = optsRef.current;
     const mode = voiceModeRef.current;
 
-    if (mode === 'recording' || mode === 'liveTalk') {
+    if (mode === 'recording' || mode === 'liveChat') {
       voiceServiceRef.current?.stopRecording();
       setVoiceMode('idle');
       return true;
@@ -231,12 +231,12 @@ export function useVoice(opts: UseVoiceOpts) {
       // Start live talk mode
       const result = voiceServiceRef.current.startRecording();
       if (result.ok) {
-        setVoiceMode('liveTalk');
+        setVoiceMode('liveChat');
         setError(null);
       } else {
         setError(result.error);
       }
-    } else if (mode === 'liveTalk') {
+    } else if (mode === 'liveChat') {
       // End live talk - transcribe and send
       stopAndTranscribe();
     } else if (mode === 'playing') {

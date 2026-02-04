@@ -11,7 +11,7 @@ import TextInput from 'ink-text-input';
 import type { Talk, Message, Session } from '../../types';
 import type { TalkManager } from '../../services/talks';
 import type { SessionManager } from '../../services/sessions';
-import { formatRelativeTime, formatSessionTime } from '../utils.js';
+import { formatRelativeTime, formatSessionTime, formatUpdatedTime } from '../utils.js';
 
 interface TalksHubProps {
   talkManager: TalkManager;
@@ -51,6 +51,7 @@ export function TalksHub({
   const [refreshKey, setRefreshKey] = useState(0);
   const [renameIndex, setRenameIndex] = useState<number | null>(null);
   const [renameValue, setRenameValue] = useState('');
+  const [confirmDeleteIndex, setConfirmDeleteIndex] = useState<number | null>(null);
 
   const talks = useMemo(() => talkManager.listSavedTalks(), [talkManager, refreshKey]);
 
@@ -151,6 +152,31 @@ export function TalksHub({
       return;
     }
 
+    // Handle delete confirmation mode
+    if (confirmDeleteIndex !== null) {
+      if (key.escape) {
+        setConfirmDeleteIndex(null);
+        return;
+      }
+      // Confirm delete on second 'd' press
+      if (input === 'd' || input === 'D') {
+        const talk = talks[confirmDeleteIndex];
+        if (talk) {
+          talkManager.unsaveTalk(talk.id);
+          setRefreshKey(k => k + 1);
+          // Adjust selection if we deleted the last item
+          if (selectedIndex >= talks.length - 1 && selectedIndex > 0) {
+            setSelectedIndex(selectedIndex - 1);
+          }
+        }
+        setConfirmDeleteIndex(null);
+        return;
+      }
+      // Any other key cancels
+      setConfirmDeleteIndex(null);
+      return;
+    }
+
     if (key.escape) {
       onClose();
       return;
@@ -187,6 +213,12 @@ export function TalksHub({
       const talk = talks[selectedIndex];
       setRenameIndex(selectedIndex);
       setRenameValue(talk.topicTitle || '');
+      return;
+    }
+
+    // 'd' to delete (unsave) - enter confirmation mode
+    if ((input === 'd' || input === 'D') && talks.length > 0) {
+      setConfirmDeleteIndex(selectedIndex);
       return;
     }
   });
@@ -238,13 +270,14 @@ export function TalksHub({
             }
 
             // Normal display: Topic Title OR (date/time + first line preview)
+            const updatedTime = formatUpdatedTime(talk.updatedAt);
             if (talk.topicTitle) {
               return (
                 <Box key={talk.id}>
                   <Text color={isSelected ? 'cyan' : undefined}>
                     {isSelected ? '> ' : '  '}
                     <Text bold={isSelected}>{talk.topicTitle}</Text>
-                    <Text dimColor> ({msgCount} msg{msgCount !== 1 ? 's' : ''})</Text>
+                    <Text dimColor> ({msgCount} msg{msgCount !== 1 ? 's' : ''}) | {updatedTime}</Text>
                   </Text>
                 </Box>
               );
@@ -259,7 +292,7 @@ export function TalksHub({
                   <Text dimColor>{sessionTime}</Text>
                   <Text> </Text>
                   <Text>{preview}</Text>
-                  <Text dimColor> ({msgCount} msg{msgCount !== 1 ? 's' : ''})</Text>
+                  <Text dimColor> ({msgCount} msg{msgCount !== 1 ? 's' : ''}) | {updatedTime}</Text>
                 </Text>
               </Box>
             );
@@ -271,8 +304,13 @@ export function TalksHub({
       <Box height={1} />
       {renameIndex !== null ? (
         <Text dimColor>  Enter Save  Esc Cancel</Text>
+      ) : confirmDeleteIndex !== null ? (
+        <Text>
+          <Text color="yellow">  Delete "{talks[confirmDeleteIndex]?.topicTitle || 'Talk'}"?</Text>
+          <Text dimColor>  d Confirm  Esc Cancel</Text>
+        </Text>
       ) : (
-        <Text dimColor>  {'\u2191\u2193'} Navigate  Enter Continue  r Rename  Esc Close</Text>
+        <Text dimColor>  {'\u2191\u2193'} Navigate  Enter Continue  r Rename  d Delete  Esc Close</Text>
       )}
     </Box>
   );

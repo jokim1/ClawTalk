@@ -66,9 +66,46 @@ export interface UsageStats {
   rateLimits?: RateLimitInfo;
 }
 
-export type VoiceMode = 'idle' | 'recording' | 'liveTalk' | 'transcribing' | 'synthesizing' | 'playing';
+export type VoiceMode = 'idle' | 'recording' | 'liveChat' | 'transcribing' | 'synthesizing' | 'playing';
 
 export type VoiceReadiness = 'checking' | 'ready' | 'no-sox' | 'no-mic' | 'no-gateway' | 'no-stt';
+
+// --- Realtime Voice Types ---
+
+export type RealtimeVoiceProvider = 'openai' | 'elevenlabs' | 'deepgram' | 'gemini';
+
+export interface RealtimeVoiceCapabilities {
+  available: boolean;
+  providers: RealtimeVoiceProvider[];
+  defaultProvider?: RealtimeVoiceProvider;
+  voices?: Record<RealtimeVoiceProvider, string[]>;
+}
+
+export interface RealtimeVoiceConfig {
+  provider: RealtimeVoiceProvider;
+  voice?: string;
+  systemPrompt?: string;
+}
+
+// WebSocket message types for realtime voice protocol
+
+/** Client → Gateway messages */
+export type RealtimeClientMessage =
+  | { type: 'audio'; data: string }           // base64 PCM audio chunk
+  | { type: 'config'; voice?: string; systemPrompt?: string }
+  | { type: 'interrupt' }                      // barge-in (cancel AI response)
+  | { type: 'end' };                           // end session
+
+/** Gateway → Client messages */
+export type RealtimeServerMessage =
+  | { type: 'audio'; data: string }            // base64 PCM audio chunk
+  | { type: 'transcript.user'; text: string; isFinal: boolean }
+  | { type: 'transcript.ai'; text: string; isFinal: boolean }
+  | { type: 'error'; message: string }
+  | { type: 'session.start' }
+  | { type: 'session.end' };
+
+export type RealtimeVoiceState = 'disconnected' | 'connecting' | 'listening' | 'aiSpeaking';
 
 export interface VoiceState {
   mode: VoiceMode;

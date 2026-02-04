@@ -5,9 +5,10 @@
  * testing with mocks, and alternative implementations.
  */
 
-import type { Message, Session, SearchResult, RateLimitInfo } from '../types.js';
+import type { Message, Session, SearchResult, RateLimitInfo, RealtimeVoiceCapabilities, RealtimeVoiceState } from '../types.js';
 import type { ChatResponse, ModelProbeResult, CostUsageResult, ProviderInfo } from './chat.js';
 import type { VoiceCapabilities, TranscriptionResult } from './voice.js';
+import type { RealtimeSessionConfig, RealtimeVoiceCallbacks } from './realtime-voice.js';
 
 /** Gateway chat and model operations. */
 export interface IChatService {
@@ -44,6 +45,19 @@ export interface IVoiceService {
   synthesize(text: string, voice?: string, speed?: number): Promise<string>;
   playAudio(audioPath: string): Promise<void>;
   stopPlayback(): void;
+  cleanup(): void;
+}
+
+/** Realtime voice streaming for bidirectional voice chat. */
+export interface IRealtimeVoiceService {
+  fetchCapabilities(): Promise<RealtimeVoiceCapabilities | null>;
+  setCallbacks(callbacks: RealtimeVoiceCallbacks): void;
+  getState(): RealtimeVoiceState;
+  connect(sessionConfig: RealtimeSessionConfig): Promise<boolean>;
+  disconnect(): void;
+  startStreaming(): boolean;
+  stopStreaming(): void;
+  interrupt(): void;
   cleanup(): void;
 }
 
