@@ -103,6 +103,8 @@ function App({ options }: AppProps) {
   const [showSettings, setShowSettings] = useState(false);
   const [sessionName, setSessionName] = useState('Session 1');
   const [activeTalkId, setActiveTalkId] = useState<string | null>(null);
+  const activeTalkIdRef = useRef<string | null>(null);
+  useEffect(() => { activeTalkIdRef.current = activeTalkId; }, [activeTalkId]);
   const [chatScrollOffset, setChatScrollOffset] = useState(0);
 
   // --- TTS bridge ref (useChat → useVoice) ---
@@ -120,6 +122,7 @@ function App({ options }: AppProps) {
     setError, speakResponseRef,
     (err) => setModelStatus({ error: err }),
     pricingRef,
+    activeTalkIdRef,
   );
 
   const gateway = useGateway(

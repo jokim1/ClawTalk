@@ -138,6 +138,18 @@ export class SessionManager implements ISessionManager {
     this.persistSessionMeta(session);
   }
 
+  /** Add a message to a specific session by ID (for background completion). */
+  addMessageToSession(sessionId: string, message: Message): boolean {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+
+    session.messages.push(message);
+    session.updatedAt = Date.now();
+    this.persistTranscript(sessionId, message);
+    this.persistSessionMeta(session);
+    return true;
+  }
+
   setSessionModel(model: string): void {
     const session = this.getActiveSession();
     session.model = model;

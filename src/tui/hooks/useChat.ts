@@ -26,6 +26,7 @@ export function useChat(
   speakResponseRef: MutableRefObject<((text: string) => void) | null>,
   onModelError: (error: string) => void,
   pricingRef: MutableRefObject<ModelPricing>,
+  activeTalkIdRef: MutableRefObject<string | null>,
 ) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -48,6 +49,10 @@ export function useChat(
     const trimmed = text.trim();
     setErrorRef.current(null);
 
+    // Capture the talk ID and session ID at the start - these won't change during streaming
+    const originTalkId = activeTalkIdRef.current;
+    const originSessionId = sessionManagerRef.current?.getActiveSessionId() ?? null;
+
     // Capture history before adding the new user message
     const history = messagesRef.current;
     const userMsg = createMessage('user', trimmed);
@@ -58,21 +63,31 @@ export function useChat(
     setIsProcessing(true);
     setStreamingContent('');
 
+    // Helper to check if still on the same talk
+    const isStillOnSameTalk = () => activeTalkIdRef.current === originTalkId;
+
     try {
       let fullContent = '';
       for await (const chunk of chatService.streamMessage(trimmed, history)) {
         fullContent += chunk;
-        setStreamingContent(fullContent);
+        // Only update streaming UI if still on the same talk
+        if (isStillOnSameTalk()) {
+          setStreamingContent(fullContent);
+        }
       }
 
       // If streaming yielded no content, fall back to non-streaming
       if (!fullContent.trim()) {
-        setStreamingContent('retrying...');
+        if (isStillOnSameTalk()) {
+          setStreamingContent('retrying...');
+        }
         try {
           const fallbackResponse = await chatService.sendMessage(trimmed, history);
           if (fallbackResponse.content) {
             fullContent = fallbackResponse.content;
-            setStreamingContent(fullContent);
+            if (isStillOnSameTalk()) {
+              setStreamingContent(fullContent);
+            }
           }
         } catch (fallbackErr) {
           // Non-streaming fallback failed - throw to outer catch
@@ -83,20 +98,32 @@ export function useChat(
       // Detect error-like responses from gateway
       const looksLikeError = /^(Connection error|Error:|Failed to|Cannot connect|Timeout)/i.test(fullContent.trim());
       if (looksLikeError) {
-        setMessages(prev => [...prev, createMessage('system', `Gateway error: ${fullContent}`)]);
-        setStreamingContent('');
+        if (isStillOnSameTalk()) {
+          setMessages(prev => [...prev, createMessage('system', `Gateway error: ${fullContent}`)]);
+          setStreamingContent('');
+        }
         return;
       }
 
       if (!isGatewaySentinel(fullContent)) {
         const model = chatService.lastResponseModel ?? currentModelRef.current;
         const assistantMsg = createMessage('assistant', fullContent, model);
-        setMessages(prev => [...prev, assistantMsg]);
-        sessionManagerRef.current?.addMessage(assistantMsg);
-        speakResponseRef.current?.(fullContent);
+
+        // Always save to the original session (even if user switched talks)
+        if (originSessionId) {
+          sessionManagerRef.current?.addMessageToSession(originSessionId, assistantMsg);
+        }
+
+        // Only update UI and speak if still on the same talk
+        if (isStillOnSameTalk()) {
+          setMessages(prev => [...prev, assistantMsg]);
+          speakResponseRef.current?.(fullContent);
+        }
       } else if (!fullContent.trim()) {
         // Gateway returned empty response even after fallback
-        setMessages(prev => [...prev, createMessage('system', 'No response received from AI. The model may be unavailable or the connection was interrupted.')]);
+        if (isStillOnSameTalk()) {
+          setMessages(prev => [...prev, createMessage('system', 'No response received from AI. The model may be unavailable or the connection was interrupted.')]);
+        }
       }
 
       // Accumulate session cost from token usage
@@ -109,20 +136,26 @@ export function useChat(
         setSessionCost(prev => prev + cost);
       }
 
-      setStreamingContent('');
+      if (isStillOnSameTalk()) {
+        setStreamingContent('');
+      }
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
-      setErrorRef.current(errorMessage);
+
+      if (isStillOnSameTalk()) {
+        setErrorRef.current(errorMessage);
+        setMessages(prev => [...prev, createMessage('system', `Error: ${errorMessage}`)]);
+      }
 
       if (/\b(40[1349]|429|5\d{2})\b/.test(errorMessage)) {
         onModelErrorRef.current(errorMessage);
       }
-
-      setMessages(prev => [...prev, createMessage('system', `Error: ${errorMessage}`)]);
     } finally {
       isProcessingRef.current = false;
       setIsProcessing(false);
-      setStreamingContent('');
+      if (isStillOnSameTalk()) {
+        setStreamingContent('');
+      }
     }
   }, []);
 
