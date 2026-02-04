@@ -118,7 +118,8 @@ function App({ options }: AppProps) {
       onInitialProbe: (model) => {
         // Skip if a probe was already triggered (e.g., by switchModel)
         if (modelStatus !== 'unknown') return;
-        probeCurrentModel(model);
+        // Skip 'checking' state during initial probe to prevent layout shift
+        probeCurrentModel(model, undefined, true);
       },
       onBillingDiscovered: (billing) => {
         setSavedConfig(prev => ({
@@ -184,9 +185,18 @@ function App({ options }: AppProps) {
       session = sessionManagerRef.current.createSession(undefined, options.model);
     }
 
-    chat.setMessages(session.messages);
-    setCurrentModel(session.model);
-    setSessionName(session.name);
+    // Batch state updates by deferring to next tick (allows React to batch)
+    // This prevents multiple re-renders during initialization
+    const msgs = session.messages;
+    const model = session.model;
+    const name = session.name;
+
+    // Use a micro-task to batch these updates
+    queueMicrotask(() => {
+      chat.setMessages(msgs);
+      setCurrentModel(model);
+      setSessionName(name);
+    });
 
     if (chatServiceRef.current && session.model) {
       chatServiceRef.current.setModel(session.model);
@@ -198,12 +208,15 @@ function App({ options }: AppProps) {
 
   // --- Model management ---
 
-  const probeCurrentModel = useCallback((modelId: string, previousModel?: string) => {
+  const probeCurrentModel = useCallback((modelId: string, previousModel?: string, skipCheckingState?: boolean) => {
     probeAbortRef.current?.abort();
     const controller = new AbortController();
     probeAbortRef.current = controller;
 
-    setModelStatus('checking');
+    // Skip 'checking' state during initial probe to prevent layout shift
+    if (!skipCheckingState) {
+      setModelStatus('checking');
+    }
 
     chatServiceRef.current?.probeModel(modelId, controller.signal).then(result => {
       if (controller.signal.aborted) return;
@@ -339,11 +352,21 @@ function App({ options }: AppProps) {
       return;
     }
 
-    // ^C Clear session
+    // ^C Chat (realtime voice)
     if (input === 'c' && key.ctrl) {
-      commandCtx.current.clearSession();
-      setChatScrollOffset(0);
+      if (chat.isProcessing) {
+        setError('Cannot start chat while processing');
+      } else {
+        voice.handleLiveTalk?.();
+      }
       cleanInputChar(setInputText, 'c');
+      return;
+    }
+
+    // ^H History (transcripts)
+    if (input === 'h' && key.ctrl) {
+      setShowTranscript(true);
+      cleanInputChar(setInputText, 'h');
       return;
     }
 
@@ -393,9 +416,21 @@ function App({ options }: AppProps) {
 
   // --- Render ---
 
+  // Show loading state until gateway is initialized to prevent layout shifts
+  // The multiple state updates during startup cause re-renders that shift the UI
+  if (!gateway.isInitialized) {
+    return (
+      <Box flexDirection="column" width={terminalWidth} height={terminalHeight}>
+        <Box height={3} paddingX={1}>
+          <Text dimColor>Starting RemoteClaw...</Text>
+        </Box>
+      </Box>
+    );
+  }
+
   return (
-    <Box key={layoutKey} flexDirection="column" width={terminalWidth} height={terminalHeight}>
-      <Box height={3}>
+    <Box flexDirection="column" width={terminalWidth} height={terminalHeight}>
+      <Box height={3} flexShrink={0}>
         <StatusBar
           gatewayStatus={gateway.gatewayStatus}
           tailscaleStatus={gateway.tailscaleStatus}
@@ -410,11 +445,11 @@ function App({ options }: AppProps) {
         />
       </Box>
 
-      <Box height={1} paddingX={1}>
+      <Box height={1} flexShrink={0} paddingX={1}>
         {error ? <Text color="red">! {error}</Text> : null}
       </Box>
 
-      <Box flexDirection="column" height={chatHeight} paddingX={1}>
+      <Box flexDirection="column" height={chatHeight} flexGrow={1} flexShrink={1} paddingX={1}>
         {showModelPicker ? (
           <ModelPicker
             models={pickerModels}
@@ -451,11 +486,11 @@ function App({ options }: AppProps) {
         )}
       </Box>
 
-      <Box height={1}>
+      <Box height={1} flexShrink={0}>
         <Text dimColor>{'─'.repeat(terminalWidth)}</Text>
       </Box>
 
-      <Box height={inputHeight} paddingX={1}>
+      <Box height={inputHeight} flexShrink={0} paddingX={1}>
         <InputArea
           value={inputText}
           onChange={setInputText}
@@ -466,8 +501,8 @@ function App({ options }: AppProps) {
         />
       </Box>
 
-      <Box height={2}>
-        <ShortcutBar terminalWidth={terminalWidth} />
+      <Box height={2} flexShrink={0}>
+        <ShortcutBar terminalWidth={terminalWidth} ttsEnabled={voice.ttsEnabled} />
       </Box>
     </Box>
   );

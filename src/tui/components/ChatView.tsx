@@ -133,13 +133,16 @@ export function ChatView({
     };
   }, [messages, messageLineInfo, maxHeight, isProcessing, scrollOffset]);
 
-  if (messages.length === 0 && !isProcessing) {
+  // Show welcome text until there's user input (not just system messages)
+  const hasUserInput = messages.some(m => m.role === 'user');
+  if (!hasUserInput && !isProcessing) {
     return (
       <Box flexDirection="column" flexGrow={1} paddingY={1}>
         <Text dimColor>Welcome to RemoteClaw by Opus4.5 and Joseph Kim (@jokim1)</Text>
         <Text dimColor>Type a message to start chatting.</Text>
         <Box height={1} />
-        <Text dimColor>Shortcuts: ^T Talk  ^A Model  ^P Push-to-Talk  ^C Clear  ^V AI Voice  ^N New  ^X Exit</Text>
+        <Text dimColor>Shortcuts: ^T Talks  ^C Chat  ^P PTT  ^V Voice  ^H History  ^S Settings  ^X Exit</Text>
+        <Text dimColor>Also: ^A AI Model  ^N New Terminal</Text>
         <Text dimColor>Scroll: ↑/↓ arrows, Page Up/Down, g/G for top/bottom</Text>
       </Box>
     );

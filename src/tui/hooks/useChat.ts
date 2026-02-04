@@ -65,12 +65,25 @@ export function useChat(
         setStreamingContent(fullContent);
       }
 
+      // If streaming yielded no content, fall back to non-streaming
+      if (!fullContent.trim()) {
+        setStreamingContent('retrying...');
+        const fallbackResponse = await chatService.sendMessage(trimmed, history);
+        if (fallbackResponse.content) {
+          fullContent = fallbackResponse.content;
+          setStreamingContent(fullContent);
+        }
+      }
+
       if (!isGatewaySentinel(fullContent)) {
         const model = chatService.lastResponseModel ?? currentModelRef.current;
         const assistantMsg = createMessage('assistant', fullContent, model);
         setMessages(prev => [...prev, assistantMsg]);
         sessionManagerRef.current?.addMessage(assistantMsg);
         speakResponseRef.current?.(fullContent);
+      } else if (!fullContent.trim()) {
+        // Gateway returned empty response even after fallback
+        setMessages(prev => [...prev, createMessage('system', 'No response received from AI. The model may be unavailable or the connection was interrupted.')]);
       }
 
       // Accumulate session cost from token usage

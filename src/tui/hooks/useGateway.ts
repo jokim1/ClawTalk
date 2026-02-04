@@ -34,6 +34,33 @@ interface Callbacks {
   onBillingDiscovered: (billing: Record<string, BillingOverride>) => void;
 }
 
+// Combined state to enable atomic updates (React 17 doesn't batch in async)
+interface GatewayState {
+  gatewayStatus: 'online' | 'offline' | 'connecting';
+  tailscaleStatus: TailscaleStatus | 'checking';
+  availableModels: ModelInfo[];
+  usage: UsageStats;
+  voiceCaps: VoiceCaps;
+  isInitialized: boolean;
+}
+
+const initialState: GatewayState = {
+  gatewayStatus: 'connecting',
+  tailscaleStatus: 'checking',
+  availableModels: MODEL_REGISTRY,
+  usage: {
+    todaySpend: 0,
+    averageDailySpend: 0,
+    modelPricing: { inputPer1M: 0.14, outputPer1M: 0.28 },
+  },
+  voiceCaps: {
+    readiness: 'checking',
+    sttAvailable: false,
+    ttsAvailable: false,
+  },
+  isInitialized: false,
+};
+
 export function useGateway(
   chatServiceRef: MutableRefObject<ChatService | null>,
   voiceServiceRef: MutableRefObject<VoiceService | null>,
@@ -41,30 +68,25 @@ export function useGateway(
   currentModelRef: MutableRefObject<string>,
   callbacks: Callbacks,
 ) {
-  const [gatewayStatus, setGatewayStatus] = useState<'online' | 'offline' | 'connecting'>('connecting');
-  const [tailscaleStatus, setTailscaleStatus] = useState<TailscaleStatus | 'checking'>('checking');
-  const [availableModels, setAvailableModels] = useState<ModelInfo[]>(MODEL_REGISTRY);
-  const [usage, setUsage] = useState<UsageStats>({
-    todaySpend: 0,
-    averageDailySpend: 0,
-    modelPricing: { inputPer1M: 0.14, outputPer1M: 0.28 },
-  });
-  const [voiceCaps, setVoiceCaps] = useState<VoiceCaps>({
-    readiness: 'checking',
-    sttAvailable: false,
-    ttsAvailable: false,
-  });
-  const [isInitialized, setIsInitialized] = useState(false);
+  const [state, setState] = useState<GatewayState>(initialState);
 
   // Keep callbacks current via ref to avoid effect re-triggers
   const cbRef = useRef(callbacks);
   cbRef.current = callbacks;
 
   // Track previous values to avoid unnecessary re-renders
-  const prevGatewayStatusRef = useRef(gatewayStatus);
-  const prevTailscaleStatusRef = useRef(tailscaleStatus);
+  const prevGatewayStatusRef = useRef(state.gatewayStatus);
+  const prevTailscaleStatusRef = useRef(state.tailscaleStatus);
   const prevUsageRef = useRef({ todaySpend: 0, weeklySpend: 0, rateLimitsJson: '' });
   const isFirstPollRef = useRef(true);
+
+  // Wrapper for backward compatibility with app.tsx setUsage calls
+  const setUsage = (updater: UsageStats | ((prev: UsageStats) => UsageStats)) => {
+    setState(prev => ({
+      ...prev,
+      usage: typeof updater === 'function' ? updater(prev.usage) : updater,
+    }));
+  };
 
   useEffect(() => {
     let modelsDiscovered = false;
@@ -78,49 +100,37 @@ export function useGateway(
 
       const isFirstPoll = isFirstPollRef.current;
 
-      // During first poll, collect updates to batch them
-      let pendingTsStatus: TailscaleStatus | 'checking' | null = null;
-      let pendingGatewayStatus: 'online' | 'offline' | null = null;
+      // Collect all state changes to apply atomically
+      const updates: Partial<GatewayState> = {};
 
       try {
         const tsStatus = getTailscaleStatus();
-        if (isFirstPoll || tsStatus !== prevTailscaleStatusRef.current) {
+        if (tsStatus !== prevTailscaleStatusRef.current) {
           prevTailscaleStatusRef.current = tsStatus;
-          if (isFirstPoll) {
-            pendingTsStatus = tsStatus;
-          } else {
-            setTailscaleStatus(tsStatus);
-          }
+          updates.tailscaleStatus = tsStatus;
         }
       } catch {
-        if (isFirstPoll || prevTailscaleStatusRef.current !== 'not-installed') {
+        if (prevTailscaleStatusRef.current !== 'not-installed') {
           prevTailscaleStatusRef.current = 'not-installed';
-          if (isFirstPoll) {
-            pendingTsStatus = 'not-installed';
-          } else {
-            setTailscaleStatus('not-installed');
-          }
+          updates.tailscaleStatus = 'not-installed';
         }
       }
 
       try {
         const healthy = await chatService.checkHealth();
         const newGatewayStatus = healthy ? 'online' : 'offline';
-        if (isFirstPoll || newGatewayStatus !== prevGatewayStatusRef.current) {
+        if (newGatewayStatus !== prevGatewayStatusRef.current) {
           prevGatewayStatusRef.current = newGatewayStatus;
-          if (isFirstPoll) {
-            pendingGatewayStatus = newGatewayStatus;
-          } else {
-            setGatewayStatus(newGatewayStatus);
-          }
+          updates.gatewayStatus = newGatewayStatus;
         }
         if (!healthy) {
-          // Apply batched updates for first poll even if unhealthy
+          // Apply updates and mark initialized even if unhealthy
           if (isFirstPoll) {
             isFirstPollRef.current = false;
-            if (pendingTsStatus !== null) setTailscaleStatus(pendingTsStatus);
-            if (pendingGatewayStatus !== null) setGatewayStatus(pendingGatewayStatus);
-            setIsInitialized(true);
+            updates.isInitialized = true;
+            setState(prev => ({ ...prev, ...updates }));
+          } else if (Object.keys(updates).length > 0) {
+            setState(prev => ({ ...prev, ...updates }));
           }
           return;
         }
@@ -130,7 +140,9 @@ export function useGateway(
           const ids = await chatService.listModels();
           if (ids && ids.length > 0) {
             const unknown = ids.filter(id => !MODEL_BY_ID[id]).map(buildUnknownModelInfo);
-            if (unknown.length > 0) setAvailableModels([...MODEL_REGISTRY, ...unknown]);
+            if (unknown.length > 0) {
+              updates.availableModels = [...MODEL_REGISTRY, ...unknown];
+            }
           }
         }
 
@@ -144,39 +156,32 @@ export function useGateway(
           }
         }
 
-        // Collect voice caps for batching during first poll
-        let pendingVoiceCaps: VoiceCaps | null = null;
-
         if (!voiceChecked) {
           const voiceService = voiceServiceRef.current;
           const soxOk = voiceService?.checkSoxInstalled() ?? false;
           if (!soxOk) {
-            pendingVoiceCaps = { readiness: 'no-sox', sttAvailable: false, ttsAvailable: false };
+            updates.voiceCaps = { readiness: 'no-sox', sttAvailable: false, ttsAvailable: false };
           } else {
             const caps = await voiceService?.fetchCapabilities();
             if (!caps) {
-              pendingVoiceCaps = { readiness: 'no-gateway', sttAvailable: false, ttsAvailable: false };
+              updates.voiceCaps = { readiness: 'no-gateway', sttAvailable: false, ttsAvailable: false };
             } else if (!caps.stt.available) {
-              pendingVoiceCaps = { readiness: 'no-stt', sttAvailable: false, ttsAvailable: caps.tts.available };
+              updates.voiceCaps = { readiness: 'no-stt', sttAvailable: false, ttsAvailable: caps.tts.available };
               voiceChecked = true;
             } else {
-              pendingVoiceCaps = { readiness: 'ready', sttAvailable: caps.stt.available, ttsAvailable: caps.tts.available };
+              updates.voiceCaps = { readiness: 'ready', sttAvailable: caps.stt.available, ttsAvailable: caps.tts.available };
               voiceChecked = true;
             }
-          }
-          if (!isFirstPoll && pendingVoiceCaps) {
-            setVoiceCaps(pendingVoiceCaps);
           }
         }
 
         if (!initialProbed) {
           initialProbed = true;
-          cbRef.current.onInitialProbe(currentModelRef.current);
+          // Defer probe callback until after state update to avoid interleaved renders
+          setTimeout(() => cbRef.current.onInitialProbe(currentModelRef.current), 0);
         }
 
-        // Collect all usage updates before applying — React 17 doesn't
-        // batch setState in async functions, so multiple setUsage calls
-        // cause multiple Ink re-renders (visible as flicker).
+        // Collect usage updates
         const todayUsage = await chatService.getCostUsage(1);
         const weekUsage = await chatService.getCostUsage(7);
 
@@ -187,7 +192,6 @@ export function useGateway(
           rateLimits = await anthropicRLRef.current.fetchRateLimits(bareModel);
         }
 
-        // Only update usage if values have actually changed to avoid re-renders
         const weekTotal = weekUsage?.totals?.totalCost ?? 0;
         const todayTotal = todayUsage?.totals?.totalCost ?? 0;
         const rateLimitsJson = rateLimits ? JSON.stringify(rateLimits) : '';
@@ -197,36 +201,38 @@ export function useGateway(
           weekTotal !== prevUsageRef.current.weeklySpend ||
           rateLimitsJson !== prevUsageRef.current.rateLimitsJson;
 
-        const dailyAvg = weekTotal ? weekTotal / 7 : undefined;
-        const pendingUsage = hasUsageChanged ? {
-          todaySpend: todayTotal,
-          weeklySpend: weekTotal,
-          averageDailySpend: dailyAvg ?? 0,
-          monthlyEstimate: dailyAvg !== undefined ? dailyAvg * 30 : 0,
-          ...(rateLimits ? { rateLimits } : {}),
-        } : null;
-
         if (hasUsageChanged) {
           prevUsageRef.current = { todaySpend: todayTotal, weeklySpend: weekTotal, rateLimitsJson };
+          const dailyAvg = weekTotal ? weekTotal / 7 : undefined;
+          // Note: usage update is merged in setState, preserving modelPricing from app.tsx
+          updates.usage = {
+            todaySpend: todayTotal,
+            weeklySpend: weekTotal,
+            averageDailySpend: dailyAvg ?? 0,
+            monthlyEstimate: dailyAvg !== undefined ? dailyAvg * 30 : 0,
+            ...(rateLimits ? { rateLimits } : {}),
+          } as UsageStats;
         }
 
-        // Apply all batched updates at end of first poll (single re-render)
+        // Apply all updates atomically in a single setState call
         if (isFirstPoll) {
           isFirstPollRef.current = false;
-          // Batch all state updates together
-          if (pendingTsStatus !== null) setTailscaleStatus(pendingTsStatus);
-          if (pendingGatewayStatus !== null) setGatewayStatus(pendingGatewayStatus);
-          if (pendingVoiceCaps) setVoiceCaps(pendingVoiceCaps);
-          if (pendingUsage) setUsage(prev => ({ ...prev, ...pendingUsage }));
-          setIsInitialized(true);
-        } else if (pendingUsage) {
-          setUsage(prev => ({ ...prev, ...pendingUsage }));
+          updates.isInitialized = true;
+        }
+
+        if (Object.keys(updates).length > 0) {
+          setState(prev => ({
+            ...prev,
+            ...updates,
+            // Merge usage to preserve modelPricing from app.tsx
+            usage: updates.usage ? { ...prev.usage, ...updates.usage } : prev.usage,
+          }));
         }
       } catch (err) {
         console.debug('Gateway poll failed:', err);
         if (prevGatewayStatusRef.current !== 'offline') {
           prevGatewayStatusRef.current = 'offline';
-          setGatewayStatus('offline');
+          setState(prev => ({ ...prev, gatewayStatus: 'offline' }));
         }
       }
     };
@@ -240,5 +246,14 @@ export function useGateway(
     return () => { clearTimeout(initial); clearInterval(interval); };
   }, []);
 
-  return { gatewayStatus, tailscaleStatus, usage, setUsage, availableModels, voiceCaps, isInitialized };
+  // Extract individual values for backward compatibility
+  return {
+    gatewayStatus: state.gatewayStatus,
+    tailscaleStatus: state.tailscaleStatus,
+    usage: state.usage,
+    setUsage,
+    availableModels: state.availableModels,
+    voiceCaps: state.voiceCaps,
+    isInitialized: state.isInitialized,
+  };
 }

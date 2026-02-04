@@ -70,9 +70,11 @@ export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleS
     ? `$${usage.modelPricing!.inputPer1M}/$${usage.modelPricing!.outputPer1M}`
     : null;
 
+  // Use minHeight instead of height to prevent content from being clipped
+  // when Ink recalculates layout during re-renders
   return (
-    <Box flexDirection="column" width="100%" height={3}>
-      <Box height={2} paddingX={1} justifyContent="space-between">
+    <Box flexDirection="column" width="100%">
+      <Box paddingX={1} justifyContent="space-between">
         <Box>
           <Text dimColor>GW:</Text><Text color={gatewayColor}>{gateway} </Text>
           <Text dimColor>TS:</Text><Text color={tsColor}>{tsIcon} </Text>
@@ -174,7 +176,7 @@ export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleS
         </Box>
       </Box>
 
-      <Box height={1}>
+      <Box>
         <Text dimColor>{'─'.repeat(Math.max(1, terminalWidth))}</Text>
       </Box>
     </Box>
@@ -183,9 +185,10 @@ export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleS
 
 interface ShortcutBarProps {
   terminalWidth?: number;
+  ttsEnabled?: boolean;
 }
 
-export function ShortcutBar({ terminalWidth = 80 }: ShortcutBarProps) {
+export function ShortcutBar({ terminalWidth = 80, ttsEnabled = true }: ShortcutBarProps) {
   return (
     <Box flexDirection="column" width="100%">
       <Box>
@@ -195,7 +198,11 @@ export function ShortcutBar({ terminalWidth = 80 }: ShortcutBarProps) {
       <Box paddingX={1} justifyContent="space-between">
         <Box>
           <Text inverse> ^T </Text>
-          <Text> Talk  </Text>
+          <Text> Talks  </Text>
+        </Box>
+        <Box>
+          <Text inverse> ^C </Text>
+          <Text> Chat  </Text>
         </Box>
         <Box>
           <Text inverse> ^P </Text>
@@ -203,19 +210,11 @@ export function ShortcutBar({ terminalWidth = 80 }: ShortcutBarProps) {
         </Box>
         <Box>
           <Text inverse> ^V </Text>
-          <Text> AI Voice  </Text>
+          <Text> {ttsEnabled ? 'Voice ON' : 'Voice OFF'}  </Text>
         </Box>
         <Box>
-          <Text inverse> ^A </Text>
-          <Text> AI Model  </Text>
-        </Box>
-        <Box>
-          <Text inverse> ^C </Text>
-          <Text> Clear  </Text>
-        </Box>
-        <Box>
-          <Text inverse> ^N </Text>
-          <Text> New  </Text>
+          <Text inverse> ^H </Text>
+          <Text> History  </Text>
         </Box>
         <Box>
           <Text inverse> ^S </Text>
