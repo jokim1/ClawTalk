@@ -114,7 +114,6 @@ interface ShortcutBarProps {
 }
 
 export function ShortcutBar({ terminalWidth = 80, ttsEnabled = true }: ShortcutBarProps) {
-  // Build shortcuts as a fixed-width string to prevent layout shifts
   const shortcuts = [
     { key: '^T', label: 'Talks' },
     { key: '^C', label: 'Chat' },
@@ -125,18 +124,32 @@ export function ShortcutBar({ terminalWidth = 80, ttsEnabled = true }: ShortcutB
     { key: '^X', label: 'Exit' },
   ];
 
-  // Build the shortcut line with inverse styling markers (we'll render without inverse for stability)
-  const shortcutText = shortcuts.map(s => `[${s.key}] ${s.label}`).join('  ');
-  let shortcutLine = ' ' + shortcutText;
+  // Calculate total content width and distribute spacing evenly
+  const items = shortcuts.map(s => ({ key: s.key, label: s.label, width: s.key.length + 2 + 1 + s.label.length })); // "[^T] Label"
+  const totalContentWidth = items.reduce((sum, i) => sum + i.width, 0);
+  const numGaps = shortcuts.length + 1; // gaps on both ends and between items
+  const totalSpacing = Math.max(0, terminalWidth - totalContentWidth);
+  const gapSize = Math.floor(totalSpacing / numGaps);
+  const extraSpaces = totalSpacing - (gapSize * numGaps);
+
+  // Build evenly distributed shortcut line
+  let shortcutLine = ' '.repeat(gapSize + (extraSpaces > 0 ? 1 : 0));
+  let extraUsed = extraSpaces > 0 ? 1 : 0;
+  items.forEach((item, i) => {
+    shortcutLine += `[${item.key}] ${item.label}`;
+    if (i < items.length - 1) {
+      const extra = extraUsed < extraSpaces ? 1 : 0;
+      if (extra) extraUsed++;
+      shortcutLine += ' '.repeat(gapSize + extra);
+    }
+  });
+  // Pad to exact width
   if (shortcutLine.length < terminalWidth) {
-    shortcutLine = shortcutLine + ' '.repeat(terminalWidth - shortcutLine.length);
-  } else {
-    shortcutLine = shortcutLine.slice(0, terminalWidth);
+    shortcutLine += ' '.repeat(terminalWidth - shortcutLine.length);
   }
 
   const separator = '─'.repeat(terminalWidth);
 
-  // Render as raw text - single Text element with newlines
   return (
     <Box width={terminalWidth} height={2}>
       <Text dimColor>{separator + '\n' + shortcutLine}</Text>
