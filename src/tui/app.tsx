@@ -474,6 +474,6 @@ function App({ options }: AppProps) {
 }
 
 export async function launchRemoteClaw(options: RemoteClawOptions): Promise<void> {
-  const { waitUntilExit } = render(<App options={options} />);
+  const { waitUntilExit } = render(<App options={options} />, { exitOnCtrlC: false });
   await waitUntilExit();
 }
