@@ -14,6 +14,7 @@ import { InputArea } from './components/InputArea.js';
 import { ModelPicker } from './components/ModelPicker.js';
 import type { Model } from './components/ModelPicker.js';
 import { TranscriptHub } from './components/TranscriptHub';
+import { SettingsPicker } from './components/SettingsPicker.js';
 import { ChatService } from '../services/chat';
 import { getSessionManager } from '../services/sessions';
 import type { SessionManager } from '../services/sessions';
@@ -90,6 +91,7 @@ function App({ options }: AppProps) {
   const [inputText, setInputText] = useState('');
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showTranscript, setShowTranscript] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [sessionName, setSessionName] = useState('Session 1');
   const [chatScrollOffset, setChatScrollOffset] = useState(0);
 
@@ -295,7 +297,7 @@ function App({ options }: AppProps) {
   // --- Keyboard shortcuts ---
 
   useInput((input, key) => {
-    if (showModelPicker || showTranscript) return;
+    if (showModelPicker || showTranscript || showSettings) return;
 
     if (key.escape) {
       if (voice.handleEscape()) return;
@@ -356,6 +358,13 @@ function App({ options }: AppProps) {
     if (input === 'n' && key.ctrl) {
       spawnNewTerminalWindow(options);
       cleanInputChar(setInputText, 'n');
+      return;
+    }
+
+    // ^S Settings
+    if (input === 's' && key.ctrl) {
+      setShowSettings(true);
+      cleanInputChar(setInputText, 's');
       return;
     }
 
@@ -424,6 +433,10 @@ function App({ options }: AppProps) {
             terminalWidth={terminalWidth}
             onClose={() => setShowTranscript(false)}
           />
+        ) : showSettings ? (
+          <SettingsPicker
+            onClose={() => setShowSettings(false)}
+          />
         ) : (
           <ChatView
             messages={chat.messages}
@@ -434,7 +447,7 @@ function App({ options }: AppProps) {
             terminalWidth={terminalWidth}
             scrollOffset={chatScrollOffset}
             onScroll={setChatScrollOffset}
-            isActive={!showModelPicker && !showTranscript}
+            isActive={!showModelPicker && !showTranscript && !showSettings}
           />
         )}
       </Box>
