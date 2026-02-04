@@ -135,9 +135,12 @@ export function ChatView({
 
   // Show welcome text until there's user input (not just system messages)
   const hasUserInput = messages.some(m => m.role === 'user');
+  const systemMessages = messages.filter(m => m.role === 'system');
+
   if (!hasUserInput && !isProcessing) {
     return (
       <Box flexDirection="column" flexGrow={1}>
+        {/* Show welcome text first */}
         <Text dimColor>Welcome to RemoteClaw by Opus4.5 and Joseph Kim (@jokim1)</Text>
         <Text dimColor>Type a message to start chatting.</Text>
         <Text> </Text>
@@ -154,6 +157,13 @@ export function ChatView({
         <Text dimColor>^V Voice ON/OFF - Toggle AI voice responses</Text>
         <Text dimColor>^H History - See transcript of past talks</Text>
         <Text dimColor>^S Settings - Modify terminal settings</Text>
+        <Text> </Text>
+        {/* Show system messages (like "Model is ready") at the bottom */}
+        {systemMessages.map((msg) => (
+          <Box key={msg.id}>
+            <Text color="yellow">{msg.content}</Text>
+          </Box>
+        ))}
       </Box>
     );
   }
