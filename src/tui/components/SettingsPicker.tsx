@@ -47,6 +47,7 @@ const PROVIDER_LABELS: Record<RealtimeVoiceProvider, string> = {
   elevenlabs: 'ElevenLabs Conversational AI',
   deepgram: 'Deepgram + LLM + TTS',
   gemini: 'Google Gemini Live',
+  cartesia: 'Cartesia',
 };
 
 function getInputDevices(): AudioDevice[] {

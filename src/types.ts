@@ -72,7 +72,7 @@ export type VoiceReadiness = 'checking' | 'ready' | 'no-sox' | 'no-mic' | 'no-ga
 
 // --- Realtime Voice Types ---
 
-export type RealtimeVoiceProvider = 'openai' | 'elevenlabs' | 'deepgram' | 'gemini';
+export type RealtimeVoiceProvider = 'openai' | 'elevenlabs' | 'deepgram' | 'gemini' | 'cartesia';
 
 export interface RealtimeVoiceCapabilities {
   available: boolean;
