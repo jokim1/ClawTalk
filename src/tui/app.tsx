@@ -365,7 +365,9 @@ function App({ options }: AppProps) {
 
     // ^H History (transcripts) - Ctrl+H sends backspace in terminals
     // Only trigger when input is empty to avoid conflict with text editing
-    if ((input === '\x08' || key.backspace) && inputText === '') {
+    // Also check for literal 'h' with ctrl in case terminal sends it differently
+    const isCtrlH = input === '\x08' || key.backspace || (input === '\b');
+    if (isCtrlH && inputText.length === 0) {
       setShowTranscript(true);
       return;
     }
