@@ -49,105 +49,61 @@ interface StatusBarProps {
 
 export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleStatus, billing, sessionName, terminalWidth = 80, voiceMode, voiceReadiness, ttsEnabled = true }: StatusBarProps) {
   const modelName = getModelAlias(model);
-
-  const modelColor: string = modelStatus === 'checking' ? 'yellow'
-    : modelStatus === 'ok' ? 'green'
-    : typeof modelStatus === 'object' && modelStatus !== null ? 'red'
-    : 'cyan';
   const modelIndicator = modelStatus === 'checking' ? ' ◐' : '';
-
   const isSubscription = billing?.mode === 'subscription';
 
   const gateway = gatewayStatus === 'online' ? '●' : gatewayStatus === 'connecting' ? '◐' : '○';
-  const gatewayColor = gatewayStatus === 'online' ? 'green' : gatewayStatus === 'connecting' ? 'yellow' : 'red';
-
   const tsIcon = tailscaleStatus === 'connected' ? '●' : '○';
-  const tsColor = tailscaleStatus === 'connected' ? 'green' : tailscaleStatus === 'checking' ? 'yellow' : 'red';
-
-  const todayCost = `$${(usage.todaySpend ?? 0).toFixed(2)}`;
-  const weeklyCost = `$${(usage.weeklySpend ?? 0).toFixed(2)}`;
-  const monthlyCost = `$${Math.round(usage.monthlyEstimate ?? 0)}`;
-  const sessCost = `$${(usage.sessionCost ?? 0).toFixed(2)}`;
-
-  const hasApiCost = usage.modelPricing !== undefined && !isSubscription;
-  const apiCost = hasApiCost
-    ? `$${usage.modelPricing!.inputPer1M}/$${usage.modelPricing!.outputPer1M}`
-    : null;
-
-  // Mic indicator: shows microphone/STT readiness
-  const micColor = voiceReadiness === 'ready' ? 'green' :
-    voiceReadiness === 'checking' ? 'yellow' : 'red';
   const micIcon = voiceReadiness === 'ready' ? '●' : voiceReadiness === 'checking' ? '◐' : '○';
-
-  // V indicator: shows TTS/AI Voice enabled state + activity
-  // When playing/synthesizing, show activity; otherwise show on/off state
   const isVoiceActive = voiceMode === 'playing' || voiceMode === 'synthesizing';
-  const ttsIcon = isVoiceActive ? (voiceMode === 'playing' ? '♪' : '◐') :
-    ttsEnabled ? '●' : '○';
-  const ttsColor = isVoiceActive ? (voiceMode === 'playing' ? 'magenta' : 'yellow') :
-    ttsEnabled ? 'green' : 'gray';
+  const ttsIcon = isVoiceActive ? (voiceMode === 'playing' ? '♪' : '◐') : ttsEnabled ? '●' : '○';
 
-  // Build cost/billing section as plain text
+  // Build cost/billing section
   let billingText = '';
   if (isSubscription) {
     const rl = usage.rateLimits;
-    const weekly = rl?.weekly;
-    const session = rl?.session;
-
-    if (weekly || session) {
-      const primary = weekly ?? session!;
+    const primary = rl?.weekly ?? rl?.session;
+    if (primary) {
       const pct = primary.limit > 0 ? Math.round((primary.used / primary.limit) * 100) : 0;
-      const barWidth = 10;
-      const filled = Math.min(barWidth, Math.round((pct / 100) * barWidth));
-      const empty = barWidth - filled;
+      const filled = Math.min(10, Math.round((pct / 100) * 10));
       const resetLabel = formatResetTime(primary.resetsAt);
-      const windowLabel = weekly ? 'wk' : 'sess';
+      const windowLabel = rl?.weekly ? 'wk' : 'sess';
       const pausedText = pct >= 100 ? ' PAUSED' : '';
-      billingText = `  ${billing?.plan ?? 'Sub'}  ${'█'.repeat(filled)}${'░'.repeat(empty)} ${pct}% ${windowLabel}${pausedText}  Resets ${resetLabel}`;
+      billingText = `${billing?.plan ?? 'Sub'} ${'█'.repeat(filled)}${'░'.repeat(10 - filled)} ${pct}% ${windowLabel}${pausedText} Resets ${resetLabel}`;
     } else {
-      billingText = `  ${billing?.plan ?? 'Sub'} $${billing?.monthlyPrice ?? '?'}/mo`;
+      billingText = `${billing?.plan ?? 'Sub'} $${billing?.monthlyPrice ?? '?'}/mo`;
     }
   } else {
-    const costParts = [];
-    if (hasApiCost) costParts.push(apiCost);
-    costParts.push(`Today ${todayCost}`);
-    costParts.push(`Wk ${weeklyCost}`);
-    costParts.push(`~Mo ${monthlyCost}`);
-    if ((usage.sessionCost ?? 0) > 0) costParts.push(`Sess ${sessCost}`);
-    billingText = '  ' + costParts.join('  ');
+    const hasApiCost = usage.modelPricing !== undefined;
+    const parts = [];
+    if (hasApiCost) parts.push(`$${usage.modelPricing!.inputPer1M}/$${usage.modelPricing!.outputPer1M}`);
+    parts.push(`Today $${(usage.todaySpend ?? 0).toFixed(2)}`);
+    parts.push(`Wk $${(usage.weeklySpend ?? 0).toFixed(2)}`);
+    parts.push(`~Mo $${Math.round(usage.monthlyEstimate ?? 0)}`);
+    if ((usage.sessionCost ?? 0) > 0) parts.push(`Sess $${(usage.sessionCost ?? 0).toFixed(2)}`);
+    billingText = parts.join('  ');
   }
 
-  // Build right side content: V (TTS) and Mic indicators + session name
-  const rightContent = `V:${ttsIcon} Mic:${micIcon}  ${sessionName ?? ''}`;
-  const rightLen = rightContent.length;
+  // Build fixed-width line: pad to exact terminal width to prevent layout shifts
+  const leftPart = `GW:${gateway} TS:${tsIcon} M:${modelName}${modelIndicator}  ${billingText}`;
+  const rightPart = `V:${ttsIcon} Mic:${micIcon}  ${sessionName ?? ''}`;
+  const gap = Math.max(2, terminalWidth - leftPart.length - rightPart.length - 2);
 
-  // Calculate left content (will be truncated if needed)
-  // We use terminalWidth - 2 (for padding) - rightLen - 2 (for gap)
-  const maxLeftWidth = terminalWidth - 2 - rightLen - 2;
+  // Create exact-width string (prevents Yoga from recalculating layout)
+  let fullLine = ' ' + leftPart + ' '.repeat(gap) + rightPart + ' ';
+  if (fullLine.length > terminalWidth) {
+    fullLine = fullLine.slice(0, terminalWidth);
+  } else if (fullLine.length < terminalWidth) {
+    fullLine = fullLine + ' '.repeat(terminalWidth - fullLine.length);
+  }
 
-  // Build the full line with padding to push right content to the edge
-  const leftContent = `GW:${gateway} TS:${tsIcon} M:${modelName}${modelIndicator}${billingText}`;
-  const leftTruncated = leftContent.length > maxLeftWidth
-    ? leftContent.slice(0, maxLeftWidth - 1) + '…'
-    : leftContent;
-  const padding = Math.max(0, terminalWidth - 2 - leftTruncated.length - rightLen);
+  const separator = '─'.repeat(terminalWidth);
 
+  // Render as raw text lines - no flexbox, no dynamic layout
+  // Using a single Text with newlines is more stable than multiple Box elements
   return (
-    <Box flexDirection="column" width={terminalWidth} height={3}>
-      <Box height={2}>
-        <Text> </Text>
-        <Text dimColor>GW:</Text><Text color={gatewayColor}>{gateway} </Text>
-        <Text dimColor>TS:</Text><Text color={tsColor}>{tsIcon} </Text>
-        <Text dimColor>M:</Text><Text color={modelColor} bold>{modelName}{modelIndicator}</Text>
-        <Text dimColor>{billingText}</Text>
-        <Text>{' '.repeat(Math.max(1, padding))}</Text>
-        <Text dimColor>V:</Text><Text color={ttsColor}>{ttsIcon} </Text>
-        <Text dimColor>Mic:</Text><Text color={micColor}>{micIcon}</Text>
-        <Text dimColor>  {sessionName ?? ''} </Text>
-      </Box>
-      <Box height={1}>
-        <Text dimColor>{'─'.repeat(terminalWidth)}</Text>
-      </Box>
+    <Box width={terminalWidth} height={3}>
+      <Text>{'\n' + fullLine + '\n' + separator}</Text>
     </Box>
   );
 }
@@ -158,8 +114,7 @@ interface ShortcutBarProps {
 }
 
 export function ShortcutBar({ terminalWidth = 80, ttsEnabled = true }: ShortcutBarProps) {
-  // Build shortcuts as a single line without flexbox space-between
-  // This prevents Ink/Yoga layout jitter
+  // Build shortcuts as a fixed-width string to prevent layout shifts
   const shortcuts = [
     { key: '^T', label: 'Talks' },
     { key: '^C', label: 'Chat' },
@@ -170,20 +125,21 @@ export function ShortcutBar({ terminalWidth = 80, ttsEnabled = true }: ShortcutB
     { key: '^X', label: 'Exit' },
   ];
 
+  // Build the shortcut line with inverse styling markers (we'll render without inverse for stability)
+  const shortcutText = shortcuts.map(s => `[${s.key}] ${s.label}`).join('  ');
+  let shortcutLine = ' ' + shortcutText;
+  if (shortcutLine.length < terminalWidth) {
+    shortcutLine = shortcutLine + ' '.repeat(terminalWidth - shortcutLine.length);
+  } else {
+    shortcutLine = shortcutLine.slice(0, terminalWidth);
+  }
+
+  const separator = '─'.repeat(terminalWidth);
+
+  // Render as raw text - single Text element with newlines
   return (
-    <Box flexDirection="column" width={terminalWidth} height={2}>
-      <Box height={1}>
-        <Text dimColor>{'─'.repeat(terminalWidth)}</Text>
-      </Box>
-      <Box height={1}>
-        <Text> </Text>
-        {shortcuts.map((s, i) => (
-          <Text key={s.key}>
-            <Text inverse> {s.key} </Text>
-            <Text> {s.label}{i < shortcuts.length - 1 ? '  ' : ''}</Text>
-          </Text>
-        ))}
-      </Box>
+    <Box width={terminalWidth} height={2}>
+      <Text dimColor>{separator + '\n' + shortcutLine}</Text>
     </Box>
   );
 }

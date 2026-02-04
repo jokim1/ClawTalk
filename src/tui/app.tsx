@@ -5,7 +5,7 @@
  * Composes custom hooks for gateway, chat, voice, and model management.
  */
 
-import React, { useState, useEffect, useCallback, useRef, useLayoutEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { render, Box, Text, useInput, useApp, useStdout } from 'ink';
 import type { RemoteClawOptions, ModelStatus } from '../types.js';
 import { StatusBar, ShortcutBar } from './components/StatusBar';
@@ -415,15 +415,6 @@ function App({ options }: AppProps) {
 
   // --- Render ---
 
-  // WORKAROUND for Ink v3 layout instability:
-  // Write ANSI escape sequences to force terminal stability.
-  // This runs after each render to reset cursor position.
-  useLayoutEffect(() => {
-    // ESC[H = cursor home (row 1, col 1)
-    // ESC[?25l = hide cursor (reduces flicker)
-    stdout?.write('\x1b[H');
-  });
-
   // Show loading state until gateway is initialized to prevent layout shifts
   // The multiple state updates during startup cause re-renders that shift the UI
   if (!gateway.isInitialized) {
@@ -455,7 +446,7 @@ function App({ options }: AppProps) {
       </Box>
 
       <Box height={1} flexShrink={0} paddingX={1}>
-        {error ? <Text color="red">! {error}</Text> : null}
+        <Text color="red">{error ? `! ${error}` : ' '}</Text>
       </Box>
 
       <Box flexDirection="column" height={chatHeight} flexGrow={1} flexShrink={1} paddingX={1}>
