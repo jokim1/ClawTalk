@@ -2,9 +2,6 @@
  * Status Bar Component
  *
  * Nano-style: info at top, shortcuts at bottom
- *
- * IMPORTANT: These components use simple Text rendering instead of flexbox
- * space-between to avoid Ink/Yoga layout jitter that causes screen shifting.
  */
 
 import React from 'react';
@@ -67,7 +64,7 @@ export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleS
 
   const isVoiceActive = voiceMode === 'playing' || voiceMode === 'synthesizing';
   const ttsIcon = isVoiceActive ? (voiceMode === 'playing' ? '♪' : '◐') : ttsEnabled ? '●' : '○';
-  const ttsColor = isVoiceActive ? (voiceMode === 'playing' ? 'magenta' : 'yellow') : ttsEnabled ? 'green' : 'gray';
+  const ttsColor = isVoiceActive ? (voiceMode === 'playing' ? 'magenta' : 'yellow') : ttsEnabled ? 'green' : 'dim';
 
   // Build cost/billing section
   let billingText = '';
@@ -95,26 +92,32 @@ export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleS
     billingText = parts.join('  ');
   }
 
-  // Calculate gap for right-alignment
-  const leftLen = `GW:${gwIcon} TS:${tsIcon} M:${modelName}${modelIndicator}  ${billingText}`.length;
-  const rightLen = `V:${ttsIcon} Mic:${micIcon}  ${sessionName ?? ''}`.length;
-  const gap = Math.max(2, terminalWidth - leftLen - rightLen - 2);
-
   const separator = '─'.repeat(terminalWidth);
 
   return (
     <Box flexDirection="column" width={terminalWidth} height={3}>
-      <Box height={2}>
-        <Text> </Text>
-        <Text dimColor>GW:</Text><Text color={gwColor}>{gwIcon} </Text>
-        <Text dimColor>TS:</Text><Text color={tsColor}>{tsIcon} </Text>
-        <Text dimColor>M:</Text><Text color={modelColor} bold>{modelName}{modelIndicator}</Text>
-        <Text>  </Text>
-        <Text dimColor>{billingText}</Text>
-        <Text>{' '.repeat(gap)}</Text>
-        <Text dimColor>V:</Text><Text color={ttsColor}>{ttsIcon} </Text>
-        <Text dimColor>Mic:</Text><Text color={micColor}>{micIcon}</Text>
-        <Text dimColor>  {sessionName ?? ''} </Text>
+      <Box height={2} justifyContent="space-between" paddingX={1}>
+        <Box>
+          <Text dimColor>GW:</Text>
+          <Text color={gwColor}>{gwIcon}</Text>
+          <Text> </Text>
+          <Text dimColor>TS:</Text>
+          <Text color={tsColor}>{tsIcon}</Text>
+          <Text> </Text>
+          <Text dimColor>M:</Text>
+          <Text color={modelColor} bold>{modelName}{modelIndicator}</Text>
+          <Text>  </Text>
+          <Text dimColor>{billingText}</Text>
+        </Box>
+        <Box>
+          <Text dimColor>V:</Text>
+          <Text color={ttsColor}>{ttsIcon}</Text>
+          <Text> </Text>
+          <Text dimColor>Mic:</Text>
+          <Text color={micColor}>{micIcon}</Text>
+          <Text>  </Text>
+          <Text dimColor>{sessionName ?? ''}</Text>
+        </Box>
       </Box>
       <Box height={1}>
         <Text dimColor>{separator}</Text>
@@ -139,47 +142,21 @@ export function ShortcutBar({ terminalWidth = 80, ttsEnabled = true }: ShortcutB
     { key: '^X', label: 'Exit' },
   ];
 
-  // Calculate item widths: "[^T] Label"
-  const items = shortcuts.map(s => ({
-    key: s.key,
-    label: s.label,
-    width: s.key.length + 2 + 1 + s.label.length // [key] + space + label
-  }));
-  const totalContentWidth = items.reduce((sum, i) => sum + i.width, 0);
-
-  // Distribute gaps between items (not at edges) so first item is at left, last at right
-  const numGaps = shortcuts.length - 1;
-  const availableSpace = terminalWidth - totalContentWidth - 2; // -2 for 1 space padding each side
-  const gapSize = numGaps > 0 ? Math.floor(availableSpace / numGaps) : 0;
-  const extraSpaces = numGaps > 0 ? availableSpace - (gapSize * numGaps) : 0;
-
-  // Build evenly distributed shortcut line
-  let shortcutLine = ' '; // left padding
-  items.forEach((item, i) => {
-    shortcutLine += `[${item.key}] ${item.label}`;
-    if (i < items.length - 1) {
-      // Distribute extra spaces among first gaps
-      const extra = i < extraSpaces ? 1 : 0;
-      shortcutLine += ' '.repeat(gapSize + extra);
-    }
-  });
-  shortcutLine += ' '; // right padding
-
-  // Ensure exact width
-  if (shortcutLine.length < terminalWidth) {
-    // Insert extra space before last item to push it to the right
-    const deficit = terminalWidth - shortcutLine.length;
-    const lastGapPos = shortcutLine.lastIndexOf('[^X]') - 1;
-    shortcutLine = shortcutLine.slice(0, lastGapPos) + ' '.repeat(deficit) + shortcutLine.slice(lastGapPos);
-  } else if (shortcutLine.length > terminalWidth) {
-    shortcutLine = shortcutLine.slice(0, terminalWidth);
-  }
-
   const separator = '─'.repeat(terminalWidth);
 
   return (
-    <Box width={terminalWidth} height={2}>
-      <Text dimColor>{separator + '\n' + shortcutLine}</Text>
+    <Box flexDirection="column" width={terminalWidth} height={2}>
+      <Box height={1}>
+        <Text dimColor>{separator}</Text>
+      </Box>
+      <Box height={1} justifyContent="space-between" paddingX={1}>
+        {shortcuts.map((s) => (
+          <Box key={s.key}>
+            <Text inverse> {s.key} </Text>
+            <Text> {s.label}</Text>
+          </Box>
+        ))}
+      </Box>
     </Box>
   );
 }
