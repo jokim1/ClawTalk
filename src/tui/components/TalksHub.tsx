@@ -21,6 +21,13 @@ interface TalksHubProps {
   onClose: () => void;
   onSelectTalk: (talk: Talk) => void;
   onNewChat: () => void;
+  onToggleTts: () => void;
+  onOpenHistory: () => void;
+  onOpenSettings: () => void;
+  onOpenModelPicker: () => void;
+  onNewTerminal: () => void;
+  onExit: () => void;
+  setError: (error: string) => void;
 }
 
 export function TalksHub({
@@ -31,6 +38,13 @@ export function TalksHub({
   onClose,
   onSelectTalk,
   onNewChat,
+  onToggleTts,
+  onOpenHistory,
+  onOpenSettings,
+  onOpenModelPicker,
+  onNewTerminal,
+  onExit,
+  setError,
 }: TalksHubProps) {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [scrollOffset, setScrollOffset] = useState(0);
@@ -72,6 +86,48 @@ export function TalksHub({
     // ^N starts new chat
     if (input === 'n' && key.ctrl) {
       onNewChat();
+      return;
+    }
+
+    // ^V toggle TTS
+    if (input === 'v' && key.ctrl) {
+      onToggleTts();
+      return;
+    }
+
+    // ^H open history
+    if (input === 'h' && key.ctrl) {
+      onOpenHistory();
+      return;
+    }
+
+    // ^S open settings
+    if (input === 's' && key.ctrl) {
+      onOpenSettings();
+      return;
+    }
+
+    // ^A open model picker
+    if (input === 'a' && key.ctrl) {
+      onOpenModelPicker();
+      return;
+    }
+
+    // ^Y new terminal
+    if (input === 'y' && key.ctrl) {
+      onNewTerminal();
+      return;
+    }
+
+    // ^X exit
+    if (input === 'x' && key.ctrl) {
+      onExit();
+      return;
+    }
+
+    // ^C and ^P - voice not available in Talks screen
+    if ((input === 'c' || input === 'p') && key.ctrl) {
+      setError('You can only use voice input in a Talk!');
       return;
     }
 

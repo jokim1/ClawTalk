@@ -568,6 +568,13 @@ function App({ options }: AppProps) {
             onClose={() => setShowTalks(false)}
             onSelectTalk={handleSelectTalk}
             onNewChat={() => { setShowTalks(false); handleNewChat(); }}
+            onToggleTts={() => { voice.handleTtsToggle?.(); }}
+            onOpenHistory={() => { setShowTalks(false); setShowTranscript(true); }}
+            onOpenSettings={() => { setShowTalks(false); setShowSettings(true); }}
+            onOpenModelPicker={() => { setShowTalks(false); setShowModelPicker(true); }}
+            onNewTerminal={() => { spawnNewTerminalWindow(options); }}
+            onExit={() => { voiceServiceRef.current?.cleanup(); exit(); }}
+            setError={setError}
           />
         ) : showSettings ? (
           <SettingsPicker
