@@ -611,7 +611,7 @@ function App({ options }: AppProps) {
         <Text color="red">{error ? `! ${error}` : ' '}</Text>
       </Box>
 
-      <Box flexDirection="column" height={chatHeight} flexGrow={1} flexShrink={1} paddingX={1}>
+      <Box flexDirection="column" height={showModelPicker || showTranscript || showTalks || showSettings ? chatHeight : undefined} flexGrow={1} flexShrink={1} paddingX={1}>
         {showModelPicker ? (
           <ModelPicker
             models={pickerModels}
