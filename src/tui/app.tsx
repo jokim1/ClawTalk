@@ -363,10 +363,9 @@ function App({ options }: AppProps) {
       return;
     }
 
-    // ^H History (transcripts)
-    if (input === 'h' && key.ctrl) {
+    // ^H History (transcripts) - Ctrl+H sends ASCII 8 (backspace) in terminals
+    if (input === '\x08' || (input === 'h' && key.ctrl)) {
       setShowTranscript(true);
-      cleanInputChar(setInputText, 'h');
       return;
     }
 

@@ -2,11 +2,14 @@
  * Status Bar Component
  *
  * Nano-style: info at top, shortcuts at bottom
+ *
+ * IMPORTANT: These components use simple Text rendering instead of flexbox
+ * space-between to avoid Ink/Yoga layout jitter that causes screen shifting.
  */
 
 import React from 'react';
 import { Box, Text } from 'ink';
-import type { UsageStats, ModelStatus, RateLimitWindow, VoiceMode, VoiceReadiness } from '../../types';
+import type { UsageStats, ModelStatus, VoiceMode, VoiceReadiness } from '../../types';
 import type { TailscaleStatus } from '../../services/tailscale';
 import type { BillingOverride } from '../../config.js';
 import { getModelAlias } from '../../models.js';
@@ -70,7 +73,6 @@ export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleS
     ? `$${usage.modelPricing!.inputPer1M}/$${usage.modelPricing!.outputPer1M}`
     : null;
 
-  // Build status text as a single string to ensure it fits on one line
   const voiceStatus = voiceReadiness === 'checking' ? '◐' :
     voiceReadiness !== 'ready' ? '○' :
     voiceMode === 'liveTalk' ? '● LIVE' :
@@ -90,88 +92,66 @@ export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleS
     voiceReadiness === 'checking' ? 'yellow' : 'red';
   const micIcon = voiceReadiness === 'ready' ? '●' : voiceReadiness === 'checking' ? '◐' : '○';
 
+  // Build cost/billing section as plain text
+  let billingText = '';
+  if (isSubscription) {
+    const rl = usage.rateLimits;
+    const weekly = rl?.weekly;
+    const session = rl?.session;
+
+    if (weekly || session) {
+      const primary = weekly ?? session!;
+      const pct = primary.limit > 0 ? Math.round((primary.used / primary.limit) * 100) : 0;
+      const barWidth = 10;
+      const filled = Math.min(barWidth, Math.round((pct / 100) * barWidth));
+      const empty = barWidth - filled;
+      const resetLabel = formatResetTime(primary.resetsAt);
+      const windowLabel = weekly ? 'wk' : 'sess';
+      const pausedText = pct >= 100 ? ' PAUSED' : '';
+      billingText = `  ${billing?.plan ?? 'Sub'}  ${'█'.repeat(filled)}${'░'.repeat(empty)} ${pct}% ${windowLabel}${pausedText}  Resets ${resetLabel}`;
+    } else {
+      billingText = `  ${billing?.plan ?? 'Sub'} $${billing?.monthlyPrice ?? '?'}/mo`;
+    }
+  } else {
+    const costParts = [];
+    if (hasApiCost) costParts.push(apiCost);
+    costParts.push(`Today ${todayCost}`);
+    costParts.push(`Wk ${weeklyCost}`);
+    costParts.push(`~Mo ${monthlyCost}`);
+    if ((usage.sessionCost ?? 0) > 0) costParts.push(`Sess ${sessCost}`);
+    billingText = '  ' + costParts.join('  ');
+  }
+
+  // Build right side content
+  const rightContent = `Mic:${micIcon}  ${sessionName ?? ''}`;
+  const rightLen = rightContent.length;
+
+  // Calculate left content (will be truncated if needed)
+  // We use terminalWidth - 2 (for padding) - rightLen - 2 (for gap)
+  const maxLeftWidth = terminalWidth - 2 - rightLen - 2;
+
+  // Build the full line with padding to push right content to the edge
+  const leftContent = `GW:${gateway} TS:${tsIcon} M:${modelName}${modelIndicator}  V:${voiceStatus}${billingText}`;
+  const leftTruncated = leftContent.length > maxLeftWidth
+    ? leftContent.slice(0, maxLeftWidth - 1) + '…'
+    : leftContent;
+  const padding = Math.max(0, terminalWidth - 2 - leftTruncated.length - rightLen);
+
   return (
-    <Box flexDirection="column" width="100%" height={3}>
-      <Box height={2} flexShrink={0} paddingX={1} justifyContent="space-between">
-        <Box>
-          <Text dimColor>GW:</Text><Text color={gatewayColor}>{gateway} </Text>
-          <Text dimColor>TS:</Text><Text color={tsColor}>{tsIcon} </Text>
-          <Text dimColor>M:</Text><Text color={modelColor} bold>{modelName}{modelIndicator}</Text>
-          <Text dimColor>  V:</Text><Text color={voiceColor}>{voiceStatus}</Text>
-
-          {isSubscription ? (
-            (() => {
-              const rl = usage.rateLimits;
-              const weekly = rl?.weekly;
-              const session = rl?.session;
-
-              if (weekly || session) {
-                const primary = weekly ?? session!;
-                const pct = primary.limit > 0 ? Math.round((primary.used / primary.limit) * 100) : 0;
-                const barWidth = 10;
-                const filled = Math.min(barWidth, Math.round((pct / 100) * barWidth));
-                const empty = barWidth - filled;
-                const barColor = pct > 90 ? 'red' : pct > 70 ? 'yellow' : 'green';
-                const resetLabel = formatResetTime(primary.resetsAt);
-                const windowLabel = weekly ? 'wk' : 'sess';
-
-                return (
-                  <>
-                    <Text dimColor>  {billing?.plan ?? 'Sub'}  </Text>
-                    <Text color={barColor}>{'█'.repeat(filled)}</Text>
-                    <Text dimColor>{'░'.repeat(empty)}</Text>
-                    <Text> </Text>
-                    <Text color={barColor}>{pct}% {windowLabel}</Text>
-                    {pct >= 100 ? (
-                      <Text color="red" bold>  PAUSED</Text>
-                    ) : null}
-                    <Text dimColor>  Resets {resetLabel}</Text>
-                  </>
-                );
-              }
-
-              return (
-                <>
-                  <Text dimColor>  {billing?.plan ?? 'Sub'} </Text>
-                  <Text>${billing?.monthlyPrice ?? '?'}/mo</Text>
-                </>
-              );
-            })()
-          ) : (
-            <>
-              {hasApiCost ? (
-                <>
-                  <Text dimColor>  </Text>
-                  <Text>{apiCost}</Text>
-                </>
-              ) : null}
-              <Text dimColor>  Today </Text>
-              <Text>{todayCost}</Text>
-              <Text dimColor>  Wk </Text>
-              <Text>{weeklyCost}</Text>
-              <Text dimColor>  ~Mo </Text>
-              <Text>{monthlyCost}</Text>
-              {(usage.sessionCost ?? 0) > 0 ? (
-                <>
-                  <Text dimColor>  Sess </Text>
-                  <Text>{sessCost}</Text>
-                </>
-              ) : null}
-            </>
-          )}
-        </Box>
-
-        <Box>
-          <Text dimColor>Mic:</Text>
-          <Text color={micColor}>{micIcon}</Text>
-          {sessionName ? (
-            <Text dimColor>  {sessionName}</Text>
-          ) : null}
-        </Box>
+    <Box flexDirection="column" width={terminalWidth} height={3}>
+      <Box height={2}>
+        <Text> </Text>
+        <Text dimColor>GW:</Text><Text color={gatewayColor}>{gateway} </Text>
+        <Text dimColor>TS:</Text><Text color={tsColor}>{tsIcon} </Text>
+        <Text dimColor>M:</Text><Text color={modelColor} bold>{modelName}{modelIndicator}</Text>
+        <Text dimColor>  V:</Text><Text color={voiceColor}>{voiceStatus}</Text>
+        <Text dimColor>{billingText}</Text>
+        <Text>{' '.repeat(Math.max(1, padding))}</Text>
+        <Text dimColor>Mic:</Text><Text color={micColor}>{micIcon}</Text>
+        <Text dimColor>  {sessionName ?? ''} </Text>
       </Box>
-
-      <Box height={1} flexShrink={0}>
-        <Text dimColor>{'─'.repeat(Math.max(1, terminalWidth))}</Text>
+      <Box height={1}>
+        <Text dimColor>{'─'.repeat(terminalWidth)}</Text>
       </Box>
     </Box>
   );
@@ -183,41 +163,31 @@ interface ShortcutBarProps {
 }
 
 export function ShortcutBar({ terminalWidth = 80, ttsEnabled = true }: ShortcutBarProps) {
-  return (
-    <Box flexDirection="column" width="100%" height={2}>
-      <Box height={1} flexShrink={0}>
-        <Text dimColor>{'─'.repeat(Math.max(1, terminalWidth))}</Text>
-      </Box>
+  // Build shortcuts as a single line without flexbox space-between
+  // This prevents Ink/Yoga layout jitter
+  const shortcuts = [
+    { key: '^T', label: 'Talks' },
+    { key: '^C', label: 'Chat' },
+    { key: '^P', label: 'PTT' },
+    { key: '^V', label: ttsEnabled ? 'Voice OFF' : 'Voice ON' },
+    { key: '^H', label: 'History' },
+    { key: '^S', label: 'Settings' },
+    { key: '^X', label: 'Exit' },
+  ];
 
-      <Box height={1} flexShrink={0} paddingX={1} justifyContent="space-between">
-        <Box>
-          <Text inverse> ^T </Text>
-          <Text> Talks  </Text>
-        </Box>
-        <Box>
-          <Text inverse> ^C </Text>
-          <Text> Chat  </Text>
-        </Box>
-        <Box>
-          <Text inverse> ^P </Text>
-          <Text> PTT  </Text>
-        </Box>
-        <Box>
-          <Text inverse> ^V </Text>
-          <Text> {ttsEnabled ? 'Voice OFF' : 'Voice ON'}  </Text>
-        </Box>
-        <Box>
-          <Text inverse> ^H </Text>
-          <Text> History  </Text>
-        </Box>
-        <Box>
-          <Text inverse> ^S </Text>
-          <Text> Settings  </Text>
-        </Box>
-        <Box>
-          <Text inverse> ^X </Text>
-          <Text> Exit</Text>
-        </Box>
+  return (
+    <Box flexDirection="column" width={terminalWidth} height={2}>
+      <Box height={1}>
+        <Text dimColor>{'─'.repeat(terminalWidth)}</Text>
+      </Box>
+      <Box height={1}>
+        <Text> </Text>
+        {shortcuts.map((s, i) => (
+          <Text key={s.key}>
+            <Text inverse> {s.key} </Text>
+            <Text> {s.label}{i < shortcuts.length - 1 ? '  ' : ''}</Text>
+          </Text>
+        ))}
       </Box>
     </Box>
   );
