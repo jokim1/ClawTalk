@@ -301,43 +301,61 @@ function App({ options }: AppProps) {
       if (voice.handleEscape()) return;
     }
 
-    if (input === 'c' && key.ctrl) {
+    // ^X Exit
+    if (input === 'x' && key.ctrl) {
       voiceServiceRef.current?.cleanup();
       exit();
       return;
     }
 
-    if (input === 'v' && key.ctrl) {
+    // ^T Talk Live (real-time voice chat)
+    if (input === 't' && key.ctrl) {
+      if (chat.isProcessing) {
+        setError('Cannot start live talk while processing');
+      } else {
+        voice.handleLiveTalk?.();
+      }
+      cleanInputChar(setInputText, 't');
+      return;
+    }
+
+    // ^A AI Model (opens model picker)
+    if (input === 'a' && key.ctrl) {
+      setShowModelPicker(true);
+      cleanInputChar(setInputText, 'a');
+      return;
+    }
+
+    // ^P Push-to-Talk (voice recording)
+    if (input === 'p' && key.ctrl) {
       if (chat.isProcessing) {
         setError('Cannot record while processing');
       } else {
         voice.handleVoiceToggle();
       }
+      cleanInputChar(setInputText, 'p');
+      return;
+    }
+
+    // ^C Clear session
+    if (input === 'c' && key.ctrl) {
+      commandCtx.current.clearSession();
+      setChatScrollOffset(0);
+      cleanInputChar(setInputText, 'c');
+      return;
+    }
+
+    // ^V AI Voice (toggle TTS responses)
+    if (input === 'v' && key.ctrl) {
+      voice.handleTtsToggle?.();
       cleanInputChar(setInputText, 'v');
       return;
     }
 
-    if ((input === 'o' || input === 'q') && key.ctrl) {
-      setShowModelPicker(true);
-      cleanInputChar(setInputText, '[qo]');
-      return;
-    }
-
+    // ^N New terminal window
     if (input === 'n' && key.ctrl) {
       spawnNewTerminalWindow(options);
       cleanInputChar(setInputText, 'n');
-      return;
-    }
-
-    if (input === 'l' && key.ctrl) {
-      commandCtx.current.clearSession();
-      cleanInputChar(setInputText, 'l');
-      return;
-    }
-
-    if (input === 't' && key.ctrl) {
-      setShowTranscript(prev => !prev);
-      cleanInputChar(setInputText, 't');
       return;
     }
 

@@ -192,27 +192,31 @@ export function ShortcutBar({ terminalWidth = 80 }: ShortcutBarProps) {
 
       <Box paddingX={1} justifyContent="space-between">
         <Box>
-          <Text inverse> ^Q </Text>
-          <Text> Model  </Text>
+          <Text inverse> ^T </Text>
+          <Text> Talk Live  </Text>
+        </Box>
+        <Box>
+          <Text inverse> ^A </Text>
+          <Text> AI Model  </Text>
+        </Box>
+        <Box>
+          <Text inverse> ^P </Text>
+          <Text> Push-to-Talk  </Text>
+        </Box>
+        <Box>
+          <Text inverse> ^C </Text>
+          <Text> Clear  </Text>
+        </Box>
+        <Box>
+          <Text inverse> ^V </Text>
+          <Text> AI Voice  </Text>
         </Box>
         <Box>
           <Text inverse> ^N </Text>
           <Text> New  </Text>
         </Box>
         <Box>
-          <Text inverse> ^L </Text>
-          <Text> Clear  </Text>
-        </Box>
-        <Box>
-          <Text inverse> ^T </Text>
-          <Text> Transcript  </Text>
-        </Box>
-        <Box>
-          <Text inverse> ^V </Text>
-          <Text> Voice  </Text>
-        </Box>
-        <Box>
-          <Text inverse> ^C </Text>
+          <Text inverse> ^X </Text>
           <Text> Exit</Text>
         </Box>
       </Box>

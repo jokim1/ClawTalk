@@ -24,6 +24,7 @@ export interface UseVoiceOpts {
 const READINESS_HINTS: Record<string, string> = {
   checking: 'Voice is still initializing, try again in a moment.',
   'no-sox': 'Voice requires SoX. Install with: brew install sox (macOS) or apt install sox (Linux)',
+  'no-mic': 'No working microphone detected. Set REMOTECLAW_MIC to your device name, or check System Preferences → Sound → Input.',
   'no-gateway': 'Voice not available — gateway did not respond to /api/voice/capabilities. Is the RemoteClawGateway plugin installed?',
   'no-stt': 'Voice not available — gateway has no speech-to-text provider configured. Set OPENAI_API_KEY on the gateway server.',
 };
@@ -33,6 +34,7 @@ const VOLUME_POLL_MS = 150;
 export function useVoice(opts: UseVoiceOpts) {
   const [voiceMode, setVoiceMode] = useState<VoiceMode>('idle');
   const [volumeLevel, setVolumeLevel] = useState(0);
+  const [ttsEnabled, setTtsEnabled] = useState(true);
   const voiceModeRef = useRef(voiceMode);
   voiceModeRef.current = voiceMode;
 
@@ -146,11 +148,11 @@ export function useVoice(opts: UseVoiceOpts) {
     return false;
   }, []);
 
-  /** Speak an assistant response via TTS if autoPlay is enabled. */
+  /** Speak an assistant response via TTS if enabled. */
   const speakResponse = useCallback((text: string) => {
     const { voiceServiceRef, ttsAvailable, voiceConfig } = optsRef.current;
     const voiceService = voiceServiceRef.current;
-    const shouldPlay = (voiceConfig?.autoPlay ?? true) && ttsAvailable && voiceService?.canPlayback;
+    const shouldPlay = ttsEnabled && (voiceConfig?.autoPlay ?? true) && ttsAvailable && voiceService?.canPlayback;
     if (!shouldPlay || !voiceService) return;
 
     setVoiceMode('synthesizing');
@@ -164,15 +166,56 @@ export function useVoice(opts: UseVoiceOpts) {
         // TTS errors are non-fatal — text response is already visible
         setVoiceMode('idle');
       });
+  }, [ttsEnabled]);
+
+  /** Toggle TTS (AI Voice) on/off. */
+  const handleTtsToggle = useCallback(() => {
+    setTtsEnabled(prev => !prev);
   }, []);
+
+  /** Start live talk mode (real-time bidirectional voice chat). */
+  const handleLiveTalk = useCallback(() => {
+    const { voiceServiceRef, readiness, setError } = optsRef.current;
+
+    if (readiness !== 'ready') {
+      setError(READINESS_HINTS[readiness] ?? 'Voice is not available.');
+      return;
+    }
+
+    if (!voiceServiceRef.current) {
+      setError('Voice service not initialized. Try restarting.');
+      return;
+    }
+
+    // For now, live talk starts recording similar to push-to-talk
+    // Future: implement continuous listening with voice activity detection
+    const mode = voiceModeRef.current;
+    if (mode === 'idle') {
+      const result = voiceServiceRef.current.startRecording();
+      if (result.ok) {
+        setVoiceMode('recording');
+        setError(null);
+      } else {
+        setError(result.error);
+      }
+    } else if (mode === 'recording') {
+      stopAndTranscribe();
+    } else if (mode === 'playing') {
+      voiceServiceRef.current?.stopPlayback();
+      setVoiceMode('idle');
+    }
+  }, [stopAndTranscribe]);
 
   return {
     voiceMode,
     volumeLevel,
+    ttsEnabled,
     autoSend: opts.voiceConfig?.autoSend ?? true,
     autoPlay: opts.voiceConfig?.autoPlay ?? true,
     handleVoiceToggle,
     handleEscape,
     speakResponse,
+    handleTtsToggle,
+    handleLiveTalk,
   };
 }
