@@ -70,37 +70,34 @@ export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleS
     ? `$${usage.modelPricing!.inputPer1M}/$${usage.modelPricing!.outputPer1M}`
     : null;
 
-  // Use minHeight instead of height to prevent content from being clipped
-  // when Ink recalculates layout during re-renders
+  // Build status text as a single string to ensure it fits on one line
+  const voiceStatus = voiceReadiness === 'checking' ? '◐' :
+    voiceReadiness !== 'ready' ? '○' :
+    voiceMode === 'liveTalk' ? '● LIVE' :
+    voiceMode === 'recording' ? '● REC' :
+    voiceMode === 'transcribing' ? '◐ STT' :
+    voiceMode === 'synthesizing' ? '◐ TTS' :
+    voiceMode === 'playing' ? '♪ PLAY' : '●';
+
+  const voiceColor = voiceReadiness === 'checking' ? 'yellow' :
+    voiceReadiness !== 'ready' ? 'red' :
+    voiceMode === 'liveTalk' ? 'cyan' :
+    voiceMode === 'recording' ? 'red' :
+    voiceMode === 'transcribing' || voiceMode === 'synthesizing' ? 'yellow' :
+    voiceMode === 'playing' ? 'magenta' : 'green';
+
+  const micColor = voiceReadiness === 'ready' ? 'green' :
+    voiceReadiness === 'checking' ? 'yellow' : 'red';
+  const micIcon = voiceReadiness === 'ready' ? '●' : voiceReadiness === 'checking' ? '◐' : '○';
+
   return (
-    <Box flexDirection="column" width="100%">
-      <Box paddingX={1} justifyContent="space-between">
+    <Box flexDirection="column" width="100%" height={3}>
+      <Box height={2} flexShrink={0} paddingX={1} justifyContent="space-between">
         <Box>
           <Text dimColor>GW:</Text><Text color={gatewayColor}>{gateway} </Text>
           <Text dimColor>TS:</Text><Text color={tsColor}>{tsIcon} </Text>
           <Text dimColor>M:</Text><Text color={modelColor} bold>{modelName}{modelIndicator}</Text>
-
-          <Text>
-            <Text dimColor>  V:</Text>
-            <Text color={
-              voiceReadiness === 'checking' ? 'yellow' :
-              voiceReadiness !== 'ready' ? 'red' :
-              voiceMode === 'liveTalk' ? 'cyan' :
-              voiceMode === 'recording' ? 'red' :
-              voiceMode === 'transcribing' || voiceMode === 'synthesizing' ? 'yellow' :
-              voiceMode === 'playing' ? 'magenta' :
-              'green'
-            }>
-              {voiceReadiness === 'checking' ? '◐' :
-               voiceReadiness !== 'ready' ? '○' :
-               voiceMode === 'liveTalk' ? '● LIVE' :
-               voiceMode === 'recording' ? '● REC' :
-               voiceMode === 'transcribing' ? '◐ STT' :
-               voiceMode === 'synthesizing' ? '◐ TTS' :
-               voiceMode === 'playing' ? '♪ PLAY' :
-               '●'}
-            </Text>
-          </Text>
+          <Text dimColor>  V:</Text><Text color={voiceColor}>{voiceStatus}</Text>
 
           {isSubscription ? (
             (() => {
@@ -166,17 +163,14 @@ export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleS
 
         <Box>
           <Text dimColor>Mic:</Text>
-          <Text color={
-            voiceReadiness === 'ready' ? 'green' :
-            voiceReadiness === 'checking' ? 'yellow' : 'red'
-          }>{voiceReadiness === 'ready' ? '●' : voiceReadiness === 'checking' ? '◐' : '○'}</Text>
+          <Text color={micColor}>{micIcon}</Text>
           {sessionName ? (
             <Text dimColor>  {sessionName}</Text>
           ) : null}
         </Box>
       </Box>
 
-      <Box>
+      <Box height={1} flexShrink={0}>
         <Text dimColor>{'─'.repeat(Math.max(1, terminalWidth))}</Text>
       </Box>
     </Box>
@@ -190,12 +184,12 @@ interface ShortcutBarProps {
 
 export function ShortcutBar({ terminalWidth = 80, ttsEnabled = true }: ShortcutBarProps) {
   return (
-    <Box flexDirection="column" width="100%">
-      <Box>
+    <Box flexDirection="column" width="100%" height={2}>
+      <Box height={1} flexShrink={0}>
         <Text dimColor>{'─'.repeat(Math.max(1, terminalWidth))}</Text>
       </Box>
 
-      <Box paddingX={1} justifyContent="space-between">
+      <Box height={1} flexShrink={0} paddingX={1} justifyContent="space-between">
         <Box>
           <Text inverse> ^T </Text>
           <Text> Talks  </Text>
@@ -210,7 +204,7 @@ export function ShortcutBar({ terminalWidth = 80, ttsEnabled = true }: ShortcutB
         </Box>
         <Box>
           <Text inverse> ^V </Text>
-          <Text> {ttsEnabled ? 'Voice ON' : 'Voice OFF'}  </Text>
+          <Text> {ttsEnabled ? 'Voice OFF' : 'Voice ON'}  </Text>
         </Box>
         <Box>
           <Text inverse> ^H </Text>

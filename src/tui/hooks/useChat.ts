@@ -68,11 +68,24 @@ export function useChat(
       // If streaming yielded no content, fall back to non-streaming
       if (!fullContent.trim()) {
         setStreamingContent('retrying...');
-        const fallbackResponse = await chatService.sendMessage(trimmed, history);
-        if (fallbackResponse.content) {
-          fullContent = fallbackResponse.content;
-          setStreamingContent(fullContent);
+        try {
+          const fallbackResponse = await chatService.sendMessage(trimmed, history);
+          if (fallbackResponse.content) {
+            fullContent = fallbackResponse.content;
+            setStreamingContent(fullContent);
+          }
+        } catch (fallbackErr) {
+          // Non-streaming fallback failed - throw to outer catch
+          throw fallbackErr;
         }
+      }
+
+      // Detect error-like responses from gateway
+      const looksLikeError = /^(Connection error|Error:|Failed to|Cannot connect|Timeout)/i.test(fullContent.trim());
+      if (looksLikeError) {
+        setMessages(prev => [...prev, createMessage('system', `Gateway error: ${fullContent}`)]);
+        setStreamingContent('');
+        return;
       }
 
       if (!isGatewaySentinel(fullContent)) {

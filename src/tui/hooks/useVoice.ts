@@ -168,9 +168,16 @@ export function useVoice(opts: UseVoiceOpts) {
       });
   }, [ttsEnabled]);
 
-  /** Toggle TTS (AI Voice) on/off. */
+  /** Toggle TTS (AI Voice) on/off. Stops playback immediately if turning off while playing. */
   const handleTtsToggle = useCallback(() => {
-    setTtsEnabled(prev => !prev);
+    setTtsEnabled(prev => {
+      // If turning off and currently playing, stop playback immediately
+      if (prev && voiceModeRef.current === 'playing') {
+        optsRef.current.voiceServiceRef.current?.stopPlayback();
+        setVoiceMode('idle');
+      }
+      return !prev;
+    });
   }, []);
 
   /** Start/stop live talk mode (real-time bidirectional voice chat). */
