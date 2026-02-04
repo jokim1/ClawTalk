@@ -54,6 +54,7 @@ export function useGateway(
     sttAvailable: false,
     ttsAvailable: false,
   });
+  const [isInitialized, setIsInitialized] = useState(false);
 
   // Keep callbacks current via ref to avoid effect re-triggers
   const cbRef = useRef(callbacks);
@@ -63,6 +64,7 @@ export function useGateway(
   const prevGatewayStatusRef = useRef(gatewayStatus);
   const prevTailscaleStatusRef = useRef(tailscaleStatus);
   const prevUsageRef = useRef({ todaySpend: 0, weeklySpend: 0, rateLimitsJson: '' });
+  const isFirstPollRef = useRef(true);
 
   useEffect(() => {
     let modelsDiscovered = false;
@@ -74,27 +76,54 @@ export function useGateway(
       const chatService = chatServiceRef.current;
       if (!chatService) return;
 
+      const isFirstPoll = isFirstPollRef.current;
+
+      // During first poll, collect updates to batch them
+      let pendingTsStatus: TailscaleStatus | 'checking' | null = null;
+      let pendingGatewayStatus: 'online' | 'offline' | null = null;
+
       try {
         const tsStatus = getTailscaleStatus();
-        if (tsStatus !== prevTailscaleStatusRef.current) {
+        if (isFirstPoll || tsStatus !== prevTailscaleStatusRef.current) {
           prevTailscaleStatusRef.current = tsStatus;
-          setTailscaleStatus(tsStatus);
+          if (isFirstPoll) {
+            pendingTsStatus = tsStatus;
+          } else {
+            setTailscaleStatus(tsStatus);
+          }
         }
       } catch {
-        if (prevTailscaleStatusRef.current !== 'not-installed') {
+        if (isFirstPoll || prevTailscaleStatusRef.current !== 'not-installed') {
           prevTailscaleStatusRef.current = 'not-installed';
-          setTailscaleStatus('not-installed');
+          if (isFirstPoll) {
+            pendingTsStatus = 'not-installed';
+          } else {
+            setTailscaleStatus('not-installed');
+          }
         }
       }
 
       try {
         const healthy = await chatService.checkHealth();
         const newGatewayStatus = healthy ? 'online' : 'offline';
-        if (newGatewayStatus !== prevGatewayStatusRef.current) {
+        if (isFirstPoll || newGatewayStatus !== prevGatewayStatusRef.current) {
           prevGatewayStatusRef.current = newGatewayStatus;
-          setGatewayStatus(newGatewayStatus);
+          if (isFirstPoll) {
+            pendingGatewayStatus = newGatewayStatus;
+          } else {
+            setGatewayStatus(newGatewayStatus);
+          }
         }
-        if (!healthy) return;
+        if (!healthy) {
+          // Apply batched updates for first poll even if unhealthy
+          if (isFirstPoll) {
+            isFirstPollRef.current = false;
+            if (pendingTsStatus !== null) setTailscaleStatus(pendingTsStatus);
+            if (pendingGatewayStatus !== null) setGatewayStatus(pendingGatewayStatus);
+            setIsInitialized(true);
+          }
+          return;
+        }
 
         if (!modelsDiscovered) {
           modelsDiscovered = true;
@@ -115,28 +144,28 @@ export function useGateway(
           }
         }
 
+        // Collect voice caps for batching during first poll
+        let pendingVoiceCaps: VoiceCaps | null = null;
+
         if (!voiceChecked) {
           const voiceService = voiceServiceRef.current;
           const soxOk = voiceService?.checkSoxInstalled() ?? false;
           if (!soxOk) {
-            setVoiceCaps(prev => ({ ...prev, readiness: 'no-sox' }));
+            pendingVoiceCaps = { readiness: 'no-sox', sttAvailable: false, ttsAvailable: false };
           } else {
-            // Test if mic is actually working (catches wrong default device, permissions issues)
-            const micError = voiceService?.checkMicAvailable();
-            if (micError) {
-              setVoiceCaps(prev => ({ ...prev, readiness: 'no-mic' }));
+            const caps = await voiceService?.fetchCapabilities();
+            if (!caps) {
+              pendingVoiceCaps = { readiness: 'no-gateway', sttAvailable: false, ttsAvailable: false };
+            } else if (!caps.stt.available) {
+              pendingVoiceCaps = { readiness: 'no-stt', sttAvailable: false, ttsAvailable: caps.tts.available };
+              voiceChecked = true;
             } else {
-              const caps = await voiceService?.fetchCapabilities();
-              if (!caps) {
-                setVoiceCaps(prev => ({ ...prev, readiness: 'no-gateway' }));
-              } else if (!caps.stt.available) {
-                setVoiceCaps({ readiness: 'no-stt', sttAvailable: false, ttsAvailable: caps.tts.available });
-                voiceChecked = true;
-              } else {
-                setVoiceCaps({ readiness: 'ready', sttAvailable: caps.stt.available, ttsAvailable: caps.tts.available });
-                voiceChecked = true;
-              }
+              pendingVoiceCaps = { readiness: 'ready', sttAvailable: caps.stt.available, ttsAvailable: caps.tts.available };
+              voiceChecked = true;
             }
+          }
+          if (!isFirstPoll && pendingVoiceCaps) {
+            setVoiceCaps(pendingVoiceCaps);
           }
         }
 
@@ -163,21 +192,35 @@ export function useGateway(
         const todayTotal = todayUsage?.totals?.totalCost ?? 0;
         const rateLimitsJson = rateLimits ? JSON.stringify(rateLimits) : '';
         const hasUsageChanged =
+          isFirstPoll ||
           todayTotal !== prevUsageRef.current.todaySpend ||
           weekTotal !== prevUsageRef.current.weeklySpend ||
           rateLimitsJson !== prevUsageRef.current.rateLimitsJson;
 
+        const dailyAvg = weekTotal ? weekTotal / 7 : undefined;
+        const pendingUsage = hasUsageChanged ? {
+          todaySpend: todayTotal,
+          weeklySpend: weekTotal,
+          averageDailySpend: dailyAvg ?? 0,
+          monthlyEstimate: dailyAvg !== undefined ? dailyAvg * 30 : 0,
+          ...(rateLimits ? { rateLimits } : {}),
+        } : null;
+
         if (hasUsageChanged) {
           prevUsageRef.current = { todaySpend: todayTotal, weeklySpend: weekTotal, rateLimitsJson };
-          const dailyAvg = weekTotal ? weekTotal / 7 : undefined;
-          setUsage(prev => ({
-            ...prev,
-            todaySpend: todayTotal || prev.todaySpend || 0,
-            weeklySpend: weekTotal || prev.weeklySpend || 0,
-            averageDailySpend: dailyAvg ?? prev.averageDailySpend ?? 0,
-            monthlyEstimate: dailyAvg !== undefined ? dailyAvg * 30 : prev.monthlyEstimate ?? 0,
-            ...(rateLimits ? { rateLimits } : {}),
-          }));
+        }
+
+        // Apply all batched updates at end of first poll (single re-render)
+        if (isFirstPoll) {
+          isFirstPollRef.current = false;
+          // Batch all state updates together
+          if (pendingTsStatus !== null) setTailscaleStatus(pendingTsStatus);
+          if (pendingGatewayStatus !== null) setGatewayStatus(pendingGatewayStatus);
+          if (pendingVoiceCaps) setVoiceCaps(pendingVoiceCaps);
+          if (pendingUsage) setUsage(prev => ({ ...prev, ...pendingUsage }));
+          setIsInitialized(true);
+        } else if (pendingUsage) {
+          setUsage(prev => ({ ...prev, ...pendingUsage }));
         }
       } catch (err) {
         console.debug('Gateway poll failed:', err);
@@ -197,5 +240,5 @@ export function useGateway(
     return () => { clearTimeout(initial); clearInterval(interval); };
   }, []);
 
-  return { gatewayStatus, tailscaleStatus, usage, setUsage, availableModels, voiceCaps };
+  return { gatewayStatus, tailscaleStatus, usage, setUsage, availableModels, voiceCaps, isInitialized };
 }
