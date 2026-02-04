@@ -413,7 +413,8 @@ function App({ options }: AppProps) {
   const availableInputWidth = Math.max(1, terminalWidth - inputPadding - promptWidth);
   const inputHeight = Math.max(1, Math.ceil((inputText.length + 1) / availableInputWidth));
 
-  const chatHeight = Math.max(3, terminalHeight - headerHeight - inputSeparatorHeight - inputHeight - shortcutBarHeight - errorHeight);
+  // Account for terminalHeight - 1 in the outer container (to prevent Ink overflow)
+  const chatHeight = Math.max(3, (terminalHeight - 1) - headerHeight - inputSeparatorHeight - inputHeight - shortcutBarHeight - errorHeight);
   const layoutKey = `${terminalWidth}x${terminalHeight}-${resizeKey}`;
 
   // --- Render ---
@@ -422,16 +423,17 @@ function App({ options }: AppProps) {
   // The multiple state updates during startup cause re-renders that shift the UI
   if (!gateway.isInitialized) {
     return (
-      <Box flexDirection="column" width={terminalWidth} height={terminalHeight}>
-        <Box height={3} paddingX={1}>
+      <Box flexDirection="column" width={terminalWidth} height={terminalHeight - 1}>
+        <Box height={2} paddingX={1}>
           <Text dimColor>Starting RemoteClaw...</Text>
         </Box>
       </Box>
     );
   }
 
+  // Use terminalHeight - 1 to prevent Ink's trailing newline from causing scroll
   return (
-    <Box flexDirection="column" width={terminalWidth} height={terminalHeight}>
+    <Box flexDirection="column" width={terminalWidth} height={terminalHeight - 1}>
       <Box height={2} flexShrink={0}>
         <StatusBar
           gatewayStatus={gateway.gatewayStatus}

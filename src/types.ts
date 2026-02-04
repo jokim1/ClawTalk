@@ -79,3 +79,12 @@ export interface VoiceState {
   autoPlay: boolean;
   error?: string;
 }
+
+export interface Talk {
+  id: string;              // Same as session ID
+  sessionId: string;       // Reference to underlying session
+  topicTitle?: string;     // User-set via /topic
+  isSaved: boolean;        // Explicitly saved via /save
+  createdAt: number;
+  updatedAt: number;
+}
