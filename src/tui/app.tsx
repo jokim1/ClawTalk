@@ -80,6 +80,7 @@ function App({ options }: AppProps) {
 
   const chatServiceRef = useRef<ChatService | null>(null);
   const sessionManagerRef = useRef<SessionManager | null>(null);
+  const talkManagerRef = useRef<TalkManager | null>(null);
   const voiceServiceRef = useRef<VoiceService | null>(null);
   const anthropicRLRef = useRef<AnthropicRateLimitService | null>(null);
 
@@ -95,8 +96,10 @@ function App({ options }: AppProps) {
   const [inputText, setInputText] = useState('');
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showTranscript, setShowTranscript] = useState(false);
+  const [showTalks, setShowTalks] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [sessionName, setSessionName] = useState('Session 1');
+  const [activeTalkId, setActiveTalkId] = useState<string | null>(null);
   const [chatScrollOffset, setChatScrollOffset] = useState(0);
 
   // --- TTS bridge ref (useChat → useVoice) ---
@@ -176,6 +179,7 @@ function App({ options }: AppProps) {
     }
 
     sessionManagerRef.current = getSessionManager();
+    talkManagerRef.current = getTalkManager();
 
     let session;
     if (options.sessionName) {
@@ -188,6 +192,10 @@ function App({ options }: AppProps) {
     } else {
       session = sessionManagerRef.current.createSession(undefined, options.model);
     }
+
+    // Create a talk for this session
+    const talk = talkManagerRef.current.createTalk(session.id);
+    setActiveTalkId(talk.id);
 
     // Batch state updates by deferring to next tick (allows React to batch)
     // This prevents multiple re-renders during initialization
@@ -284,6 +292,69 @@ function App({ options }: AppProps) {
     };
   });
 
+  // --- Talk handlers ---
+
+  const handleSaveTalk = useCallback(() => {
+    if (activeTalkId && talkManagerRef.current) {
+      const success = talkManagerRef.current.saveTalk(activeTalkId);
+      if (success) {
+        chat.setMessages(prev => [...prev, createMessage('system', 'Chat saved to Talks.')]);
+      } else {
+        setError('Failed to save talk');
+      }
+    }
+  }, [activeTalkId]);
+
+  const handleSetTopicTitle = useCallback((title: string) => {
+    if (activeTalkId && talkManagerRef.current) {
+      const success = talkManagerRef.current.setTopicTitle(activeTalkId, title);
+      if (success) {
+        chat.setMessages(prev => [...prev, createMessage('system', `Topic set to: ${title}`)]);
+      } else {
+        setError('Failed to set topic');
+      }
+    }
+  }, [activeTalkId]);
+
+  const handleNewChat = useCallback(() => {
+    // Update context MD for current talk before creating new chat
+    if (activeTalkId && talkManagerRef.current) {
+      talkManagerRef.current.updateContextMd(activeTalkId, chat.messages);
+    }
+
+    // Create new session
+    const session = sessionManagerRef.current?.createSession(undefined, currentModel);
+    if (session) {
+      // Create a new talk for this session
+      const talk = talkManagerRef.current?.createTalk(session.id);
+      if (talk) {
+        setActiveTalkId(talk.id);
+      }
+
+      chat.setMessages([]);
+      setSessionName(session.name);
+      chat.setMessages(prev => [...prev, createMessage('system', 'New chat started.')]);
+    }
+  }, [activeTalkId, chat.messages, currentModel]);
+
+  const handleSelectTalk = useCallback((talk: Talk) => {
+    // Update context MD for current talk before switching
+    if (activeTalkId && talkManagerRef.current) {
+      talkManagerRef.current.updateContextMd(activeTalkId, chat.messages);
+    }
+
+    // Switch to the selected talk's session
+    const session = sessionManagerRef.current?.setActiveSession(talk.sessionId);
+    if (session) {
+      chat.setMessages(session.messages);
+      setSessionName(session.name);
+      setActiveTalkId(talk.id);
+      talkManagerRef.current?.setActiveTalk(talk.id);
+      talkManagerRef.current?.touchTalk(talk.id);
+      setShowTalks(false);
+    }
+  }, [activeTalkId, chat.messages]);
+
   // --- Submit handler (command registry + chat) ---
 
   const commandCtx = useRef({
@@ -295,8 +366,17 @@ function App({ options }: AppProps) {
       setError(null);
     },
     setError,
+    saveTalk: handleSaveTalk,
+    setTopicTitle: handleSetTopicTitle,
   });
-  commandCtx.current = { switchModel, openModelPicker: () => setShowModelPicker(true), clearSession: () => { chat.setMessages([]); sessionManagerRef.current?.clearActiveSession(); setError(null); }, setError };
+  commandCtx.current = {
+    switchModel,
+    openModelPicker: () => setShowModelPicker(true),
+    clearSession: () => { chat.setMessages([]); sessionManagerRef.current?.clearActiveSession(); setError(null); },
+    setError,
+    saveTalk: handleSaveTalk,
+    setTopicTitle: handleSetTopicTitle,
+  };
 
   const handleSubmit = useCallback(async (text: string) => {
     const trimmed = text.trim();
@@ -314,7 +394,7 @@ function App({ options }: AppProps) {
   // --- Keyboard shortcuts ---
 
   useInput((input, key) => {
-    if (showModelPicker || showTranscript || showSettings) return;
+    if (showModelPicker || showTranscript || showTalks || showSettings) return;
 
     if (key.escape) {
       if (voice.handleEscape()) return;
@@ -327,13 +407,9 @@ function App({ options }: AppProps) {
       return;
     }
 
-    // ^T Talk Live (real-time voice chat)
+    // ^T Talks (open saved conversations list)
     if (input === 't' && key.ctrl) {
-      if (chat.isProcessing) {
-        setError('Cannot start live talk while processing');
-      } else {
-        voice.handleLiveTalk?.();
-      }
+      setShowTalks(true);
       cleanInputChar(setInputText, 't');
       return;
     }
@@ -383,10 +459,17 @@ function App({ options }: AppProps) {
       return;
     }
 
-    // ^N New terminal window
+    // ^N New Chat (update context MD of current talk first)
     if (input === 'n' && key.ctrl) {
-      spawnNewTerminalWindow(options);
+      handleNewChat();
       cleanInputChar(setInputText, 'n');
+      return;
+    }
+
+    // ^Y New Terminal (spawn new terminal window)
+    if (input === 'y' && key.ctrl) {
+      spawnNewTerminalWindow(options);
+      cleanInputChar(setInputText, 'y');
       return;
     }
 
@@ -476,6 +559,15 @@ function App({ options }: AppProps) {
             terminalWidth={terminalWidth}
             onClose={() => setShowTranscript(false)}
           />
+        ) : showTalks ? (
+          <TalksHub
+            talkManager={talkManagerRef.current!}
+            sessionManager={sessionManagerRef.current!}
+            maxHeight={chatHeight}
+            terminalWidth={terminalWidth}
+            onClose={() => setShowTalks(false)}
+            onSelectTalk={handleSelectTalk}
+          />
         ) : showSettings ? (
           <SettingsPicker
             onClose={() => setShowSettings(false)}
@@ -490,7 +582,7 @@ function App({ options }: AppProps) {
             terminalWidth={terminalWidth}
             scrollOffset={chatScrollOffset}
             onScroll={setChatScrollOffset}
-            isActive={!showModelPicker && !showTranscript && !showSettings}
+            isActive={!showModelPicker && !showTranscript && !showTalks && !showSettings}
           />
         )}
       </Box>
