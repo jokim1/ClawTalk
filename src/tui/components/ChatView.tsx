@@ -23,6 +23,32 @@ interface ChatViewProps {
   isActive?: boolean;
 }
 
+/** Streaming text component that shows only the tail end fitting within maxHeight */
+function StreamingText({ content, width, maxHeight }: { content: string; width: number; maxHeight: number }) {
+  // Split content into lines and only show what fits
+  const lines = content.split('\n');
+  const displayLines: string[] = [];
+  let lineCount = 0;
+
+  // Work backwards from the end to show most recent content
+  for (let i = lines.length - 1; i >= 0 && lineCount < maxHeight; i--) {
+    const line = lines[i];
+    const wrappedLines = Math.max(1, Math.ceil(line.length / Math.max(1, width)));
+    if (lineCount + wrappedLines <= maxHeight) {
+      displayLines.unshift(line);
+      lineCount += wrappedLines;
+    } else if (lineCount < maxHeight) {
+      // Partial line - truncate from beginning
+      const charsToShow = (maxHeight - lineCount) * width;
+      displayLines.unshift('...' + line.slice(-charsToShow));
+      break;
+    }
+  }
+
+  const displayContent = displayLines.join('\n');
+  return <Text wrap="wrap">{displayContent}<Text color="cyan">▌</Text></Text>;
+}
+
 export function ChatView({
   messages,
   isProcessing,
@@ -214,7 +240,7 @@ export function ChatView({
           </Box>
           <Box paddingLeft={2}>
             {streamingContent && streamingContent.length > 0 ? (
-              <Text wrap="wrap">{streamingContent}<Text color="cyan">▌</Text></Text>
+              <StreamingText content={streamingContent} width={terminalWidth - 6} maxHeight={maxHeight - 3} />
             ) : (
               <Text color="gray">thinking...</Text>
             )}
