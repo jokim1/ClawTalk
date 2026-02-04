@@ -44,8 +44,9 @@ export function writeMessageToScrollback(msg: Message): void {
     .map(line => `  ${line}`)
     .join('\n');
 
-  // Write to stdout - this goes to terminal scrollback
-  process.stdout.write(`${header}\n${content}\n`);
+  // Clear current line and move to start, then write message
+  // This ensures we don't overlap with Ink's rendering
+  process.stdout.write(`\r\x1b[K${header}\n${content}\n`);
 }
 
 /**
