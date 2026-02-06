@@ -113,11 +113,9 @@ export function resolveGatewayConfig(flags: CliFlags): RemoteClawConfig {
   const urlCheck = validateGatewayUrl(gatewayUrl);
   if (!urlCheck.ok) {
     process.stderr.write(`${urlCheck.error}\n`);
-  } else {
-    for (const w of urlCheck.warnings) {
-      process.stderr.write(`${w}\n`);
-    }
   }
+  // Warnings (e.g. HTTP plaintext) are not printed here — they would
+  // pollute the TUI scrollback. Callers can inspect urlCheck.warnings.
 
   return {
     gatewayUrl,

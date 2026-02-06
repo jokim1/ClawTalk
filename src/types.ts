@@ -117,12 +117,37 @@ export interface VoiceState {
   error?: string;
 }
 
+export interface Job {
+  id: string;
+  schedule: string;        // Cron expression or human-readable schedule
+  prompt: string;          // What the job should do
+  active: boolean;
+  createdAt: number;
+  lastRunAt?: number;
+  lastStatus?: string;
+}
+
+export interface JobReport {
+  id: string;
+  jobId: string;
+  talkId: string;
+  runAt: number;
+  status: 'success' | 'error';
+  summary: string;
+  fullOutput: string;
+  tokenUsage?: { input: number; output: number };
+}
+
 export interface Talk {
   id: string;              // Same as session ID
   sessionId: string;       // Reference to underlying session
   topicTitle?: string;     // User-set via /topic
   isSaved: boolean;        // Explicitly saved via /save
   model?: string;          // Last used AI model for this talk
+  objective?: string;          // System prompt prepended to every AI request
+  pinnedMessageIds?: string[];  // Pinned message IDs for stable context
+  jobs?: Job[];            // Background jobs for this talk
+  gatewayTalkId?: string;  // Corresponding gateway-side talk ID
   createdAt: number;
   updatedAt: number;
 }
