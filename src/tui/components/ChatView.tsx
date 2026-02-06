@@ -99,18 +99,31 @@ function computeVisibleMessages(
   // Walk backwards from bottomIndex, accumulating lines
   let linesUsed = 0;
   let startIndex = bottomIndex;
+  let firstMessageSkipLines = 0;
 
   for (let i = bottomIndex - 1; i >= 0; i--) {
     const msgLines = messageVisualLines(messages[i], width);
-    if (linesUsed + msgLines > availableHeight && linesUsed > 0) {
+    if (linesUsed + msgLines > availableHeight) {
+      if (linesUsed === 0) {
+        // Single message exceeds viewport — show bottom portion
+        firstMessageSkipLines = msgLines - availableHeight;
+        linesUsed = availableHeight;
+        startIndex = i;
+      } else {
+        // Fill remaining viewport with partial view of this message
+        const remaining = availableHeight - linesUsed;
+        if (remaining >= 2) {
+          firstMessageSkipLines = msgLines - remaining;
+          linesUsed = availableHeight;
+          startIndex = i;
+        }
+      }
       break;
     }
     linesUsed += msgLines;
     startIndex = i;
   }
 
-  // If a single message exceeds availableHeight, truncate from the top
-  const firstMessageSkipLines = linesUsed > availableHeight ? linesUsed - availableHeight : 0;
   const effectiveLinesUsed = Math.min(linesUsed, availableHeight);
 
   const visibleMessages = messages.slice(startIndex, bottomIndex);
