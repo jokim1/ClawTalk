@@ -177,10 +177,12 @@ export function ChatView({
   const maxStreamLines = Math.max(4, availableHeight - slice.linesUsed - indicatorLines - 2);
   const cappedStreaming = useMemo(() => {
     if (!streamingContent) return '';
-    const lines = streamingContent.split('\n');
+    const streamWidth = Math.max(10, contentWidth - 4); // paddingX + paddingLeft
+    const wrapped = wrapAnsi(streamingContent, streamWidth, { hard: true, wordWrap: true, trim: false });
+    const lines = wrapped.split('\n');
     if (lines.length <= maxStreamLines) return streamingContent;
     return lines.slice(-maxStreamLines).join('\n');
-  }, [streamingContent, maxStreamLines]);
+  }, [streamingContent, maxStreamLines, contentWidth]);
 
   // Only show welcome header when all messages fit on screen (not scrolled past it)
   const showWelcome = slice.hiddenAbove === 0;

@@ -220,7 +220,7 @@ function App({ options }: AppProps) {
   const queuedLines = messageQueue.length > 0 ? messageQueue.length : 0;
   const hintsLines = showCommandHints ? commandHints.length + 1 : 0; // +1 for separator line
   const inputLines = 2; // approximate: prompt + at least 1 line
-  const chatHeight = Math.max(4, terminalHeight - 2 - errorLines - clearPromptLines - 1 - inputLines - 3 - queuedLines - hintsLines);
+  const chatHeight = Math.max(4, terminalHeight - 2 - errorLines - clearPromptLines - 1 - inputLines - 3 - queuedLines - hintsLines - 1);
 
   const mouseScroll = useMouseScroll({
     maxOffset: Math.max(0, chat.messages.length - 1),
