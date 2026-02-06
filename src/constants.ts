@@ -1,5 +1,5 @@
 /**
- * Shared constants for RemoteClaw
+ * Shared constants for ClawTalk
  */
 
 // Default model ID used when no model is specified

@@ -68,7 +68,7 @@ export class VoiceService implements IVoiceService {
       const tmpDir = os.tmpdir();
       const entries = fs.readdirSync(tmpDir);
       for (const entry of entries) {
-        if (entry.startsWith('remoteclaw-voice-') || entry.startsWith('remoteclaw-tts-')) {
+        if (entry.startsWith('clawtalk-voice-') || entry.startsWith('clawtalk-tts-')) {
           try {
             fs.unlinkSync(path.join(tmpDir, entry));
           } catch (err) {
@@ -106,7 +106,7 @@ export class VoiceService implements IVoiceService {
       return 'SoX not installed';
     }
 
-    const testPath = path.join(os.tmpdir(), `remoteclaw-mic-test-${Date.now()}.wav`);
+    const testPath = path.join(os.tmpdir(), `clawtalk-mic-test-${Date.now()}.wav`);
     try {
       // Try a very brief recording (0.5 seconds) to test mic access
       execSync(`rec -q -r 16000 -c 1 -b 16 -t wav "${testPath}" trim 0 0.5`, {
@@ -239,7 +239,7 @@ export class VoiceService implements IVoiceService {
       return { ok: false, error: 'Voice requires sox. Install with: brew install sox' };
     }
 
-    const tempPath = path.join(os.tmpdir(), `remoteclaw-voice-${Date.now()}.wav`);
+    const tempPath = path.join(os.tmpdir(), `clawtalk-voice-${Date.now()}.wav`);
     this.tempFiles.push(tempPath);
     this.recordingError = null;
 
@@ -441,7 +441,7 @@ export class VoiceService implements IVoiceService {
     }
 
     const audioBuffer = await response.arrayBuffer();
-    const tempPath = path.join(os.tmpdir(), `remoteclaw-tts-${Date.now()}.mp3`);
+    const tempPath = path.join(os.tmpdir(), `clawtalk-tts-${Date.now()}.mp3`);
     fs.writeFileSync(tempPath, Buffer.from(audioBuffer));
     this.tempFiles.push(tempPath);
 

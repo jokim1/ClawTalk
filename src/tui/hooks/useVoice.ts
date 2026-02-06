@@ -24,8 +24,8 @@ export interface UseVoiceOpts {
 const READINESS_HINTS: Record<string, string> = {
   checking: 'Voice is still initializing, try again in a moment.',
   'no-sox': 'Voice requires SoX. Install with: brew install sox (macOS) or apt install sox (Linux)',
-  'no-mic': 'No working microphone detected. Set REMOTECLAW_MIC to your device name, or check System Preferences → Sound → Input.',
-  'no-gateway': 'Voice not available — gateway did not respond to /api/voice/capabilities. Is the RemoteClawGateway plugin installed?',
+  'no-mic': 'No working microphone detected. Set CLAWTALK_MIC to your device name, or check System Preferences → Sound → Input.',
+  'no-gateway': 'Voice not available — gateway did not respond to /api/voice/capabilities. Is the ClawTalkGateway plugin installed?',
   'no-stt': 'Voice not available — gateway has no speech-to-text provider configured. Set OPENAI_API_KEY on the gateway server.',
 };
 
@@ -34,7 +34,7 @@ const VOLUME_POLL_MS = 150;
 import * as fs from 'fs';
 import * as path from 'path';
 
-const TTS_PREF_PATH = path.join(process.env.HOME || '~', '.remoteclaw', 'tts_enabled');
+const TTS_PREF_PATH = path.join(process.env.HOME || '~', '.clawtalk', 'tts_enabled');
 
 // Load ttsEnabled preference from file (persists across sessions)
 function loadTtsEnabled(): boolean {

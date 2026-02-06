@@ -1,7 +1,7 @@
 /**
- * Configuration management for RemoteClaw
+ * Configuration management for ClawTalk
  *
- * Persists gateway URL, token, and preferences to ~/.remoteclaw/config.json
+ * Persists gateway URL, token, and preferences to ~/.clawtalk/config.json
  */
 
 import * as fs from 'fs';
@@ -20,7 +20,7 @@ export interface VoiceConfig {
   ttsSpeed?: number;
 }
 
-export interface RemoteClawConfig {
+export interface ClawTalkConfig {
   gatewayUrl: string;
   gatewayToken?: string;
   defaultModel?: string;
@@ -30,7 +30,17 @@ export interface RemoteClawConfig {
   anthropicApiKey?: string;
 }
 
-const CONFIG_DIR = path.join(process.env.HOME || '~', '.remoteclaw');
+const CONFIG_DIR = path.join(process.env.HOME || '~', '.clawtalk');
+
+// One-time migration: rename ~/.remoteclaw → ~/.clawtalk if needed
+const LEGACY_CONFIG_DIR = path.join(process.env.HOME || '~', '.remoteclaw');
+if (fs.existsSync(LEGACY_CONFIG_DIR) && !fs.existsSync(CONFIG_DIR)) {
+  try {
+    fs.renameSync(LEGACY_CONFIG_DIR, CONFIG_DIR);
+  } catch {
+    // If rename fails (e.g., cross-device), silently continue with new directory
+  }
+}
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 
 /** Validate that a gateway URL is a well-formed HTTP(S) URL. */
@@ -55,16 +65,16 @@ export function validateGatewayUrl(urlString: string): { ok: true; warnings: str
   return { ok: true, warnings };
 }
 
-const DEFAULT_CONFIG: RemoteClawConfig = {
+const DEFAULT_CONFIG: ClawTalkConfig = {
   gatewayUrl: 'http://127.0.0.1:18789',
-  agentId: 'remoteclaw',
+  agentId: 'clawtalk',
 };
 
 export function getConfigPath(): string {
   return CONFIG_PATH;
 }
 
-export function loadConfig(): RemoteClawConfig {
+export function loadConfig(): ClawTalkConfig {
   try {
     if (fs.existsSync(CONFIG_PATH)) {
       const raw = fs.readFileSync(CONFIG_PATH, 'utf-8');
@@ -76,7 +86,7 @@ export function loadConfig(): RemoteClawConfig {
   return { ...DEFAULT_CONFIG };
 }
 
-export function saveConfig(config: RemoteClawConfig): void {
+export function saveConfig(config: ClawTalkConfig): void {
   if (!fs.existsSync(CONFIG_DIR)) {
     fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
   }
@@ -101,12 +111,12 @@ export interface CliFlags {
 /**
  * Resolve gateway config from CLI flags > env vars > config file > defaults
  */
-export function resolveGatewayConfig(flags: CliFlags): RemoteClawConfig {
+export function resolveGatewayConfig(flags: CliFlags): ClawTalkConfig {
   const fileConfig = loadConfig();
 
   const gatewayUrl =
     flags.gateway
-    || process.env.REMOTECLAW_GATEWAY_URL
+    || process.env.CLAWTALK_GATEWAY_URL
     || fileConfig.gatewayUrl
     || DEFAULT_CONFIG.gatewayUrl;
 
@@ -121,7 +131,7 @@ export function resolveGatewayConfig(flags: CliFlags): RemoteClawConfig {
     gatewayUrl,
     gatewayToken:
       flags.token
-      || process.env.REMOTECLAW_GATEWAY_TOKEN
+      || process.env.CLAWTALK_GATEWAY_TOKEN
       || fileConfig.gatewayToken,
     defaultModel:
       flags.model
@@ -141,7 +151,7 @@ const DEFAULT_BILLING: BillingOverride = { mode: 'api' };
  * Get billing override for a provider, defaulting to API mode
  */
 export function getBillingForProvider(
-  config: RemoteClawConfig,
+  config: ClawTalkConfig,
   provider: string,
 ): BillingOverride {
   return config.billing?.[provider] ?? DEFAULT_BILLING;

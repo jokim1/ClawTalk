@@ -190,7 +190,7 @@ export function ChatView({
       {/* Welcome header (persistent at top when not scrolled) */}
       {showWelcome && (
         <Box flexDirection="column">
-          <Text dimColor>Welcome to RemoteClaw by Opus4.5 and Joseph Kim (@jokim1)</Text>
+          <Text dimColor>Welcome to ClawTalk by Opus4.5 and Joseph Kim (@jokim1)</Text>
           <Text dimColor>Type a message to start chatting.</Text>
           <Text> </Text>
         </Box>

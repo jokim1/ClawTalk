@@ -18,7 +18,7 @@ function isValidSessionId(id: string): boolean {
   return /^[\w-]+$/.test(id) && !id.includes('..');
 }
 
-export const SESSIONS_DIR = path.join(process.env.HOME || '~', '.remoteclaw', 'sessions');
+export const SESSIONS_DIR = path.join(process.env.HOME || '~', '.clawtalk', 'sessions');
 
 export class SessionManager implements ISessionManager {
   private sessions: Map<string, Session> = new Map();

@@ -1,8 +1,8 @@
 /**
- * Type definitions for RemoteClaw
+ * Type definitions for ClawTalk
  */
 
-export interface RemoteClawOptions {
+export interface ClawTalkOptions {
   gatewayUrl: string;
   gatewayToken?: string;
   model?: string;

@@ -1,5 +1,5 @@
 /**
- * RemoteClaw TUI App
+ * ClawTalk TUI App
  *
  * Main terminal user interface built with Ink (React for CLI).
  * Full-screen layout with pinned status bar (top), pinned input/shortcuts (bottom),
@@ -8,7 +8,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { render, Box, Text, useInput, useApp, useStdout } from 'ink';
-import type { RemoteClawOptions, ModelStatus, Message } from '../types.js';
+import type { ClawTalkOptions, ModelStatus, Message } from '../types.js';
 import type { Talk } from '../types.js';
 import { StatusBar, ShortcutBar } from './components/StatusBar';
 import { InputArea } from './components/InputArea.js';
@@ -45,7 +45,7 @@ import { useRealtimeVoice } from './hooks/useRealtimeVoice.js';
 import { useMouseScroll } from './hooks/useMouseScroll.js';
 
 interface AppProps {
-  options: RemoteClawOptions;
+  options: ClawTalkOptions;
 }
 
 function App({ options }: AppProps) {
@@ -251,7 +251,7 @@ function App({ options }: AppProps) {
     chatServiceRef.current = new ChatService({
       gatewayUrl: options.gatewayUrl,
       gatewayToken: options.gatewayToken,
-      agentId: 'remoteclaw',
+      agentId: 'clawtalk',
       model: currentModel,
     });
 
@@ -1117,7 +1117,7 @@ function App({ options }: AppProps) {
     return (
       <Box flexDirection="column" width={terminalWidth} height={terminalHeight}>
         <Box paddingX={1}>
-          <Text dimColor>Starting RemoteClaw...</Text>
+          <Text dimColor>Starting ClawTalk...</Text>
         </Box>
       </Box>
     );
@@ -1302,7 +1302,7 @@ function App({ options }: AppProps) {
   );
 }
 
-export async function launchRemoteClaw(options: RemoteClawOptions): Promise<void> {
+export async function launchClawTalk(options: ClawTalkOptions): Promise<void> {
   // Suppress all stdout/stderr output during TUI operation.
   const origDebug = console.debug;
   const origLog = console.log;

@@ -1,4 +1,4 @@
-# RemoteClaw
+# ClawTalk
 
 Terminal TUI client for remote LLM chatting. Connects to a Moltbot gateway (via Tailscale VPN) and provides a React/Ink-based chat interface with multi-model support, voice I/O, session management, and real-time token/cost tracking.
 
@@ -62,9 +62,9 @@ src/
 
 ## Architecture
 
-Client-server design. RemoteClaw runs locally and connects to a RemoteClawGateway plugin on a remote Moltbot server. API keys stay on the server. Auth is via bearer token or localhost fallback.
+Client-server design. ClawTalk runs locally and connects to a ClawTalkGateway plugin on a remote Moltbot server. API keys stay on the server. Auth is via bearer token or localhost fallback.
 
-Gateway project: `~/Projects/Personal/Terminator/RemoteClawGateway` (run `git pull` for latest).
+Gateway project: `~/Projects/Personal/Terminator/ClawTalkGateway` (run `git pull` for latest).
 
 ## Caution: TUI Rendering
 
@@ -90,6 +90,6 @@ No linter or formatter configured. Match existing code style:
 
 ## Related Projects
 
-- **RemoteClawGateway** — Moltbot plugin providing HTTP endpoints this client connects to
-- **ClawTalk** — iOS client that connects to the same gateway
+- **ClawTalkGateway** — Moltbot plugin providing HTTP endpoints this client connects to
+- **ClawTalkMobile** — iOS client that connects to the same gateway
 - **Moltbot** — The host server the gateway plugin extends

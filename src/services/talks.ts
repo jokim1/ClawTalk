@@ -17,7 +17,7 @@ function isValidTalkId(id: string): boolean {
   return /^[\w-]+$/.test(id) && !id.includes('..');
 }
 
-export const TALKS_DIR = path.join(process.env.HOME || '~', '.remoteclaw', 'talks');
+export const TALKS_DIR = path.join(process.env.HOME || '~', '.clawtalk', 'talks');
 
 export class TalkManager {
   private talks: Map<string, Talk> = new Map();

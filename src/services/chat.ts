@@ -102,7 +102,7 @@ export class ChatService implements IChatService {
 
   constructor(config: ChatServiceConfig) {
     this.config = config;
-    this.sessionKey = `remoteclaw-${randomUUID()}`;
+    this.sessionKey = `clawtalk-${randomUUID()}`;
   }
 
   /** Build standard auth headers for gateway requests. */

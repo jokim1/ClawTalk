@@ -1,11 +1,11 @@
 {
-  "name": "@jokim1/remoteclaw",
+  "name": "@jokim1/clawtalk",
   "version": "0.1.0",
-  "description": "Remote LLM chat TUI for Moltbot gateway",
+  "description": "Terminal TUI client for AI chat via Moltbot gateway",
   "main": "dist/cli.js",
   "types": "dist/cli.d.ts",
   "bin": {
-    "remoteclaw": "./dist/cli.js"
+    "clawtalk": "./dist/cli.js"
   },
   "scripts": {
     "build": "tsc",

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 /**
- * RemoteClaw CLI
+ * ClawTalk CLI
  *
- * Entry point for the remoteclaw command
+ * Entry point for the clawtalk command
  */
 
 import { Command } from 'commander';
@@ -11,12 +11,12 @@ import { loadConfig, saveConfig, resolveGatewayConfig, getConfigPath } from './c
 import type { BillingOverride } from './config.js';
 import { ChatService } from './services/chat.js';
 import { getStatus as getTailscaleStatus } from './services/tailscale.js';
-import { launchRemoteClaw } from './tui/app.js';
+import { launchClawTalk } from './tui/app.js';
 
 const program = new Command();
 
 program
-  .name('remoteclaw')
+  .name('clawtalk')
   .description('Remote LLM chat TUI for Moltbot gateway')
   .version('0.1.0')
   .option('-g, --gateway <url>', 'Gateway URL (e.g. http://100.x.x.x:18789)')
@@ -44,7 +44,7 @@ program
     const chatService = new ChatService({
       gatewayUrl: resolved.gatewayUrl,
       gatewayToken: resolved.gatewayToken,
-      agentId: resolved.agentId || 'remoteclaw',
+      agentId: resolved.agentId || 'clawtalk',
       model: resolved.defaultModel,
     });
 
@@ -69,17 +69,17 @@ program
           console.error(`  - Is the Moltbot gateway running on the remote machine?`);
           console.error(`  - Can you reach it? curl ${resolved.gatewayUrl}/health`);
           if (!resolved.gatewayToken) {
-            console.error('  - Do you need an auth token? remoteclaw config --token <token>');
+            console.error('  - Do you need an auth token? clawtalk config --token <token>');
           }
           break;
       }
       console.error(`\nConfig file: ${getConfigPath()}`);
-      console.error('Set gateway:  remoteclaw config --gateway <url>');
-      console.error('Set token:    remoteclaw config --token <token>\n');
+      console.error('Set gateway:  clawtalk config --gateway <url>');
+      console.error('Set token:    clawtalk config --token <token>\n');
       process.exit(1);
     }
 
-    await launchRemoteClaw({
+    await launchClawTalk({
       gatewayUrl: resolved.gatewayUrl,
       gatewayToken: resolved.gatewayToken,
       model: opts.model || resolved.defaultModel,
@@ -91,7 +91,7 @@ program
 // Config subcommand
 const configCmd = program
   .command('config')
-  .description('View or update RemoteClaw configuration')
+  .description('View or update ClawTalk configuration')
   .option('-g, --gateway <url>', 'Set gateway URL')
   .option('-t, --token <token>', 'Set gateway auth token')
   .option('-m, --model <model>', 'Set default model')
@@ -176,7 +176,7 @@ const configCmd = program
       console.log(`  Gateway URL:   ${config.gatewayUrl}`);
       console.log(`  Gateway Token: ${config.gatewayToken ? '********' : '(not set)'}`);
       console.log(`  Default Model: ${config.defaultModel || '(not set)'}`);
-      console.log(`  Agent ID:      ${config.agentId || 'remoteclaw'}`);
+      console.log(`  Agent ID:      ${config.agentId || 'clawtalk'}`);
       console.log(`  Anthropic Key: ${config.anthropicApiKey ? '********' : '(not set)'}`);
       if (config.billing && Object.keys(config.billing).length > 0) {
         console.log(`  Billing:`);

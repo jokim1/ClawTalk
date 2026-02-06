@@ -1,7 +1,7 @@
 /**
  * Terminal window spawning utility
  *
- * Spawns a new terminal window running a fresh RemoteClaw instance,
+ * Spawns a new terminal window running a fresh ClawTalk instance,
  * inheriting gateway config but starting with a fresh session context.
  */
 
@@ -9,15 +9,15 @@ import { spawn } from 'child_process';
 import { writeFileSync, chmodSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import type { RemoteClawOptions } from '../types.js';
+import type { ClawTalkOptions } from '../types.js';
 
 /**
- * Build the CLI command string to launch a new RemoteClaw instance.
+ * Build the CLI command string to launch a new ClawTalk instance.
  * Inherits gateway config and model but omits --session (fresh context).
- * Token is passed via env var (REMOTECLAW_GATEWAY_TOKEN) to avoid leaking
+ * Token is passed via env var (CLAWTALK_GATEWAY_TOKEN) to avoid leaking
  * it in process lists and shell history.
  */
-function buildCommand(options: RemoteClawOptions): { command: string; env: Record<string, string> } {
+function buildCommand(options: ClawTalkOptions): { command: string; env: Record<string, string> } {
   const argv = process.argv;
   let executable: string;
 
@@ -34,7 +34,7 @@ function buildCommand(options: RemoteClawOptions): { command: string; env: Recor
     args.push(`-g ${shellEscape(options.gatewayUrl)}`);
   }
   if (options.gatewayToken) {
-    env.REMOTECLAW_GATEWAY_TOKEN = options.gatewayToken;
+    env.CLAWTALK_GATEWAY_TOKEN = options.gatewayToken;
   }
   if (options.model) {
     args.push(`-m ${shellEscape(options.model)}`);
@@ -61,12 +61,12 @@ function buildEnvPrefix(env: Record<string, string>): string {
 }
 
 /**
- * Spawn a new terminal window running a fresh RemoteClaw instance.
+ * Spawn a new terminal window running a fresh ClawTalk instance.
  *
  * Detects the current terminal emulator and uses the appropriate method
  * to open a new window.
  */
-export function spawnNewTerminalWindow(options: RemoteClawOptions): void {
+export function spawnNewTerminalWindow(options: ClawTalkOptions): void {
   const { command, env } = buildCommand(options);
   const fullCommand = `${buildEnvPrefix(env)}${command}`;
   const termProgram = process.env.TERM_PROGRAM ?? '';
@@ -82,7 +82,7 @@ export function spawnNewTerminalWindow(options: RemoteClawOptions): void {
       `tell application "iTerm2" to create window with default profile command "${escapeAppleScript(fullCommand)}"`,
     ], { detached: true, stdio: 'ignore' }).unref();
   } else {
-    const scriptPath = join(tmpdir(), `remoteclaw-launch-${Date.now()}.sh`);
+    const scriptPath = join(tmpdir(), `clawtalk-launch-${Date.now()}.sh`);
     writeFileSync(scriptPath, `#!/bin/bash\n${fullCommand}\nrm -f ${shellEscape(scriptPath)}\n`);
     chmodSync(scriptPath, 0o755);
     spawn('open', ['-a', 'Terminal.app', scriptPath], {

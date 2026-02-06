@@ -8,4 +8,4 @@ dist/
 Thumbs.db
 *.log
 npm-debug.log*
-.remoteclaw/
+.clawtalk/
