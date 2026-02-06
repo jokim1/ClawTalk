@@ -32,15 +32,7 @@ export interface ClawTalkConfig {
 
 const CONFIG_DIR = path.join(process.env.HOME || '~', '.clawtalk');
 
-// One-time migration: rename ~/.remoteclaw → ~/.clawtalk if needed
-const LEGACY_CONFIG_DIR = path.join(process.env.HOME || '~', '.remoteclaw');
-if (fs.existsSync(LEGACY_CONFIG_DIR) && !fs.existsSync(CONFIG_DIR)) {
-  try {
-    fs.renameSync(LEGACY_CONFIG_DIR, CONFIG_DIR);
-  } catch {
-    // If rename fails (e.g., cross-device), silently continue with new directory
-  }
-}
+
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 
 /** Validate that a gateway URL is a well-formed HTTP(S) URL. */

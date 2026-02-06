@@ -334,7 +334,17 @@ export class TalkManager {
     createdAt: number;
     updatedAt: number;
   }): Talk {
-    const existing = this.talks.get(gwTalk.id);
+    // Check by gateway talk ID first, then check if any local talk maps to it
+    let existing = this.talks.get(gwTalk.id);
+    if (!existing) {
+      for (const t of this.talks.values()) {
+        if (t.gatewayTalkId === gwTalk.id) {
+          existing = t;
+          break;
+        }
+      }
+    }
+
     if (existing) {
       // Update local metadata from gateway (gateway is source of truth)
       existing.topicTitle = gwTalk.topicTitle ?? existing.topicTitle;
