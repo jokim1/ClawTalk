@@ -183,11 +183,17 @@ export function useChat(
   // Stable ref for voice hook to call sendMessage without stale closures
   const sendMessageRef = useRef(sendMessage);
 
+  /** Clear streaming state — call when switching talks to avoid cross-talk bleed */
+  const clearStreaming = useCallback(() => {
+    setStreamingContent('');
+  }, []);
+
   return {
     messages,
     setMessages,
     isProcessing,
     streamingContent,
+    clearStreaming,
     sendMessage,
     sendMessageRef,
     sessionCost,

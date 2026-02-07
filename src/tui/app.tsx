@@ -825,6 +825,7 @@ function App({ options }: AppProps) {
       // Gateway talk is created lazily on first message send
       gatewayTalkIdRef.current = null;
 
+      chat.clearStreaming();
       chat.setMessages([]);
       setSessionName(session.name);
       const sysMsg = createMessage('system', 'New chat started.');
@@ -838,6 +839,7 @@ function App({ options }: AppProps) {
     const session = sessionManagerRef.current?.setActiveSession(talk.sessionId);
 
     // Show local messages immediately (or empty for gateway-only talks)
+    chat.clearStreaming();
     chat.setMessages(session?.messages ?? []);
     setSessionName(session?.name ?? talk.topicTitle ?? 'Talk');
     setActiveTalkId(talk.id);
