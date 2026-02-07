@@ -18,6 +18,8 @@ interface InputAreaProps {
   volumeLevel?: number;
   width?: number;
   isActive?: boolean;
+  /** Maximum visible lines for the text input */
+  maxVisibleLines?: number;
   // Realtime voice props
   realtimeState?: RealtimeVoiceState;
   userTranscript?: string;
@@ -48,6 +50,7 @@ export function InputArea({
   volumeLevel,
   width = 80,
   isActive = true,
+  maxVisibleLines,
   realtimeState,
   userTranscript,
   aiTranscript,
@@ -138,6 +141,7 @@ export function InputArea({
         onSubmit={onSubmit}
         width={inputWidth}
         isActive={isActive}
+        maxVisibleLines={maxVisibleLines}
       />
     </Box>
   );

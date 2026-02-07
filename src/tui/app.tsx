@@ -6,7 +6,7 @@
  * and scrollable message history in the middle.
  */
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { render, Box, Text, useInput, useApp, useStdout } from 'ink';
 import type { ClawTalkOptions, ModelStatus, Message } from '../types.js';
 import type { Talk } from '../types.js';
@@ -43,6 +43,7 @@ import { useChat } from './hooks/useChat.js';
 import { useVoice } from './hooks/useVoice.js';
 import { useRealtimeVoice } from './hooks/useRealtimeVoice.js';
 import { useMouseScroll } from './hooks/useMouseScroll.js';
+import { countVisualLines, messageVisualLines } from './lineCount.js';
 
 interface AppProps {
   options: ClawTalkOptions;
@@ -213,17 +214,40 @@ function App({ options }: AppProps) {
     setHintSelectedIndex(0);
   }, [commandHints.length, inputText]);
 
+  // --- Dynamic input height ---
+  // Calculate how many visual lines the input text occupies
+  const inputContentWidth = Math.max(10, terminalWidth - 4); // matches InputArea's inputWidth
+  const inputVisualLines = inputText.length === 0
+    ? 1
+    : countVisualLines(inputText, inputContentWidth);
+  const maxInputLines = Math.min(10, Math.floor(terminalHeight / 4));
+  const inputLines = Math.min(maxInputLines, inputVisualLines);
+
   // Calculate available height for the chat area:
-  // Total - StatusBar(2) - error(0-1) - separator(1) - input(~2) - shortcuts(2) - queued messages - hints
+  // Total - StatusBar(2) - error(0-1) - clearPrompt(0-1) - separator(1) - input - shortcuts(3) - queued - hints - margin(1)
   const errorLines = error ? 1 : 0;
   const clearPromptLines = pendingClear ? 1 : 0;
   const queuedLines = messageQueue.length > 0 ? messageQueue.length : 0;
   const hintsLines = showCommandHints ? commandHints.length + 1 : 0; // +1 for separator line
-  const inputLines = 2; // approximate: prompt + at least 1 line
   const chatHeight = Math.max(4, terminalHeight - 2 - errorLines - clearPromptLines - 1 - inputLines - 3 - queuedLines - hintsLines - 1);
 
+  // --- Line-based scroll ---
+  // Pre-compute visual line counts for all messages (recomputes on messages or width change)
+  const contentWidth = Math.max(10, terminalWidth - 2); // account for paddingX={1} in ChatView
+  const messageLinesArray = useMemo(
+    () => chat.messages.map(msg => messageVisualLines(msg, contentWidth)),
+    [chat.messages, contentWidth],
+  );
+  const totalMessageLines = useMemo(
+    () => messageLinesArray.reduce((s, c) => s + c, 0),
+    [messageLinesArray],
+  );
+
+  // maxOffset = total visual lines - viewport height (can't scroll past first message)
+  const scrollMaxOffset = Math.max(0, totalMessageLines - chatHeight);
+
   const mouseScroll = useMouseScroll({
-    maxOffset: Math.max(0, chat.messages.length - 1),
+    maxOffset: scrollMaxOffset,
     enabled: !isOverlayActive,
   });
 
@@ -237,13 +261,6 @@ function App({ options }: AppProps) {
     }
     prevMessageCountRef.current = chat.messages.length;
   }, [chat.messages.length]);
-
-  // Auto-scroll to bottom when streaming starts
-  useEffect(() => {
-    if (chat.isProcessing && mouseScroll.scrollOffset === 0) {
-      // Already at bottom — good
-    }
-  }, [chat.isProcessing]);
 
   // --- Service initialization ---
 
@@ -1243,6 +1260,7 @@ function App({ options }: AppProps) {
       ) : (
         <ChatView
           messages={chat.messages}
+          messageLinesArray={messageLinesArray}
           streamingContent={chat.streamingContent}
           isProcessing={chat.isProcessing}
           processingStartTime={processingStartTime}
@@ -1290,6 +1308,7 @@ function App({ options }: AppProps) {
           volumeLevel={realtimeVoice.isActive ? realtimeVoice.volumeLevel : voice.volumeLevel}
           width={terminalWidth - 2}
           isActive={!isOverlayActive}
+          maxVisibleLines={maxInputLines}
           realtimeState={realtimeVoice.state}
           userTranscript={realtimeVoice.userTranscript}
           aiTranscript={realtimeVoice.aiTranscript}

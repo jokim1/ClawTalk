@@ -1,26 +1,26 @@
 /**
  * ChatView Component
  *
- * Scrollable message area with accurate line counting.
- * Renders visible messages based on scroll offset and available height.
- * Uses wrap-ansi for accurate word-wrap-aware line counting.
+ * Scrollable message area with line-based scrolling.
+ * scrollOffset is measured in visual LINES (not messages).
+ * All text is pre-wrapped to guarantee line count === rendered lines.
  */
 
-import React, { useMemo, memo } from 'react';
+import React, { useMemo } from 'react';
 import { Box, Text } from 'ink';
 import type { Message } from '../../types.js';
 import { getModelAlias } from '../../models.js';
 import { formatElapsed } from '../utils.js';
-
-// wrap-ansi v6 is a CJS dependency of Ink, available in node_modules
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const wrapAnsi = require('wrap-ansi') as (input: string, columns: number, options?: { hard?: boolean; wordWrap?: boolean; trim?: boolean }) => string;
+import { preWrapText, countVisualLines, getSpeakerName } from '../lineCount.js';
 
 interface ChatViewProps {
   messages: Message[];
+  /** Pre-computed visual line count for each message (same length as messages) */
+  messageLinesArray: number[];
   streamingContent: string;
   isProcessing: boolean;
   processingStartTime: number | null;
+  /** Scroll offset in visual lines (0 = bottom) */
   scrollOffset: number;
   availableHeight: number;
   width: number;
@@ -28,120 +28,127 @@ interface ChatViewProps {
   pinnedMessageIds?: string[];
 }
 
-/**
- * Count how many visual terminal lines a string occupies when wrapped to `width`.
- * Uses wrap-ansi for accurate ANSI-aware word wrapping (same as Ink uses internally).
- */
-function countVisualLines(text: string, width: number): number {
-  if (!text || width <= 0) return 0;
-  const wrapped = wrapAnsi(text, width, { hard: true, wordWrap: true, trim: false });
-  const lines = wrapped.split('\n');
-  return lines.length;
-}
-
-/** How many visual lines a message occupies (speaker line + indented content) */
-function messageVisualLines(msg: Message, width: number): number {
-  const speakerName = msg.role === 'user'
-    ? 'You'
-    : msg.role === 'system'
-      ? 'System'
-      : getModelAlias(msg.model ?? '');
-
-  // Speaker line: "Name:" — always 1 line
-  const speakerLines = countVisualLines(`${speakerName}:`, width);
-
-  // Content indented by 2 chars
-  const contentWidth = Math.max(10, width - 2);
-  const content = msg.content || ' ';
-  const contentLines = countVisualLines(content, contentWidth);
-
-  return speakerLines + contentLines;
-}
-
 interface VisibleSlice {
-  /** Index of the first visible message in the array */
   startIndex: number;
-  /** The messages to render */
+  endIndex: number;
   messages: Message[];
-  /** Number of messages above the visible area */
+  /** Number of messages fully hidden above the visible area */
   hiddenAbove: number;
-  /** Number of messages below the visible area (when scrolled up) */
-  hiddenBelow: number;
-  /** Lines consumed by visible messages */
-  linesUsed: number;
-  /** Lines to skip from the top of the first visible message (when it overflows) */
+  /** Whether there's content hidden below the visible area */
+  hasContentBelow: boolean;
+  /** Lines to skip from the top of the first visible message */
   firstMessageSkipLines: number;
+  /** Lines to show from the last visible message (0 = show all) */
+  lastMessageShowLines: number;
+  /** Total visual lines that will be rendered */
+  linesUsed: number;
 }
 
 /**
- * Compute which messages are visible given the scroll position and available height.
+ * Compute which messages are visible given a LINE-BASED scroll offset.
  *
- * scrollOffset is measured in messages (not lines) — 0 means "show the bottom".
- * We walk from the bottom up, fitting messages into the available height.
+ * scrollOffset = number of visual lines scrolled up from the bottom.
+ * We compute the visible "window" of lines and map it back to messages.
  */
 function computeVisibleMessages(
   messages: Message[],
+  lineCounts: number[],
   scrollOffset: number,
   availableHeight: number,
-  width: number,
 ): VisibleSlice {
-  if (messages.length === 0 || availableHeight <= 0) {
-    return { startIndex: 0, messages: [], hiddenAbove: 0, hiddenBelow: 0, linesUsed: 0, firstMessageSkipLines: 0 };
-  }
+  const empty: VisibleSlice = {
+    startIndex: 0, endIndex: 0, messages: [],
+    hiddenAbove: 0, hasContentBelow: false,
+    firstMessageSkipLines: 0, lastMessageShowLines: 0, linesUsed: 0,
+  };
 
-  // Bottom boundary: skip the last `scrollOffset` messages
-  const bottomIndex = messages.length - scrollOffset;
-  if (bottomIndex <= 0) {
-    // Scrolled past all messages
-    return { startIndex: 0, messages: [], hiddenAbove: 0, hiddenBelow: messages.length, linesUsed: 0, firstMessageSkipLines: 0 };
-  }
+  if (messages.length === 0 || availableHeight <= 0) return empty;
 
-  // Walk backwards from bottomIndex, accumulating lines
-  let linesUsed = 0;
-  let startIndex = bottomIndex;
+  const totalLines = lineCounts.reduce((s, c) => s + c, 0);
+  if (totalLines === 0) return empty;
+
+  // The visible window in terms of absolute line positions:
+  // bottomLine = last visible line (exclusive), topLine = first visible line (inclusive)
+  const bottomLine = Math.max(0, totalLines - scrollOffset);
+  const topLine = Math.max(0, bottomLine - availableHeight);
+
+  if (bottomLine <= 0) return empty;
+
+  // Walk through messages to find which ones overlap [topLine, bottomLine)
+  let cumulative = 0;
+  let startMsgIdx = -1;
+  let endMsgIdx = -1;
   let firstMessageSkipLines = 0;
+  let lastMessageShowLines = 0;
 
-  for (let i = bottomIndex - 1; i >= 0; i--) {
-    const msgLines = messageVisualLines(messages[i], width);
-    if (linesUsed + msgLines > availableHeight) {
-      if (linesUsed === 0) {
-        // Single message exceeds viewport — show bottom portion
-        firstMessageSkipLines = msgLines - availableHeight;
-        linesUsed = availableHeight;
-        startIndex = i;
-      } else {
-        // Fill remaining viewport with partial view of this message
-        const remaining = availableHeight - linesUsed;
-        if (remaining >= 2) {
-          firstMessageSkipLines = msgLines - remaining;
-          linesUsed = availableHeight;
-          startIndex = i;
-        }
+  for (let i = 0; i < messages.length; i++) {
+    const msgStart = cumulative;
+    const msgEnd = cumulative + lineCounts[i];
+
+    // Does this message overlap the visible window?
+    if (msgEnd > topLine && msgStart < bottomLine) {
+      if (startMsgIdx === -1) {
+        startMsgIdx = i;
+        firstMessageSkipLines = Math.max(0, topLine - msgStart);
       }
-      break;
+      endMsgIdx = i + 1;
+
+      // If this message extends past bottomLine, we can only show part of it
+      if (msgEnd > bottomLine) {
+        lastMessageShowLines = bottomLine - msgStart;
+      } else {
+        lastMessageShowLines = 0; // show all lines of this message
+      }
     }
-    linesUsed += msgLines;
-    startIndex = i;
+
+    cumulative += lineCounts[i];
+    if (msgStart >= bottomLine) break;
   }
 
-  const effectiveLinesUsed = Math.min(linesUsed, availableHeight);
+  if (startMsgIdx === -1) return empty;
 
-  const visibleMessages = messages.slice(startIndex, bottomIndex);
-  const hiddenAbove = startIndex + (firstMessageSkipLines > 0 ? 1 : 0); // partially visible counts as hidden
-  const hiddenBelow = scrollOffset;
+  // Count fully hidden messages above (not counting partially visible first message)
+  const hiddenAbove = startMsgIdx;
+  const hasContentBelow = scrollOffset > 0;
+
+  // Calculate actual lines used
+  let linesUsed = 0;
+  for (let i = startMsgIdx; i < endMsgIdx; i++) {
+    let msgLines = lineCounts[i];
+
+    // Subtract skipped lines from first message
+    if (i === startMsgIdx && firstMessageSkipLines > 0) {
+      msgLines -= firstMessageSkipLines;
+    }
+
+    // Subtract hidden bottom lines from last message
+    if (i === endMsgIdx - 1 && lastMessageShowLines > 0) {
+      // lastMessageShowLines = total lines from msg start to show
+      // But we may have also skipped some from the top (if same message)
+      const fullMsgLines = lineCounts[i];
+      const hiddenBottom = fullMsgLines - lastMessageShowLines;
+      msgLines -= hiddenBottom;
+    }
+
+    linesUsed += msgLines;
+  }
+  linesUsed = Math.max(0, Math.min(linesUsed, availableHeight));
 
   return {
-    startIndex,
-    messages: visibleMessages,
+    startIndex: startMsgIdx,
+    endIndex: endMsgIdx,
+    messages: messages.slice(startMsgIdx, endMsgIdx),
     hiddenAbove,
-    hiddenBelow,
-    linesUsed: effectiveLinesUsed,
+    hasContentBelow,
     firstMessageSkipLines,
+    lastMessageShowLines,
+    linesUsed,
   };
 }
 
 export function ChatView({
   messages,
+  messageLinesArray,
   streamingContent,
   isProcessing,
   processingStartTime,
@@ -154,55 +161,69 @@ export function ChatView({
   const pinnedSet = useMemo(() => new Set(pinnedMessageIds), [pinnedMessageIds]);
   const contentWidth = Math.max(10, width - 2); // account for paddingX={1}
 
-  // Welcome header: 3 lines (welcome + instructions + blank line)
-  // Shown when not scrolled past it
-  const welcomeLines = 3;
-
-  // Reserve lines for streaming content and indicators
-  let reservedLines = welcomeLines;
-
-  // If processing and at bottom (scrollOffset === 0), reserve space for streaming
-  if (isProcessing && scrollOffset === 0) {
-    // Speaker line (1) + streaming content + processing timer (1)
-    const streamLines = streamingContent
-      ? 1 + countVisualLines(streamingContent, contentWidth - 2) // -2 for inner padding
-      : 1 + 1; // speaker + "thinking..."
-    const timerLine = processingStartTime ? 1 : 0;
-    reservedLines += streamLines + timerLine;
-  }
-
-  const heightForMessages = Math.max(0, availableHeight - reservedLines);
-
-  const slice = useMemo(
-    () => computeVisibleMessages(messages, scrollOffset, heightForMessages, contentWidth),
-    [messages, scrollOffset, heightForMessages, contentWidth],
+  const totalMessageLines = useMemo(
+    () => messageLinesArray.reduce((s, c) => s + c, 0),
+    [messageLinesArray],
   );
 
-  // Adjust available height accounting for indicators
-  const showUpIndicator = slice.hiddenAbove > 0;
-  const showDownIndicator = slice.hiddenBelow > 0;
+  // --- Compute height budget in a single stable pass ---
+
+  let heightBudget = availableHeight;
+
+  // Streaming reservation (only when processing and at bottom)
+  let streamReservedLines = 0;
+  if (isProcessing && scrollOffset === 0) {
+    const streamWidth = Math.max(10, contentWidth - 2);
+    const streamLines = streamingContent
+      ? 1 + countVisualLines(streamingContent, streamWidth)
+      : 2; // speaker + "thinking..."
+    const timerLine = processingStartTime ? 1 : 0;
+    streamReservedLines = streamLines + timerLine;
+    heightBudget = Math.max(0, heightBudget - streamReservedLines);
+  }
+
+  // Welcome: show only if all messages + welcome fit and we're at the bottom
+  const welcomeLines = 3;
+  const showWelcome = scrollOffset === 0 && totalMessageLines + welcomeLines + streamReservedLines <= availableHeight;
+  if (showWelcome) {
+    heightBudget = Math.max(0, heightBudget - welcomeLines);
+  }
+
+  // First compute: determine if we need scroll indicators
+  const prelimSlice = useMemo(
+    () => computeVisibleMessages(messages, messageLinesArray, scrollOffset, heightBudget),
+    [messages, messageLinesArray, scrollOffset, heightBudget],
+  );
+
+  const showUpIndicator = prelimSlice.hiddenAbove > 0 || prelimSlice.firstMessageSkipLines > 0;
+  const showDownIndicator = prelimSlice.hasContentBelow;
   const indicatorLines = (showUpIndicator ? 1 : 0) + (showDownIndicator ? 1 : 0);
 
-  // If indicators would push us over, recompute with less space
-  // (This is a minor edge case — usually indicators fit within the flexGrow area)
+  // Final compute: subtract indicator lines if needed (stable — at most one recompute)
+  const finalBudget = Math.max(0, heightBudget - indicatorLines);
+  const slice = useMemo(() => {
+    if (indicatorLines === 0) return prelimSlice;
+    return computeVisibleMessages(messages, messageLinesArray, scrollOffset, finalBudget);
+  }, [indicatorLines, messages, messageLinesArray, scrollOffset, finalBudget, prelimSlice]);
 
-  // Cap streaming display
-  const maxStreamLines = Math.max(4, availableHeight - slice.linesUsed - indicatorLines - 2);
+  // Cap streaming display to remaining space
+  const remainingForStream = Math.max(0, availableHeight - slice.linesUsed - indicatorLines - (showWelcome ? welcomeLines : 0));
+  const maxStreamLines = Math.max(1, Math.min(remainingForStream, streamReservedLines));
   const cappedStreaming = useMemo(() => {
     if (!streamingContent) return '';
-    const streamWidth = Math.max(10, contentWidth - 4); // paddingX + paddingLeft
-    const wrapped = wrapAnsi(streamingContent, streamWidth, { hard: true, wordWrap: true, trim: false });
+    const streamWidth = Math.max(10, contentWidth - 4);
+    const wrapped = preWrapText(streamingContent, streamWidth);
     const lines = wrapped.split('\n');
-    if (lines.length <= maxStreamLines) return streamingContent;
+    if (lines.length <= maxStreamLines) return wrapped;
     return lines.slice(-maxStreamLines).join('\n');
   }, [streamingContent, maxStreamLines, contentWidth]);
 
-  // Only show welcome header when all messages fit on screen (not scrolled past it)
-  const showWelcome = slice.hiddenAbove === 0;
+  // hiddenAbove count for display: include partial first message
+  const displayHiddenAbove = slice.hiddenAbove + (slice.firstMessageSkipLines > 0 ? 1 : 0);
 
   return (
     <Box flexDirection="column" height={availableHeight} paddingX={1}>
-      {/* Welcome header (persistent at top when not scrolled) */}
+      {/* Welcome header (only when all messages fit on screen) */}
       {showWelcome && (
         <Box flexDirection="column">
           <Text dimColor>Welcome to ClawTalk by Opus4.5 and Joseph Kim (@jokim1)</Text>
@@ -213,19 +234,29 @@ export function ChatView({
 
       {/* Scroll-up indicator */}
       {showUpIndicator && (
-        <Text dimColor> {'\u25b2'} {slice.hiddenAbove} earlier message{slice.hiddenAbove !== 1 ? 's' : ''}</Text>
+        <Text dimColor> {'\u25b2'} {displayHiddenAbove} earlier message{displayHiddenAbove !== 1 ? 's' : ''}</Text>
       )}
 
       {/* Visible messages */}
-      {slice.messages.map((msg, idx) => (
-        <MessageBlock
-          key={msg.id}
-          message={msg}
-          isPinned={pinnedSet.has(msg.id)}
-          skipLines={idx === 0 ? slice.firstMessageSkipLines : 0}
-          contentWidth={contentWidth}
-        />
-      ))}
+      {slice.messages.map((msg, idx) => {
+        const isFirst = idx === 0;
+        const isLast = idx === slice.messages.length - 1;
+        const skipLines = isFirst ? slice.firstMessageSkipLines : 0;
+        const showLines = isLast && slice.lastMessageShowLines > 0
+          ? slice.lastMessageShowLines
+          : 0;
+
+        return (
+          <MessageBlock
+            key={msg.id}
+            message={msg}
+            isPinned={pinnedSet.has(msg.id)}
+            skipLines={skipLines}
+            showLines={showLines}
+            contentWidth={contentWidth}
+          />
+        );
+      })}
 
       {/* Streaming content (only when at bottom and processing) */}
       {isProcessing && scrollOffset === 0 && (
@@ -233,7 +264,7 @@ export function ChatView({
           <Text color="cyan" bold>{getModelAlias(currentModel)}:</Text>
           <Box paddingLeft={2}>
             {cappedStreaming ? (
-              <Text wrap="wrap">{cappedStreaming}<Text color="cyan">{'\u258c'}</Text></Text>
+              <Text>{cappedStreaming}<Text color="cyan">{'\u258c'}</Text></Text>
             ) : (
               <Text color="gray">thinking...</Text>
             )}
@@ -246,29 +277,34 @@ export function ChatView({
         <Text dimColor>* Waiting for {formatElapsed(processingStartTime)}</Text>
       )}
 
-      {/* Spacer to push content up when there's extra space */}
+      {/* Spacer to push down indicator to bottom */}
       <Box flexGrow={1} />
 
       {/* Scroll-down indicator */}
       {showDownIndicator && (
-        <Text dimColor> {'\u25bc'} scrolled up {slice.hiddenBelow} message{slice.hiddenBelow !== 1 ? 's' : ''}</Text>
+        <Text dimColor> {'\u25bc'} more below</Text>
       )}
     </Box>
   );
 }
 
-/** Render a single message (speaker + indented content) */
-function MessageBlock({ message, isPinned, skipLines = 0, contentWidth = 80 }: {
+/**
+ * Render a single message with pre-wrapped text.
+ *
+ * skipLines: lines to skip from the START of the message (top clipping)
+ * showLines: total lines from message START to show (bottom clipping, 0 = show all)
+ *
+ * When both apply (single message spans entire viewport):
+ *   visible = lines from skipLines to showLines
+ */
+function MessageBlock({ message, isPinned, skipLines = 0, showLines = 0, contentWidth = 80 }: {
   message: Message;
   isPinned?: boolean;
   skipLines?: number;
+  showLines?: number;
   contentWidth?: number;
 }) {
-  const speakerName = message.role === 'user'
-    ? 'You'
-    : message.role === 'system'
-      ? 'System'
-      : getModelAlias(message.model ?? '');
+  const speakerName = getSpeakerName(message);
 
   const speakerColor = message.role === 'user'
     ? 'green'
@@ -276,31 +312,49 @@ function MessageBlock({ message, isPinned, skipLines = 0, contentWidth = 80 }: {
       ? 'yellow'
       : 'cyan';
 
-  // When skipLines > 0, truncate content from the top to fit available space
-  const content = useMemo(() => {
-    if (skipLines <= 0) return message.content || ' ';
-    const innerWidth = Math.max(10, contentWidth - 2);
-    const wrapped = wrapAnsi(message.content || ' ', innerWidth, { hard: true, wordWrap: true, trim: false });
-    const lines = wrapped.split('\n');
-    // Skip speaker line(s) first, then content lines
-    const speakerLineCount = countVisualLines(`${speakerName}:`, contentWidth);
-    const contentSkip = Math.max(0, skipLines - speakerLineCount);
-    if (contentSkip >= lines.length) return lines[lines.length - 1] || ' ';
-    return lines.slice(contentSkip).join('\n');
-  }, [message.content, skipLines, contentWidth, speakerName]);
+  const innerWidth = Math.max(10, contentWidth - 2);
 
-  // Hide speaker line if it's entirely within the skipped region
-  const speakerLineCount = skipLines > 0 ? countVisualLines(`${speakerName}:`, contentWidth) : 0;
-  const showSpeaker = skipLines < speakerLineCount || skipLines === 0;
+  // Pre-wrap content to exact width (guarantees line count matches rendering)
+  const fullWrapped = useMemo(
+    () => preWrapText(message.content || ' ', innerWidth),
+    [message.content, innerWidth],
+  );
+
+  const rendered = useMemo(() => {
+    const speakerLineCount = countVisualLines(`${speakerName}:`, contentWidth);
+    const contentLines = fullWrapped.split('\n');
+
+    // Determine visible range in terms of absolute message lines (speaker + content)
+    // line 0..speakerLineCount-1 = speaker, speakerLineCount..end = content
+    const visibleStart = skipLines; // first visible line from message start
+    const visibleEnd = showLines > 0 ? showLines : speakerLineCount + contentLines.length;
+
+    // Speaker visibility
+    const showSpeaker = visibleStart < speakerLineCount;
+
+    // Content line range
+    const contentStart = Math.max(0, visibleStart - speakerLineCount);
+    const contentEnd = Math.max(0, visibleEnd - speakerLineCount);
+    const clampedStart = Math.min(contentStart, contentLines.length);
+    const clampedEnd = Math.min(contentEnd, contentLines.length);
+
+    const text = clampedEnd > clampedStart
+      ? contentLines.slice(clampedStart, clampedEnd).join('\n')
+      : '';
+
+    return { text, showSpeaker };
+  }, [fullWrapped, skipLines, showLines, speakerName, contentWidth]);
 
   return (
     <Box flexDirection="column">
-      {showSpeaker && (
+      {rendered.showSpeaker && (
         <Text color={speakerColor} bold>{speakerName}:{isPinned ? ' \uD83D\uDCCC' : ''}</Text>
       )}
-      <Box paddingLeft={2}>
-        <Text wrap="wrap">{content}</Text>
-      </Box>
+      {rendered.text && (
+        <Box paddingLeft={2}>
+          <Text>{rendered.text}</Text>
+        </Box>
+      )}
     </Box>
   );
 }

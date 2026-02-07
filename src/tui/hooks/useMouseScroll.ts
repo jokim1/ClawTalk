@@ -2,14 +2,15 @@
  * Mouse wheel scroll hook
  *
  * Enables SGR mouse protocol on the terminal to capture scroll wheel events.
- * Returns the current scroll offset (0 = bottom/latest).
+ * Returns the current scroll offset in visual lines (0 = bottom/latest).
+ * Each scroll wheel tick moves 3 lines.
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useStdin, useStdout } from 'ink';
 
 interface UseMouseScrollOptions {
-  /** Maximum scroll offset (number of scrollable "lines" above) */
+  /** Maximum scroll offset (total visual lines minus viewport height) */
   maxOffset: number;
   /** Whether scrolling is enabled (disable during overlays) */
   enabled?: boolean;

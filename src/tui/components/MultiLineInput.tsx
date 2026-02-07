@@ -6,7 +6,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Text, useInput } from 'ink';
+import { Box, Text, useInput } from 'ink';
 
 interface MultiLineInputProps {
   value: string;
@@ -14,6 +14,8 @@ interface MultiLineInputProps {
   onSubmit: (value: string) => void;
   width: number;
   isActive?: boolean;
+  /** Maximum visible lines. When text exceeds this, show the portion around the cursor. */
+  maxVisibleLines?: number;
 }
 
 export function MultiLineInput({
@@ -22,6 +24,7 @@ export function MultiLineInput({
   onSubmit,
   width,
   isActive = true,
+  maxVisibleLines,
 }: MultiLineInputProps) {
   const [cursorPos, setCursorPos] = useState(value.length);
 
@@ -129,6 +132,20 @@ export function MultiLineInput({
   const beforeCursor = value.slice(0, cursorPos);
   const atCursor = value[cursorPos] || ' ';
   const afterCursor = value.slice(cursorPos + 1);
+
+  // When maxVisibleLines is set, Ink's Box height clips the overflow.
+  // The dynamic inputLines calculation in app.tsx handles growing/shrinking.
+  if (maxVisibleLines) {
+    return (
+      <Box height={maxVisibleLines}>
+        <Text wrap="wrap">
+          {beforeCursor}
+          <Text inverse>{atCursor}</Text>
+          {afterCursor}
+        </Text>
+      </Box>
+    );
+  }
 
   return (
     <Text wrap="wrap">
