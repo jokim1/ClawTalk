@@ -28,6 +28,7 @@ export interface ClawTalkConfig {
   billing?: Record<string, BillingOverride>;
   voice?: VoiceConfig;
   anthropicApiKey?: string;
+  exportDir?: string;
 }
 
 const CONFIG_DIR = path.join(process.env.HOME || '~', '.clawtalk');

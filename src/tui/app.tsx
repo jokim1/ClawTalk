@@ -1752,6 +1752,7 @@ function App({ options }: AppProps) {
             currentSessionName={sessionName}
             sessionManager={sessionManagerRef.current!}
             talkManager={talkManagerRef.current!}
+            exportDir={savedConfig.exportDir}
             maxHeight={overlayMaxHeight}
             terminalWidth={terminalWidth}
             onClose={() => setShowTranscript(false)}

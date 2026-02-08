@@ -6,6 +6,17 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { Message } from '../types';
 
+/** Resolve the export directory: explicit dir > ~/Documents > ~ */
+function resolveExportDir(dir?: string): string {
+  if (dir) {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+  const docs = path.join(process.env.HOME || '~', 'Documents');
+  if (fs.existsSync(docs)) return docs;
+  return process.env.HOME || '~';
+}
+
 /** Format elapsed time as "Xs" or "Xm Ys" */
 export function formatElapsed(startTime: number): string {
   const elapsed = Math.floor((Date.now() - startTime) / 1000);
@@ -67,11 +78,12 @@ export function formatUpdatedTime(ts: number): string {
   }
 }
 
-export function exportTranscript(messages: Message[], sessionName: string): string {
+export function exportTranscript(messages: Message[], sessionName: string, destDir?: string): string {
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const safeName = path.basename(sessionName.replace(/\s+/g, '-').replace(/[/\\]/g, '_'));
   const filename = `transcript-${safeName}-${timestamp}.txt`;
-  const filepath = path.join(process.env.HOME || '~', filename);
+  const dir = resolveExportDir(destDir);
+  const filepath = path.join(dir, filename);
 
   let content = `Transcript: ${sessionName}\n`;
   content += `Exported: ${new Date().toLocaleString()}\n`;
@@ -88,11 +100,12 @@ export function exportTranscript(messages: Message[], sessionName: string): stri
   return filepath;
 }
 
-export function exportTranscriptMd(messages: Message[], sessionName: string): string {
+export function exportTranscriptMd(messages: Message[], sessionName: string, destDir?: string): string {
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const safeName = path.basename(sessionName.replace(/\s+/g, '-').replace(/[/\\]/g, '_'));
   const filename = `transcript-${safeName}-${timestamp}.md`;
-  const filepath = path.join(process.env.HOME || '~', filename);
+  const dir = resolveExportDir(destDir);
+  const filepath = path.join(dir, filename);
 
   let content = `# Transcript: ${sessionName}\n\n`;
   content += `*Exported: ${new Date().toLocaleString()} | ${messages.length} messages*\n\n`;
@@ -110,13 +123,14 @@ export function exportTranscriptMd(messages: Message[], sessionName: string): st
   return filepath;
 }
 
-export async function exportTranscriptDocx(messages: Message[], sessionName: string): Promise<string> {
+export async function exportTranscriptDocx(messages: Message[], sessionName: string, destDir?: string): Promise<string> {
   const { Document, Paragraph, TextRun, HeadingLevel, Packer, BorderStyle } = await import('docx');
 
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const safeName = path.basename(sessionName.replace(/\s+/g, '-').replace(/[/\\]/g, '_'));
   const filename = `transcript-${safeName}-${timestamp}.docx`;
-  const filepath = path.join(process.env.HOME || '~', filename);
+  const dir = resolveExportDir(destDir);
+  const filepath = path.join(dir, filename);
 
   const children: any[] = [];
 

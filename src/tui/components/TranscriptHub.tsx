@@ -20,6 +20,7 @@ interface TranscriptHubProps {
   currentSessionName: string;
   sessionManager: SessionManager;
   talkManager?: TalkManager;
+  exportDir?: string;
   maxHeight: number;
   terminalWidth: number;
   onClose: () => void;
@@ -36,6 +37,7 @@ export function TranscriptHub({
   currentSessionName,
   sessionManager,
   talkManager,
+  exportDir,
   maxHeight,
   terminalWidth,
   onClose,
@@ -273,7 +275,7 @@ export function TranscriptHub({
         const msgs = isActive ? currentMessages : (session?.messages ?? []);
         if ((input === 't' || input === 'T') && msgs.length > 0) {
           try {
-            setExported(exportTranscript(msgs, name));
+            setExported(exportTranscript(msgs, name, exportDir));
           } catch (err) {
             setExported(`Error: ${err instanceof Error ? err.message : 'Failed'}`);
           }
@@ -282,7 +284,7 @@ export function TranscriptHub({
         }
         if ((input === 'm' || input === 'M') && msgs.length > 0) {
           try {
-            setExported(exportTranscriptMd(msgs, name));
+            setExported(exportTranscriptMd(msgs, name, exportDir));
           } catch (err) {
             setExported(`Error: ${err instanceof Error ? err.message : 'Failed'}`);
           }
@@ -290,7 +292,7 @@ export function TranscriptHub({
           return;
         }
         if ((input === 'd' || input === 'D') && msgs.length > 0) {
-          exportTranscriptDocx(msgs, name).then(filepath => {
+          exportTranscriptDocx(msgs, name, exportDir).then(filepath => {
             setExported(filepath);
           }).catch(err => {
             setExported(`Error: ${err instanceof Error ? err.message : 'Failed'}`);
