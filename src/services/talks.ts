@@ -357,10 +357,11 @@ export class TalkManager {
     const talk = this.talks.get(talkId);
     if (!talk?.agents) return false;
 
-    const agent = talk.agents.find(a => a.name.toLowerCase() === agentName.toLowerCase());
+    // Use findAgent for prefix-match support
+    const agent = this.findAgent(talkId, agentName);
     if (!agent || agent.isPrimary) return false;
 
-    talk.agents = talk.agents.filter(a => a.name.toLowerCase() !== agentName.toLowerCase());
+    talk.agents = talk.agents.filter(a => a !== agent);
     talk.updatedAt = Date.now();
     if (talk.isSaved) this.persistTalk(talk);
     return true;
@@ -387,7 +388,8 @@ export class TalkManager {
     const talk = this.talks.get(talkId);
     if (!talk?.agents) return null;
 
-    const agent = talk.agents.find(a => a.name.toLowerCase() === agentName.toLowerCase());
+    // Use findAgent for prefix-match support
+    const agent = this.findAgent(talkId, agentName);
     if (!agent) return null;
 
     agent.role = newRole;
@@ -410,10 +412,22 @@ export class TalkManager {
     return agent;
   }
 
-  /** Find an agent by name (case-insensitive). */
+  /** Find an agent by name (case-insensitive, supports prefix matching). */
   findAgent(talkId: string, name: string): TalkAgent | undefined {
     const talk = this.talks.get(talkId);
-    return talk?.agents?.find(a => a.name.toLowerCase() === name.toLowerCase());
+    if (!talk?.agents) return undefined;
+
+    const lower = name.toLowerCase();
+
+    // Exact match first
+    const exact = talk.agents.find(a => a.name.toLowerCase() === lower);
+    if (exact) return exact;
+
+    // Prefix match fallback (only if unambiguous)
+    const prefixMatches = talk.agents.filter(a => a.name.toLowerCase().startsWith(lower));
+    if (prefixMatches.length === 1) return prefixMatches[0];
+
+    return undefined;
   }
 
   /** Import a talk from gateway data (creates local entry if not present). */
