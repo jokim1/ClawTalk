@@ -60,15 +60,21 @@ export function RolePicker({ roles, onSelect, onClose, modelName, maxHeight = 20
       {visibleRoles.map((role, i) => {
         const isSelected = i === selectedIndex;
         return (
-          <Box key={role.id}>
-            <Text color={isSelected ? 'cyan' : undefined}>
-              {isSelected ? '> ' : '  '}
-            </Text>
-            <Text dimColor>{i + 1}. </Text>
-            <Text color={isSelected ? 'cyan' : undefined} bold={isSelected}>
-              {role.label}
-            </Text>
-            <Text dimColor>  {role.description}</Text>
+          <Box key={role.id} flexDirection="column">
+            <Box>
+              <Text color={isSelected ? 'cyan' : undefined}>
+                {isSelected ? '> ' : '  '}
+              </Text>
+              <Text dimColor>{i + 1}. </Text>
+              <Text color={isSelected ? 'cyan' : undefined} bold={isSelected}>
+                {role.label}
+              </Text>
+            </Box>
+            {isSelected && (
+              <Box marginLeft={5}>
+                <Text dimColor>{role.description}</Text>
+              </Box>
+            )}
           </Box>
         );
       })}

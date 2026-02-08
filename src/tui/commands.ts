@@ -340,7 +340,7 @@ export function getCommandCompletions(prefix: string): CommandInfo[] {
         results.push(
           { name: 'agent add <model> <role>', description: 'Add agent with role' },
           { name: 'agent remove <name>', description: 'Remove an agent' },
-          { name: 'agent role <name> <role>', description: 'Change agent role' },
+          { name: 'agent role <name> <role>', description: 'Change role: Analyst, Critic, Strategist, Devil\'s Advocate, Synthesizer, Editor' },
         );
       } else {
         results.push({ name, description: entry.description });
