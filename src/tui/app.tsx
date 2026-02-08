@@ -1452,6 +1452,7 @@ function App({ options }: AppProps) {
         voiceMode={voice.voiceMode}
         voiceReadiness={gateway.voiceCaps.readiness}
         ttsEnabled={voice.ttsEnabled}
+        agents={activeTalk?.agents}
       />
 
       {/* Talk title (pinned below status bar) */}

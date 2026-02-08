@@ -6,10 +6,11 @@
 
 import React from 'react';
 import { Box, Text } from 'ink';
-import type { UsageStats, ModelStatus, VoiceMode, VoiceReadiness } from '../../types';
+import type { UsageStats, ModelStatus, VoiceMode, VoiceReadiness, TalkAgent } from '../../types';
 import type { TailscaleStatus } from '../../services/tailscale';
 import type { BillingOverride } from '../../config.js';
 import { getModelAlias } from '../../models.js';
+import { ROLE_BY_ID } from '../../agent-roles.js';
 
 function formatResetTime(isoTimestamp: string): string {
   const now = Date.now();
@@ -42,11 +43,21 @@ interface StatusBarProps {
   voiceMode?: VoiceMode;
   voiceReadiness?: VoiceReadiness;
   ttsEnabled?: boolean;
+  agents?: TalkAgent[];
 }
 
-export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleStatus, billing, sessionName, terminalWidth = 80, voiceMode, voiceReadiness, ttsEnabled = true }: StatusBarProps) {
+export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleStatus, billing, sessionName, terminalWidth = 80, voiceMode, voiceReadiness, ttsEnabled = true, agents }: StatusBarProps) {
   const modelName = getModelAlias(model);
   const modelIndicator = modelStatus === 'checking' ? ' ◐' : '';
+
+  // Build model display: single model or agent list
+  const modelDisplay = agents && agents.length > 0
+    ? agents.map(a => {
+        const alias = getModelAlias(a.model);
+        const roleShort = ROLE_BY_ID[a.role]?.shortLabel ?? '?';
+        return `${alias}(${roleShort})`;
+      }).join(' ')
+    : `${modelName}${modelIndicator}`;
   const isSubscription = billing?.mode === 'subscription';
 
   // Icons with colors
@@ -93,7 +104,7 @@ export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleS
   }
 
   // Calculate padding for right-alignment
-  const leftContent = `GW:${gwIcon} TS:${tsIcon} M:${modelName}${modelIndicator}  ${billingText}`;
+  const leftContent = `GW:${gwIcon} TS:${tsIcon} M:${modelDisplay}  ${billingText}`;
   const rightContent = `V:${ttsIcon} Mic:${micIcon}  ${sessionName ?? ''}`;
   const padding = Math.max(1, terminalWidth - leftContent.length - rightContent.length - 2);
 
@@ -109,7 +120,7 @@ export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleS
         <Text color={tsColor}>{tsIcon}</Text>
         <Text> </Text>
         <Text dimColor>M:</Text>
-        <Text color={modelColor} bold>{modelName}{modelIndicator}</Text>
+        <Text color={modelColor} bold>{modelDisplay}</Text>
         <Text>  </Text>
         <Text dimColor>{billingText}</Text>
         <Text>{' '.repeat(padding)}</Text>
