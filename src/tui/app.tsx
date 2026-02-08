@@ -99,6 +99,14 @@ function App({ options }: AppProps) {
   const probeSuppressedRef = useRef(false); // Synchronous flag to suppress initial probe
   const modelOverrideAbortRef = useRef<AbortController | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Auto-dismiss errors after 5 seconds
+  useEffect(() => {
+    if (!error) return;
+    const timer = setTimeout(() => setError(null), 25000);
+    return () => clearTimeout(timer);
+  }, [error]);
+
   const [inputText, setInputText] = useState('');
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showTranscript, setShowTranscript] = useState(false);
@@ -107,7 +115,10 @@ function App({ options }: AppProps) {
   const [sessionName, setSessionName] = useState('Session 1');
   const [activeTalkId, setActiveTalkId] = useState<string | null>(null);
   const activeTalkIdRef = useRef<string | null>(null);
-  useEffect(() => { activeTalkIdRef.current = activeTalkId; }, [activeTalkId]);
+  useEffect(() => {
+    activeTalkIdRef.current = activeTalkId;
+    setError(null); // Clear error when switching talks
+  }, [activeTalkId]);
   const [messageQueue, setMessageQueue] = useState<string[]>([]);
   const [processingStartTime, setProcessingStartTime] = useState<number | null>(null);
   const [hintSelectedIndex, setHintSelectedIndex] = useState(0);
