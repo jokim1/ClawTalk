@@ -31,6 +31,7 @@ import { VoiceService } from '../services/voice.js';
 import { RealtimeVoiceService } from '../services/realtime-voice.js';
 import { AnthropicRateLimitService } from '../services/anthropic-ratelimit.js';
 import { processImage } from '../services/image.js';
+import { processFile, detectFilePaths } from '../services/file.js';
 import { loadConfig, getBillingForProvider } from '../config.js';
 import {
   getModelAlias,
@@ -139,6 +140,7 @@ function App({ options }: AppProps) {
   const [hintSelectedIndex, setHintSelectedIndex] = useState(0);
   const [pendingClear, setPendingClear] = useState(false);
   const [pendingAttachment, setPendingAttachment] = useState<PendingAttachment | null>(null);
+  const [pendingDocument, setPendingDocument] = useState<{ filename: string; text: string } | null>(null);
 
   // --- TTS bridge ref (useChat → useVoice) ---
 
@@ -265,7 +267,7 @@ function App({ options }: AppProps) {
   // Total - StatusBar(2) - talkTitle(0-2) - error(0-1) - clearPrompt(0-1) - separator(1) - input - shortcuts(3) - queued - hints - margin(1)
   const errorLines = error ? 1 : 0;
   const clearPromptLines = pendingClear ? 1 : 0;
-  const attachmentLines = pendingAttachment ? 1 : 0;
+  const attachmentLines = (pendingAttachment ? 1 : 0) + (pendingDocument ? 1 : 0);
   const queuedLines = messageQueue.length > 0 ? messageQueue.length : 0;
   const hintsLines = showCommandHints ? commandHints.length + 1 : 0; // +1 for separator line
   const chatHeight = Math.max(4, terminalHeight - 2 - talkTitleLines - errorLines - clearPromptLines - attachmentLines - 1 - inputLines - 3 - queuedLines - hintsLines - 1);
@@ -1320,47 +1322,65 @@ function App({ options }: AppProps) {
   // --- File attachment handler ---
 
   const handleAttachFile = useCallback(async (filePath: string, message?: string) => {
-    const sysMsg = createMessage('system', 'Processing image...');
+    const sysMsg = createMessage('system', 'Processing file...');
     chat.setMessages(prev => [...prev, sysMsg]);
 
     try {
-      const attachment = await processImage(filePath);
-      const sizeKB = Math.round(attachment.sizeBytes / 1024);
+      const result = await processFile(filePath);
 
-      if (message) {
-        // Attach + send immediately
-        chat.setMessages(prev => prev.filter(m => m.id !== sysMsg.id));
-        const confirmMsg = createMessage('system', `[attached] ${attachment.filename} (${attachment.width}x${attachment.height}, ${sizeKB}KB)`);
-        chat.setMessages(prev => [...prev, confirmMsg]);
+      if (result.type === 'image') {
+        const attachment = result.attachment;
+        const sizeKB = Math.round(attachment.sizeBytes / 1024);
 
-        // Lazy gateway talk creation
-        if (!gatewayTalkIdRef.current && chatServiceRef.current) {
-          if (activeTalkIdRef.current) {
-            talkManagerRef.current?.saveTalk(activeTalkIdRef.current);
-          }
-          const gwId = await chatServiceRef.current.createGatewayTalk(currentModelRef.current);
-          if (gwId) {
-            gatewayTalkIdRef.current = gwId;
+        if (message) {
+          chat.setMessages(prev => prev.filter(m => m.id !== sysMsg.id));
+          const confirmMsg = createMessage('system', `[attached] ${attachment.filename} (${attachment.width}x${attachment.height}, ${sizeKB}KB)`);
+          chat.setMessages(prev => [...prev, confirmMsg]);
+
+          // Lazy gateway talk creation
+          if (!gatewayTalkIdRef.current && chatServiceRef.current) {
             if (activeTalkIdRef.current) {
-              talkManagerRef.current?.setGatewayTalkId(activeTalkIdRef.current, gwId);
+              talkManagerRef.current?.saveTalk(activeTalkIdRef.current);
+            }
+            const gwId = await chatServiceRef.current.createGatewayTalk(currentModelRef.current);
+            if (gwId) {
+              gatewayTalkIdRef.current = gwId;
+              if (activeTalkIdRef.current) {
+                talkManagerRef.current?.setGatewayTalkId(activeTalkIdRef.current, gwId);
+              }
             }
           }
-        }
 
-        await chat.sendMessage(message, attachment);
+          await chat.sendMessage(message, attachment);
+        } else {
+          setPendingAttachment(attachment);
+          chat.setMessages(prev => {
+            const filtered = prev.filter(m => m.id !== sysMsg.id);
+            const confirmMsg = createMessage('system', `[attached] ${attachment.filename} (${attachment.width}x${attachment.height}, ${sizeKB}KB) — type a message to send`);
+            return [...filtered, confirmMsg];
+          });
+        }
       } else {
-        // Queue attachment for next message
-        setPendingAttachment(attachment);
-        chat.setMessages(prev => {
-          const filtered = prev.filter(m => m.id !== sysMsg.id);
-          const confirmMsg = createMessage('system', `[attached] ${attachment.filename} (${attachment.width}x${attachment.height}, ${sizeKB}KB) — type a message to send`);
-          return [...filtered, confirmMsg];
-        });
+        // Document (PDF, text file)
+        const sizeKB = Math.round(result.sizeBytes / 1024);
+        const pageInfo = result.pageCount ? `, ${result.pageCount} pages` : '';
+        const charCount = result.text.length;
+
+        chat.setMessages(prev => prev.filter(m => m.id !== sysMsg.id));
+        const confirmMsg = createMessage('system', `[attached] ${result.filename} (${sizeKB}KB${pageInfo}, ${charCount} chars)`);
+        chat.setMessages(prev => [...prev, confirmMsg]);
+
+        if (message) {
+          await chat.sendMessage(message, undefined, { filename: result.filename, text: result.text });
+        } else {
+          // Store document content for next message
+          setPendingDocument({ filename: result.filename, text: result.text });
+        }
       }
     } catch (err) {
       chat.setMessages(prev => prev.filter(m => m.id !== sysMsg.id));
       const errMessage = err instanceof Error ? err.message : 'Unknown error';
-      setError(`Image error: ${errMessage}`);
+      setError(`File error: ${errMessage}`);
     }
   }, []);
 
@@ -1497,8 +1517,45 @@ function App({ options }: AppProps) {
     if (pendingAttachment) {
       setPendingAttachment(null);
     }
-    await chat.sendMessage(trimmed, attachment);
-  }, [chat.sendMessage, chat.isProcessing, sendMultiAgentMessage, pendingAttachment]);
+
+    // Check for pending document from /file command
+    const docContent = pendingDocument ?? undefined;
+    if (pendingDocument) {
+      setPendingDocument(null);
+    }
+
+    // Detect inline file paths if no attachment/document already pending
+    if (!attachment && !docContent) {
+      const detected = detectFilePaths(trimmed);
+      if (detected.length > 0) {
+        // Try each detected path — use the first one that resolves to an actual file
+        for (const det of detected) {
+          try {
+            const result = await processFile(det.path);
+            if (result.type === 'image') {
+              const sizeKB = Math.round(result.attachment.sizeBytes / 1024);
+              const confirmMsg = createMessage('system', `[attached] ${result.attachment.filename} (${result.attachment.width}x${result.attachment.height}, ${sizeKB}KB)`);
+              chat.setMessages(prev => [...prev, confirmMsg]);
+              await chat.sendMessage(trimmed, result.attachment);
+              return;
+            } else {
+              const sizeKB = Math.round(result.sizeBytes / 1024);
+              const pageInfo = result.pageCount ? `, ${result.pageCount} pages` : '';
+              const confirmMsg = createMessage('system', `[attached] ${result.filename} (${sizeKB}KB${pageInfo}, ${result.text.length} chars)`);
+              chat.setMessages(prev => [...prev, confirmMsg]);
+              await chat.sendMessage(trimmed, undefined, { filename: result.filename, text: result.text });
+              return;
+            }
+          } catch {
+            // Path matched regex but file doesn't exist or can't be processed — skip
+            continue;
+          }
+        }
+      }
+    }
+
+    await chat.sendMessage(trimmed, attachment, docContent);
+  }, [chat.sendMessage, chat.isProcessing, sendMultiAgentMessage, pendingAttachment, pendingDocument]);
 
   // Process queued messages when AI finishes responding
   useEffect(() => {
@@ -1874,6 +1931,12 @@ function App({ options }: AppProps) {
         <Box paddingX={1}>
           <Text color="blue">[attached] </Text>
           <Text>{pendingAttachment.filename} ({pendingAttachment.width}x{pendingAttachment.height}, {Math.round(pendingAttachment.sizeBytes / 1024)}KB)</Text>
+        </Box>
+      )}
+      {pendingDocument && (
+        <Box paddingX={1}>
+          <Text color="blue">[attached] </Text>
+          <Text>{pendingDocument.filename} ({pendingDocument.text.length} chars)</Text>
         </Box>
       )}
 

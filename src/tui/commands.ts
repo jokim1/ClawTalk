@@ -266,7 +266,7 @@ function handleReviewCommand(_args: string, ctx: CommandContext): CommandResult 
   return { handled: true };
 }
 
-/** Handle /file <path> [message] — attach an image file. */
+/** Handle /file <path> [message] — attach a file (image, PDF, or text). */
 function handleFileCommand(args: string, ctx: CommandContext): CommandResult {
   const trimmed = args.trim();
   if (!trimmed) {
@@ -323,7 +323,7 @@ const COMMANDS: Record<string, { handler: CommandHandler; description: string }>
   ask: { handler: handleAskCommand, description: 'Ask a specific agent' },
   debate: { handler: handleDebateCommand, description: 'All agents discuss a topic' },
   review: { handler: handleReviewCommand, description: 'Agents review last response' },
-  file: { handler: handleFileCommand, description: 'Attach an image file' },
+  file: { handler: handleFileCommand, description: 'Attach a file (image, PDF, text)' },
 };
 
 /**

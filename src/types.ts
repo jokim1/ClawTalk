@@ -51,6 +51,11 @@ export interface Message {
   attachment?: ImageAttachmentMeta;
 }
 
+export interface DocumentContent {
+  filename: string;
+  text: string;
+}
+
 export type ModelStatus = 'unknown' | 'checking' | 'ok' | { error: string };
 
 export interface SearchResult {

@@ -7,7 +7,7 @@
 
 import { useState, useCallback, useRef } from 'react';
 import type { MutableRefObject, Dispatch, SetStateAction } from 'react';
-import type { Message, PendingAttachment, TalkAgent } from '../../types.js';
+import type { Message, PendingAttachment, DocumentContent, TalkAgent } from '../../types.js';
 import type { ChatService } from '../../services/chat.js';
 import type { SessionManager } from '../../services/sessions.js';
 import { isGatewaySentinel } from '../../constants.js';
@@ -46,7 +46,7 @@ export function useChat(
   const onModelErrorRef = useRef(onModelError);
   onModelErrorRef.current = onModelError;
 
-  const sendMessage = useCallback(async (text: string, attachment?: PendingAttachment) => {
+  const sendMessage = useCallback(async (text: string, attachment?: PendingAttachment, documentContent?: DocumentContent) => {
     const chatService = chatServiceRef.current;
     if (!text.trim() || isProcessingRef.current || !chatService) return;
 
@@ -69,6 +69,15 @@ export function useChat(
         sizeBytes: attachment.sizeBytes,
       };
     }
+    if (documentContent) {
+      userMsg.attachment = {
+        filename: documentContent.filename,
+        mimeType: 'application/octet-stream',
+        width: 0,
+        height: 0,
+        sizeBytes: documentContent.text.length,
+      };
+    }
     setMessages(prev => [...prev, userMsg]);
     sessionManagerRef.current?.addMessage(userMsg);
 
@@ -82,12 +91,17 @@ export function useChat(
     // Route through gateway Talk endpoint when available, otherwise direct
     const gwTalkId = gatewayTalkIdRef.current;
 
+    // When document content is provided, embed it in the message sent to the LLM
+    const llmText = documentContent
+      ? `<file name="${documentContent.filename}">\n${documentContent.text}\n</file>\n\n${trimmed}`
+      : trimmed;
+
     try {
       let fullContent = '';
       const imageParam = attachment ? { base64: attachment.base64, mimeType: attachment.mimeType } : undefined;
       const stream = gwTalkId
-        ? chatService.streamTalkMessage(gwTalkId, trimmed, undefined, imageParam)
-        : chatService.streamMessage(trimmed, history);
+        ? chatService.streamTalkMessage(gwTalkId, llmText, undefined, imageParam)
+        : chatService.streamMessage(llmText, history);
       for await (const chunk of stream) {
         fullContent += chunk;
         // Only update streaming UI if still on the same talk
