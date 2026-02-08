@@ -53,11 +53,10 @@ export function messageVisualLines(msg: Message, width: number): number {
 
 /**
  * Get the speaker name for a message.
+ * Uses agent name when available, falls back to model alias.
  */
 export function getSpeakerName(msg: Message): string {
-  return msg.role === 'user'
-    ? 'You'
-    : msg.role === 'system'
-      ? 'System'
-      : getModelAlias(msg.model ?? '');
+  if (msg.role === 'user') return 'You';
+  if (msg.role === 'system') return 'System';
+  return msg.agentName ?? getModelAlias(msg.model ?? '');
 }

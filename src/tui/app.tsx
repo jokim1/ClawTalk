@@ -8,13 +8,16 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { render, Box, Text, useInput, useApp, useStdout } from 'ink';
-import type { ClawTalkOptions, ModelStatus, Message } from '../types.js';
+import type { ClawTalkOptions, ModelStatus, Message, TalkAgent, AgentRole } from '../types.js';
 import type { Talk } from '../types.js';
+import { AGENT_ROLES, ROLE_BY_ID, generateAgentName } from '../agent-roles.js';
+import type { RoleTemplate } from '../agent-roles.js';
 import { StatusBar, ShortcutBar } from './components/StatusBar';
 import { InputArea } from './components/InputArea.js';
 import { ChatView } from './components/ChatView.js';
 import { ModelPicker } from './components/ModelPicker.js';
 import type { Model } from './components/ModelPicker.js';
+import { RolePicker } from './components/RolePicker.js';
 import { TranscriptHub } from './components/TranscriptHub';
 import { TalksHub } from './components/TalksHub';
 import { SettingsPicker } from './components/SettingsPicker.js';
@@ -33,6 +36,7 @@ import {
   getModelPricing,
   getProviderKey,
   formatPricingLabel,
+  ALIAS_TO_MODEL_ID,
 } from '../models.js';
 import { DEFAULT_MODEL, RESIZE_DEBOUNCE_MS } from '../constants.js';
 import { createMessage, cleanInputChar } from './helpers.js';
@@ -109,6 +113,10 @@ function App({ options }: AppProps) {
 
   const [inputText, setInputText] = useState('');
   const [showModelPicker, setShowModelPicker] = useState(false);
+  const [showRolePicker, setShowRolePicker] = useState(false);
+  const [pendingAgentModelId, setPendingAgentModelId] = useState<string | null>(null);
+  const [rolePickerPhase, setRolePickerPhase] = useState<'primary' | 'new-agent'>('new-agent');
+  const [streamingAgentName, setStreamingAgentName] = useState<string | undefined>(undefined);
   const [showTranscript, setShowTranscript] = useState(false);
   const [showTalks, setShowTalks] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
@@ -205,7 +213,7 @@ function App({ options }: AppProps) {
 
   // --- Scroll state ---
 
-  const isOverlayActive = showModelPicker || showTranscript || showTalks || showSettings;
+  const isOverlayActive = showModelPicker || showRolePicker || showTranscript || showTalks || showSettings;
 
   // --- Command hints ---
 
@@ -430,6 +438,86 @@ function App({ options }: AppProps) {
       pricingLabel: formatPricingLabel(m, providerBilling),
     };
   });
+
+  // --- Agent management ---
+
+  /** Sync agents to gateway after any mutation. */
+  const syncAgentsToGateway = useCallback((agents: TalkAgent[]) => {
+    const gwId = gatewayTalkIdRef.current;
+    if (gwId && chatServiceRef.current) {
+      chatServiceRef.current.updateGatewayTalk(gwId, { agents });
+    }
+  }, []);
+
+  /** Handle "Add as Talk agent" request from ModelPicker. */
+  const handleAddAgentRequest = useCallback((modelId: string) => {
+    setShowModelPicker(false);
+    setPendingAgentModelId(modelId);
+
+    const talkId = activeTalkIdRef.current;
+    if (!talkId || !talkManagerRef.current) return;
+
+    const existingAgents = talkManagerRef.current.getAgents(talkId);
+    if (existingAgents.length === 0) {
+      // First time: need to assign a role to the current/primary model first
+      setRolePickerPhase('primary');
+    } else {
+      setRolePickerPhase('new-agent');
+    }
+    setShowRolePicker(true);
+  }, []);
+
+  /** Handle role selection from RolePicker. */
+  const handleRoleSelected = useCallback((role: RoleTemplate) => {
+    const talkId = activeTalkIdRef.current;
+    if (!talkId || !talkManagerRef.current) return;
+
+    if (rolePickerPhase === 'primary') {
+      // Create primary agent from current model + selected role
+      const primaryAlias = getModelAlias(currentModel);
+      const primaryAgent: TalkAgent = {
+        name: generateAgentName(primaryAlias, role.id),
+        model: currentModel,
+        role: role.id,
+        isPrimary: true,
+      };
+      talkManagerRef.current.addAgent(talkId, primaryAgent);
+
+      // Now show role picker again for the new agent model
+      setRolePickerPhase('new-agent');
+      // Don't dismiss — RolePicker stays open for the new agent
+      return;
+    }
+
+    // new-agent phase: create agent from pendingAgentModelId
+    if (!pendingAgentModelId) {
+      setShowRolePicker(false);
+      return;
+    }
+
+    const newAlias = getModelAlias(pendingAgentModelId);
+    const newAgent: TalkAgent = {
+      name: generateAgentName(newAlias, role.id),
+      model: pendingAgentModelId,
+      role: role.id,
+      isPrimary: false,
+    };
+    talkManagerRef.current.addAgent(talkId, newAgent);
+
+    // Auto-save the talk
+    talkManagerRef.current.saveTalk(talkId);
+
+    // Sync to gateway
+    const agents = talkManagerRef.current.getAgents(talkId);
+    syncAgentsToGateway(agents);
+
+    // Dismiss and confirm
+    setShowRolePicker(false);
+    setPendingAgentModelId(null);
+
+    const sysMsg = createMessage('system', `Agent added: ${newAgent.name} (${role.label})`);
+    chat.setMessages(prev => [...prev, sysMsg]);
+  }, [rolePickerPhase, pendingAgentModelId, currentModel, syncAgentsToGateway]);
 
   // --- Talk handlers ---
 
@@ -817,6 +905,7 @@ function App({ options }: AppProps) {
           model: gwTalk.model,
           pinnedMessageIds: gwTalk.pinnedMessageIds,
           jobs: gwTalk.jobs,
+          agents: gwTalk.agents,
           createdAt: gwTalk.createdAt,
           updatedAt: gwTalk.updatedAt,
         });
@@ -895,6 +984,194 @@ function App({ options }: AppProps) {
     setShowTalks(false);
   }, [activeTalkId, chat.messages]);
 
+  // --- Multi-agent messaging ---
+
+  const sendMultiAgentMessage = useCallback(async (text: string, targetAgents: TalkAgent[], allAgents: TalkAgent[]) => {
+    const gwTalkId = gatewayTalkIdRef.current;
+    if (!gwTalkId || !chatServiceRef.current) {
+      setError('Multi-agent requires a gateway-synced talk');
+      return;
+    }
+
+    // Add user message
+    const userMsg = createMessage('user', text);
+    chat.setMessages(prev => [...prev, userMsg]);
+    mouseScroll.scrollToBottom();
+
+    for (const agent of targetAgents) {
+      const roleTemplate = ROLE_BY_ID[agent.role];
+      if (!roleTemplate) continue;
+
+      // Show "responding..." indicator
+      setStreamingAgentName(agent.name);
+      const indicatorMsg = createMessage('system', `${agent.name} is responding...`);
+      chat.setMessages(prev => [...prev, indicatorMsg]);
+
+      try {
+        let fullContent = '';
+        const stream = chatServiceRef.current!.streamAgentMessage(
+          gwTalkId,
+          text,
+          { name: agent.name, model: agent.model, role: agent.role },
+          allAgents.map(a => ({ name: a.name, role: a.role, model: a.model })),
+          roleTemplate.instructions,
+        );
+
+        for await (const chunk of stream) {
+          fullContent += chunk;
+        }
+
+        // Replace indicator with final message
+        if (fullContent.trim()) {
+          const model = chatServiceRef.current!.lastResponseModel ?? agent.model;
+          const assistantMsg = createMessage('assistant', fullContent, model, agent.name, agent.role);
+          chat.setMessages(prev => {
+            const filtered = prev.filter(m => m.id !== indicatorMsg.id);
+            return [...filtered, assistantMsg];
+          });
+        } else {
+          // Remove indicator if no content
+          chat.setMessages(prev => prev.filter(m => m.id !== indicatorMsg.id));
+        }
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+        const errMsg = createMessage('system', `${agent.name} error: ${errorMessage}`);
+        chat.setMessages(prev => {
+          const filtered = prev.filter(m => m.id !== indicatorMsg.id);
+          return [...filtered, errMsg];
+        });
+      }
+    }
+
+    setStreamingAgentName(undefined);
+  }, [activeTalkId]);
+
+  // --- Agent command handlers ---
+
+  const handleAddAgentCommand = useCallback((modelAlias: string, roleId: string) => {
+    const talkId = activeTalkIdRef.current;
+    if (!talkId || !talkManagerRef.current) return;
+
+    const modelId = ALIAS_TO_MODEL_ID[modelAlias.toLowerCase()] ?? modelAlias;
+    const role = roleId as AgentRole;
+    if (!ROLE_BY_ID[role]) {
+      setError(`Unknown role: ${roleId}. Valid: analyst, critic, strategist, devils-advocate, synthesizer, editor`);
+      return;
+    }
+
+    const existingAgents = talkManagerRef.current.getAgents(talkId);
+    if (existingAgents.length === 0) {
+      // Auto-create primary agent from current model as analyst
+      const primaryAlias = getModelAlias(currentModel);
+      const primaryAgent: TalkAgent = {
+        name: generateAgentName(primaryAlias, 'analyst'),
+        model: currentModel,
+        role: 'analyst',
+        isPrimary: true,
+      };
+      talkManagerRef.current.addAgent(talkId, primaryAgent);
+    }
+
+    const alias = getModelAlias(modelId);
+    const newAgent: TalkAgent = {
+      name: generateAgentName(alias, role),
+      model: modelId,
+      role,
+      isPrimary: false,
+    };
+    talkManagerRef.current.addAgent(talkId, newAgent);
+    talkManagerRef.current.saveTalk(talkId);
+
+    const agents = talkManagerRef.current.getAgents(talkId);
+    syncAgentsToGateway(agents);
+
+    const sysMsg = createMessage('system', `Agent added: ${newAgent.name} (${ROLE_BY_ID[role].label})`);
+    chat.setMessages(prev => [...prev, sysMsg]);
+  }, [currentModel, syncAgentsToGateway]);
+
+  const handleRemoveAgent = useCallback((name: string) => {
+    const talkId = activeTalkIdRef.current;
+    if (!talkId || !talkManagerRef.current) return;
+
+    const success = talkManagerRef.current.removeAgent(talkId, name);
+    if (success) {
+      const agents = talkManagerRef.current.getAgents(talkId);
+      syncAgentsToGateway(agents);
+      const sysMsg = createMessage('system', `Agent removed: ${name}`);
+      chat.setMessages(prev => [...prev, sysMsg]);
+    } else {
+      setError(`Cannot remove "${name}" — not found or is primary agent`);
+    }
+  }, [syncAgentsToGateway]);
+
+  const handleListAgents = useCallback(() => {
+    const talkId = activeTalkIdRef.current;
+    if (!talkId || !talkManagerRef.current) return;
+
+    const agents = talkManagerRef.current.getAgents(talkId);
+    if (agents.length === 0) {
+      const sysMsg = createMessage('system', 'No agents configured. Use /agent add <model> <role> or ^A → A to add one.');
+      chat.setMessages(prev => [...prev, sysMsg]);
+      return;
+    }
+    const lines = agents.map((a, i) => {
+      const primary = a.isPrimary ? ' (primary)' : '';
+      const alias = getModelAlias(a.model);
+      return `  ${i + 1}. ${a.name} — ${ROLE_BY_ID[a.role]?.label ?? a.role} [${alias}]${primary}`;
+    });
+    const sysMsg = createMessage('system', `Agents:\n${lines.join('\n')}`);
+    chat.setMessages(prev => [...prev, sysMsg]);
+  }, []);
+
+  const handleAskAgent = useCallback(async (name: string, message: string) => {
+    const talkId = activeTalkIdRef.current;
+    if (!talkId || !talkManagerRef.current) return;
+
+    const agent = talkManagerRef.current.findAgent(talkId, name);
+    if (!agent) {
+      setError(`Agent "${name}" not found`);
+      return;
+    }
+
+    const allAgents = talkManagerRef.current.getAgents(talkId);
+    await sendMultiAgentMessage(message, [agent], allAgents);
+  }, [sendMultiAgentMessage]);
+
+  const handleDebateAll = useCallback(async (topic: string) => {
+    const talkId = activeTalkIdRef.current;
+    if (!talkId || !talkManagerRef.current) return;
+
+    const agents = talkManagerRef.current.getAgents(talkId);
+    if (agents.length < 2) {
+      setError('Debate requires at least 2 agents. Use /agent add or ^A to add agents.');
+      return;
+    }
+
+    await sendMultiAgentMessage(topic, agents, agents);
+  }, [sendMultiAgentMessage]);
+
+  const handleReviewLast = useCallback(async () => {
+    const talkId = activeTalkIdRef.current;
+    if (!talkId || !talkManagerRef.current) return;
+
+    const agents = talkManagerRef.current.getAgents(talkId);
+    const nonPrimary = agents.filter(a => !a.isPrimary);
+    if (nonPrimary.length === 0) {
+      setError('Review requires non-primary agents. Use /agent add to add agents.');
+      return;
+    }
+
+    // Find the last assistant message
+    const lastAssistant = [...chat.messages].reverse().find(m => m.role === 'assistant');
+    if (!lastAssistant) {
+      setError('No assistant message to review');
+      return;
+    }
+
+    const reviewPrompt = `Please review and critique the following response:\n\n${lastAssistant.content}`;
+    await sendMultiAgentMessage(reviewPrompt, nonPrimary, agents);
+  }, [sendMultiAgentMessage, chat.messages]);
+
   // --- Submit handler (command registry + chat) ---
 
   const executeClear = useCallback(() => {
@@ -924,6 +1201,12 @@ function App({ options }: AppProps) {
     setObjective: handleSetObjective,
     showObjective: handleShowObjective,
     viewReports: handleViewReports,
+    addAgent: handleAddAgentCommand,
+    removeAgent: handleRemoveAgent,
+    listAgents: handleListAgents,
+    askAgent: handleAskAgent,
+    debateAll: handleDebateAll,
+    reviewLast: handleReviewLast,
   });
   commandCtx.current = {
     switchModel,
@@ -943,6 +1226,12 @@ function App({ options }: AppProps) {
     setObjective: handleSetObjective,
     showObjective: handleShowObjective,
     viewReports: handleViewReports,
+    addAgent: handleAddAgentCommand,
+    removeAgent: handleRemoveAgent,
+    listAgents: handleListAgents,
+    askAgent: handleAskAgent,
+    debateAll: handleDebateAll,
+    reviewLast: handleReviewLast,
   };
 
   const handleSubmit = useCallback(async (text: string) => {
@@ -994,7 +1283,7 @@ function App({ options }: AppProps) {
   // --- Keyboard shortcuts ---
 
   useInput((input, key) => {
-    if (showModelPicker || showTranscript || showTalks || showSettings) return;
+    if (showModelPicker || showRolePicker || showTranscript || showTalks || showSettings) return;
 
     // Clear confirmation mode
     if (pendingClear) {
@@ -1185,6 +1474,19 @@ function App({ options }: AppProps) {
             onSelect={selectModel}
             onClose={() => setShowModelPicker(false)}
             maxHeight={overlayMaxHeight}
+            onAddAgent={handleAddAgentRequest}
+          />
+        </Box>
+      ) : showRolePicker ? (
+        <Box flexGrow={1} paddingX={1}>
+          <RolePicker
+            roles={AGENT_ROLES}
+            onSelect={handleRoleSelected}
+            onClose={() => { setShowRolePicker(false); setPendingAgentModelId(null); }}
+            modelName={rolePickerPhase === 'primary'
+              ? getModelAlias(currentModel) + ' (primary)'
+              : getModelAlias(pendingAgentModelId ?? '')}
+            maxHeight={overlayMaxHeight}
           />
         </Box>
       ) : showTranscript ? (
@@ -1273,6 +1575,7 @@ function App({ options }: AppProps) {
           currentModel={currentModel}
           pinnedMessageIds={activeTalkId && talkManagerRef.current
             ? talkManagerRef.current.getPinnedMessageIds(activeTalkId) : []}
+          streamingAgentName={streamingAgentName}
         />
       )}
 

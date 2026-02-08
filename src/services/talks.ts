@@ -10,7 +10,7 @@ import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
-import type { Talk, Job } from '../types';
+import type { Talk, Job, TalkAgent } from '../types';
 
 /** Validate that a talk ID is safe for use as a directory name. */
 function isValidTalkId(id: string): boolean {
@@ -323,6 +323,71 @@ export class TalkManager {
     return (talk?.jobs ?? []).some(j => j.active);
   }
 
+  // --- Agent methods ---
+
+  /** Get all agents for a talk. */
+  getAgents(talkId: string): TalkAgent[] {
+    const talk = this.talks.get(talkId);
+    return talk?.agents ?? [];
+  }
+
+  /** Add an agent to a talk. Appends a number suffix if name collides. */
+  addAgent(talkId: string, agent: TalkAgent): void {
+    const talk = this.talks.get(talkId);
+    if (!talk) return;
+
+    if (!talk.agents) talk.agents = [];
+
+    // Check name collision, append number if exists
+    let name = agent.name;
+    const existing = talk.agents.map(a => a.name.toLowerCase());
+    if (existing.includes(name.toLowerCase())) {
+      let suffix = 2;
+      while (existing.includes(`${name} ${suffix}`.toLowerCase())) suffix++;
+      name = `${name} ${suffix}`;
+    }
+
+    talk.agents.push({ ...agent, name });
+    talk.updatedAt = Date.now();
+    if (talk.isSaved) this.persistTalk(talk);
+  }
+
+  /** Remove an agent from a talk. Returns false if not found or is primary. */
+  removeAgent(talkId: string, agentName: string): boolean {
+    const talk = this.talks.get(talkId);
+    if (!talk?.agents) return false;
+
+    const agent = talk.agents.find(a => a.name.toLowerCase() === agentName.toLowerCase());
+    if (!agent || agent.isPrimary) return false;
+
+    talk.agents = talk.agents.filter(a => a.name.toLowerCase() !== agentName.toLowerCase());
+    talk.updatedAt = Date.now();
+    if (talk.isSaved) this.persistTalk(talk);
+    return true;
+  }
+
+  /** Set the full agents array for a talk. */
+  setAgents(talkId: string, agents: TalkAgent[]): void {
+    const talk = this.talks.get(talkId);
+    if (!talk) return;
+
+    talk.agents = agents;
+    talk.updatedAt = Date.now();
+    if (talk.isSaved) this.persistTalk(talk);
+  }
+
+  /** Get the primary agent for a talk. */
+  getPrimaryAgent(talkId: string): TalkAgent | undefined {
+    const talk = this.talks.get(talkId);
+    return talk?.agents?.find(a => a.isPrimary);
+  }
+
+  /** Find an agent by name (case-insensitive). */
+  findAgent(talkId: string, name: string): TalkAgent | undefined {
+    const talk = this.talks.get(talkId);
+    return talk?.agents?.find(a => a.name.toLowerCase() === name.toLowerCase());
+  }
+
   /** Import a talk from gateway data (creates local entry if not present). */
   importGatewayTalk(gwTalk: {
     id: string;
@@ -331,6 +396,7 @@ export class TalkManager {
     model?: string;
     pinnedMessageIds?: string[];
     jobs?: Job[];
+    agents?: TalkAgent[];
     createdAt: number;
     updatedAt: number;
   }): Talk {
@@ -352,6 +418,7 @@ export class TalkManager {
       existing.model = gwTalk.model ?? existing.model;
       existing.pinnedMessageIds = gwTalk.pinnedMessageIds ?? existing.pinnedMessageIds;
       existing.jobs = gwTalk.jobs ?? existing.jobs;
+      existing.agents = gwTalk.agents ?? existing.agents;
       existing.updatedAt = gwTalk.updatedAt;
       existing.gatewayTalkId = gwTalk.id;
       return existing;
@@ -367,6 +434,7 @@ export class TalkManager {
       model: gwTalk.model,
       pinnedMessageIds: gwTalk.pinnedMessageIds,
       jobs: gwTalk.jobs,
+      agents: gwTalk.agents,
       gatewayTalkId: gwTalk.id,
       isSaved: false,
       createdAt: gwTalk.createdAt,

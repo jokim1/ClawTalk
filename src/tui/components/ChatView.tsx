@@ -8,10 +8,20 @@
 
 import React, { useMemo } from 'react';
 import { Box, Text } from 'ink';
-import type { Message } from '../../types.js';
+import type { Message, AgentRole } from '../../types.js';
 import { getModelAlias } from '../../models.js';
 import { formatElapsed } from '../utils.js';
 import { preWrapText, countVisualLines, getSpeakerName } from '../lineCount.js';
+
+/** Map agent roles to speaker colors */
+const ROLE_COLORS: Record<AgentRole, string> = {
+  analyst: 'cyan',
+  critic: 'red',
+  strategist: 'blue',
+  'devils-advocate': 'magenta',
+  synthesizer: 'green',
+  editor: 'yellow',
+};
 
 interface ChatViewProps {
   messages: Message[];
@@ -26,6 +36,8 @@ interface ChatViewProps {
   width: number;
   currentModel: string;
   pinnedMessageIds?: string[];
+  /** Agent name to show during streaming (for multi-agent) */
+  streamingAgentName?: string;
 }
 
 interface VisibleSlice {
@@ -157,6 +169,7 @@ export function ChatView({
   width,
   currentModel,
   pinnedMessageIds = [],
+  streamingAgentName,
 }: ChatViewProps) {
   const pinnedSet = useMemo(() => new Set(pinnedMessageIds), [pinnedMessageIds]);
   const contentWidth = Math.max(10, width - 2); // account for paddingX={1}
@@ -261,7 +274,7 @@ export function ChatView({
       {/* Streaming content (only when at bottom and processing) */}
       {isProcessing && scrollOffset === 0 && (
         <Box flexDirection="column">
-          <Text color="cyan" bold>{getModelAlias(currentModel)}:</Text>
+          <Text color="cyan" bold>{streamingAgentName ?? getModelAlias(currentModel)}:</Text>
           <Box paddingLeft={2}>
             {cappedStreaming ? (
               <Text>{cappedStreaming}<Text color="cyan">{'\u258c'}</Text></Text>
@@ -310,7 +323,7 @@ function MessageBlock({ message, isPinned, skipLines = 0, showLines = 0, content
     ? 'green'
     : message.role === 'system'
       ? 'yellow'
-      : 'cyan';
+      : (message.agentRole ? ROLE_COLORS[message.agentRole] : 'cyan');
 
   const innerWidth = Math.max(10, contentWidth - 2);
 

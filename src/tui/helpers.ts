@@ -3,7 +3,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import type { Message } from '../types.js';
+import type { Message, AgentRole } from '../types.js';
 import { INPUT_CLEANUP_DELAY_MS } from '../constants.js';
 
 /** Create a Message object with a unique ID and current timestamp. */
@@ -11,13 +11,17 @@ export function createMessage(
   role: Message['role'],
   content: string,
   model?: string,
+  agentName?: string,
+  agentRole?: AgentRole,
 ): Message {
   return {
     id: randomUUID(),
     role,
     content,
     timestamp: Date.now(),
-    ...(model ? { model } : {}),
+    ...(model && { model }),
+    ...(agentName && { agentName }),
+    ...(agentRole && { agentRole }),
   };
 }
 

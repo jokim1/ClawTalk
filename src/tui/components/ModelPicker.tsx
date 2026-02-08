@@ -21,13 +21,17 @@ interface ModelPickerProps {
   onSelect: (modelId: string) => void;
   onClose: () => void;
   maxHeight?: number;
+  onAddAgent?: (modelId: string) => void;
 }
 
 type RenderItem =
   | { type: 'header'; provider: string }
   | { type: 'model'; model: Model; flatIndex: number };
 
-export function ModelPicker({ models, currentModel, onSelect, onClose, maxHeight = 20 }: ModelPickerProps) {
+export function ModelPicker({ models, currentModel, onSelect, onClose, maxHeight = 20, onAddAgent }: ModelPickerProps) {
+  // Two-phase flow: 'model' = selecting model, 'action' = choose switch vs add agent
+  const [phase, setPhase] = useState<'model' | 'action'>('model');
+  const [pendingModelId, setPendingModelId] = useState<string | null>(null);
   // Build grouped render list
   const { renderList, modelIndices } = useMemo(() => {
     const items: RenderItem[] = [];
@@ -76,6 +80,26 @@ export function ModelPicker({ models, currentModel, onSelect, onClose, maxHeight
   };
 
   useInput((input, key) => {
+    // --- Action phase: switch model or add agent ---
+    if (phase === 'action') {
+      if (key.escape) {
+        setPhase('model');
+        setPendingModelId(null);
+        return;
+      }
+      if (key.return) {
+        // Enter = switch model (same as current behavior)
+        if (pendingModelId) onSelect(pendingModelId);
+        return;
+      }
+      if ((input === 'a' || input === 'A') && onAddAgent && pendingModelId) {
+        onAddAgent(pendingModelId);
+        return;
+      }
+      return;
+    }
+
+    // --- Model phase ---
     if (key.escape) {
       onClose();
       return;
@@ -100,11 +124,17 @@ export function ModelPicker({ models, currentModel, onSelect, onClose, maxHeight
     }
 
     if (key.return) {
-      onSelect(models[selectedIndex].id);
+      if (onAddAgent) {
+        // Transition to action phase
+        setPendingModelId(models[selectedIndex].id);
+        setPhase('action');
+      } else {
+        onSelect(models[selectedIndex].id);
+      }
       return;
     }
 
-    // Number keys for quick select (1-9)
+    // Number keys for quick select (1-9) — fast path, always switch directly
     const num = parseInt(input, 10);
     if (num >= 1 && num <= 9 && num <= models.length) {
       onSelect(models[num - 1].id);
@@ -115,6 +145,28 @@ export function ModelPicker({ models, currentModel, onSelect, onClose, maxHeight
   const visibleItems = renderList.slice(scrollOffset, scrollOffset + visibleRows);
   const hasMore = scrollOffset + visibleRows < renderList.length;
   const hasLess = scrollOffset > 0;
+
+  // --- Action sub-menu ---
+  if (phase === 'action' && pendingModelId) {
+    const pendingModel = models.find(m => m.id === pendingModelId);
+    const label = pendingModel?.label ?? pendingModelId;
+    return (
+      <Box flexDirection="column" paddingX={1}>
+        <Text bold color="cyan">{label}</Text>
+        <Box height={1} />
+        <Text color="cyan">{'>'}  </Text>
+        <Text>Enter — Switch to this model</Text>
+        {onAddAgent && (
+          <Box>
+            <Text>   </Text>
+            <Text>A — Add as Talk agent</Text>
+          </Box>
+        )}
+        <Box height={1} />
+        <Text dimColor>Esc to go back</Text>
+      </Box>
+    );
+  }
 
   return (
     <Box flexDirection="column" paddingX={1}>

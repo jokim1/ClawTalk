@@ -5,7 +5,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import type { Message, RateLimitInfo, Job, JobReport } from '../types.js';
+import type { Message, RateLimitInfo, Job, JobReport, TalkAgent } from '../types.js';
 import type { IChatService } from './interfaces.js';
 import {
   CHAT_TIMEOUT_MS,
@@ -265,7 +265,7 @@ export class ChatService implements IChatService {
   }
 
   /** Update Talk metadata on the gateway (objective, topicTitle, model). */
-  async updateGatewayTalk(talkId: string, updates: { objective?: string; topicTitle?: string; model?: string }): Promise<boolean> {
+  async updateGatewayTalk(talkId: string, updates: { objective?: string; topicTitle?: string; model?: string; agents?: TalkAgent[] }): Promise<boolean> {
     try {
       const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}`, {
         method: 'PATCH',
@@ -294,7 +294,7 @@ export class ChatService implements IChatService {
   }
 
   /** Fetch Talk metadata from gateway. */
-  async getGatewayTalk(talkId: string): Promise<{ id: string; topicTitle?: string; objective?: string; model?: string; pinnedMessageIds: string[]; contextMd?: string } | null> {
+  async getGatewayTalk(talkId: string): Promise<{ id: string; topicTitle?: string; objective?: string; model?: string; pinnedMessageIds: string[]; agents?: TalkAgent[]; contextMd?: string } | null> {
     try {
       const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}`, {
         method: 'GET',
@@ -309,7 +309,7 @@ export class ChatService implements IChatService {
   }
 
   /** List all talks from the gateway. */
-  async listGatewayTalks(): Promise<Array<{ id: string; topicTitle?: string; objective?: string; model?: string; pinnedMessageIds: string[]; jobs: Job[]; createdAt: number; updatedAt: number }>> {
+  async listGatewayTalks(): Promise<Array<{ id: string; topicTitle?: string; objective?: string; model?: string; pinnedMessageIds: string[]; jobs: Job[]; agents?: TalkAgent[]; createdAt: number; updatedAt: number }>> {
     try {
       const response = await fetch(`${this.config.gatewayUrl}/api/talks`, {
         method: 'GET',
@@ -463,6 +463,86 @@ export class ChatService implements IChatService {
       body: JSON.stringify({
         message: userMessage,
         model: model ?? this.config.model,
+      }),
+      signal: AbortSignal.timeout(CHAT_TIMEOUT_MS),
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Gateway error (${response.status}): ${error.slice(0, 200)}`);
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error('No response body');
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+    this.lastResponseModel = undefined;
+    this.lastResponseUsage = undefined;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      if (buffer.length > MAX_STREAM_BUFFER_BYTES) {
+        reader.cancel();
+        throw new Error('Streaming buffer exceeded size limit');
+      }
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+
+      for (const line of lines) {
+        // Skip custom meta events from gateway
+        if (line.startsWith('event: ')) continue;
+
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6);
+          if (data === '[DONE]') return;
+
+          try {
+            const parsed = validateSSEChunk(JSON.parse(data));
+            if (!parsed) continue;
+            if (!this.lastResponseModel && parsed.model) {
+              this.lastResponseModel = parsed.model;
+            }
+            if (parsed.usage) {
+              this.lastResponseUsage = {
+                promptTokens: parsed.usage.prompt_tokens ?? 0,
+                completionTokens: parsed.usage.completion_tokens ?? 0,
+              };
+            }
+            const content = parsed.choices?.[0]?.delta?.content;
+            if (content) yield stripAnsi(content);
+          } catch (err) {
+            console.debug('SSE parse error (expected for partial chunks):', err);
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Stream a message through the gateway Talk chat endpoint with agent context.
+   * The gateway handles system prompt, context, and history with role-specific instructions.
+   */
+  async *streamAgentMessage(
+    talkId: string,
+    message: string,
+    agent: { name: string; model: string; role: string },
+    allAgents: { name: string; role: string; model: string }[],
+    roleInstructions: string,
+  ): AsyncGenerator<string, void, unknown> {
+    const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+      body: JSON.stringify({
+        message,
+        model: agent.model,
+        agentName: agent.name,
+        agentRole: agent.role,
+        agentRoleInstructions: roleInstructions,
+        otherAgents: allAgents.filter(a => a.name !== agent.name),
       }),
       signal: AbortSignal.timeout(CHAT_TIMEOUT_MS),
     });

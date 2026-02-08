@@ -19,12 +19,23 @@ export interface Session {
   updatedAt: number;
 }
 
+export type AgentRole = 'analyst' | 'critic' | 'strategist' | 'devils-advocate' | 'synthesizer' | 'editor';
+
+export interface TalkAgent {
+  name: string;
+  model: string;
+  role: AgentRole;
+  isPrimary: boolean;
+}
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: number;
   model?: string;
+  agentName?: string;
+  agentRole?: AgentRole;
 }
 
 export type ModelStatus = 'unknown' | 'checking' | 'ok' | { error: string };
@@ -147,6 +158,7 @@ export interface Talk {
   objective?: string;          // System prompt prepended to every AI request
   pinnedMessageIds?: string[];  // Pinned message IDs for stable context
   jobs?: Job[];            // Background jobs for this talk
+  agents?: TalkAgent[];    // Multi-agent configuration
   gatewayTalkId?: string;  // Corresponding gateway-side talk ID
   createdAt: number;
   updatedAt: number;

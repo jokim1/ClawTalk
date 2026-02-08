@@ -25,6 +25,12 @@ export interface CommandContext {
   setObjective: (text: string | undefined) => void;
   showObjective: () => void;
   viewReports: (jobIndex?: number) => void;
+  addAgent: (model: string, role: string) => void;
+  removeAgent: (name: string) => void;
+  listAgents: () => void;
+  askAgent: (name: string, message: string) => void;
+  debateAll: (topic: string) => void;
+  reviewLast: () => void;
 }
 
 export interface CommandResult {
@@ -173,6 +179,77 @@ function handleObjectiveCommand(args: string, ctx: CommandContext): CommandResul
   return { handled: true };
 }
 
+/** Handle /agent <subcommand> — manage agents. */
+function handleAgentCommand(args: string, ctx: CommandContext): CommandResult {
+  const trimmed = args.trim();
+  if (!trimmed) {
+    ctx.setError('Usage: /agent add <model> <role> | /agent remove <name>');
+    return { handled: true };
+  }
+
+  if (trimmed.startsWith('add ')) {
+    const rest = trimmed.slice(4).trim();
+    const parts = rest.split(/\s+/);
+    if (parts.length < 2) {
+      ctx.setError('Usage: /agent add <model> <role>');
+      return { handled: true };
+    }
+    const model = parts[0];
+    const role = parts[1];
+    ctx.addAgent(model, role);
+    return { handled: true };
+  }
+
+  if (trimmed.startsWith('remove ')) {
+    const name = trimmed.slice(7).trim();
+    if (!name) {
+      ctx.setError('Usage: /agent remove <name>');
+      return { handled: true };
+    }
+    ctx.removeAgent(name);
+    return { handled: true };
+  }
+
+  ctx.setError('Usage: /agent add <model> <role> | /agent remove <name>');
+  return { handled: true };
+}
+
+/** Handle /agents — list all agents. */
+function handleAgentsCommand(_args: string, ctx: CommandContext): CommandResult {
+  ctx.listAgents();
+  return { handled: true };
+}
+
+/** Handle /ask @<name> <message> — send to specific agent. */
+function handleAskCommand(args: string, ctx: CommandContext): CommandResult {
+  const trimmed = args.trim();
+  // Parse @name from the start
+  const match = trimmed.match(/^@(\S+)\s+(.+)$/s);
+  if (!match) {
+    ctx.setError('Usage: /ask @<agent-name> <message>');
+    return { handled: true };
+  }
+  ctx.askAgent(match[1], match[2]);
+  return { handled: true };
+}
+
+/** Handle /debate <topic> — all agents discuss. */
+function handleDebateCommand(args: string, ctx: CommandContext): CommandResult {
+  const trimmed = args.trim();
+  if (!trimmed) {
+    ctx.setError('Usage: /debate <topic>');
+    return { handled: true };
+  }
+  ctx.debateAll(trimmed);
+  return { handled: true };
+}
+
+/** Handle /review — non-primary agents critique the last response. */
+function handleReviewCommand(_args: string, ctx: CommandContext): CommandResult {
+  ctx.reviewLast();
+  return { handled: true };
+}
+
 /**
  * Registry of slash commands.
  * Add new commands here — they'll be available immediately.
@@ -189,6 +266,11 @@ const COMMANDS: Record<string, { handler: CommandHandler; description: string }>
   jobs: { handler: handleJobsCommand, description: 'List jobs for this talk' },
   objective: { handler: handleObjectiveCommand, description: 'Set talk objective (system prompt)' },
   reports: { handler: handleReportsCommand, description: 'View job reports' },
+  agent: { handler: handleAgentCommand, description: 'Add or remove an agent' },
+  agents: { handler: handleAgentsCommand, description: 'List agents for this talk' },
+  ask: { handler: handleAskCommand, description: 'Ask a specific agent' },
+  debate: { handler: handleDebateCommand, description: 'All agents discuss a topic' },
+  review: { handler: handleReviewCommand, description: 'Agents review last response' },
 };
 
 /**
@@ -238,6 +320,11 @@ export function getCommandCompletions(prefix: string): CommandInfo[] {
           { name: 'job pause N', description: 'Pause job #N' },
           { name: 'job resume N', description: 'Resume job #N' },
           { name: 'job delete N', description: 'Delete job #N' },
+        );
+      } else if (name === 'agent') {
+        results.push(
+          { name: 'agent add <model> <role>', description: 'Add agent with role' },
+          { name: 'agent remove <name>', description: 'Remove an agent' },
         );
       } else {
         results.push({ name, description: entry.description });
