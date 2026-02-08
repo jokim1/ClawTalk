@@ -440,7 +440,6 @@ src/
 
 - **[ClawTalkGateway](https://github.com/jokim1/ClawTalkGateway)** — OpenClaw plugin providing HTTP endpoints this client connects to
 - **[ClawTalkMobile](https://github.com/jokim1/ClawTalkMobile)** — iOS client that connects to the same gateway
-- **[ClawTalkTerminal](https://github.com/jokim1/ClawTalkTerminal)** — Legacy local-only terminal client (superseded by ClawTalk's local mode — see Setup Option A)
 - **[OpenClaw](https://github.com/jokim1/openclaw)** — The host server the gateway plugin extends
 
 ## Development
