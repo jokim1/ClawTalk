@@ -1016,6 +1016,15 @@ function App({ options }: AppProps) {
           chat.setMessages(msgs);
         }
       });
+      // Recover agents from gateway if local agents were lost
+      const localAgents = talkManagerRef.current?.getAgents(talk.id) ?? [];
+      if (localAgents.length === 0) {
+        chatServiceRef.current?.getGatewayTalk(gwId).then(gwTalk => {
+          if (!gwTalk?.agents?.length || activeTalkIdRef.current !== talk.id) return;
+          talkManagerRef.current?.setAgents(talk.id, gwTalk.agents!);
+          syncAgentsToGateway(gwTalk.agents!);
+        });
+      }
     } else {
       // Gateway talk will be created lazily on first message send
       gatewayTalkIdRef.current = null;
@@ -1041,7 +1050,7 @@ function App({ options }: AppProps) {
     setModelStatus('ok');
 
     setShowTalks(false);
-  }, [activeTalkId, chat.messages]);
+  }, [activeTalkId, chat.messages, syncAgentsToGateway]);
 
   // --- Multi-agent messaging ---
 

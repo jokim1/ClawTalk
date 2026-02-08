@@ -460,7 +460,13 @@ export class TalkManager {
       existing.model = gwTalk.model ?? existing.model;
       existing.pinnedMessageIds = gwTalk.pinnedMessageIds ?? existing.pinnedMessageIds;
       existing.jobs = gwTalk.jobs ?? existing.jobs;
-      existing.agents = gwTalk.agents ?? existing.agents;
+      // Only overwrite agents if gateway actually has agents; never replace
+      // non-empty local agents with an empty array from gateway (sync may have
+      // failed or gateway may have been restarted without agents).
+      const gwAgents = gwTalk.agents;
+      if (gwAgents && gwAgents.length > 0) {
+        existing.agents = gwAgents;
+      }
       existing.updatedAt = gwTalk.updatedAt;
       existing.gatewayTalkId = gwTalk.id;
       return existing;
