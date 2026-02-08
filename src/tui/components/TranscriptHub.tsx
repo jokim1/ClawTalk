@@ -73,6 +73,15 @@ export function TranscriptHub({
   const sessions = useMemo(() => sessionManager.listSessions(), [sessionManager, mode, refreshKey]);
   const activeSessionId = sessionManager.getActiveSessionId();
 
+  // Resolved export directory for display
+  const resolvedExportDir = useMemo(() => {
+    if (exportDir) return exportDir;
+    const home = process.env.HOME || '~';
+    const docs = `${home}/Documents`;
+    try { if (require('fs').existsSync(docs)) return docs; } catch {}
+    return home;
+  }, [exportDir]);
+
   // Determine messages for transcript view
   const transcriptMessages = useMemo(() => {
     if (!viewingSession) return [];
@@ -124,8 +133,8 @@ export function TranscriptHub({
   }, [searchResults]);
 
   // Session list scrolling helpers
-  // title(1) + blank(1) + footer(1) + blank(1) + up to 2 scroll indicators = 6
-  const listVisibleRows = Math.max(3, maxHeight - 6);
+  // title(1) + blank(1) + footer(1) + blank(1) + help(1) + blank(1) + up to 2 scroll indicators = 8
+  const listVisibleRows = Math.max(3, maxHeight - 8);
 
   const ensureListVisible = (idx: number) => {
     setListScrollOffset(prev => {
@@ -492,6 +501,8 @@ export function TranscriptHub({
         ) : (
           <Text dimColor>  ↑↓ Navigate  Enter View  / Search  e Export  x Delete  Esc Close</Text>
         )}
+        <Box height={1} />
+        <Text dimColor>  Export dir: {resolvedExportDir}/  <Text italic>(set exportDir in ~/.clawtalk/config.json)</Text></Text>
       </Box>
     );
   }
