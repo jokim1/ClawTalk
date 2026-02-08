@@ -117,6 +117,8 @@ function App({ options }: AppProps) {
   const [pendingAgentModelId, setPendingAgentModelId] = useState<string | null>(null);
   const [rolePickerPhase, setRolePickerPhase] = useState<'primary' | 'new-agent'>('new-agent');
   const [streamingAgentName, setStreamingAgentName] = useState<string | undefined>(undefined);
+  // Pending agent from /agent add command — created after primary role is selected
+  const [pendingSlashAgent, setPendingSlashAgent] = useState<{ model: string; role: AgentRole } | null>(null);
   const [showTranscript, setShowTranscript] = useState(false);
   const [showTalks, setShowTalks] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
@@ -488,7 +490,31 @@ function App({ options }: AppProps) {
       };
       talkManagerRef.current.addAgent(talkId, primaryAgent);
 
-      // Now show role picker again for the new agent model
+      // If there's a pending slash command agent, create it now and finish
+      if (pendingSlashAgent) {
+        const alias = getModelAlias(pendingSlashAgent.model);
+        const newAgent: TalkAgent = {
+          name: generateAgentName(alias, pendingSlashAgent.role),
+          model: pendingSlashAgent.model,
+          role: pendingSlashAgent.role,
+          isPrimary: false,
+        };
+        talkManagerRef.current.addAgent(talkId, newAgent);
+        talkManagerRef.current.saveTalk(talkId);
+
+        const agents = talkManagerRef.current.getAgents(talkId);
+        syncAgentsToGateway(agents);
+
+        setShowRolePicker(false);
+        setPendingAgentModelId(null);
+        setPendingSlashAgent(null);
+
+        const sysMsg = createMessage('system', `Agents created: ${primaryAgent.name} (${role.label}) + ${newAgent.name} (${ROLE_BY_ID[pendingSlashAgent.role].label})`);
+        chat.setMessages(prev => [...prev, sysMsg]);
+        return;
+      }
+
+      // Otherwise (^A flow), show role picker again for the new agent model
       setRolePickerPhase('new-agent');
       // Don't dismiss — RolePicker stays open for the new agent
       return;
@@ -522,7 +548,7 @@ function App({ options }: AppProps) {
 
     const sysMsg = createMessage('system', `Agent added: ${newAgent.name} (${role.label})`);
     chat.setMessages(prev => [...prev, sysMsg]);
-  }, [rolePickerPhase, pendingAgentModelId, currentModel, syncAgentsToGateway]);
+  }, [rolePickerPhase, pendingAgentModelId, pendingSlashAgent, currentModel, syncAgentsToGateway]);
 
   // --- Talk handlers ---
 
@@ -1066,15 +1092,11 @@ function App({ options }: AppProps) {
 
     const existingAgents = talkManagerRef.current.getAgents(talkId);
     if (existingAgents.length === 0) {
-      // Auto-create primary agent from current model as analyst
-      const primaryAlias = getModelAlias(currentModel);
-      const primaryAgent: TalkAgent = {
-        name: generateAgentName(primaryAlias, 'analyst'),
-        model: currentModel,
-        role: 'analyst',
-        isPrimary: true,
-      };
-      talkManagerRef.current.addAgent(talkId, primaryAgent);
+      // No agents yet — prompt user to choose the primary agent's role first
+      setPendingSlashAgent({ model: modelId, role });
+      setRolePickerPhase('primary');
+      setShowRolePicker(true);
+      return;
     }
 
     const alias = getModelAlias(modelId);
@@ -1093,6 +1115,27 @@ function App({ options }: AppProps) {
     const sysMsg = createMessage('system', `Agent added: ${newAgent.name} (${ROLE_BY_ID[role].label})`);
     chat.setMessages(prev => [...prev, sysMsg]);
   }, [currentModel, syncAgentsToGateway]);
+
+  const handleChangeAgentRole = useCallback((name: string, roleId: string) => {
+    const talkId = activeTalkIdRef.current;
+    if (!talkId || !talkManagerRef.current) return;
+
+    const role = roleId as AgentRole;
+    if (!ROLE_BY_ID[role]) {
+      setError(`Unknown role: ${roleId}. Valid: analyst, critic, strategist, devils-advocate, synthesizer, editor`);
+      return;
+    }
+
+    const updated = talkManagerRef.current.changeAgentRole(talkId, name, role, ROLE_BY_ID[role].label, generateAgentName);
+    if (updated) {
+      const agents = talkManagerRef.current.getAgents(talkId);
+      syncAgentsToGateway(agents);
+      const sysMsg = createMessage('system', `Agent role updated: ${updated.name} (${ROLE_BY_ID[role].label})`);
+      chat.setMessages(prev => [...prev, sysMsg]);
+    } else {
+      setError(`Agent "${name}" not found`);
+    }
+  }, [syncAgentsToGateway]);
 
   const handleRemoveAgent = useCallback((name: string) => {
     const talkId = activeTalkIdRef.current;
@@ -1208,6 +1251,7 @@ function App({ options }: AppProps) {
     viewReports: handleViewReports,
     addAgent: handleAddAgentCommand,
     removeAgent: handleRemoveAgent,
+    changeAgentRole: handleChangeAgentRole,
     listAgents: handleListAgents,
     askAgent: handleAskAgent,
     debateAll: handleDebateAll,
@@ -1233,6 +1277,7 @@ function App({ options }: AppProps) {
     viewReports: handleViewReports,
     addAgent: handleAddAgentCommand,
     removeAgent: handleRemoveAgent,
+    changeAgentRole: handleChangeAgentRole,
     listAgents: handleListAgents,
     askAgent: handleAskAgent,
     debateAll: handleDebateAll,
@@ -1498,7 +1543,7 @@ function App({ options }: AppProps) {
           <RolePicker
             roles={AGENT_ROLES}
             onSelect={handleRoleSelected}
-            onClose={() => { setShowRolePicker(false); setPendingAgentModelId(null); }}
+            onClose={() => { setShowRolePicker(false); setPendingAgentModelId(null); setPendingSlashAgent(null); }}
             modelName={rolePickerPhase === 'primary'
               ? getModelAlias(currentModel) + ' (primary)'
               : getModelAlias(pendingAgentModelId ?? '')}

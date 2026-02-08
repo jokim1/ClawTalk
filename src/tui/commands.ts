@@ -27,6 +27,7 @@ export interface CommandContext {
   viewReports: (jobIndex?: number) => void;
   addAgent: (model: string, role: string) => void;
   removeAgent: (name: string) => void;
+  changeAgentRole: (name: string, role: string) => void;
   listAgents: () => void;
   askAgent: (name: string, message: string) => void;
   debateAll: (topic: string) => void;
@@ -210,7 +211,21 @@ function handleAgentCommand(args: string, ctx: CommandContext): CommandResult {
     return { handled: true };
   }
 
-  ctx.setError('Usage: /agent add <model> <role> | /agent remove <name>');
+  if (trimmed.startsWith('role ')) {
+    const rest = trimmed.slice(5).trim();
+    // Parse: "Agent Name newrole" — role is always last word
+    const lastSpace = rest.lastIndexOf(' ');
+    if (lastSpace === -1) {
+      ctx.setError('Usage: /agent role <name> <new-role>');
+      return { handled: true };
+    }
+    const name = rest.slice(0, lastSpace).trim();
+    const role = rest.slice(lastSpace + 1).trim();
+    ctx.changeAgentRole(name, role);
+    return { handled: true };
+  }
+
+  ctx.setError('Usage: /agent add <model> <role> | /agent remove <name> | /agent role <name> <role>');
   return { handled: true };
 }
 
@@ -325,6 +340,7 @@ export function getCommandCompletions(prefix: string): CommandInfo[] {
         results.push(
           { name: 'agent add <model> <role>', description: 'Add agent with role' },
           { name: 'agent remove <name>', description: 'Remove an agent' },
+          { name: 'agent role <name> <role>', description: 'Change agent role' },
         );
       } else {
         results.push({ name, description: entry.description });

@@ -10,7 +10,7 @@ import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
-import type { Talk, Job, TalkAgent } from '../types';
+import type { Talk, Job, TalkAgent, AgentRole } from '../types';
 
 /** Validate that a talk ID is safe for use as a directory name. */
 function isValidTalkId(id: string): boolean {
@@ -380,6 +380,34 @@ export class TalkManager {
   getPrimaryAgent(talkId: string): TalkAgent | undefined {
     const talk = this.talks.get(talkId);
     return talk?.agents?.find(a => a.isPrimary);
+  }
+
+  /** Change an agent's role and update its name. Returns the updated agent or null. */
+  changeAgentRole(talkId: string, agentName: string, newRole: AgentRole, newRoleLabel: string, generateName: (alias: string, role: AgentRole) => string): TalkAgent | null {
+    const talk = this.talks.get(talkId);
+    if (!talk?.agents) return null;
+
+    const agent = talk.agents.find(a => a.name.toLowerCase() === agentName.toLowerCase());
+    if (!agent) return null;
+
+    agent.role = newRole;
+    // Regenerate name from model alias + new role
+    const { getModelAlias } = require('../models.js');
+    const alias = getModelAlias(agent.model);
+    let newName = generateName(alias, newRole);
+
+    // Handle name collision
+    const existing = talk.agents.filter(a => a !== agent).map(a => a.name.toLowerCase());
+    if (existing.includes(newName.toLowerCase())) {
+      let suffix = 2;
+      while (existing.includes(`${newName} ${suffix}`.toLowerCase())) suffix++;
+      newName = `${newName} ${suffix}`;
+    }
+
+    agent.name = newName;
+    talk.updatedAt = Date.now();
+    if (talk.isSaved) this.persistTalk(talk);
+    return agent;
   }
 
   /** Find an agent by name (case-insensitive). */
