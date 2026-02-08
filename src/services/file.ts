@@ -17,7 +17,7 @@ import type { PendingAttachment } from '../types.js';
 
 const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic']);
 const PDF_EXTENSIONS = new Set(['.pdf']);
-const TEXT_EXTENSIONS = new Set(['.txt', '.md', '.csv', '.log']);
+const TEXT_EXTENSIONS = new Set(['.txt', '.md', '.csv', '.log', '.vtt', '.srt', '.json', '.xml']);
 const MAX_TEXT_SIZE = 512 * 1024; // 512KB max for text files
 
 export type ProcessedFile =
@@ -177,9 +177,9 @@ async function readTextFile(filePath: string): Promise<ProcessedFile> {
 export function detectFilePaths(message: string): Array<{ path: string; start: number; end: number }> {
   const exts = getSupportedExtensions().map(e => e.slice(1)).join('|');
   // Match paths starting with / or ~/ , allowing backslash-escaped spaces
-  // Lookbehind ensures path starts after whitespace or at string start (not mid-URL)
+  // Lookbehind: whitespace, start of string, or punctuation (handles "well./Users/..." case)
   const pathRegex = new RegExp(
-    `(?<=\\s|^)((?:~\\/|\\/)(?:[^\\s\\\\]|\\\\.)*\\.(?:${exts}))(?=\\s|$|[)\\]}>",;:!?'])`,
+    `(?<=\\s|^|[.,;:!?)])((?:~\\/|\\/(?!\\/))(?:[^\\s\\\\]|\\\\.)*\\.(?:${exts}))(?=\\s|$|[)\\]}>",;:!?'])`,
     'gi',
   );
 
