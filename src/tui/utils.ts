@@ -87,3 +87,88 @@ export function exportTranscript(messages: Message[], sessionName: string): stri
   fs.writeFileSync(filepath, content);
   return filepath;
 }
+
+export function exportTranscriptMd(messages: Message[], sessionName: string): string {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const safeName = path.basename(sessionName.replace(/\s+/g, '-').replace(/[/\\]/g, '_'));
+  const filename = `transcript-${safeName}-${timestamp}.md`;
+  const filepath = path.join(process.env.HOME || '~', filename);
+
+  let content = `# Transcript: ${sessionName}\n\n`;
+  content += `*Exported: ${new Date().toLocaleString()} | ${messages.length} messages*\n\n`;
+  content += '---\n\n';
+
+  for (const msg of messages) {
+    const time = new Date(msg.timestamp).toLocaleTimeString();
+    const role = msg.role === 'user' ? 'You' : msg.role === 'system' ? 'System' : 'AI';
+    const modelLabel = msg.model ? ` (${msg.model.split('/').pop()})` : '';
+    content += `### [${time}] ${role}${modelLabel}\n\n`;
+    content += `${msg.content}\n\n`;
+  }
+
+  fs.writeFileSync(filepath, content);
+  return filepath;
+}
+
+export async function exportTranscriptDocx(messages: Message[], sessionName: string): Promise<string> {
+  const { Document, Paragraph, TextRun, HeadingLevel, Packer, BorderStyle } = await import('docx');
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const safeName = path.basename(sessionName.replace(/\s+/g, '-').replace(/[/\\]/g, '_'));
+  const filename = `transcript-${safeName}-${timestamp}.docx`;
+  const filepath = path.join(process.env.HOME || '~', filename);
+
+  const children: any[] = [];
+
+  // Title
+  children.push(new Paragraph({
+    heading: HeadingLevel.HEADING_1,
+    children: [new TextRun({ text: `Transcript: ${sessionName}`, bold: true })],
+  }));
+
+  // Metadata
+  children.push(new Paragraph({
+    children: [new TextRun({
+      text: `Exported: ${new Date().toLocaleString()} | ${messages.length} messages`,
+      italics: true,
+      color: '666666',
+    })],
+  }));
+
+  // Separator
+  children.push(new Paragraph({
+    border: { bottom: { style: BorderStyle.SINGLE, size: 1, color: 'CCCCCC' } },
+    children: [],
+  }));
+
+  children.push(new Paragraph({ children: [] }));
+
+  // Messages
+  for (const msg of messages) {
+    const time = new Date(msg.timestamp).toLocaleTimeString();
+    const role = msg.role === 'user' ? 'You' : msg.role === 'system' ? 'System' : 'AI';
+    const modelLabel = msg.model ? ` (${msg.model.split('/').pop()})` : '';
+
+    children.push(new Paragraph({
+      heading: HeadingLevel.HEADING_3,
+      children: [new TextRun({ text: `[${time}] ${role}${modelLabel}` })],
+    }));
+
+    // Split content into paragraphs
+    for (const para of msg.content.split('\n')) {
+      children.push(new Paragraph({
+        children: [new TextRun({ text: para })],
+      }));
+    }
+
+    children.push(new Paragraph({ children: [] }));
+  }
+
+  const doc = new Document({
+    sections: [{ children }],
+  });
+
+  const buffer = await Packer.toBuffer(doc);
+  fs.writeFileSync(filepath, buffer);
+  return filepath;
+}

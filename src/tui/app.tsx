@@ -1740,6 +1740,7 @@ function App({ options }: AppProps) {
             currentMessages={chat.messages}
             currentSessionName={sessionName}
             sessionManager={sessionManagerRef.current!}
+            talkManager={talkManagerRef.current!}
             maxHeight={overlayMaxHeight}
             terminalWidth={terminalWidth}
             onClose={() => setShowTranscript(false)}
