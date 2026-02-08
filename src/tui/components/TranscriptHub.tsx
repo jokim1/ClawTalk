@@ -11,52 +11,7 @@ import type { Message, Session, SearchResult } from '../../types';
 import type { SessionManager } from '../../services/sessions';
 import type { TalkManager } from '../../services/talks';
 import { formatRelativeTime, formatSessionTime, exportTranscript, exportTranscriptMd, exportTranscriptDocx } from '../utils.js';
-
-/** Truncate text content to fit within maxLines at given width */
-function truncateContent(text: string, maxLines: number, width: number): { content: string; truncated: boolean } {
-  if (!text || maxLines <= 0) return { content: '', truncated: false };
-
-  const usableWidth = Math.max(10, width - 6);
-  const lines: string[] = [];
-
-  for (const para of text.split('\n')) {
-    if (lines.length >= maxLines) break;
-
-    if (!para) {
-      lines.push('');
-      continue;
-    }
-
-    // Count visual lines for this paragraph
-    const visualLines = Math.ceil(para.length / usableWidth) || 1;
-
-    if (lines.length + visualLines <= maxLines) {
-      lines.push(para);
-    } else {
-      // Partial fit - truncate
-      const remainingLines = maxLines - lines.length;
-      const maxChars = remainingLines * usableWidth;
-      if (maxChars > 0) {
-        lines.push(para.slice(0, maxChars));
-      }
-      break;
-    }
-  }
-
-  const result = lines.join('\n');
-  return { content: result, truncated: result.length < text.length };
-}
-
-/** Count actual visual lines text will occupy */
-function countVisualLines(text: string, width: number): number {
-  if (!text) return 1;
-  const usableWidth = Math.max(10, width - 6);
-  let count = 0;
-  for (const line of text.split('\n')) {
-    count += Math.ceil(line.length / usableWidth) || 1;
-  }
-  return count;
-}
+import { preWrapText, countVisualLines } from '../lineCount.js';
 
 type HubMode = 'list' | 'transcript' | 'search';
 
@@ -177,10 +132,72 @@ export function TranscriptHub({
     });
   };
 
-  // Transcript scrolling helpers
-  // Account for: title (1) + path (1) + blank (1) + footer (1) + blank before footer (1) = 5 lines
-  const transcriptHeaderLines = 5;
-  const transcriptVisibleRows = Math.max(3, maxHeight - transcriptHeaderLines);
+  // Transcript line counting — use proper wrapAnsi-based counting to match Ink rendering
+  // Width accounting: parent paddingX(1)=2 + own paddingX(1)=2 = 4 total for headers
+  // Content also has paddingLeft(2), so +2 = 6 total for content
+  const transcriptHeaderWidth = Math.max(10, terminalWidth - 4);
+  const transcriptContentWidth = Math.max(10, terminalWidth - 6);
+
+  const transcriptLineCounts = useMemo(() => {
+    return transcriptMessages.map(msg => {
+      const time = new Date(msg.timestamp).toLocaleTimeString();
+      const role = msg.role === 'user' ? 'You' : msg.role === 'system' ? 'System' : 'AI';
+      const modelLabel = msg.model ? ` (${msg.model.split('/').pop()})` : '';
+      const header = `[${time}] ${role}${modelLabel}:`;
+      return countVisualLines(header, transcriptHeaderWidth) + countVisualLines(msg.content || ' ', transcriptContentWidth);
+    });
+  }, [transcriptMessages, transcriptHeaderWidth, transcriptContentWidth]);
+
+  const totalTranscriptLines = useMemo(
+    () => transcriptLineCounts.reduce((s, c) => s + c, 0),
+    [transcriptLineCounts],
+  );
+
+  // Transcript viewport: title(1) + path(1) + blank(1) + up_indicator(1) + down_indicator(1) + footer(1) = 6
+  const transcriptExportedLines = exported ? 1 : 0;
+  const transcriptViewport = Math.max(3, maxHeight - 6 - transcriptExportedLines);
+  const maxTranscriptScroll = Math.max(0, totalTranscriptLines - transcriptViewport);
+
+  // Compute visible transcript messages using line-based viewport
+  // transcriptScrollOffset = lines scrolled from top (0 = show beginning)
+  const transcriptSlice = useMemo(() => {
+    const empty = { startIndex: 0, endIndex: 0, firstSkipLines: 0, lastShowLines: 0 };
+    if (transcriptMessages.length === 0 || transcriptLineCounts.length === 0) return empty;
+
+    const windowStart = transcriptScrollOffset;
+    const windowEnd = transcriptScrollOffset + transcriptViewport;
+
+    let cumulative = 0;
+    let startIdx = -1;
+    let endIdx = -1;
+    let firstSkip = 0;
+    let lastShow = 0;
+
+    for (let i = 0; i < transcriptMessages.length; i++) {
+      const msgStart = cumulative;
+      const msgEnd = cumulative + transcriptLineCounts[i];
+
+      if (msgEnd > windowStart && msgStart < windowEnd) {
+        if (startIdx === -1) {
+          startIdx = i;
+          firstSkip = Math.max(0, windowStart - msgStart);
+        }
+        endIdx = i + 1;
+
+        if (msgEnd > windowEnd) {
+          lastShow = windowEnd - msgStart;
+        } else {
+          lastShow = 0; // show all lines of this message
+        }
+      }
+
+      cumulative += transcriptLineCounts[i];
+      if (msgStart >= windowEnd) break;
+    }
+
+    if (startIdx === -1) return empty;
+    return { startIndex: startIdx, endIndex: endIdx, firstSkipLines: firstSkip, lastShowLines: lastShow };
+  }, [transcriptMessages, transcriptLineCounts, transcriptScrollOffset, transcriptViewport]);
 
   // Search scrolling helpers
   const searchHeaderLines = 4; // title + input + blank + footer
@@ -294,12 +311,11 @@ export function TranscriptHub({
         return;
       }
       if (key.upArrow) {
-        setTranscriptScrollOffset(prev => Math.max(0, prev - 1));
+        setTranscriptScrollOffset(prev => Math.max(0, prev - 3));
         return;
       }
       if (key.downArrow) {
-        const maxOffset = Math.max(0, transcriptMessages.length - 1);
-        setTranscriptScrollOffset(prev => Math.min(maxOffset, prev + 1));
+        setTranscriptScrollOffset(prev => Math.min(maxTranscriptScroll, prev + 3));
         return;
       }
       if (input === '/' ) {
@@ -456,34 +472,7 @@ export function TranscriptHub({
     const messages = transcriptMessages;
 
     const hasAbove = transcriptScrollOffset > 0;
-    // Fixed overhead: title(1) + path(1) + blank(1) + footer(1) + indicators(2) = 6 lines
-    const fixedOverhead = 6;
-    const availableForMessages = Math.max(3, transcriptVisibleRows - fixedOverhead);
-
-    // Compute visible messages with truncation budgets
-    type VisibleMsg = { msg: Message; maxLines: number };
-    const visibleMessages: VisibleMsg[] = [];
-    let linesRemaining = availableForMessages;
-
-    for (let i = transcriptScrollOffset; i < messages.length && linesRemaining > 1; i++) {
-      const msg = messages[i];
-      const headerLine = 1; // [time] Role:
-      const contentLines = countVisualLines(msg.content, terminalWidth);
-      const totalLines = headerLine + contentLines;
-
-      if (totalLines <= linesRemaining) {
-        // Full message fits
-        visibleMessages.push({ msg, maxLines: contentLines });
-        linesRemaining -= totalLines;
-      } else if (linesRemaining > headerLine) {
-        // Partial fit - truncate content
-        const availableContent = linesRemaining - headerLine;
-        visibleMessages.push({ msg, maxLines: availableContent });
-        linesRemaining = 0;
-      }
-    }
-
-    const hasBelow = transcriptScrollOffset + visibleMessages.length < messages.length;
+    const hasBelow = transcriptScrollOffset < maxTranscriptScroll;
 
     return (
       <Box flexDirection="column" paddingX={1} height={maxHeight}>
@@ -500,26 +489,24 @@ export function TranscriptHub({
           <Text dimColor>No messages in this session.</Text>
         ) : (
           <Box flexDirection="column">
-            {hasAbove && <Text dimColor>  ▲ {transcriptScrollOffset} earlier message{transcriptScrollOffset !== 1 ? 's' : ''}</Text>}
+            {hasAbove && <Text dimColor>  ▲ more messages above</Text>}
             {!hasAbove && <Text> </Text>}
 
-            {visibleMessages.map(({ msg, maxLines }) => {
-              const time = new Date(msg.timestamp).toLocaleTimeString();
-              const role = msg.role === 'user' ? 'You' : msg.role === 'system' ? 'System' : 'AI';
-              const roleColor = msg.role === 'user' ? 'green' : msg.role === 'system' ? 'yellow' : 'cyan';
-              const modelLabel = msg.model ? ` (${msg.model.split('/').pop()})` : '';
-              const { content, truncated } = truncateContent(msg.content, maxLines, terminalWidth);
+            {messages.slice(transcriptSlice.startIndex, transcriptSlice.endIndex).map((msg, idx) => {
+              const isFirst = idx === 0;
+              const isLast = idx === (transcriptSlice.endIndex - transcriptSlice.startIndex) - 1;
+              const skipLines = isFirst ? transcriptSlice.firstSkipLines : 0;
+              const showLines = isLast && transcriptSlice.lastShowLines > 0 ? transcriptSlice.lastShowLines : 0;
 
               return (
-                <Box key={msg.id} flexDirection="column">
-                  <Text>
-                    <Text dimColor>[{time}] </Text>
-                    <Text color={roleColor} bold>{role}{modelLabel}:</Text>
-                  </Text>
-                  <Box paddingLeft={2}>
-                    <Text wrap="wrap">{content}{truncated ? <Text dimColor>...</Text> : null}</Text>
-                  </Box>
-                </Box>
+                <TranscriptMsgBlock
+                  key={msg.id}
+                  msg={msg}
+                  skipLines={skipLines}
+                  showLines={showLines}
+                  headerWidth={transcriptHeaderWidth}
+                  contentWidth={transcriptContentWidth}
+                />
               );
             })}
 
@@ -599,6 +586,66 @@ export function TranscriptHub({
 
       <Box height={1} />
       <Text dimColor>  ↑↓ Navigate  Enter View  Esc {isSearchInputActive ? 'Cancel' : 'Back to input'}</Text>
+    </Box>
+  );
+}
+
+/**
+ * Render a single transcript message with pre-wrapped text and line clipping.
+ */
+function TranscriptMsgBlock({ msg, skipLines, showLines, headerWidth, contentWidth }: {
+  msg: Message;
+  skipLines: number;
+  showLines: number;
+  headerWidth: number;
+  contentWidth: number;
+}) {
+  const time = new Date(msg.timestamp).toLocaleTimeString();
+  const role = msg.role === 'user' ? 'You' : msg.role === 'system' ? 'System' : 'AI';
+  const roleColor = msg.role === 'user' ? 'green' : msg.role === 'system' ? 'yellow' : 'cyan';
+  const modelLabel = msg.model ? ` (${msg.model.split('/').pop()})` : '';
+  const header = `[${time}] ${role}${modelLabel}:`;
+
+  const headerLineCount = countVisualLines(header, headerWidth);
+
+  const fullWrapped = useMemo(
+    () => preWrapText(msg.content || ' ', contentWidth),
+    [msg.content, contentWidth],
+  );
+
+  const rendered = useMemo(() => {
+    const contentLines = fullWrapped.split('\n');
+    const totalLines = headerLineCount + contentLines.length;
+    const visibleStart = skipLines;
+    const visibleEnd = showLines > 0 ? showLines : totalLines;
+
+    const showHeader = visibleStart < headerLineCount;
+
+    const cStart = Math.max(0, visibleStart - headerLineCount);
+    const cEnd = Math.max(0, visibleEnd - headerLineCount);
+    const clampedStart = Math.min(cStart, contentLines.length);
+    const clampedEnd = Math.min(cEnd, contentLines.length);
+
+    const text = clampedEnd > clampedStart
+      ? contentLines.slice(clampedStart, clampedEnd).join('\n')
+      : '';
+
+    return { text, showHeader };
+  }, [fullWrapped, skipLines, showLines, headerLineCount]);
+
+  return (
+    <Box flexDirection="column">
+      {rendered.showHeader && (
+        <Text>
+          <Text dimColor>[{time}] </Text>
+          <Text color={roleColor} bold>{role}{modelLabel}:</Text>
+        </Text>
+      )}
+      {rendered.text.length > 0 && (
+        <Box paddingLeft={2}>
+          <Text>{rendered.text}</Text>
+        </Box>
+      )}
     </Box>
   );
 }

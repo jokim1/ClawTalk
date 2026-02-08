@@ -1147,7 +1147,9 @@ function App({ options }: AppProps) {
     const combinedResponses = allResponses.join('\n');
     const followUpAgents = findMentionedAgents(combinedResponses, respondedAgents, allAgents);
     for (const agent of followUpAgents) {
-      await streamAgentResponse(gwTalkId, text, agent, allAgents);
+      const respondedNames = [...respondedAgents].join(', ');
+      const followUpMsg = `[${respondedNames} mentioned you in their response above. Please respond to their questions or comments directed at you.]`;
+      await streamAgentResponse(gwTalkId, followUpMsg, agent, allAgents);
       respondedAgents.add(agent.name);
     }
 
