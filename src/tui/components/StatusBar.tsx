@@ -55,7 +55,8 @@ export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleS
     ? agents.map(a => {
         const alias = getModelAlias(a.model);
         const roleShort = ROLE_BY_ID[a.role]?.shortLabel ?? '?';
-        return `@${alias}(${roleShort})`;
+        const prefix = a.isPrimary ? '' : '@';
+        return `${prefix}${alias}(${roleShort})`;
       }).join(' ')
     : `${modelName}${modelIndicator}`;
   const isSubscription = billing?.mode === 'subscription';
