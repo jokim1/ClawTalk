@@ -104,8 +104,8 @@ export function TalksHub({
       return;
     }
 
-    // ^H open history
-    if (input === 'h' && key.ctrl) {
+    // ^H open history (Ctrl+H sends backspace in terminals)
+    if (input === '\x08' || key.backspace || input === '\b') {
       onOpenHistory();
       return;
     }

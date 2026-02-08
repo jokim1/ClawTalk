@@ -65,6 +65,7 @@ export function TranscriptHub({
   const [searchScrollOffset, setSearchScrollOffset] = useState(0);
   const [isSearchInputActive, setIsSearchInputActive] = useState(true);
   const [deleteConfirmSessionId, setDeleteConfirmSessionId] = useState<string | null>(null);
+  const [exportPickerSessionId, setExportPickerSessionId] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
 
   const sessions = useMemo(() => sessionManager.listSessions(), [sessionManager, mode, refreshKey]);
@@ -153,9 +154,9 @@ export function TranscriptHub({
     [transcriptLineCounts],
   );
 
-  // Transcript viewport: title(1) + path(1) + blank(1) + up_indicator(1) + down_indicator(1) + footer(1) = 6
-  const transcriptExportedLines = exported ? 1 : 0;
-  const transcriptViewport = Math.max(3, maxHeight - 6 - transcriptExportedLines);
+  // Transcript viewport: title(1) + path(1) + blank(1) + footer(1) = 4 fixed lines
+  // Messages area gets height = transcriptViewport + 2 (for indicators)
+  const transcriptViewport = Math.max(3, maxHeight - 4);
   const maxTranscriptScroll = Math.max(0, totalTranscriptLines - transcriptViewport);
 
   // Compute visible transcript messages using line-based viewport
@@ -227,7 +228,7 @@ export function TranscriptHub({
       onToggleTts();
       return;
     }
-    if (input === 'h' && key.ctrl) {
+    if (input === '\x08' || key.backspace || input === '\b') {
       onClose(); // Already in History
       return;
     }
@@ -256,6 +257,45 @@ export function TranscriptHub({
         }
         if (key.escape) {
           setDeleteConfirmSessionId(null);
+          return;
+        }
+        return;
+      }
+      if (exportPickerSessionId) {
+        if (key.escape) {
+          setExportPickerSessionId(null);
+          return;
+        }
+        const session = sessionManager.getSession(exportPickerSessionId);
+        const talk = talkManager?.getTalk(exportPickerSessionId);
+        const name = talk?.topicTitle ?? session?.name ?? 'Session';
+        const isActive = exportPickerSessionId === activeSessionId;
+        const msgs = isActive ? currentMessages : (session?.messages ?? []);
+        if ((input === 't' || input === 'T') && msgs.length > 0) {
+          try {
+            setExported(exportTranscript(msgs, name));
+          } catch (err) {
+            setExported(`Error: ${err instanceof Error ? err.message : 'Failed'}`);
+          }
+          setExportPickerSessionId(null);
+          return;
+        }
+        if ((input === 'm' || input === 'M') && msgs.length > 0) {
+          try {
+            setExported(exportTranscriptMd(msgs, name));
+          } catch (err) {
+            setExported(`Error: ${err instanceof Error ? err.message : 'Failed'}`);
+          }
+          setExportPickerSessionId(null);
+          return;
+        }
+        if ((input === 'd' || input === 'D') && msgs.length > 0) {
+          exportTranscriptDocx(msgs, name).then(filepath => {
+            setExported(filepath);
+          }).catch(err => {
+            setExported(`Error: ${err instanceof Error ? err.message : 'Failed'}`);
+          });
+          setExportPickerSessionId(null);
           return;
         }
         return;
@@ -296,6 +336,10 @@ export function TranscriptHub({
         setMode('search');
         return;
       }
+      if ((input === 'e' || input === 'E') && sessions.length > 0) {
+        setExportPickerSessionId(sessions[selectedSessionIndex].id);
+        return;
+      }
       if (input === 'x' || input === 'X') {
         if (sessions.length > 0) {
           setDeleteConfirmSessionId(sessions[selectedSessionIndex].id);
@@ -324,27 +368,6 @@ export function TranscriptHub({
         setSearchResults([]);
         setIsSearchInputActive(true);
         setMode('search');
-        return;
-      }
-      if ((input === 'e' || input === 'E') && transcriptMessages.length > 0) {
-        const talk = talkManager?.getTalk(viewingSession?.id ?? '');
-        const name = talk?.topicTitle ?? viewingSession?.name ?? currentSessionName;
-        try {
-          const filepath = exportTranscriptMd(transcriptMessages, name);
-          setExported(filepath);
-        } catch (err) {
-          setExported(`Error: ${err instanceof Error ? err.message : 'Failed to export'}`);
-        }
-        return;
-      }
-      if ((input === 'd' || input === 'D') && transcriptMessages.length > 0) {
-        const talk = talkManager?.getTalk(viewingSession?.id ?? '');
-        const name = talk?.topicTitle ?? viewingSession?.name ?? currentSessionName;
-        exportTranscriptDocx(transcriptMessages, name).then(filepath => {
-          setExported(filepath);
-        }).catch(err => {
-          setExported(`Error: ${err instanceof Error ? err.message : 'Failed to export'}`);
-        });
         return;
       }
       return;
@@ -455,11 +478,17 @@ export function TranscriptHub({
           </>
         )}
 
+        {exported && (
+          <Text color={exported.startsWith('Error') ? 'red' : 'green'}>  {exported}</Text>
+        )}
+
         <Box height={1} />
         {deleteConfirmSessionId ? (
           <Text>  <Text color="red">Delete &quot;{sessions.find(s => s.id === deleteConfirmSessionId)?.name}&quot;?</Text>  <Text dimColor>  Enter confirm  Esc cancel</Text></Text>
+        ) : exportPickerSessionId ? (
+          <Text>  <Text bold>Export:</Text> <Text dimColor>t .txt  m .md  d .docx  Esc Cancel</Text></Text>
         ) : (
-          <Text dimColor>  ↑↓ Navigate  Enter View  / Search  x Delete  Esc Close</Text>
+          <Text dimColor>  ↑↓ Navigate  Enter View  / Search  e Export  x Delete  Esc Close</Text>
         )}
       </Box>
     );
@@ -478,17 +507,12 @@ export function TranscriptHub({
       <Box flexDirection="column" paddingX={1} height={maxHeight}>
         <Text bold color="cyan">{sessionName} ({messages.length} message{messages.length !== 1 ? 's' : ''})</Text>
         <Text dimColor>  {sessionDir}/</Text>
-
-        {exported && (
-          <Text color={exported.startsWith('Error') ? 'red' : 'green'}>  {exported}</Text>
-        )}
-
         <Box height={1} />
 
         {messages.length === 0 ? (
           <Text dimColor>No messages in this session.</Text>
         ) : (
-          <Box flexDirection="column">
+          <Box flexDirection="column" height={transcriptViewport + 2}>
             {hasAbove && <Text dimColor>  ▲ more messages above</Text>}
             {!hasAbove && <Text> </Text>}
 
@@ -510,12 +534,13 @@ export function TranscriptHub({
               );
             })}
 
+            <Box flexGrow={1} />
             {hasBelow && <Text dimColor>  ▼ more messages below</Text>}
             {!hasBelow && <Text> </Text>}
           </Box>
         )}
 
-        <Text dimColor>  ↑↓ Scroll  / Search  E Markdown  D Docx  Esc Back</Text>
+        <Text dimColor>  ↑↓ Scroll  / Search  Esc Back</Text>
       </Box>
     );
   }
