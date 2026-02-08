@@ -159,7 +159,7 @@ export function ModelPicker({ models, currentModel, onSelect, onClose, maxHeight
         {onAddAgent && (
           <Box>
             <Text>   </Text>
-            <Text>A — Add as Talk agent</Text>
+            <Text>A — Add as AI agent</Text>
           </Box>
         )}
         <Box height={1} />

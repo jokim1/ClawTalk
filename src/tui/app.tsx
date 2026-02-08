@@ -242,13 +242,18 @@ function App({ options }: AppProps) {
   const maxInputLines = Math.min(10, Math.floor(terminalHeight / 4));
   const inputLines = Math.min(maxInputLines, inputVisualLines);
 
+  // Talk title (shown below status bar when a topic title is set)
+  const activeTalk = activeTalkId ? talkManagerRef.current?.getTalk(activeTalkId) : null;
+  const talkTitle = activeTalk?.topicTitle ?? null;
+  const talkTitleLines = talkTitle ? 2 : 0; // title + separator
+
   // Calculate available height for the chat area:
-  // Total - StatusBar(2) - error(0-1) - clearPrompt(0-1) - separator(1) - input - shortcuts(3) - queued - hints - margin(1)
+  // Total - StatusBar(2) - talkTitle(0-2) - error(0-1) - clearPrompt(0-1) - separator(1) - input - shortcuts(3) - queued - hints - margin(1)
   const errorLines = error ? 1 : 0;
   const clearPromptLines = pendingClear ? 1 : 0;
   const queuedLines = messageQueue.length > 0 ? messageQueue.length : 0;
   const hintsLines = showCommandHints ? commandHints.length + 1 : 0; // +1 for separator line
-  const chatHeight = Math.max(4, terminalHeight - 2 - errorLines - clearPromptLines - 1 - inputLines - 3 - queuedLines - hintsLines - 1);
+  const chatHeight = Math.max(4, terminalHeight - 2 - talkTitleLines - errorLines - clearPromptLines - 1 - inputLines - 3 - queuedLines - hintsLines - 1);
 
   // --- Line-based scroll ---
   // Pre-compute visual line counts for all messages (recomputes on messages or width change)
@@ -1448,6 +1453,16 @@ function App({ options }: AppProps) {
         voiceReadiness={gateway.voiceCaps.readiness}
         ttsEnabled={voice.ttsEnabled}
       />
+
+      {/* Talk title (pinned below status bar) */}
+      {talkTitle && (
+        <Box flexDirection="column">
+          <Box justifyContent="center" width={terminalWidth}>
+            <Text bold>{talkTitle}</Text>
+          </Box>
+          <Text dimColor>{'─'.repeat(terminalWidth)}</Text>
+        </Box>
+      )}
 
       {/* Error line */}
       {error && (
