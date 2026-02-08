@@ -509,7 +509,8 @@ function App({ options }: AppProps) {
         setPendingAgentModelId(null);
         setPendingSlashAgent(null);
 
-        const sysMsg = createMessage('system', `Agents created: ${primaryAgent.name} (${role.label}) + ${newAgent.name} (${ROLE_BY_ID[pendingSlashAgent.role].label})`);
+        const newAlias = getModelAlias(pendingSlashAgent.model);
+        const sysMsg = createMessage('system', `Agents created: ${primaryAgent.name} (${role.label}) + ${newAgent.name} (${ROLE_BY_ID[pendingSlashAgent.role].label}). Use @${newAlias} in any message to ask ${newAgent.name} directly.`);
         chat.setMessages(prev => [...prev, sysMsg]);
         return;
       }
@@ -546,7 +547,7 @@ function App({ options }: AppProps) {
     setShowRolePicker(false);
     setPendingAgentModelId(null);
 
-    const sysMsg = createMessage('system', `Agent added: ${newAgent.name} (${role.label})`);
+    const sysMsg = createMessage('system', `Agent added: ${newAgent.name} (${role.label}). Use @${newAlias} in any message to ask directly.`);
     chat.setMessages(prev => [...prev, sysMsg]);
   }, [rolePickerPhase, pendingAgentModelId, pendingSlashAgent, currentModel, syncAgentsToGateway]);
 
@@ -1112,7 +1113,8 @@ function App({ options }: AppProps) {
     const agents = talkManagerRef.current.getAgents(talkId);
     syncAgentsToGateway(agents);
 
-    const sysMsg = createMessage('system', `Agent added: ${newAgent.name} (${ROLE_BY_ID[role].label})`);
+    const agentAlias = getModelAlias(modelId);
+    const sysMsg = createMessage('system', `Agent added: ${newAgent.name} (${ROLE_BY_ID[role].label}). Use @${agentAlias} in any message to ask directly.`);
     chat.setMessages(prev => [...prev, sysMsg]);
   }, [currentModel, syncAgentsToGateway]);
 
@@ -1318,8 +1320,33 @@ function App({ options }: AppProps) {
       return;
     }
 
+    // Detect @mentions and route to specific agents
+    const talkId = activeTalkIdRef.current;
+    if (talkId && talkManagerRef.current) {
+      const allAgents = talkManagerRef.current.getAgents(talkId);
+      if (allAgents.length > 0) {
+        // Extract @mentions (word boundary: start of string or whitespace before @)
+        const mentionPattern = /(?:^|\s)@(\w+)/g;
+        const mentionedAgents: TalkAgent[] = [];
+        let match;
+        while ((match = mentionPattern.exec(trimmed)) !== null) {
+          const agent = talkManagerRef.current.findAgent(talkId, match[1]);
+          if (agent && !mentionedAgents.includes(agent)) {
+            mentionedAgents.push(agent);
+          }
+        }
+
+        // If non-primary agents are mentioned, route through multi-agent
+        const hasNonPrimary = mentionedAgents.some(a => !a.isPrimary);
+        if (hasNonPrimary) {
+          await sendMultiAgentMessage(trimmed, mentionedAgents, allAgents);
+          return;
+        }
+      }
+    }
+
     await chat.sendMessage(trimmed);
-  }, [chat.sendMessage, chat.isProcessing]);
+  }, [chat.sendMessage, chat.isProcessing, sendMultiAgentMessage]);
 
   // Process queued messages when AI finishes responding
   useEffect(() => {
