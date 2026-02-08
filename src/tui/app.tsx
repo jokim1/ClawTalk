@@ -8,7 +8,7 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { render, Box, Text, useInput, useApp, useStdout } from 'ink';
-import type { ClawTalkOptions, ModelStatus, Message, TalkAgent, AgentRole } from '../types.js';
+import type { ClawTalkOptions, ModelStatus, Message, TalkAgent, AgentRole, PendingAttachment } from '../types.js';
 import type { Talk } from '../types.js';
 import { AGENT_ROLES, ROLE_BY_ID, generateAgentName } from '../agent-roles.js';
 import type { RoleTemplate } from '../agent-roles.js';
@@ -30,6 +30,7 @@ import { spawnNewTerminalWindow } from '../services/terminal.js';
 import { VoiceService } from '../services/voice.js';
 import { RealtimeVoiceService } from '../services/realtime-voice.js';
 import { AnthropicRateLimitService } from '../services/anthropic-ratelimit.js';
+import { processImage } from '../services/image.js';
 import { loadConfig, getBillingForProvider } from '../config.js';
 import {
   getModelAlias,
@@ -134,6 +135,7 @@ function App({ options }: AppProps) {
   const [processingStartTime, setProcessingStartTime] = useState<number | null>(null);
   const [hintSelectedIndex, setHintSelectedIndex] = useState(0);
   const [pendingClear, setPendingClear] = useState(false);
+  const [pendingAttachment, setPendingAttachment] = useState<PendingAttachment | null>(null);
 
   // --- TTS bridge ref (useChat → useVoice) ---
 
@@ -255,9 +257,10 @@ function App({ options }: AppProps) {
   // Total - StatusBar(2) - talkTitle(0-2) - error(0-1) - clearPrompt(0-1) - separator(1) - input - shortcuts(3) - queued - hints - margin(1)
   const errorLines = error ? 1 : 0;
   const clearPromptLines = pendingClear ? 1 : 0;
+  const attachmentLines = pendingAttachment ? 1 : 0;
   const queuedLines = messageQueue.length > 0 ? messageQueue.length : 0;
   const hintsLines = showCommandHints ? commandHints.length + 1 : 0; // +1 for separator line
-  const chatHeight = Math.max(4, terminalHeight - 2 - talkTitleLines - errorLines - clearPromptLines - 1 - inputLines - 3 - queuedLines - hintsLines - 1);
+  const chatHeight = Math.max(4, terminalHeight - 2 - talkTitleLines - errorLines - clearPromptLines - attachmentLines - 1 - inputLines - 3 - queuedLines - hintsLines - 1);
 
   // --- Line-based scroll ---
   // Pre-compute visual line counts for all messages (recomputes on messages or width change)
@@ -989,6 +992,7 @@ function App({ options }: AppProps) {
     chat.setMessages(session?.messages ?? []);
     setSessionName(session?.name ?? talk.topicTitle ?? 'Talk');
     setActiveTalkId(talk.id);
+    setPendingAttachment(null);
     talkManagerRef.current?.setActiveTalk(talk.id);
     talkManagerRef.current?.touchTalk(talk.id);
     mouseScroll.scrollToBottom();
@@ -1236,6 +1240,53 @@ function App({ options }: AppProps) {
     await sendMultiAgentMessage(reviewPrompt, nonPrimary, agents);
   }, [sendMultiAgentMessage, chat.messages]);
 
+  // --- File attachment handler ---
+
+  const handleAttachFile = useCallback(async (filePath: string, message?: string) => {
+    const sysMsg = createMessage('system', 'Processing image...');
+    chat.setMessages(prev => [...prev, sysMsg]);
+
+    try {
+      const attachment = await processImage(filePath);
+      const sizeKB = Math.round(attachment.sizeBytes / 1024);
+
+      if (message) {
+        // Attach + send immediately
+        chat.setMessages(prev => prev.filter(m => m.id !== sysMsg.id));
+        const confirmMsg = createMessage('system', `[attached] ${attachment.filename} (${attachment.width}x${attachment.height}, ${sizeKB}KB)`);
+        chat.setMessages(prev => [...prev, confirmMsg]);
+
+        // Lazy gateway talk creation
+        if (!gatewayTalkIdRef.current && chatServiceRef.current) {
+          if (activeTalkIdRef.current) {
+            talkManagerRef.current?.saveTalk(activeTalkIdRef.current);
+          }
+          const gwId = await chatServiceRef.current.createGatewayTalk(currentModelRef.current);
+          if (gwId) {
+            gatewayTalkIdRef.current = gwId;
+            if (activeTalkIdRef.current) {
+              talkManagerRef.current?.setGatewayTalkId(activeTalkIdRef.current, gwId);
+            }
+          }
+        }
+
+        await chat.sendMessage(message, attachment);
+      } else {
+        // Queue attachment for next message
+        setPendingAttachment(attachment);
+        chat.setMessages(prev => {
+          const filtered = prev.filter(m => m.id !== sysMsg.id);
+          const confirmMsg = createMessage('system', `[attached] ${attachment.filename} (${attachment.width}x${attachment.height}, ${sizeKB}KB) — type a message to send`);
+          return [...filtered, confirmMsg];
+        });
+      }
+    } catch (err) {
+      chat.setMessages(prev => prev.filter(m => m.id !== sysMsg.id));
+      const errMessage = err instanceof Error ? err.message : 'Unknown error';
+      setError(`Image error: ${errMessage}`);
+    }
+  }, []);
+
   // --- Submit handler (command registry + chat) ---
 
   const executeClear = useCallback(() => {
@@ -1272,6 +1323,7 @@ function App({ options }: AppProps) {
     askAgent: handleAskAgent,
     debateAll: handleDebateAll,
     reviewLast: handleReviewLast,
+    attachFile: handleAttachFile,
   });
   commandCtx.current = {
     switchModel,
@@ -1298,6 +1350,7 @@ function App({ options }: AppProps) {
     askAgent: handleAskAgent,
     debateAll: handleDebateAll,
     reviewLast: handleReviewLast,
+    attachFile: handleAttachFile,
   };
 
   const handleSubmit = useCallback(async (text: string) => {
@@ -1359,8 +1412,13 @@ function App({ options }: AppProps) {
       }
     }
 
-    await chat.sendMessage(trimmed);
-  }, [chat.sendMessage, chat.isProcessing, sendMultiAgentMessage]);
+    // Send with pending attachment if present
+    const attachment = pendingAttachment ?? undefined;
+    if (pendingAttachment) {
+      setPendingAttachment(null);
+    }
+    await chat.sendMessage(trimmed, attachment);
+  }, [chat.sendMessage, chat.isProcessing, sendMultiAgentMessage, pendingAttachment]);
 
   // Process queued messages when AI finishes responding
   useEffect(() => {
@@ -1478,10 +1536,10 @@ function App({ options }: AppProps) {
       return;
     }
 
-    // ^G Grab Text (toggle mouse capture for text selection)
-    if (input === 'g' && key.ctrl) {
+    // ^E Select Text (toggle mouse capture for text selection)
+    if (input === 'e' && key.ctrl) {
       setGrabTextMode(prev => !prev);
-      cleanInputChar(setInputText, 'g');
+      cleanInputChar(setInputText, 'e');
       return;
     }
 
@@ -1560,14 +1618,14 @@ function App({ options }: AppProps) {
                 {grabTextMode && (
                   <Box marginRight={1}>
                     <Text color="yellow" bold>SELECT MODE</Text>
-                    <Text dimColor> ^G exit</Text>
+                    <Text dimColor> ^E exit</Text>
                   </Box>
                 )}
               </>
             ) : (
               <Box flexGrow={1} justifyContent="center">
                 <Text color="yellow" bold>SELECT MODE</Text>
-                <Text dimColor> — drag to select, ^G to exit</Text>
+                <Text dimColor> — drag to select, ^E to exit</Text>
               </Box>
             )}
           </Box>
@@ -1727,6 +1785,14 @@ function App({ options }: AppProps) {
           selectedIndex={hintSelectedIndex}
           width={terminalWidth}
         />
+      )}
+
+      {/* Pending attachment indicator */}
+      {pendingAttachment && (
+        <Box paddingX={1}>
+          <Text color="blue">[attached] </Text>
+          <Text>{pendingAttachment.filename} ({pendingAttachment.width}x{pendingAttachment.height}, {Math.round(pendingAttachment.sizeBytes / 1024)}KB)</Text>
+        </Box>
       )}
 
       {/* Input area */}

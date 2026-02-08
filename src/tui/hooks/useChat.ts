@@ -7,7 +7,7 @@
 
 import { useState, useCallback, useRef } from 'react';
 import type { MutableRefObject, Dispatch, SetStateAction } from 'react';
-import type { Message } from '../../types.js';
+import type { Message, PendingAttachment } from '../../types.js';
 import type { ChatService } from '../../services/chat.js';
 import type { SessionManager } from '../../services/sessions.js';
 import { isGatewaySentinel } from '../../constants.js';
@@ -44,7 +44,7 @@ export function useChat(
   const onModelErrorRef = useRef(onModelError);
   onModelErrorRef.current = onModelError;
 
-  const sendMessage = useCallback(async (text: string) => {
+  const sendMessage = useCallback(async (text: string, attachment?: PendingAttachment) => {
     const chatService = chatServiceRef.current;
     if (!text.trim() || isProcessingRef.current || !chatService) return;
 
@@ -58,6 +58,15 @@ export function useChat(
     // Capture history before adding the new user message
     const history = messagesRef.current;
     const userMsg = createMessage('user', trimmed);
+    if (attachment) {
+      userMsg.attachment = {
+        filename: attachment.filename,
+        mimeType: attachment.mimeType,
+        width: attachment.width,
+        height: attachment.height,
+        sizeBytes: attachment.sizeBytes,
+      };
+    }
     setMessages(prev => [...prev, userMsg]);
     sessionManagerRef.current?.addMessage(userMsg);
 
@@ -73,8 +82,9 @@ export function useChat(
 
     try {
       let fullContent = '';
+      const imageParam = attachment ? { base64: attachment.base64, mimeType: attachment.mimeType } : undefined;
       const stream = gwTalkId
-        ? chatService.streamTalkMessage(gwTalkId, trimmed)
+        ? chatService.streamTalkMessage(gwTalkId, trimmed, undefined, imageParam)
         : chatService.streamMessage(trimmed, history);
       for await (const chunk of stream) {
         fullContent += chunk;

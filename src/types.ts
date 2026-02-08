@@ -28,6 +28,18 @@ export interface TalkAgent {
   isPrimary: boolean;
 }
 
+export interface ImageAttachmentMeta {
+  filename: string;
+  mimeType: string;
+  width: number;
+  height: number;
+  sizeBytes: number;
+}
+
+export interface PendingAttachment extends ImageAttachmentMeta {
+  base64: string;
+}
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -36,6 +48,7 @@ export interface Message {
   model?: string;
   agentName?: string;
   agentRole?: AgentRole;
+  attachment?: ImageAttachmentMeta;
 }
 
 export type ModelStatus = 'unknown' | 'checking' | 'ok' | { error: string };

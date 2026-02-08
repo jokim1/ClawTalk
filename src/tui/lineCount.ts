@@ -43,12 +43,15 @@ export function messageVisualLines(msg: Message, width: number): number {
   // Speaker line: "Name:" — always 1 visual line
   const speakerLines = countVisualLines(`${speakerName}:`, width);
 
+  // Attachment badge line (shown below speaker)
+  const attachmentLines = msg.attachment ? 1 : 0;
+
   // Content indented by 2 chars
   const contentWidth = Math.max(10, width - 2);
   const content = msg.content || ' ';
   const contentLines = countVisualLines(content, contentWidth);
 
-  return speakerLines + contentLines;
+  return speakerLines + attachmentLines + contentLines;
 }
 
 /**

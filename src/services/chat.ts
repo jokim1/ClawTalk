@@ -456,6 +456,7 @@ export class ChatService implements IChatService {
     talkId: string,
     userMessage: string,
     model?: string,
+    image?: { base64: string; mimeType: string },
   ): AsyncGenerator<string, void, unknown> {
     const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}/chat`, {
       method: 'POST',
@@ -463,6 +464,7 @@ export class ChatService implements IChatService {
       body: JSON.stringify({
         message: userMessage,
         model: model ?? this.config.model,
+        ...(image && { imageBase64: image.base64, imageMimeType: image.mimeType }),
       }),
       signal: AbortSignal.timeout(CHAT_TIMEOUT_MS),
     });

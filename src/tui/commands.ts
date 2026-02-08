@@ -32,6 +32,7 @@ export interface CommandContext {
   askAgent: (name: string, message: string) => void;
   debateAll: (topic: string) => void;
   reviewLast: () => void;
+  attachFile: (filePath: string, message?: string) => void;
 }
 
 export interface CommandResult {
@@ -265,6 +266,42 @@ function handleReviewCommand(_args: string, ctx: CommandContext): CommandResult 
   return { handled: true };
 }
 
+/** Handle /file <path> [message] — attach an image file. */
+function handleFileCommand(args: string, ctx: CommandContext): CommandResult {
+  const trimmed = args.trim();
+  if (!trimmed) {
+    ctx.setError('Usage: /file <path> [message]');
+    return { handled: true };
+  }
+
+  // Parse path: support quoted paths and ~/
+  let filePath: string;
+  let message: string | undefined;
+
+  if (trimmed.startsWith('"')) {
+    // Quoted path: /file "path with spaces" optional message
+    const endQuote = trimmed.indexOf('"', 1);
+    if (endQuote === -1) {
+      ctx.setError('Unclosed quote in file path');
+      return { handled: true };
+    }
+    filePath = trimmed.slice(1, endQuote);
+    message = trimmed.slice(endQuote + 1).trim() || undefined;
+  } else {
+    // Unquoted: first token is path, rest is message
+    const spaceIdx = trimmed.indexOf(' ');
+    if (spaceIdx === -1) {
+      filePath = trimmed;
+    } else {
+      filePath = trimmed.slice(0, spaceIdx);
+      message = trimmed.slice(spaceIdx + 1).trim() || undefined;
+    }
+  }
+
+  ctx.attachFile(filePath, message);
+  return { handled: true };
+}
+
 /**
  * Registry of slash commands.
  * Add new commands here — they'll be available immediately.
@@ -286,6 +323,7 @@ const COMMANDS: Record<string, { handler: CommandHandler; description: string }>
   ask: { handler: handleAskCommand, description: 'Ask a specific agent' },
   debate: { handler: handleDebateCommand, description: 'All agents discuss a topic' },
   review: { handler: handleReviewCommand, description: 'Agents review last response' },
+  file: { handler: handleFileCommand, description: 'Attach an image file' },
 };
 
 /**
@@ -335,6 +373,10 @@ export function getCommandCompletions(prefix: string): CommandInfo[] {
           { name: 'job pause N', description: 'Pause job #N' },
           { name: 'job resume N', description: 'Resume job #N' },
           { name: 'job delete N', description: 'Delete job #N' },
+        );
+      } else if (name === 'file') {
+        results.push(
+          { name: 'file <path> [message]', description: 'Attach image (jpg, png, heic, webp, gif)' },
         );
       } else if (name === 'agent') {
         results.push(

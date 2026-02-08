@@ -152,7 +152,7 @@ export function ShortcutBar({ terminalWidth = 80, ttsEnabled = true, grabTextMod
     { key: '^C', label: 'Live Chat' },
     { key: '^P', label: 'Push-to-Talk' },
     { key: '^V', label: ttsEnabled ? 'Voice OFF' : 'Voice ON' },
-    { key: '^G', label: grabTextMode ? 'End Select' : 'Select Text' },
+    { key: '^E', label: grabTextMode ? 'End Select' : 'Select Text' },
   ];
   const row2 = [
     { key: '^A', label: 'AI Model' },
