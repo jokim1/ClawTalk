@@ -245,7 +245,7 @@ function App({ options }: AppProps) {
   // Talk title (shown below status bar when a topic title is set)
   const activeTalk = activeTalkId ? talkManagerRef.current?.getTalk(activeTalkId) : null;
   const talkTitle = activeTalk?.topicTitle ?? null;
-  const talkTitleLines = talkTitle ? 2 : 0; // title + separator
+  const talkTitleLines = talkTitle && !isOverlayActive ? 2 : 0; // title + separator
 
   // Calculate available height for the chat area:
   // Total - StatusBar(2) - talkTitle(0-2) - error(0-1) - clearPrompt(0-1) - separator(1) - input - shortcuts(3) - queued - hints - margin(1)
@@ -1456,7 +1456,7 @@ function App({ options }: AppProps) {
       />
 
       {/* Talk title (pinned below status bar) */}
-      {talkTitle && (
+      {talkTitle && !isOverlayActive && (
         <Box flexDirection="column">
           <Box justifyContent="center" width={terminalWidth}>
             <Text bold>{talkTitle}</Text>
