@@ -43,51 +43,12 @@ Your machine                         Your server                     LLM provide
 
 ## Setup
 
-### Step 1: Set up the gateway (on your server)
+### Prerequisites
 
-Install the [ClawTalkGateway](https://github.com/jokim1/ClawTalkGateway) plugin on your OpenClaw instance. See that repo's README for instructions.
+- **Node.js 20+** installed
+- **[ClawTalkGateway](https://github.com/jokim1/ClawTalkGateway)** plugin running on your OpenClaw server (see that repo's README for setup)
 
-Once the plugin is running, you'll have a gateway URL (e.g. `http://100.x.x.x:18789`) and optionally an auth token.
-
-### Step 2: Set up Tailscale (on both machines)
-
-ClawTalk uses [Tailscale](https://tailscale.com) to securely connect your local machine to your server. Tailscale creates a private mesh VPN — each device gets a stable `100.x.x.x` IP address that works from anywhere, without port forwarding or firewall configuration.
-
-**On your server (where OpenClaw runs):**
-
-1. Install Tailscale: https://tailscale.com/download
-2. Start Tailscale and log in:
-   ```bash
-   sudo tailscale up
-   ```
-3. Note your server's Tailscale IP:
-   ```bash
-   tailscale ip -4
-   # Example output: 100.85.123.45
-   ```
-
-**On your local machine (where you'll run ClawTalk):**
-
-1. Install Tailscale — download directly from the website: https://tailscale.com/download
-
-   > **macOS note:** The [website download](https://tailscale.com/download) is the most reliable option. The Mac App Store version and `brew install tailscale` can have issues with the system network extension and daemon management. The website version installs both the menu bar app and the CLI tools.
-2. Log in with the same Tailscale account:
-   ```bash
-   tailscale up
-   ```
-3. Verify you can reach your server:
-   ```bash
-   # Replace with your server's Tailscale IP from above
-   ping 100.85.123.45
-   ```
-
-Once both machines are on the same Tailscale network, your server's gateway (e.g. `http://100.85.123.45:18789`) is reachable from your machine as if it were on the local network.
-
-ClawTalk monitors Tailscale status and shows it in the status bar (`TS:●`). If Tailscale isn't connected, ClawTalk tells you exactly what's wrong — not installed, daemon not running, or not logged in.
-
-> **Note:** If your server is on the same local network (or is localhost), you can skip Tailscale and use the local IP directly. Tailscale is for remote access from anywhere.
-
-### Step 3: Install ClawTalk (on your machine)
+### Install ClawTalk
 
 ```bash
 npm install -g @jokim1/clawtalk
@@ -103,28 +64,87 @@ npm run build
 npm link
 ```
 
-Requires **Node.js 20+**.
+### Option A: Local use (on the same machine as the gateway)
 
-### Step 4: Point ClawTalk at your gateway
+If you're running ClawTalk directly on the same machine where OpenClaw and ClawTalkGateway are running, **no configuration is needed**. Just run:
+
+```bash
+clawtalk
+```
+
+That's it. Here's why this works with zero config:
+
+1. ClawTalk defaults to `http://127.0.0.1:18789` as the gateway URL
+2. ClawTalkGateway listens on port `18789` by default
+3. The gateway allows unauthenticated access from localhost — no token required
+
+You can optionally set a default model:
+
+```bash
+clawtalk config --model deepseek/deepseek-chat
+```
+
+### Option B: Remote use (from a different machine)
+
+To use ClawTalk from your laptop, phone, or any machine that isn't the server itself, you need two things: a network connection to the server, and an auth token.
+
+#### Step 1: Set up Tailscale (on both machines)
+
+[Tailscale](https://tailscale.com) creates a private VPN between your devices. Each device gets a stable `100.x.x.x` IP that works from anywhere — no port forwarding or firewall rules needed.
+
+**On your server (where OpenClaw runs):**
+
+1. Install Tailscale: https://tailscale.com/download
+2. Start it and log in:
+   ```bash
+   sudo tailscale up
+   ```
+3. Note your server's Tailscale IP:
+   ```bash
+   tailscale ip -4
+   # Example output: 100.85.123.45
+   ```
+
+**On your local machine (where you'll run ClawTalk):**
+
+1. Install Tailscale from the website: https://tailscale.com/download
+
+   > **macOS note:** The [website download](https://tailscale.com/download) is the most reliable option. The Mac App Store version and `brew install tailscale` can have issues with the system network extension. The website version installs both the menu bar app and the CLI tools.
+2. Log in with the same Tailscale account:
+   ```bash
+   tailscale up
+   ```
+3. Verify you can reach your server:
+   ```bash
+   ping 100.85.123.45   # use your server's IP
+   ```
+
+> **Alternative:** If both machines are on the same local network, you can skip Tailscale and use the local IP directly (e.g. `192.168.1.50`).
+
+#### Step 2: Configure ClawTalk
+
+Point ClawTalk at your server's gateway:
 
 ```bash
 # Set your gateway URL (use your server's Tailscale IP)
 clawtalk config --gateway http://100.85.123.45:18789
 
-# Set auth token (if your gateway requires one)
+# Set auth token (required for remote connections)
 clawtalk config --token your-token-here
 
 # Optionally pick a default model
 clawtalk config --model deepseek/deepseek-chat
 ```
 
-### Step 5: Run it
+The auth token is whatever you configured in your gateway's `CLAWDBOT_GATEWAY_TOKEN` env var or `config.gateway.auth.token` setting.
+
+#### Step 3: Run it
 
 ```bash
 clawtalk
 ```
 
-ClawTalk connects to your gateway over Tailscale, discovers available models, and drops you into the chat.
+ClawTalk connects to your gateway, discovers available models, and drops you into the chat. The status bar shows connection status: `GW:●` for the gateway and `TS:●` for Tailscale.
 
 ## Features
 
@@ -275,19 +295,9 @@ clawtalk config --no-voice-auto-play
 clawtalk config --voice-tts-voice nova
 ```
 
-## Tailscale
+## Tailscale diagnostics
 
-ClawTalk is designed for remote access — your server holds the API keys and runs the OpenClaw gateway, and you connect to it from your laptop, phone, or any other machine. [Tailscale](https://tailscale.com) makes this easy.
-
-### What Tailscale does
-
-Tailscale creates a private mesh VPN between your devices. Each device gets a stable IP address (like `100.85.123.45`) that works from anywhere — at home, at a coffee shop, on a plane. No port forwarding, no DNS, no firewall rules.
-
-Your server's gateway runs on a local port (e.g. `18789`). With Tailscale, you access it at `http://100.85.123.45:18789` from any of your devices.
-
-### How ClawTalk uses Tailscale
-
-ClawTalk checks Tailscale status on startup and continuously while running:
+When using remote mode, ClawTalk monitors Tailscale status on startup and continuously while running:
 
 - **On startup** — if the gateway is unreachable, ClawTalk checks Tailscale and tells you exactly what's wrong:
   - `Tailscale is not installed` — with install instructions
@@ -297,15 +307,7 @@ ClawTalk checks Tailscale status on startup and continuously while running:
 
 - **While running** — the status bar shows `TS:●` (green = connected, red = disconnected). If Tailscale drops, you'll see it immediately.
 
-### Without Tailscale
-
-If your server is on the same local network or is localhost, you don't need Tailscale. Just point ClawTalk at the local address:
-
-```bash
-clawtalk config --gateway http://192.168.1.50:18789
-# or
-clawtalk config --gateway http://localhost:18789
-```
+When running locally on the gateway machine, Tailscale is not needed and its status is not relevant.
 
 ## Billing configuration
 
@@ -438,7 +440,7 @@ src/
 
 - **[ClawTalkGateway](https://github.com/jokim1/ClawTalkGateway)** — OpenClaw plugin providing HTTP endpoints this client connects to
 - **[ClawTalkMobile](https://github.com/jokim1/ClawTalkMobile)** — iOS client that connects to the same gateway
-- **[ClawTalkTerminal](https://github.com/jokim1/ClawTalkTerminal)** — Voice-first terminal plugin running locally on the OpenClaw server
+- **[ClawTalkTerminal](https://github.com/jokim1/ClawTalkTerminal)** — Legacy local-only terminal client (superseded by ClawTalk's local mode — see Setup Option A)
 - **[OpenClaw](https://github.com/jokim1/openclaw)** — The host server the gateway plugin extends
 
 ## Development
