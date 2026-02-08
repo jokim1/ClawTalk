@@ -1445,7 +1445,7 @@ function App({ options }: AppProps) {
       return;
     }
 
-    // Detect @mentions and route to specific agents
+    // When agents are configured, route through multi-agent (enables response chaining)
     const talkId = activeTalkIdRef.current;
     if (talkId && talkManagerRef.current) {
       const allAgents = talkManagerRef.current.getAgents(talkId);
@@ -1461,16 +1461,19 @@ function App({ options }: AppProps) {
           }
         }
 
-        // If non-primary agents are mentioned, route through multi-agent
-        const hasNonPrimary = mentionedAgents.some(a => !a.isPrimary);
-        if (hasNonPrimary) {
-          await sendMultiAgentMessage(trimmed, mentionedAgents, allAgents);
+        // Use @mentioned agents, or default to primary agent
+        const targets = mentionedAgents.length > 0
+          ? mentionedAgents
+          : allAgents.filter(a => a.isPrimary);
+
+        if (targets.length > 0) {
+          await sendMultiAgentMessage(trimmed, targets, allAgents);
           return;
         }
       }
     }
 
-    // Send with pending attachment if present
+    // No agents configured — send through regular chat path
     const attachment = pendingAttachment ?? undefined;
     if (pendingAttachment) {
       setPendingAttachment(null);
