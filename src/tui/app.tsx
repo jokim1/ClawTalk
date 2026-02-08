@@ -983,6 +983,14 @@ function App({ options }: AppProps) {
       // Gateway talk is created lazily on first message send
       gatewayTalkIdRef.current = null;
 
+      // Sync model to chat service and gateway (gateway may have been restarted
+      // or have a different active model since the previous talk set it)
+      chatServiceRef.current?.setModel(currentModel);
+      modelOverrideAbortRef.current?.abort();
+      const controller = new AbortController();
+      modelOverrideAbortRef.current = controller;
+      chatServiceRef.current?.setModelOverride(currentModel, controller.signal).catch(() => {});
+
       chat.clearStreaming();
       chat.setMessages([]);
       setSessionName(session.name);
