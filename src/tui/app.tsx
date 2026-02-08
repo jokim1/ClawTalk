@@ -130,6 +130,9 @@ function App({ options }: AppProps) {
   useEffect(() => {
     activeTalkIdRef.current = activeTalkId;
     setError(null); // Clear error when switching talks
+    // Keep primary agent ref in sync
+    const agents = activeTalkId ? talkManagerRef.current?.getAgents(activeTalkId) : [];
+    primaryAgentRef.current = agents?.find(a => a.isPrimary) ?? null;
   }, [activeTalkId]);
   const [messageQueue, setMessageQueue] = useState<string[]>([]);
   const [processingStartTime, setProcessingStartTime] = useState<number | null>(null);
@@ -149,6 +152,10 @@ function App({ options }: AppProps) {
 
   const gatewayTalkIdRef = useRef<string | null>(null);
 
+  // --- Primary agent ref (used by useChat for speaker labels) ---
+
+  const primaryAgentRef = useRef<TalkAgent | null>(null);
+
   // --- Hooks ---
 
   const chat = useChat(
@@ -158,6 +165,7 @@ function App({ options }: AppProps) {
     pricingRef,
     activeTalkIdRef,
     gatewayTalkIdRef,
+    primaryAgentRef,
   );
 
   // Track when processing starts/stops for timer display
@@ -467,6 +475,7 @@ function App({ options }: AppProps) {
 
   /** Sync agents to gateway after any mutation. */
   const syncAgentsToGateway = useCallback((agents: TalkAgent[]) => {
+    primaryAgentRef.current = agents.find(a => a.isPrimary) ?? null;
     const gwId = gatewayTalkIdRef.current;
     if (gwId && chatServiceRef.current) {
       chatServiceRef.current.updateGatewayTalk(gwId, { agents });
@@ -1036,6 +1045,81 @@ function App({ options }: AppProps) {
 
   // --- Multi-agent messaging ---
 
+  /** Stream a single agent's response. Returns the full content or empty string on error. */
+  const streamAgentResponse = useCallback(async (
+    gwTalkId: string,
+    message: string,
+    agent: TalkAgent,
+    allAgents: TalkAgent[],
+  ): Promise<string> => {
+    const roleTemplate = ROLE_BY_ID[agent.role];
+    if (!roleTemplate) return '';
+
+    setStreamingAgentName(agent.name);
+    const indicatorMsg = createMessage('system', `${agent.name} is responding...`);
+    chat.setMessages(prev => [...prev, indicatorMsg]);
+
+    try {
+      let fullContent = '';
+      const stream = chatServiceRef.current!.streamAgentMessage(
+        gwTalkId,
+        message,
+        { name: agent.name, model: agent.model, role: agent.role },
+        allAgents.map(a => ({ name: a.name, role: a.role, model: a.model })),
+        roleTemplate.instructions,
+      );
+
+      for await (const chunk of stream) {
+        fullContent += chunk;
+      }
+
+      if (fullContent.trim()) {
+        const model = chatServiceRef.current!.lastResponseModel ?? agent.model;
+        const assistantMsg = createMessage('assistant', fullContent, model, agent.name, agent.role);
+        chat.setMessages(prev => {
+          const filtered = prev.filter(m => m.id !== indicatorMsg.id);
+          return [...filtered, assistantMsg];
+        });
+      } else {
+        chat.setMessages(prev => prev.filter(m => m.id !== indicatorMsg.id));
+      }
+      return fullContent;
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      const errMsg = createMessage('system', `${agent.name} error: ${errorMessage}`);
+      chat.setMessages(prev => {
+        const filtered = prev.filter(m => m.id !== indicatorMsg.id);
+        return [...filtered, errMsg];
+      });
+      return '';
+    }
+  }, []);
+
+  /** Find agents mentioned in a response by name or model alias. */
+  const findMentionedAgents = useCallback((
+    responseText: string,
+    respondedAgents: Set<string>,
+    allAgents: TalkAgent[],
+  ): TalkAgent[] => {
+    const mentioned: TalkAgent[] = [];
+    const textLower = responseText.toLowerCase();
+
+    for (const agent of allAgents) {
+      if (respondedAgents.has(agent.name)) continue;
+
+      // Check for agent name (e.g. "Opus Strategist") or model alias (e.g. "Opus")
+      const alias = getModelAlias(agent.model).toLowerCase();
+      const nameLower = agent.name.toLowerCase();
+
+      // Use word boundary check to avoid false positives
+      const aliasPattern = new RegExp(`\\b${alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+      if (aliasPattern.test(responseText) || textLower.includes(nameLower)) {
+        mentioned.push(agent);
+      }
+    }
+    return mentioned;
+  }, []);
+
   const sendMultiAgentMessage = useCallback(async (text: string, targetAgents: TalkAgent[], allAgents: TalkAgent[]) => {
     const gwTalkId = gatewayTalkIdRef.current;
     if (!gwTalkId || !chatServiceRef.current) {
@@ -1048,53 +1132,27 @@ function App({ options }: AppProps) {
     chat.setMessages(prev => [...prev, userMsg]);
     mouseScroll.scrollToBottom();
 
+    // Track which agents have responded (to avoid duplicates and enable follow-up)
+    const respondedAgents = new Set<string>();
+    const allResponses: string[] = [];
+
     for (const agent of targetAgents) {
-      const roleTemplate = ROLE_BY_ID[agent.role];
-      if (!roleTemplate) continue;
+      const content = await streamAgentResponse(gwTalkId, text, agent, allAgents);
+      respondedAgents.add(agent.name);
+      if (content.trim()) allResponses.push(content);
+    }
 
-      // Show "responding..." indicator
-      setStreamingAgentName(agent.name);
-      const indicatorMsg = createMessage('system', `${agent.name} is responding...`);
-      chat.setMessages(prev => [...prev, indicatorMsg]);
-
-      try {
-        let fullContent = '';
-        const stream = chatServiceRef.current!.streamAgentMessage(
-          gwTalkId,
-          text,
-          { name: agent.name, model: agent.model, role: agent.role },
-          allAgents.map(a => ({ name: a.name, role: a.role, model: a.model })),
-          roleTemplate.instructions,
-        );
-
-        for await (const chunk of stream) {
-          fullContent += chunk;
-        }
-
-        // Replace indicator with final message
-        if (fullContent.trim()) {
-          const model = chatServiceRef.current!.lastResponseModel ?? agent.model;
-          const assistantMsg = createMessage('assistant', fullContent, model, agent.name, agent.role);
-          chat.setMessages(prev => {
-            const filtered = prev.filter(m => m.id !== indicatorMsg.id);
-            return [...filtered, assistantMsg];
-          });
-        } else {
-          // Remove indicator if no content
-          chat.setMessages(prev => prev.filter(m => m.id !== indicatorMsg.id));
-        }
-      } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : 'Unknown error';
-        const errMsg = createMessage('system', `${agent.name} error: ${errorMessage}`);
-        chat.setMessages(prev => {
-          const filtered = prev.filter(m => m.id !== indicatorMsg.id);
-          return [...filtered, errMsg];
-        });
-      }
+    // Follow-up round: if any response mentions agents that haven't responded,
+    // give them a chance to reply (capped at 1 extra round to prevent loops)
+    const combinedResponses = allResponses.join('\n');
+    const followUpAgents = findMentionedAgents(combinedResponses, respondedAgents, allAgents);
+    for (const agent of followUpAgents) {
+      await streamAgentResponse(gwTalkId, text, agent, allAgents);
+      respondedAgents.add(agent.name);
     }
 
     setStreamingAgentName(undefined);
-  }, [activeTalkId]);
+  }, [activeTalkId, streamAgentResponse, findMentionedAgents]);
 
   // --- Agent command handlers ---
 

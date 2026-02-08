@@ -7,7 +7,7 @@
 
 import { useState, useCallback, useRef } from 'react';
 import type { MutableRefObject, Dispatch, SetStateAction } from 'react';
-import type { Message, PendingAttachment } from '../../types.js';
+import type { Message, PendingAttachment, TalkAgent } from '../../types.js';
 import type { ChatService } from '../../services/chat.js';
 import type { SessionManager } from '../../services/sessions.js';
 import { isGatewaySentinel } from '../../constants.js';
@@ -29,6 +29,8 @@ export function useChat(
   activeTalkIdRef: MutableRefObject<string | null>,
   /** Gateway talk ID — when set, messages route through /api/talks/:id/chat */
   gatewayTalkIdRef: MutableRefObject<string | null>,
+  /** Primary agent — when set, used for speaker label on regular chat responses */
+  primaryAgentRef: MutableRefObject<TalkAgent | null>,
 ) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -127,7 +129,11 @@ export function useChat(
 
       if (!isGatewaySentinel(fullContent)) {
         const model = chatService.lastResponseModel ?? currentModelRef.current;
-        const assistantMsg = createMessage('assistant', fullContent, model);
+        const primary = primaryAgentRef.current;
+        const assistantMsg = createMessage(
+          'assistant', fullContent, model,
+          primary?.name, primary?.role,
+        );
 
         // Save to local session when not using gateway (gateway persists its own history)
         if (!gwTalkId && originSessionId) {
