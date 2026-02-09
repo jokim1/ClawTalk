@@ -44,12 +44,34 @@ export function parseJobBlocks(text: string): Array<{ schedule: string; prompt: 
   return results;
 }
 
-/** Remove leaked control characters from the input field (Ink workaround). */
+/**
+ * Remove a leaked control character from the input field (Ink workaround).
+ *
+ * When Ctrl+key shortcuts fire, Ink sometimes leaks the raw character into
+ * the input. This records the current input length and, after a short delay,
+ * removes the character only if one was actually appended at that position.
+ * Previous implementation used a global regex which destroyed ALL occurrences
+ * of the character in the user's text (e.g. every "a" after Ctrl+A).
+ */
 export function cleanInputChar(
   setter: (fn: (prev: string) => string) => void,
   char: string,
 ): void {
+  // Capture current length synchronously so the delayed check knows
+  // where a leaked character would appear.
+  let snapshotLength = -1;
+  setter(prev => {
+    snapshotLength = prev.length;
+    return prev; // no-op — just reading the length
+  });
+
   setTimeout(() => {
-    setter(prev => prev.replace(new RegExp(char, 'g'), ''));
+    setter(prev => {
+      // Only remove if a character was appended right at the snapshot position
+      if (prev.length > snapshotLength && prev[snapshotLength] === char) {
+        return prev.slice(0, snapshotLength) + prev.slice(snapshotLength + 1);
+      }
+      return prev;
+    });
   }, INPUT_CLEANUP_DELAY_MS);
 }

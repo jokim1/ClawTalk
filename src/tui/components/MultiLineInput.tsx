@@ -116,8 +116,12 @@ export function MultiLineInput({
       // Regular character input (including pasted text)
       // Filter out control characters but allow normal typing and paste
       if (input && !key.ctrl && !key.meta) {
+        // Strip SGR mouse escape sequence fragments that leak through Ink's parser.
+        // Terminal sends \x1b[<button;x;yM for mouse events; Ink consumes the \x1b
+        // but passes through the rest (e.g. "[<64;24;59M") as text input.
+        const stripped = input.replace(/\[?<\d+;\d+;\d+[Mm]/g, '');
         // Filter out any control characters from the input
-        const printable = input.split('').filter(c => c.charCodeAt(0) >= 32).join('');
+        const printable = stripped.split('').filter(c => c.charCodeAt(0) >= 32).join('');
         if (printable.length > 0) {
           const newValue = value.slice(0, cursorPos) + printable + value.slice(cursorPos);
           onChange(newValue);
