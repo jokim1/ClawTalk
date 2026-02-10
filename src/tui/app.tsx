@@ -1507,55 +1507,17 @@ function App({ options }: AppProps) {
       return;
     }
 
-    // When agents are configured, route through multi-agent (enables response chaining)
-    const talkId = activeTalkIdRef.current;
-    if (talkId && talkManagerRef.current) {
-      const allAgents = talkManagerRef.current.getAgents(talkId);
-      if (allAgents.length > 0) {
-        // Extract @mentions (word boundary: start of string or whitespace before @)
-        const mentionPattern = /(?:^|\s)@(\w+)/g;
-        const mentionedAgents: TalkAgent[] = [];
-        let match;
-        while ((match = mentionPattern.exec(trimmed)) !== null) {
-          const agent = talkManagerRef.current.findAgent(talkId, match[1]);
-          if (agent && !mentionedAgents.includes(agent)) {
-            mentionedAgents.push(agent);
-          }
-        }
+    // Process staged pending files before routing (applies to both agent and regular paths)
+    let finalMessage = trimmed;
+    let fileAttachment: PendingAttachment | undefined;
+    let fileDoc: { filename: string; text: string } | undefined;
 
-        // Use @mentioned agents, or default to primary agent
-        const targets = mentionedAgents.length > 0
-          ? mentionedAgents
-          : allAgents.filter(a => a.isPrimary);
-
-        if (targets.length > 0) {
-          await sendMultiAgentMessage(trimmed, targets, allAgents);
-          return;
-        }
-      }
-    }
-
-    // No agents configured — send through regular chat path
-    const attachment = pendingAttachment ?? undefined;
-    if (pendingAttachment) {
-      setPendingAttachment(null);
-    }
-
-    // Check for pending document from /file command
-    const docContent = pendingDocument ?? undefined;
-    if (pendingDocument) {
-      setPendingDocument(null);
-    }
-
-    // Process staged pending files (uploaded during file detection effect)
-    if (!attachment && !docContent && pendingFiles.length > 0) {
+    if (pendingFiles.length > 0) {
       const files = [...pendingFiles];
       setPendingFiles([]);
       setFileIndicatorSelected(false);
 
       const uploadNotes: string[] = [];
-      let imageAttachment: PendingAttachment | undefined;
-      let combinedDoc: { filename: string; text: string } | undefined;
 
       for (const file of files) {
         // Upload to gateway
@@ -1581,21 +1543,60 @@ function App({ options }: AppProps) {
         // Local text extraction / image processing
         try {
           const result = await processFile(file.path);
-          if (result.type === 'image' && !imageAttachment) {
-            imageAttachment = result.attachment;
+          if (result.type === 'image' && !fileAttachment) {
+            fileAttachment = result.attachment;
           } else if (result.type === 'document') {
-            if (!combinedDoc) combinedDoc = { filename: result.filename, text: result.text };
-            else combinedDoc.text += `\n\n--- ${result.filename} ---\n${result.text}`;
+            if (!fileDoc) fileDoc = { filename: result.filename, text: result.text };
+            else fileDoc.text += `\n\n--- ${result.filename} ---\n${result.text}`;
           }
         } catch { /* upload note still provides server path */ }
       }
 
       const prefix = uploadNotes.length > 0 ? uploadNotes.join('\n') + '\n\n' : '';
-      await chat.sendMessage(`${prefix}${trimmed}`, imageAttachment, combinedDoc);
-      return;
+      finalMessage = `${prefix}${trimmed}`;
     }
 
-    await chat.sendMessage(trimmed, attachment, docContent);
+    // When agents are configured, route through multi-agent (enables response chaining)
+    const talkId = activeTalkIdRef.current;
+    if (talkId && talkManagerRef.current) {
+      const allAgents = talkManagerRef.current.getAgents(talkId);
+      if (allAgents.length > 0) {
+        // Extract @mentions (word boundary: start of string or whitespace before @)
+        const mentionPattern = /(?:^|\s)@(\w+)/g;
+        const mentionedAgents: TalkAgent[] = [];
+        let match;
+        while ((match = mentionPattern.exec(finalMessage)) !== null) {
+          const agent = talkManagerRef.current.findAgent(talkId, match[1]);
+          if (agent && !mentionedAgents.includes(agent)) {
+            mentionedAgents.push(agent);
+          }
+        }
+
+        // Use @mentioned agents, or default to primary agent
+        const targets = mentionedAgents.length > 0
+          ? mentionedAgents
+          : allAgents.filter(a => a.isPrimary);
+
+        if (targets.length > 0) {
+          await sendMultiAgentMessage(finalMessage, targets, allAgents);
+          return;
+        }
+      }
+    }
+
+    // No agents configured — send through regular chat path
+    const attachment = fileAttachment ?? pendingAttachment ?? undefined;
+    if (pendingAttachment) {
+      setPendingAttachment(null);
+    }
+
+    // Check for pending document from /file command
+    const docContent = fileDoc ?? pendingDocument ?? undefined;
+    if (pendingDocument) {
+      setPendingDocument(null);
+    }
+
+    await chat.sendMessage(finalMessage, attachment, docContent);
   }, [chat.sendMessage, chat.isProcessing, sendMultiAgentMessage, pendingAttachment, pendingDocument, pendingFiles]);
 
   // Process queued messages when AI finishes responding
