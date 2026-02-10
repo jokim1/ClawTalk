@@ -19,6 +19,7 @@ const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.he
 const PDF_EXTENSIONS = new Set(['.pdf']);
 const TEXT_EXTENSIONS = new Set(['.txt', '.md', '.csv', '.log', '.vtt', '.srt', '.json', '.xml']);
 const MAX_TEXT_SIZE = 512 * 1024; // 512KB max for text files
+const MAX_UPLOAD_SIZE = 50 * 1024 * 1024; // 50MB max for file uploads
 
 export type ProcessedFile =
   | { type: 'image'; attachment: PendingAttachment }
@@ -161,6 +162,31 @@ async function readTextFile(filePath: string): Promise<ProcessedFile> {
     type: 'document',
     text,
     filename: basename(filePath),
+    sizeBytes: fileStat.size,
+  };
+}
+
+/**
+ * Read any file as raw binary for upload to the gateway.
+ * Returns base64-encoded data, filename, and size.
+ * Works with any file type, not just supported extensions.
+ */
+export async function readFileForUpload(filePath: string): Promise<{
+  filename: string;
+  base64: string;
+  sizeBytes: number;
+}> {
+  const resolved = resolvePath(filePath);
+  const fileStat = await stat(resolved).catch(() => null);
+  if (!fileStat?.isFile()) throw new Error(`File not found: ${filePath}`);
+  if (fileStat.size > MAX_UPLOAD_SIZE) {
+    throw new Error(`File too large (${Math.round(fileStat.size / 1024 / 1024)}MB). Max: 50MB`);
+  }
+
+  const buffer = await readFile(resolved);
+  return {
+    filename: basename(resolved),
+    base64: buffer.toString('base64'),
     sizeBytes: fileStat.size,
   };
 }

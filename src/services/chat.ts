@@ -604,6 +604,51 @@ export class ChatService implements IChatService {
     }
   }
 
+  /** Upload a file to the gateway server. */
+  async uploadFile(
+    filename: string,
+    base64Data: string,
+  ): Promise<{ serverPath: string; filename: string; sizeBytes: number }> {
+    const response = await fetch(`${this.config.gatewayUrl}/api/files/upload`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.authHeaders(),
+      },
+      body: JSON.stringify({ filename, base64Data }),
+      signal: AbortSignal.timeout(120_000), // 2-minute timeout for large files
+    });
+
+    if (!response.ok) {
+      const error = await readLimitedBody(response, MAX_RESPONSE_BODY_BYTES);
+      let message: string;
+      try {
+        const parsed = JSON.parse(error);
+        message = parsed.error || error.slice(0, 200);
+      } catch {
+        message = error.slice(0, 200);
+      }
+      throw new Error(`Upload failed (${response.status}): ${message}`);
+    }
+
+    const data = JSON.parse(await readLimitedBody(response, MAX_RESPONSE_BODY_BYTES)) as {
+      ok?: boolean;
+      serverPath?: string;
+      filename?: string;
+      sizeBytes?: number;
+    };
+
+    if (!data.ok || !data.serverPath || !data.filename) {
+      throw new Error('Invalid upload response from gateway');
+    }
+
+    return {
+      serverPath: data.serverPath,
+      filename: data.filename,
+      sizeBytes: data.sizeBytes ?? 0,
+    };
+  }
+
   async checkHealth(): Promise<boolean> {
     try {
       const response = await fetch(`${this.config.gatewayUrl}/health`, {
