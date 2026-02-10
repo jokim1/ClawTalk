@@ -141,6 +141,8 @@ function App({ options }: AppProps) {
   const [pendingClear, setPendingClear] = useState(false);
   const [pendingAttachment, setPendingAttachment] = useState<PendingAttachment | null>(null);
   const [pendingDocument, setPendingDocument] = useState<{ filename: string; text: string } | null>(null);
+  const [pendingFiles, setPendingFiles] = useState<Array<{ path: string; filename: string }>>([]);
+  const [fileIndicatorSelected, setFileIndicatorSelected] = useState(false);
 
   // --- TTS bridge ref (useChat → useVoice) ---
 
@@ -248,6 +250,23 @@ function App({ options }: AppProps) {
     setHintSelectedIndex(0);
   }, [commandHints.length, inputText]);
 
+  // Extract file paths from input and stage them as pending files
+  useEffect(() => {
+    if (isOverlayActive) return;
+    const detected = detectFilePaths(inputText);
+    if (detected.length === 0) return;
+    let newInput = inputText;
+    const newFiles: Array<{ path: string; filename: string }> = [];
+    for (let i = detected.length - 1; i >= 0; i--) {
+      const det = detected[i];
+      newFiles.unshift({ path: det.path, filename: det.path.split('/').pop() || 'file' });
+      newInput = newInput.slice(0, det.start) + newInput.slice(det.end);
+    }
+    newInput = newInput.replace(/\s{2,}/g, ' ').trim();
+    setPendingFiles(prev => [...prev, ...newFiles]);
+    setInputText(newInput);
+  }, [inputText, isOverlayActive]);
+
   // --- Dynamic input height ---
   // Calculate how many visual lines the input text occupies
   const inputContentWidth = Math.max(10, terminalWidth - 4); // matches InputArea's inputWidth
@@ -267,7 +286,7 @@ function App({ options }: AppProps) {
   // Total - StatusBar(2) - talkTitle(0-2) - error(0-1) - clearPrompt(0-1) - separator(1) - input - shortcuts(3) - queued - hints - margin(1)
   const errorLines = error ? 1 : 0;
   const clearPromptLines = pendingClear ? 1 : 0;
-  const attachmentLines = (pendingAttachment ? 1 : 0) + (pendingDocument ? 1 : 0);
+  const attachmentLines = (pendingAttachment ? 1 : 0) + (pendingDocument ? 1 : 0) + pendingFiles.length;
   const queuedLines = messageQueue.length > 0 ? messageQueue.length : 0;
   const hintsLines = showCommandHints ? commandHints.length + 1 : 0; // +1 for separator line
   const chatHeight = Math.max(4, terminalHeight - 2 - talkTitleLines - errorLines - clearPromptLines - attachmentLines - 1 - inputLines - 3 - queuedLines - hintsLines - 1);
@@ -995,6 +1014,8 @@ function App({ options }: AppProps) {
 
       chat.clearStreaming();
       chat.setMessages([]);
+      setPendingFiles([]);
+      setFileIndicatorSelected(false);
       setSessionName(session.name);
       const sysMsg = createMessage('system', 'New chat started.');
       chat.setMessages(prev => [...prev, sysMsg]);
@@ -1012,6 +1033,8 @@ function App({ options }: AppProps) {
     setSessionName(session?.name ?? talk.topicTitle ?? 'Talk');
     setActiveTalkId(talk.id);
     setPendingAttachment(null);
+    setPendingFiles([]);
+    setFileIndicatorSelected(false);
     talkManagerRef.current?.setActiveTalk(talk.id);
     talkManagerRef.current?.touchTalk(talk.id);
     mouseScroll.scrollToBottom();
@@ -1524,93 +1547,56 @@ function App({ options }: AppProps) {
       setPendingDocument(null);
     }
 
-    // Detect inline file paths if no attachment/document already pending
-    if (!attachment && !docContent) {
-      const detected = detectFilePaths(trimmed);
-      if (detected.length > 0) {
-        // Try each detected path — use the first one that resolves to an actual file
-        for (const det of detected) {
+    // Process staged pending files (uploaded during file detection effect)
+    if (!attachment && !docContent && pendingFiles.length > 0) {
+      const files = [...pendingFiles];
+      setPendingFiles([]);
+      setFileIndicatorSelected(false);
+
+      const uploadNotes: string[] = [];
+      let imageAttachment: PendingAttachment | undefined;
+      let combinedDoc: { filename: string; text: string } | undefined;
+
+      for (const file of files) {
+        // Upload to gateway
+        if (chatServiceRef.current) {
+          const uploadMsg = createMessage('system', `[uploading] ${file.filename}...`);
+          chat.setMessages(prev => [...prev, uploadMsg]);
           try {
-            // Upload file to gateway server first
-            let uploadServerPath = '';
-            let uploadFilename = '';
-            if (chatServiceRef.current) {
-              const uploadMsg = createMessage('system', `[uploading] ${det.path}...`);
-              chat.setMessages(prev => [...prev, uploadMsg]);
-              try {
-                const uploadData = await readFileForUpload(det.path);
-                const uploadResult = await chatServiceRef.current.uploadFile(uploadData.filename, uploadData.base64);
-                const sizeKB = Math.round(uploadResult.sizeBytes / 1024);
-                uploadServerPath = uploadResult.serverPath;
-                uploadFilename = uploadData.filename;
-                chat.setMessages(prev => {
-                  const filtered = prev.filter(m => m.id !== uploadMsg.id);
-                  const doneMsg = createMessage('system', `[uploaded] ${uploadResult.filename} (${sizeKB}KB) → ${uploadResult.serverPath}`);
-                  return [...filtered, doneMsg];
-                });
-              } catch (uploadErr) {
-                // Upload failed — remove indicator and continue with local processing
-                chat.setMessages(prev => prev.filter(m => m.id !== uploadMsg.id));
-                const errMessage = uploadErr instanceof Error ? uploadErr.message : 'Unknown error';
-                const warnMsg = createMessage('system', `[upload failed] ${errMessage}`);
-                chat.setMessages(prev => [...prev, warnMsg]);
-              }
-            }
-
-            // Replace the local path in the message with [file: name]
-            // so the LLM doesn't see the user's local filesystem path
-            const fileLabel = uploadFilename || det.path.split('/').pop() || 'file';
-            const cleanedMessage = trimmed.slice(0, det.start) + `[file: ${fileLabel}]` + trimmed.slice(det.end);
-
-            // Build the final message: server path note (if uploaded) + cleaned message
-            let messageText = cleanedMessage;
-            if (uploadServerPath) {
-              messageText = `[File "${fileLabel}" has been uploaded to the server at: ${uploadServerPath}]\n\n${cleanedMessage}`;
-            }
-
-            // Also process the file locally for text extraction / image attachment
-            const result = await processFile(det.path);
-            if (result.type === 'image') {
-              const sizeKB = Math.round(result.attachment.sizeBytes / 1024);
-              const confirmMsg = createMessage('system', `[attached] ${result.attachment.filename} (${result.attachment.width}x${result.attachment.height}, ${sizeKB}KB)`);
-              chat.setMessages(prev => [...prev, confirmMsg]);
-              await chat.sendMessage(messageText, result.attachment);
-              return;
-            } else {
-              const sizeKB = Math.round(result.sizeBytes / 1024);
-              const pageInfo = result.pageCount ? `, ${result.pageCount} pages` : '';
-              const confirmMsg = createMessage('system', `[attached] ${result.filename} (${sizeKB}KB${pageInfo}, ${result.text.length} chars)`);
-              chat.setMessages(prev => [...prev, confirmMsg]);
-              await chat.sendMessage(messageText, undefined, { filename: result.filename, text: result.text });
-              return;
-            }
-          } catch {
-            // If upload succeeded but local processing failed, still send with upload note
-            // (the file is on the server even if we can't extract text locally)
-            if (det.path) {
-              const fileLabel = det.path.split('/').pop() || 'file';
-              const cleanedMessage = trimmed.slice(0, det.start) + `[file: ${fileLabel}]` + trimmed.slice(det.end);
-              // Check for a recent successful upload in system messages
-              const recentMessages = chat.messages;
-              const lastSysMsg = recentMessages[recentMessages.length - 1];
-              if (lastSysMsg?.role === 'system' && lastSysMsg.content.startsWith('[uploaded]')) {
-                const pathMatch = lastSysMsg.content.match(/→ (.+)$/);
-                if (pathMatch) {
-                  const messageText = `[File "${fileLabel}" has been uploaded to the server at: ${pathMatch[1]}]\n\n${cleanedMessage}`;
-                  await chat.sendMessage(messageText);
-                  return;
-                }
-              }
-            }
-            // Path matched regex but file doesn't exist or can't be processed — skip
-            continue;
+            const uploadData = await readFileForUpload(file.path);
+            const uploadResult = await chatServiceRef.current.uploadFile(uploadData.filename, uploadData.base64);
+            const sizeKB = Math.round(uploadResult.sizeBytes / 1024);
+            uploadNotes.push(`[File "${file.filename}" uploaded to server: ${uploadResult.serverPath}]`);
+            chat.setMessages(prev => {
+              const filtered = prev.filter(m => m.id !== uploadMsg.id);
+              return [...filtered, createMessage('system', `[uploaded] ${uploadResult.filename} (${sizeKB}KB) → ${uploadResult.serverPath}`)];
+            });
+          } catch (uploadErr) {
+            chat.setMessages(prev => prev.filter(m => m.id !== uploadMsg.id));
+            const errMsg = uploadErr instanceof Error ? uploadErr.message : 'Unknown error';
+            chat.setMessages(prev => [...prev, createMessage('system', `[upload failed] ${file.filename}: ${errMsg}`)]);
           }
         }
+
+        // Local text extraction / image processing
+        try {
+          const result = await processFile(file.path);
+          if (result.type === 'image' && !imageAttachment) {
+            imageAttachment = result.attachment;
+          } else if (result.type === 'document') {
+            if (!combinedDoc) combinedDoc = { filename: result.filename, text: result.text };
+            else combinedDoc.text += `\n\n--- ${result.filename} ---\n${result.text}`;
+          }
+        } catch { /* upload note still provides server path */ }
       }
+
+      const prefix = uploadNotes.length > 0 ? uploadNotes.join('\n') + '\n\n' : '';
+      await chat.sendMessage(`${prefix}${trimmed}`, imageAttachment, combinedDoc);
+      return;
     }
 
     await chat.sendMessage(trimmed, attachment, docContent);
-  }, [chat.sendMessage, chat.isProcessing, sendMultiAgentMessage, pendingAttachment, pendingDocument]);
+  }, [chat.sendMessage, chat.isProcessing, sendMultiAgentMessage, pendingAttachment, pendingDocument, pendingFiles]);
 
   // Process queued messages when AI finishes responding
   useEffect(() => {
@@ -1633,6 +1619,26 @@ function App({ options }: AppProps) {
       } else {
         setPendingClear(false);
       }
+      return;
+    }
+
+    // File indicator selection
+    if (fileIndicatorSelected && pendingFiles.length > 0) {
+      if (key.backspace || key.delete) {
+        setPendingFiles(prev => prev.slice(0, -1));
+        if (pendingFiles.length <= 1) setFileIndicatorSelected(false);
+        return;
+      }
+      if (key.escape || key.downArrow) {
+        setFileIndicatorSelected(false);
+        return;
+      }
+      setFileIndicatorSelected(false);
+      // fall through to normal input handling
+    }
+
+    if (key.upArrow && inputText.length === 0 && pendingFiles.length > 0 && !showCommandHints) {
+      setFileIndicatorSelected(true);
       return;
     }
 
@@ -1992,6 +1998,27 @@ function App({ options }: AppProps) {
         <Box paddingX={1}>
           <Text color="blue">[attached] </Text>
           <Text>{pendingDocument.filename} ({pendingDocument.text.length} chars)</Text>
+        </Box>
+      )}
+
+      {/* Pending file indicators */}
+      {pendingFiles.length > 0 && (
+        <Box flexDirection="column" paddingX={1}>
+          {pendingFiles.map((f, i) => (
+            <Box key={`pf-${i}`}>
+              {fileIndicatorSelected && i === pendingFiles.length - 1 ? (
+                <>
+                  <Text color="blue" inverse bold>{` [file: ${f.filename}] `}</Text>
+                  <Text dimColor> Delete to remove · Esc to cancel</Text>
+                </>
+              ) : (
+                <>
+                  <Text color="blue">[file: {f.filename}]</Text>
+                  {i === pendingFiles.length - 1 && <Text dimColor> (↑ to select)</Text>}
+                </>
+              )}
+            </Box>
+          ))}
         </Box>
       )}
 
