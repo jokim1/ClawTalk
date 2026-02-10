@@ -1772,7 +1772,7 @@ function App({ options }: AppProps) {
 
   // --- Layout ---
 
-  const overlayMaxHeight = Math.max(6, terminalHeight - 6);
+  const overlayMaxHeight = Math.max(6, terminalHeight - 4);
 
   // --- Render ---
 
@@ -1964,82 +1964,88 @@ function App({ options }: AppProps) {
         />
       )}
 
-      {/* Separator */}
-      <Text dimColor>{'─'.repeat(terminalWidth)}</Text>
+      {/* Separator, indicators, and input (hidden when overlays are active) */}
+      {!isOverlayActive && (
+        <>
+        <Text dimColor>{'─'.repeat(terminalWidth)}</Text>
 
-      {/* Queued messages */}
-      {messageQueue.length > 0 && (
-        <Box flexDirection="column" paddingX={1}>
-          {messageQueue.map((msg, idx) => (
-            <Box key={idx}>
-              <Text dimColor>queued: </Text>
-              <Text color="gray">{msg.length > 60 ? msg.slice(0, 60) + '...' : msg}</Text>
-            </Box>
-          ))}
-        </Box>
+        {/* Queued messages */}
+        {messageQueue.length > 0 && (
+          <Box flexDirection="column" paddingX={1}>
+            {messageQueue.map((msg, idx) => (
+              <Box key={idx}>
+                <Text dimColor>queued: </Text>
+                <Text color="gray">{msg.length > 60 ? msg.slice(0, 60) + '...' : msg}</Text>
+              </Box>
+            ))}
+          </Box>
+        )}
+
+        {/* Command hints popup (above input when typing "/") */}
+        {showCommandHints && (
+          <CommandHints
+            commands={commandHints}
+            selectedIndex={hintSelectedIndex}
+            width={terminalWidth}
+          />
+        )}
+
+        {/* Pending attachment indicator */}
+        {pendingAttachment && (
+          <Box paddingX={1}>
+            <Text color="blue">[attached] </Text>
+            <Text>{pendingAttachment.filename} ({pendingAttachment.width}x{pendingAttachment.height}, {Math.round(pendingAttachment.sizeBytes / 1024)}KB)</Text>
+          </Box>
+        )}
+        {pendingDocument && (
+          <Box paddingX={1}>
+            <Text color="blue">[attached] </Text>
+            <Text>{pendingDocument.filename} ({pendingDocument.text.length} chars)</Text>
+          </Box>
+        )}
+
+        {/* Pending file indicators */}
+        {pendingFiles.length > 0 && (
+          <Box flexDirection="column" paddingX={1}>
+            {pendingFiles.map((f, i) => (
+              <Box key={`pf-${i}`}>
+                {fileIndicatorSelected && i === pendingFiles.length - 1 ? (
+                  <>
+                    <Text color="blue" inverse bold>{` [file: ${f.filename}] `}</Text>
+                    <Text dimColor> Delete to remove · Esc to cancel</Text>
+                  </>
+                ) : (
+                  <>
+                    <Text color="blue">[file: {f.filename}]</Text>
+                    {i === pendingFiles.length - 1 && <Text dimColor> (↑ to select)</Text>}
+                  </>
+                )}
+              </Box>
+            ))}
+          </Box>
+        )}
+        </>
       )}
 
-      {/* Command hints popup (above input when typing "/") */}
-      {showCommandHints && (
-        <CommandHints
-          commands={commandHints}
-          selectedIndex={hintSelectedIndex}
-          width={terminalWidth}
-        />
-      )}
-
-      {/* Pending attachment indicator */}
-      {pendingAttachment && (
+      {/* Input area (hidden when overlays are active) */}
+      {!isOverlayActive && (
         <Box paddingX={1}>
-          <Text color="blue">[attached] </Text>
-          <Text>{pendingAttachment.filename} ({pendingAttachment.width}x{pendingAttachment.height}, {Math.round(pendingAttachment.sizeBytes / 1024)}KB)</Text>
+          <InputArea
+            value={inputText}
+            onChange={setInputText}
+            onSubmit={handleSubmit}
+            disabled={chat.isProcessing}
+            voiceMode={realtimeVoice.isActive ? 'liveChat' : voice.voiceMode}
+            volumeLevel={realtimeVoice.isActive ? realtimeVoice.volumeLevel : voice.volumeLevel}
+            width={terminalWidth - 2}
+            isActive={!isOverlayActive}
+            maxVisibleLines={inputLines}
+            realtimeState={realtimeVoice.state}
+            userTranscript={realtimeVoice.userTranscript}
+            aiTranscript={realtimeVoice.aiTranscript}
+          />
         </Box>
       )}
-      {pendingDocument && (
-        <Box paddingX={1}>
-          <Text color="blue">[attached] </Text>
-          <Text>{pendingDocument.filename} ({pendingDocument.text.length} chars)</Text>
-        </Box>
-      )}
-
-      {/* Pending file indicators */}
-      {pendingFiles.length > 0 && (
-        <Box flexDirection="column" paddingX={1}>
-          {pendingFiles.map((f, i) => (
-            <Box key={`pf-${i}`}>
-              {fileIndicatorSelected && i === pendingFiles.length - 1 ? (
-                <>
-                  <Text color="blue" inverse bold>{` [file: ${f.filename}] `}</Text>
-                  <Text dimColor> Delete to remove · Esc to cancel</Text>
-                </>
-              ) : (
-                <>
-                  <Text color="blue">[file: {f.filename}]</Text>
-                  {i === pendingFiles.length - 1 && <Text dimColor> (↑ to select)</Text>}
-                </>
-              )}
-            </Box>
-          ))}
-        </Box>
-      )}
-
-      {/* Input area */}
-      <Box paddingX={1}>
-        <InputArea
-          value={inputText}
-          onChange={setInputText}
-          onSubmit={handleSubmit}
-          disabled={chat.isProcessing}
-          voiceMode={realtimeVoice.isActive ? 'liveChat' : voice.voiceMode}
-          volumeLevel={realtimeVoice.isActive ? realtimeVoice.volumeLevel : voice.volumeLevel}
-          width={terminalWidth - 2}
-          isActive={!isOverlayActive}
-          maxVisibleLines={inputLines}
-          realtimeState={realtimeVoice.state}
-          userTranscript={realtimeVoice.userTranscript}
-          aiTranscript={realtimeVoice.aiTranscript}
-        />
-      </Box>
 
       {/* Shortcut bar pinned at bottom (2 lines) */}
       <ShortcutBar terminalWidth={terminalWidth} ttsEnabled={voice.ttsEnabled} grabTextMode={grabTextMode} />
