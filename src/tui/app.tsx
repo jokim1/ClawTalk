@@ -1532,7 +1532,8 @@ function App({ options }: AppProps) {
         for (const det of detected) {
           try {
             // Upload file to gateway server first
-            let uploadNote = '';
+            let uploadServerPath = '';
+            let uploadFilename = '';
             if (chatServiceRef.current) {
               const uploadMsg = createMessage('system', `[uploading] ${det.path}...`);
               chat.setMessages(prev => [...prev, uploadMsg]);
@@ -1540,7 +1541,8 @@ function App({ options }: AppProps) {
                 const uploadData = await readFileForUpload(det.path);
                 const uploadResult = await chatServiceRef.current.uploadFile(uploadData.filename, uploadData.base64);
                 const sizeKB = Math.round(uploadResult.sizeBytes / 1024);
-                uploadNote = `[File uploaded to server: ${uploadResult.serverPath}]`;
+                uploadServerPath = uploadResult.serverPath;
+                uploadFilename = uploadData.filename;
                 chat.setMessages(prev => {
                   const filtered = prev.filter(m => m.id !== uploadMsg.id);
                   const doneMsg = createMessage('system', `[uploaded] ${uploadResult.filename} (${sizeKB}KB) → ${uploadResult.serverPath}`);
@@ -1555,13 +1557,23 @@ function App({ options }: AppProps) {
               }
             }
 
+            // Replace the local path in the message with [file: name]
+            // so the LLM doesn't see the user's local filesystem path
+            const fileLabel = uploadFilename || det.path.split('/').pop() || 'file';
+            const cleanedMessage = trimmed.slice(0, det.start) + `[file: ${fileLabel}]` + trimmed.slice(det.end);
+
+            // Build the final message: server path note (if uploaded) + cleaned message
+            let messageText = cleanedMessage;
+            if (uploadServerPath) {
+              messageText = `[File "${fileLabel}" has been uploaded to the server at: ${uploadServerPath}]\n\n${cleanedMessage}`;
+            }
+
             // Also process the file locally for text extraction / image attachment
             const result = await processFile(det.path);
             if (result.type === 'image') {
               const sizeKB = Math.round(result.attachment.sizeBytes / 1024);
               const confirmMsg = createMessage('system', `[attached] ${result.attachment.filename} (${result.attachment.width}x${result.attachment.height}, ${sizeKB}KB)`);
               chat.setMessages(prev => [...prev, confirmMsg]);
-              const messageText = uploadNote ? `${uploadNote}\n\n${trimmed}` : trimmed;
               await chat.sendMessage(messageText, result.attachment);
               return;
             } else {
@@ -1569,22 +1581,25 @@ function App({ options }: AppProps) {
               const pageInfo = result.pageCount ? `, ${result.pageCount} pages` : '';
               const confirmMsg = createMessage('system', `[attached] ${result.filename} (${sizeKB}KB${pageInfo}, ${result.text.length} chars)`);
               chat.setMessages(prev => [...prev, confirmMsg]);
-              const messageText = uploadNote ? `${uploadNote}\n\n${trimmed}` : trimmed;
               await chat.sendMessage(messageText, undefined, { filename: result.filename, text: result.text });
               return;
             }
           } catch {
             // If upload succeeded but local processing failed, still send with upload note
             // (the file is on the server even if we can't extract text locally)
-            // Re-check if we had a successful upload by looking for the upload system message
-            const lastSysMsg = chat.messages[chat.messages.length - 1];
-            if (lastSysMsg?.role === 'system' && lastSysMsg.content.startsWith('[uploaded]')) {
-              // Extract server path from the upload confirmation
-              const pathMatch = lastSysMsg.content.match(/→ (.+)$/);
-              if (pathMatch) {
-                const uploadNote = `[File uploaded to server: ${pathMatch[1]}]`;
-                await chat.sendMessage(`${uploadNote}\n\n${trimmed}`);
-                return;
+            if (det.path) {
+              const fileLabel = det.path.split('/').pop() || 'file';
+              const cleanedMessage = trimmed.slice(0, det.start) + `[file: ${fileLabel}]` + trimmed.slice(det.end);
+              // Check for a recent successful upload in system messages
+              const recentMessages = chat.messages;
+              const lastSysMsg = recentMessages[recentMessages.length - 1];
+              if (lastSysMsg?.role === 'system' && lastSysMsg.content.startsWith('[uploaded]')) {
+                const pathMatch = lastSysMsg.content.match(/→ (.+)$/);
+                if (pathMatch) {
+                  const messageText = `[File "${fileLabel}" has been uploaded to the server at: ${pathMatch[1]}]\n\n${cleanedMessage}`;
+                  await chat.sendMessage(messageText);
+                  return;
+                }
               }
             }
             // Path matched regex but file doesn't exist or can't be processed — skip
