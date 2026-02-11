@@ -12,6 +12,7 @@ export interface CommandContext {
   openModelPicker: () => void;
   clearSession: () => void;
   setError: (error: string | null) => void;
+  addSystemMessage: (text: string) => void;
   saveTalk: (title?: string) => void;
   setTopicTitle: (title: string) => void;
   pinMessage: (fromBottom?: number) => void;
@@ -74,7 +75,7 @@ function handleSaveCommand(args: string, ctx: CommandContext): CommandResult {
 /** Handle /topic <title> — set topic title and save current chat to Talks list. */
 function handleTopicCommand(args: string, ctx: CommandContext): CommandResult {
   if (!args.trim()) {
-    ctx.setError('Usage: /topic <title>');
+    ctx.addSystemMessage('Usage: /topic <title>');
     return { handled: true };
   }
   ctx.saveTalk(args.trim());
@@ -85,7 +86,7 @@ function handleTopicCommand(args: string, ctx: CommandContext): CommandResult {
 function handlePinCommand(args: string, ctx: CommandContext): CommandResult {
   const n = args.trim() ? parseInt(args.trim(), 10) : undefined;
   if (n !== undefined && (isNaN(n) || n < 1)) {
-    ctx.setError('Usage: /pin [N] — N is a positive number');
+    ctx.addSystemMessage('Usage: /pin [N] — N is a positive number');
     return { handled: true };
   }
   ctx.pinMessage(n);
@@ -96,7 +97,7 @@ function handlePinCommand(args: string, ctx: CommandContext): CommandResult {
 function handleUnpinCommand(args: string, ctx: CommandContext): CommandResult {
   const n = args.trim() ? parseInt(args.trim(), 10) : undefined;
   if (n !== undefined && (isNaN(n) || n < 1)) {
-    ctx.setError('Usage: /unpin [N] — N is a positive number');
+    ctx.addSystemMessage('Usage: /unpin [N] — N is a positive number');
     return { handled: true };
   }
   ctx.unpinMessage(n);
@@ -113,7 +114,7 @@ function handlePinsCommand(_args: string, ctx: CommandContext): CommandResult {
 function handleJobCommand(args: string, ctx: CommandContext): CommandResult {
   const trimmed = args.trim();
   if (!trimmed) {
-    ctx.setError('Usage: /job add "schedule" prompt | /job pause|resume|delete N');
+    ctx.addSystemMessage('Usage: /job add "schedule" prompt | /job pause|resume|delete N');
     return { handled: true };
   }
 
@@ -123,7 +124,7 @@ function handleJobCommand(args: string, ctx: CommandContext): CommandResult {
     // Parse quoted schedule: "schedule" prompt
     const match = rest.match(/^"([^"]+)"\s+(.+)$/s);
     if (!match) {
-      ctx.setError('Usage: /job add "schedule" prompt text');
+      ctx.addSystemMessage('Usage: /job add "schedule" prompt text');
       return { handled: true };
     }
     ctx.addJob(match[1], match[2]);
@@ -140,14 +141,19 @@ function handleJobCommand(args: string, ctx: CommandContext): CommandResult {
     return { handled: true };
   }
 
-  ctx.setError('Usage: /job add "schedule" prompt | /job pause|resume|delete N');
+  ctx.addSystemMessage('Usage: /job add "schedule" prompt | /job pause|resume|delete N');
   return { handled: true };
 }
 
-/** Handle /jobs — list all jobs for current talk. */
-function handleJobsCommand(_args: string, ctx: CommandContext): CommandResult {
-  ctx.listJobs();
-  return { handled: true };
+/** Handle /jobs [subcommand] — list jobs, or forward subcommands to /job handler. */
+function handleJobsCommand(args: string, ctx: CommandContext): CommandResult {
+  const trimmed = args.trim();
+  if (!trimmed) {
+    ctx.listJobs();
+    return { handled: true };
+  }
+  // Forward subcommands (e.g. "/jobs delete 3") to the /job handler
+  return handleJobCommand(trimmed, ctx);
 }
 
 /** Handle /reports [N] — view job reports for this talk (optionally for job #N). */
@@ -159,7 +165,7 @@ function handleReportsCommand(args: string, ctx: CommandContext): CommandResult 
   }
   const n = parseInt(trimmed, 10);
   if (isNaN(n) || n < 1) {
-    ctx.setError('Usage: /reports [N] — N is a positive job number');
+    ctx.addSystemMessage('Usage: /reports [N] — N is a positive job number');
     return { handled: true };
   }
   ctx.viewReports(n);
@@ -185,7 +191,7 @@ function handleObjectiveCommand(args: string, ctx: CommandContext): CommandResul
 function handleAgentCommand(args: string, ctx: CommandContext): CommandResult {
   const trimmed = args.trim();
   if (!trimmed) {
-    ctx.setError('Usage: /agent add <model> <role> | /agent remove <name>');
+    ctx.addSystemMessage('Usage: /agent add <model> <role> | /agent remove <name>');
     return { handled: true };
   }
 
@@ -193,7 +199,7 @@ function handleAgentCommand(args: string, ctx: CommandContext): CommandResult {
     const rest = trimmed.slice(4).trim();
     const parts = rest.split(/\s+/);
     if (parts.length < 2) {
-      ctx.setError('Usage: /agent add <model> <role>');
+      ctx.addSystemMessage('Usage: /agent add <model> <role>');
       return { handled: true };
     }
     const model = parts[0];
@@ -205,7 +211,7 @@ function handleAgentCommand(args: string, ctx: CommandContext): CommandResult {
   if (trimmed.startsWith('remove ')) {
     const name = trimmed.slice(7).trim();
     if (!name) {
-      ctx.setError('Usage: /agent remove <name>');
+      ctx.addSystemMessage('Usage: /agent remove <name>');
       return { handled: true };
     }
     ctx.removeAgent(name);
@@ -217,7 +223,7 @@ function handleAgentCommand(args: string, ctx: CommandContext): CommandResult {
     // Parse: "Agent Name newrole" — role is always last word
     const lastSpace = rest.lastIndexOf(' ');
     if (lastSpace === -1) {
-      ctx.setError('Usage: /agent role <name> <new-role>');
+      ctx.addSystemMessage('Usage: /agent role <name> <new-role>');
       return { handled: true };
     }
     const name = rest.slice(0, lastSpace).trim();
@@ -226,7 +232,7 @@ function handleAgentCommand(args: string, ctx: CommandContext): CommandResult {
     return { handled: true };
   }
 
-  ctx.setError('Usage: /agent add <model> <role> | /agent remove <name> | /agent role <name> <role>');
+  ctx.addSystemMessage('Usage: /agent add <model> <role> | /agent remove <name> | /agent role <name> <role>');
   return { handled: true };
 }
 
@@ -242,7 +248,7 @@ function handleAskCommand(args: string, ctx: CommandContext): CommandResult {
   // Parse @name from the start
   const match = trimmed.match(/^@(\S+)\s+(.+)$/s);
   if (!match) {
-    ctx.setError('Usage: /ask @<agent-name> <message>');
+    ctx.addSystemMessage('Usage: /ask @<agent-name> <message>');
     return { handled: true };
   }
   ctx.askAgent(match[1], match[2]);
@@ -253,7 +259,7 @@ function handleAskCommand(args: string, ctx: CommandContext): CommandResult {
 function handleDebateCommand(args: string, ctx: CommandContext): CommandResult {
   const trimmed = args.trim();
   if (!trimmed) {
-    ctx.setError('Usage: /debate <topic>');
+    ctx.addSystemMessage('Usage: /debate <topic>');
     return { handled: true };
   }
   ctx.debateAll(trimmed);
@@ -270,7 +276,7 @@ function handleReviewCommand(_args: string, ctx: CommandContext): CommandResult 
 function handleFileCommand(args: string, ctx: CommandContext): CommandResult {
   const trimmed = args.trim();
   if (!trimmed) {
-    ctx.setError('Usage: /file <path> [message]');
+    ctx.addSystemMessage('Usage: /file <path> [message]');
     return { handled: true };
   }
 
@@ -282,7 +288,7 @@ function handleFileCommand(args: string, ctx: CommandContext): CommandResult {
     // Quoted path: /file "path with spaces" optional message
     const endQuote = trimmed.indexOf('"', 1);
     if (endQuote === -1) {
-      ctx.setError('Unclosed quote in file path');
+      ctx.addSystemMessage('Unclosed quote in file path');
       return { handled: true };
     }
     filePath = trimmed.slice(1, endQuote);
@@ -352,7 +358,10 @@ export function dispatchCommand(input: string, ctx: CommandContext): boolean {
     return true;
   }
 
-  return false;
+  // Unrecognized slash command — show feedback instead of sending as chat
+  const cmdWord = withoutSlash.split(/\s/)[0];
+  ctx.addSystemMessage(`Unknown command: /${cmdWord}. Type / to see available commands.`);
+  return true;
 }
 
 /**

@@ -1429,11 +1429,17 @@ function App({ options }: AppProps) {
     chat.setMessages([sysMsg]);
   }, [chat]);
 
+  const addSystemMessage = useCallback((text: string) => {
+    const sysMsg = createMessage('system', text);
+    chat.setMessages(prev => [...prev, sysMsg]);
+  }, []);
+
   const commandCtx = useRef({
     switchModel,
     openModelPicker: () => setShowModelPicker(true),
     clearSession: () => { setPendingClear(true); },
     setError,
+    addSystemMessage,
     saveTalk: handleSaveTalk,
     setTopicTitle: handleSetTopicTitle,
     pinMessage: handlePinMessage,
@@ -1461,6 +1467,7 @@ function App({ options }: AppProps) {
     openModelPicker: () => setShowModelPicker(true),
     clearSession: () => { setPendingClear(true); },
     setError,
+    addSystemMessage,
     saveTalk: handleSaveTalk,
     setTopicTitle: handleSetTopicTitle,
     pinMessage: handlePinMessage,
