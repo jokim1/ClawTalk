@@ -161,7 +161,9 @@ export function useChat(
           // Show confirmation for any auto-created jobs
           const jobBlocks = parseJobBlocks(fullContent);
           for (const { schedule, prompt } of jobBlocks) {
-            const jobMsg = createMessage('system', `Job created: "${schedule}" — ${prompt}`);
+            const isOneOff = /^(in\s|at\s)/i.test(schedule);
+            const label = isOneOff ? 'Job Scheduled' : 'Recurring Job Scheduled';
+            const jobMsg = createMessage('system', `[${label}] "${prompt}" — ${schedule}`);
             setMessages(prev => [...prev, jobMsg]);
           }
 

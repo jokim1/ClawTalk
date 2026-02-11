@@ -206,7 +206,15 @@ function App({ options }: AppProps) {
           billing: { ...billing, ...prev.billing },
         }));
       },
+      onNewReports: (reports) => {
+        for (const report of reports) {
+          const icon = report.status === 'success' ? '\u2713' : '\u2717';
+          const sysMsg = createMessage('system', `[Job Report] ${icon} ${report.summary}`);
+          chat.setMessages(prev => [...prev, sysMsg]);
+        }
+      },
     },
+    gatewayTalkIdRef,
   );
 
   const voice = useVoice({
@@ -716,13 +724,16 @@ function App({ options }: AppProps) {
     // Auto-save the talk when adding a job
     talkManagerRef.current.saveTalk(activeTalkId);
 
+    const isOneOff = /^(in\s|at\s)/i.test(schedule);
+    const label = isOneOff ? 'Job Scheduled' : 'Recurring Job Scheduled';
+
     const gwId = gatewayTalkIdRef.current;
     if (gwId && chatServiceRef.current) {
       chatServiceRef.current.createGatewayJob(gwId, schedule, prompt).then(job => {
         if (job) {
           // Update local cache
           talkManagerRef.current?.addJob(activeTalkId, schedule, prompt);
-          const sysMsg = createMessage('system', `Job created: "${schedule}" — ${prompt}`);
+          const sysMsg = createMessage('system', `[${label}] "${prompt}" — ${schedule}`);
           chat.setMessages(prev => [...prev, sysMsg]);
         } else {
           setError('Failed to create job on gateway');
@@ -732,7 +743,7 @@ function App({ options }: AppProps) {
       // Fallback to local-only
       const job = talkManagerRef.current.addJob(activeTalkId, schedule, prompt);
       if (job) {
-        const sysMsg = createMessage('system', `Job created: "${schedule}" — ${prompt}`);
+        const sysMsg = createMessage('system', `[${label}] "${prompt}" — ${schedule}`);
         chat.setMessages(prev => [...prev, sysMsg]);
       } else {
         setError('Failed to create job');

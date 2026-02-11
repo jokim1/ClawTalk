@@ -7,7 +7,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import type { MutableRefObject } from 'react';
-import type { UsageStats, VoiceReadiness, RealtimeVoiceCapabilities } from '../../types.js';
+import type { UsageStats, VoiceReadiness, RealtimeVoiceCapabilities, JobReport } from '../../types.js';
 import type { ChatService } from '../../services/chat.js';
 import type { VoiceService } from '../../services/voice.js';
 import type { RealtimeVoiceService } from '../../services/realtime-voice.js';
@@ -37,6 +37,7 @@ export interface VoiceCaps {
 interface Callbacks {
   onInitialProbe: (model: string) => void;
   onBillingDiscovered: (billing: Record<string, BillingOverride>) => void;
+  onNewReports?: (reports: JobReport[]) => void;
 }
 
 // Combined state to enable atomic updates (React 17 doesn't batch in async)
@@ -79,6 +80,7 @@ export function useGateway(
   anthropicRLRef: MutableRefObject<AnthropicRateLimitService | null>,
   currentModelRef: MutableRefObject<string>,
   callbacks: Callbacks,
+  gatewayTalkIdRef?: MutableRefObject<string | null>,
 ) {
   const [state, setState] = useState<GatewayState>(initialState);
 
@@ -91,6 +93,7 @@ export function useGateway(
   const prevTailscaleStatusRef = useRef(state.tailscaleStatus);
   const prevUsageRef = useRef({ todaySpend: 0, weeklySpend: 0, rateLimitsJson: '' });
   const isFirstPollRef = useRef(true);
+  const lastReportTimestampRef = useRef(Date.now());
 
   // Wrapper for backward compatibility with app.tsx setUsage calls
   const setUsage = (updater: UsageStats | ((prev: UsageStats) => UsageStats)) => {
@@ -253,6 +256,21 @@ export function useGateway(
             monthlyEstimate: dailyAvg !== undefined ? dailyAvg * 30 : 0,
             ...(rateLimits ? { rateLimits } : {}),
           } as UsageStats;
+        }
+
+        // Poll for new job reports
+        const gwTalkId = gatewayTalkIdRef?.current;
+        if (gwTalkId && cbRef.current.onNewReports) {
+          try {
+            const newReports = await chatService.fetchGatewayReports(gwTalkId, undefined, 5, lastReportTimestampRef.current);
+            if (newReports.length > 0) {
+              const maxRunAt = Math.max(...newReports.map(r => r.runAt));
+              lastReportTimestampRef.current = maxRunAt;
+              cbRef.current.onNewReports(newReports);
+            }
+          } catch {
+            // Report polling is best-effort
+          }
         }
 
         // Apply all updates atomically in a single setState call

@@ -430,12 +430,13 @@ export class ChatService implements IChatService {
   }
 
   /** Fetch job reports from a gateway talk. */
-  async fetchGatewayReports(talkId: string, jobId?: string, limit = 20): Promise<JobReport[]> {
+  async fetchGatewayReports(talkId: string, jobId?: string, limit = 20, since?: number): Promise<JobReport[]> {
     try {
       const path = jobId
         ? `/api/talks/${encodeURIComponent(talkId)}/jobs/${encodeURIComponent(jobId)}/reports`
         : `/api/talks/${encodeURIComponent(talkId)}/reports`;
-      const response = await fetch(`${this.config.gatewayUrl}${path}?limit=${limit}`, {
+      const sinceParam = since ? `&since=${since}` : '';
+      const response = await fetch(`${this.config.gatewayUrl}${path}?limit=${limit}${sinceParam}`, {
         method: 'GET',
         headers: this.authHeaders(),
         signal: AbortSignal.timeout(15_000),
