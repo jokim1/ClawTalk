@@ -110,11 +110,11 @@ function createActivityAbort(inactivityMs: number, maxMs: number) {
   };
 }
 
-/** Inactivity timeout for SSE streams — resets on each chunk (2 min per chunk). */
-const STREAM_INACTIVITY_MS = 120_000;
+/** Inactivity timeout for SSE streams — resets on each chunk (5 min per chunk). */
+const STREAM_INACTIVITY_MS = 300_000;
 
-/** Hard max timeout for the entire SSE connection (15 minutes). */
-const STREAM_MAX_MS = 900_000;
+/** Hard max timeout for the entire SSE connection (30 minutes). */
+const STREAM_MAX_MS = 1_800_000;
 
 function parseModelError(status: number, body: string, model: string): string {
   if (status === 401) return 'Authentication failed. Check your API key or gateway token.';
