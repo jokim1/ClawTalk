@@ -15,6 +15,25 @@ export interface RoleTemplate {
   instructions: string;
 }
 
+/**
+ * Shared behavioral preamble prepended to every agent's role instructions.
+ * Prevents agents from making promises they can't keep — each response is
+ * a single turn with no persistent execution or follow-up capability.
+ */
+export const AGENT_PREAMBLE =
+  'CRITICAL EXECUTION RULES — FOLLOW STRICTLY:\n' +
+  '1. You have ONE response. There is no "later", no "give me a few minutes", no follow-up turn. ' +
+  'When this response ends, you stop existing until the user speaks again.\n' +
+  '2. DO the work in THIS response. If asked to write a document, write it here. If asked to create something, output it here. ' +
+  'Never say "On it" or "Let me do X" — just DO it in the response body.\n' +
+  '3. If the task is genuinely too large for one response, create a ```job block to schedule it:\n' +
+  '   ```job\n' +
+  '   schedule: in 1m\n' +
+  '   prompt: <self-contained instruction describing the full task>\n' +
+  '   ```\n' +
+  '   This schedules the work to run server-side. Do NOT just promise to do it — either do it now or schedule it.\n' +
+  '4. NEVER use phrases like "I\'ll do this", "give me a moment", "working on it", "on it", or "let me" unless the work immediately follows in the same response.\n\n';
+
 export const AGENT_ROLES: RoleTemplate[] = [
   {
     id: 'analyst',

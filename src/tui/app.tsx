@@ -10,7 +10,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { render, Box, Text, useInput, useApp, useStdout } from 'ink';
 import type { ClawTalkOptions, ModelStatus, Message, TalkAgent, AgentRole, PendingAttachment } from '../types.js';
 import type { Talk } from '../types.js';
-import { AGENT_ROLES, ROLE_BY_ID, generateAgentName } from '../agent-roles.js';
+import { AGENT_ROLES, ROLE_BY_ID, AGENT_PREAMBLE, generateAgentName } from '../agent-roles.js';
 import type { RoleTemplate } from '../agent-roles.js';
 import { StatusBar, ShortcutBar } from './components/StatusBar';
 import { InputArea } from './components/InputArea.js';
@@ -740,14 +740,9 @@ function App({ options }: AppProps) {
         }
       });
     } else {
-      // Fallback to local-only
-      const job = talkManagerRef.current.addJob(activeTalkId, schedule, prompt);
-      if (job) {
-        const sysMsg = createMessage('system', `[${label}] "${prompt}" — ${schedule}`);
-        chat.setMessages(prev => [...prev, sysMsg]);
-      } else {
-        setError('Failed to create job');
-      }
+      // Jobs require a gateway connection — the client doesn't execute them
+      const sysMsg = createMessage('system', 'Cannot create job: no gateway connection. Jobs run server-side — connect to a gateway first.');
+      chat.setMessages(prev => [...prev, sysMsg]);
     }
   }, [activeTalkId]);
 
@@ -1119,7 +1114,7 @@ function App({ options }: AppProps) {
         message,
         { name: agent.name, model: agent.model, role: agent.role },
         allAgents.map(a => ({ name: a.name, role: a.role, model: a.model })),
-        roleTemplate.instructions,
+        AGENT_PREAMBLE + roleTemplate.instructions,
       );
 
       for await (const chunk of stream) {
