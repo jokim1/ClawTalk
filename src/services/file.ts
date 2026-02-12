@@ -17,6 +17,7 @@ import type { PendingAttachment } from '../types.js';
 
 const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic']);
 const PDF_EXTENSIONS = new Set(['.pdf']);
+const DOCX_EXTENSIONS = new Set(['.docx', '.doc', '.rtf']);
 const TEXT_EXTENSIONS = new Set(['.txt', '.md', '.csv', '.log', '.vtt', '.srt', '.json', '.xml']);
 const MAX_TEXT_SIZE = 512 * 1024; // 512KB max for text files
 const MAX_UPLOAD_SIZE = 50 * 1024 * 1024; // 50MB max for file uploads
@@ -32,12 +33,12 @@ function resolvePath(filePath: string): string {
 }
 
 function getSupportedExtensions(): string[] {
-  return [...IMAGE_EXTENSIONS, ...PDF_EXTENSIONS, ...TEXT_EXTENSIONS];
+  return [...IMAGE_EXTENSIONS, ...PDF_EXTENSIONS, ...DOCX_EXTENSIONS, ...TEXT_EXTENSIONS];
 }
 
 export function isSupportedFile(filePath: string): boolean {
   const ext = extname(filePath).toLowerCase();
-  return IMAGE_EXTENSIONS.has(ext) || PDF_EXTENSIONS.has(ext) || TEXT_EXTENSIONS.has(ext);
+  return IMAGE_EXTENSIONS.has(ext) || PDF_EXTENSIONS.has(ext) || DOCX_EXTENSIONS.has(ext) || TEXT_EXTENSIONS.has(ext);
 }
 
 /**
@@ -56,6 +57,10 @@ export async function processFile(filePath: string): Promise<ProcessedFile> {
 
   if (PDF_EXTENSIONS.has(ext)) {
     return await extractPdfText(resolved);
+  }
+
+  if (DOCX_EXTENSIONS.has(ext)) {
+    return await extractDocxText(resolved);
   }
 
   if (TEXT_EXTENSIONS.has(ext)) {
@@ -145,6 +150,30 @@ sys.stdout.write(text)
   if (!text) throw new Error('No text content');
 
   return { type: 'document', text, pageCount };
+}
+
+/**
+ * Extract text from a Word document (.docx, .doc) or RTF file.
+ *
+ * Uses macOS textutil which natively handles these formats.
+ */
+async function extractDocxText(filePath: string): Promise<ProcessedFile> {
+  const fileStat = await stat(filePath).catch(() => null);
+  if (!fileStat?.isFile()) throw new Error(`File not found: ${filePath}`);
+
+  try {
+    const { stdout: text } = await execFilePromise('textutil', ['-convert', 'txt', '-stdout', filePath]);
+    if (!text.trim()) throw new Error('No text content extracted');
+
+    return {
+      type: 'document',
+      text: text.trim(),
+      filename: basename(filePath),
+      sizeBytes: fileStat.size,
+    };
+  } catch {
+    throw new Error('Document extraction requires macOS textutil (built-in). Supported: .docx, .doc, .rtf');
+  }
 }
 
 /**
