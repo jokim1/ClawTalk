@@ -85,6 +85,37 @@ function stripAnsi(text: string): string {
   return text.replace(/[\u001b\u009b][\[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nq-uy=><~]/g, '');
 }
 
+/**
+ * Create an AbortController with an activity-based timeout.
+ * The timer resets each time `touch()` is called.
+ * Falls back to a hard maximum timeout as a safety net.
+ */
+function createActivityAbort(inactivityMs: number, maxMs: number) {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout>;
+
+  const resetTimer = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => controller.abort(), inactivityMs);
+  };
+
+  // Hard maximum timeout safety net
+  const maxTimer = setTimeout(() => controller.abort(), maxMs);
+
+  resetTimer();
+  return {
+    signal: controller.signal,
+    touch: resetTimer,
+    clear: () => { clearTimeout(timer); clearTimeout(maxTimer); },
+  };
+}
+
+/** Inactivity timeout for SSE streams — resets on each chunk (2 min per chunk). */
+const STREAM_INACTIVITY_MS = 120_000;
+
+/** Hard max timeout for the entire SSE connection (15 minutes). */
+const STREAM_MAX_MS = 900_000;
+
 function parseModelError(status: number, body: string, model: string): string {
   if (status === 401) return 'Authentication failed. Check your API key or gateway token.';
   if (status === 403) return 'Access denied. Account may lack permission.';
@@ -460,6 +491,11 @@ export class ChatService implements IChatService {
     model?: string,
     image?: { base64: string; mimeType: string },
   ): AsyncGenerator<StreamChunk, void, unknown> {
+    // Use activity-based timeout: resets on each chunk, with a hard max.
+    // This keeps the connection alive during multi-iteration tool loops
+    // where tool execution gaps can be long but data is still flowing.
+    const abort = createActivityAbort(STREAM_INACTIVITY_MS, STREAM_MAX_MS);
+
     const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
@@ -468,16 +504,17 @@ export class ChatService implements IChatService {
         model: model ?? this.config.model,
         ...(image && { imageBase64: image.base64, imageMimeType: image.mimeType }),
       }),
-      signal: AbortSignal.timeout(CHAT_TIMEOUT_MS),
+      signal: abort.signal,
     });
 
     if (!response.ok) {
+      abort.clear();
       const error = await response.text();
       throw new Error(`Gateway error (${response.status}): ${error.slice(0, 200)}`);
     }
 
     const reader = response.body?.getReader();
-    if (!reader) throw new Error('No response body');
+    if (!reader) { abort.clear(); throw new Error('No response body'); }
 
     const decoder = new TextDecoder();
     let buffer = '';
@@ -485,10 +522,12 @@ export class ChatService implements IChatService {
     this.lastResponseModel = undefined;
     this.lastResponseUsage = undefined;
 
+    try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
 
+      abort.touch(); // Reset inactivity timer on each chunk
       buffer += decoder.decode(value, { stream: true });
       if (buffer.length > MAX_STREAM_BUFFER_BYTES) {
         reader.cancel();
@@ -566,6 +605,9 @@ export class ChatService implements IChatService {
         }
       }
     }
+    } finally {
+      abort.clear();
+    }
   }
 
   /**
@@ -580,6 +622,8 @@ export class ChatService implements IChatService {
     allAgents: { name: string; role: string; model: string }[],
     roleInstructions: string,
   ): AsyncGenerator<StreamChunk, void, unknown> {
+    const abort = createActivityAbort(STREAM_INACTIVITY_MS, STREAM_MAX_MS);
+
     const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
@@ -591,16 +635,17 @@ export class ChatService implements IChatService {
         agentRoleInstructions: roleInstructions,
         otherAgents: allAgents.filter(a => a.name !== agent.name),
       }),
-      signal: AbortSignal.timeout(CHAT_TIMEOUT_MS),
+      signal: abort.signal,
     });
 
     if (!response.ok) {
+      abort.clear();
       const error = await response.text();
       throw new Error(`Gateway error (${response.status}): ${error.slice(0, 200)}`);
     }
 
     const reader = response.body?.getReader();
-    if (!reader) throw new Error('No response body');
+    if (!reader) { abort.clear(); throw new Error('No response body'); }
 
     const decoder = new TextDecoder();
     let buffer = '';
@@ -608,10 +653,12 @@ export class ChatService implements IChatService {
     this.lastResponseModel = undefined;
     this.lastResponseUsage = undefined;
 
+    try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
 
+      abort.touch(); // Reset inactivity timer on each chunk
       buffer += decoder.decode(value, { stream: true });
       if (buffer.length > MAX_STREAM_BUFFER_BYTES) {
         reader.cancel();
@@ -688,6 +735,9 @@ export class ChatService implements IChatService {
           }
         }
       }
+    }
+    } finally {
+      abort.clear();
     }
   }
 
