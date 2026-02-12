@@ -7,7 +7,7 @@
 
 import { useState, useCallback, useRef } from 'react';
 import type { MutableRefObject, Dispatch, SetStateAction } from 'react';
-import type { Message, PendingAttachment, DocumentContent, TalkAgent } from '../../types.js';
+import type { Message, PendingAttachment, DocumentContent, TalkAgent, StreamChunk } from '../../types.js';
 import type { ChatService } from '../../services/chat.js';
 import type { SessionManager } from '../../services/sessions.js';
 import { isGatewaySentinel } from '../../constants.js';
@@ -99,14 +99,38 @@ export function useChat(
     try {
       let fullContent = '';
       const imageParam = attachment ? { base64: attachment.base64, mimeType: attachment.mimeType } : undefined;
-      const stream = gwTalkId
-        ? chatService.streamTalkMessage(gwTalkId, llmText, undefined, imageParam)
-        : chatService.streamMessage(llmText, history);
-      for await (const chunk of stream) {
-        fullContent += chunk;
-        // Only update streaming UI if still on the same talk
-        if (isStillOnSameTalk()) {
-          setStreamingContent(fullContent);
+
+      if (gwTalkId) {
+        // Gateway Talk streaming — handles StreamChunk (content + tool events)
+        const stream = chatService.streamTalkMessage(gwTalkId, llmText, undefined, imageParam);
+        for await (const chunk of stream) {
+          if (chunk.type === 'content') {
+            fullContent += chunk.text;
+            if (isStillOnSameTalk()) {
+              setStreamingContent(fullContent);
+            }
+          } else if (chunk.type === 'tool_start') {
+            if (isStillOnSameTalk()) {
+              const toolMsg = createMessage('system', `[Tool] ${chunk.name}(${chunk.arguments.slice(0, 100)}${chunk.arguments.length > 100 ? '...' : ''})`);
+              setMessages(prev => [...prev, toolMsg]);
+            }
+          } else if (chunk.type === 'tool_end') {
+            if (isStillOnSameTalk()) {
+              const status = chunk.success ? 'OK' : 'ERROR';
+              const preview = chunk.content.slice(0, 200) + (chunk.content.length > 200 ? '...' : '');
+              const toolMsg = createMessage('system', `[Tool ${status}] ${chunk.name} (${chunk.durationMs}ms): ${preview}`);
+              setMessages(prev => [...prev, toolMsg]);
+            }
+          }
+        }
+      } else {
+        // Direct streaming — yields plain strings
+        const stream = chatService.streamMessage(llmText, history);
+        for await (const chunk of stream) {
+          fullContent += chunk;
+          if (isStillOnSameTalk()) {
+            setStreamingContent(fullContent);
+          }
         }
       }
 

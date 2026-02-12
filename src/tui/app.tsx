@@ -1118,7 +1118,17 @@ function App({ options }: AppProps) {
       );
 
       for await (const chunk of stream) {
-        fullContent += chunk;
+        if (chunk.type === 'content') {
+          fullContent += chunk.text;
+        } else if (chunk.type === 'tool_start') {
+          const toolMsg = createMessage('system', `[${agent.name} → Tool] ${chunk.name}(${chunk.arguments.slice(0, 80)}${chunk.arguments.length > 80 ? '...' : ''})`);
+          chat.setMessages(prev => [...prev, toolMsg]);
+        } else if (chunk.type === 'tool_end') {
+          const status = chunk.success ? 'OK' : 'ERROR';
+          const preview = chunk.content.slice(0, 150) + (chunk.content.length > 150 ? '...' : '');
+          const toolMsg = createMessage('system', `[${agent.name} → Tool ${status}] ${chunk.name} (${chunk.durationMs}ms): ${preview}`);
+          chat.setMessages(prev => [...prev, toolMsg]);
+        }
       }
 
       if (fullContent.trim()) {

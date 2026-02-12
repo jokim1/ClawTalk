@@ -5,7 +5,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import type { Message, RateLimitInfo, Job, JobReport, TalkAgent } from '../types.js';
+import type { Message, RateLimitInfo, Job, JobReport, TalkAgent, StreamChunk } from '../types.js';
 import type { IChatService } from './interfaces.js';
 import {
   CHAT_TIMEOUT_MS,
@@ -452,13 +452,14 @@ export class ChatService implements IChatService {
   /**
    * Stream a message through the gateway Talk chat endpoint.
    * The gateway handles system prompt, context, and history.
+   * Yields StreamChunk objects: content text, tool_start, and tool_end events.
    */
   async *streamTalkMessage(
     talkId: string,
     userMessage: string,
     model?: string,
     image?: { base64: string; mimeType: string },
-  ): AsyncGenerator<string, void, unknown> {
+  ): AsyncGenerator<StreamChunk, void, unknown> {
     const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
@@ -480,6 +481,7 @@ export class ChatService implements IChatService {
 
     const decoder = new TextDecoder();
     let buffer = '';
+    let pendingEvent: string | null = null;
     this.lastResponseModel = undefined;
     this.lastResponseUsage = undefined;
 
@@ -496,12 +498,53 @@ export class ChatService implements IChatService {
       buffer = lines.pop() ?? '';
 
       for (const line of lines) {
-        // Skip custom meta events from gateway
-        if (line.startsWith('event: ')) continue;
+        // Track event type for tool_start / tool_end
+        if (line.startsWith('event: ')) {
+          const eventType = line.slice(7).trim();
+          if (eventType === 'tool_start' || eventType === 'tool_end') {
+            pendingEvent = eventType;
+          } else {
+            pendingEvent = null; // Skip other custom events (meta, etc.)
+          }
+          continue;
+        }
 
         if (line.startsWith('data: ')) {
           const data = line.slice(6);
           if (data === '[DONE]') return;
+
+          // Handle tool events
+          if (pendingEvent === 'tool_start') {
+            try {
+              const parsed = JSON.parse(data);
+              yield {
+                type: 'tool_start',
+                id: parsed.id ?? '',
+                name: parsed.name ?? '',
+                arguments: parsed.arguments ?? '',
+              };
+            } catch { /* ignore parse error */ }
+            pendingEvent = null;
+            continue;
+          }
+
+          if (pendingEvent === 'tool_end') {
+            try {
+              const parsed = JSON.parse(data);
+              yield {
+                type: 'tool_end',
+                id: parsed.id ?? '',
+                name: parsed.name ?? '',
+                success: parsed.success ?? false,
+                content: parsed.content ?? '',
+                durationMs: parsed.durationMs ?? 0,
+              };
+            } catch { /* ignore parse error */ }
+            pendingEvent = null;
+            continue;
+          }
+
+          pendingEvent = null;
 
           try {
             const parsed = validateSSEChunk(JSON.parse(data));
@@ -516,7 +559,7 @@ export class ChatService implements IChatService {
               };
             }
             const content = parsed.choices?.[0]?.delta?.content;
-            if (content) yield stripAnsi(content);
+            if (content) yield { type: 'content', text: stripAnsi(content) };
           } catch (err) {
             console.debug('SSE parse error (expected for partial chunks):', err);
           }
@@ -528,6 +571,7 @@ export class ChatService implements IChatService {
   /**
    * Stream a message through the gateway Talk chat endpoint with agent context.
    * The gateway handles system prompt, context, and history with role-specific instructions.
+   * Yields StreamChunk objects: content text, tool_start, and tool_end events.
    */
   async *streamAgentMessage(
     talkId: string,
@@ -535,7 +579,7 @@ export class ChatService implements IChatService {
     agent: { name: string; model: string; role: string },
     allAgents: { name: string; role: string; model: string }[],
     roleInstructions: string,
-  ): AsyncGenerator<string, void, unknown> {
+  ): AsyncGenerator<StreamChunk, void, unknown> {
     const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
@@ -560,6 +604,7 @@ export class ChatService implements IChatService {
 
     const decoder = new TextDecoder();
     let buffer = '';
+    let pendingEvent: string | null = null;
     this.lastResponseModel = undefined;
     this.lastResponseUsage = undefined;
 
@@ -576,12 +621,53 @@ export class ChatService implements IChatService {
       buffer = lines.pop() ?? '';
 
       for (const line of lines) {
-        // Skip custom meta events from gateway
-        if (line.startsWith('event: ')) continue;
+        // Track event type for tool_start / tool_end
+        if (line.startsWith('event: ')) {
+          const eventType = line.slice(7).trim();
+          if (eventType === 'tool_start' || eventType === 'tool_end') {
+            pendingEvent = eventType;
+          } else {
+            pendingEvent = null;
+          }
+          continue;
+        }
 
         if (line.startsWith('data: ')) {
           const data = line.slice(6);
           if (data === '[DONE]') return;
+
+          // Handle tool events
+          if (pendingEvent === 'tool_start') {
+            try {
+              const parsed = JSON.parse(data);
+              yield {
+                type: 'tool_start',
+                id: parsed.id ?? '',
+                name: parsed.name ?? '',
+                arguments: parsed.arguments ?? '',
+              };
+            } catch { /* ignore parse error */ }
+            pendingEvent = null;
+            continue;
+          }
+
+          if (pendingEvent === 'tool_end') {
+            try {
+              const parsed = JSON.parse(data);
+              yield {
+                type: 'tool_end',
+                id: parsed.id ?? '',
+                name: parsed.name ?? '',
+                success: parsed.success ?? false,
+                content: parsed.content ?? '',
+                durationMs: parsed.durationMs ?? 0,
+              };
+            } catch { /* ignore parse error */ }
+            pendingEvent = null;
+            continue;
+          }
+
+          pendingEvent = null;
 
           try {
             const parsed = validateSSEChunk(JSON.parse(data));
@@ -596,7 +682,7 @@ export class ChatService implements IChatService {
               };
             }
             const content = parsed.choices?.[0]?.delta?.content;
-            if (content) yield stripAnsi(content);
+            if (content) yield { type: 'content', text: stripAnsi(content) };
           } catch (err) {
             console.debug('SSE parse error (expected for partial chunks):', err);
           }

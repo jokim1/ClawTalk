@@ -168,6 +168,44 @@ export interface JobReport {
   tokenUsage?: { input: number; output: number };
 }
 
+// ---------------------------------------------------------------------------
+// Tool support types
+// ---------------------------------------------------------------------------
+
+export interface ToolCallFunction {
+  name: string;
+  arguments: string;
+}
+
+export interface ToolCallInfo {
+  id: string;
+  type: 'function';
+  function: ToolCallFunction;
+}
+
+export interface ToolStartEvent {
+  type: 'tool_start';
+  id: string;
+  name: string;
+  arguments: string;
+}
+
+export interface ToolEndEvent {
+  type: 'tool_end';
+  id: string;
+  name: string;
+  success: boolean;
+  content: string;
+  durationMs: number;
+}
+
+export interface ContentChunk {
+  type: 'content';
+  text: string;
+}
+
+export type StreamChunk = ContentChunk | ToolStartEvent | ToolEndEvent;
+
 export interface Talk {
   id: string;              // Same as session ID
   sessionId: string;       // Reference to underlying session
