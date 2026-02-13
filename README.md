@@ -454,3 +454,36 @@ npm start
 ## License
 
 MIT
+
+## Troubleshooting
+
+### "Cannot reach gateway" / "Connection refused"
+
+1. **Is the gateway running?** On your server:
+   ```bash
+   openclaw gateway status
+   # or
+   curl http://127.0.0.1:18789/health
+   ```
+
+2. **Check your config:**
+   ```bash
+   cat ~/.clawtalk/config.json
+   ```
+   Should show your server's IP, not `127.0.0.1` (unless running locally).
+
+3. **Test connectivity:**
+   ```bash
+   ping YOUR_SERVER_IP
+   curl http://YOUR_SERVER_IP:18789/health
+   ```
+
+4. **Tailscale users:** Ensure both machines show as "connected" in `tailscale status`
+
+### "Request was interrupted" / "Connection failed" in the TUI
+
+The gateway was reachable at startup but the connection dropped. Check:
+- Gateway server is still running
+- Network/VPN connection is stable
+- Try restarting ClawTalk
+
