@@ -13,7 +13,7 @@ Multiple interconnected issues were discovered after the OpenClaw 2026.2.9 updat
 1. **Port conflict** - ClawTalk plugin's internal proxy using same port as gateway
 2. **macOS interface binding** - Node.js 25 binds to wrong interface for Tailscale IPs
 
-All issues resolved. The macOS interface binding fix patches `net.connect` to inject `localAddress` for Tailscale IPs.
+All issues resolved. The fetch connector bug is fixed by replacing Node.js 25's built-in undici dispatcher with the npm undici package's connector.
 
 ---
 
@@ -202,52 +202,32 @@ http.request = function(options, callback) {
 
 **Not implemented** - Would require significant refactoring of all fetch calls in ClawTalk.
 
-### Fix Applied: net.connect Patching
+### Attempted Fix 3: net.connect Patching (FAILED)
 
-Patched `net.connect` at module load time to inject `localAddress` for Tailscale IP destinations:
+Patched `net.connect` to inject `localAddress` for Tailscale IP destinations. This did NOT work because Node.js 25's built-in undici uses internal TCP bindings that bypass the public `net.connect`.
+
+### Fix Applied: undici Global Dispatcher Replacement
+
+The real root cause is that Node.js 25's **built-in** undici connector has a bug connecting to Tailscale IPs. The **npm** undici package's `buildConnector` does not have this bug. Replacing the global dispatcher with one from the npm package fixes all `fetch()` calls:
 
 ```typescript
-import net from 'net';
-
-function patchNetForTailscale(): void {
-  if (process.platform !== 'darwin') return;
-  const localTailscaleIp = getLocalTailscaleIp();
-  if (!localTailscaleIp) return;
-
-  const origConnect = net.connect;
-  function patched(...args: unknown[]): net.Socket {
-    const opts = args[0];
-    if (typeof opts === 'object' && opts !== null) {
-      const o = opts as Record<string, unknown>;
-      if (!o.localAddress) {
-        const host = String(o.host || o.hostname || '');
-        // Check for Tailscale CGNAT range: 100.64.0.0/10
-        const m = host.match(/^100\.(\d+)\./);
-        if (m) {
-          const second = parseInt(m[1], 10);
-          if (second >= 64 && second <= 127) {
-            o.localAddress = localTailscaleIp;
-          }
-        }
-      }
-    }
-    return origConnect.apply(net, args);
-  }
-  net.connect = patched;
-  net.createConnection = patched;
-}
+const { Agent, setGlobalDispatcher, buildConnector } = require('undici');
+const connector = buildConnector({});
+setGlobalDispatcher(new Agent({
+  connect: (opts, cb) => connector(opts, cb),
+}));
 ```
 
+**Key discovery:** This is NOT a macOS-specific issue or an interface binding issue. The bug exists on Linux too. Both `curl` and `http.get` work fine, but `fetch()` (via the built-in undici) fails with ECONNREFUSED for Tailscale-bound servers.
+
 **Why this works:**
-- Node.js's built-in `fetch()` uses undici internally
-- undici creates TCP sockets via `net.connect()`
-- Patching `net.connect` intercepts all outgoing connections
-- For Tailscale IP destinations, `localAddress` is set to the local Tailscale IP
-- This forces the kernel to bind to the utun (Tailscale) interface
-- No external dependencies needed — uses only Node.js built-in modules
+- `setGlobalDispatcher` sets `globalThis[Symbol.for('undici.globalDispatcher.1')]`
+- Node.js's built-in `fetch()` reads from this same symbol
+- The npm undici's `buildConnector({})` creates a working connector
+- No `localAddress` injection needed — the npm connector handles routing correctly
 
 ### Status
-✅ **Fixed in code** — `src/services/chat.ts` applies patch at module load time (macOS only)
+✅ **Fixed in code** — `src/services/chat.ts` applies fix at module load time, requires `undici` npm dependency
 
 ---
 
@@ -364,10 +344,10 @@ export OPENCLAW_GATEWAY_TOKEN="your-token"
 | Gateway binding to 100.69.69.108:18789 | ✅ Working |
 | Tailscale VPN connectivity | ✅ Working |
 | curl from MacBook | ✅ Working |
-| Node.js fetch without localAddress | ✅ Fixed (net.connect patch) |
+| Node.js fetch without localAddress | ✅ Fixed (undici dispatcher replacement) |
 | Node.js fetch with localAddress | ✅ Working |
 | ClawTalk with manual workaround | ✅ Working |
-| ClawTalk out-of-the-box | ✅ Fixed (net.connect patch for macOS) |
+| ClawTalk out-of-the-box | ✅ Fixed (undici dispatcher replacement) |
 
 ---
 

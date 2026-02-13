@@ -5,41 +5,8 @@
  */
 
 import { randomUUID } from 'crypto';
-import net from 'net';
-import { networkInterfaces } from 'os';
 import type { Message, RateLimitInfo, Job, JobReport, TalkAgent, StreamChunk } from '../types.js';
 import type { IChatService } from './interfaces.js';
-
-// Cache the local Tailscale IP to avoid repeated lookups
-let cachedLocalTailscaleIp: string | undefined;
-
-/**
- * Detect the local Tailscale IP address (100.x.x.x range).
- * This is needed on macOS where Node.js may bind to the wrong interface
- * when connecting to Tailscale IPs, causing ECONNREFUSED.
- */
-function getLocalTailscaleIp(): string | undefined {
-  if (cachedLocalTailscaleIp !== undefined) {
-    return cachedLocalTailscaleIp;
-  }
-  
-  const nets = networkInterfaces();
-  for (const [name, addrs] of Object.entries(nets)) {
-    // Tailscale interfaces are typically 'utun#' on macOS or 'tailscale0' on Linux
-    if (name.startsWith('utun') || name === 'tailscale0') {
-      for (const addr of addrs || []) {
-        if (addr.family === 'IPv4' && addr.address.startsWith('100.')) {
-          cachedLocalTailscaleIp = addr.address;
-          return cachedLocalTailscaleIp;
-        }
-      }
-    }
-  }
-  
-  // Cache null result to avoid repeated lookups
-  cachedLocalTailscaleIp = undefined;
-  return undefined;
-}
 
 import {
   CHAT_TIMEOUT_MS,
@@ -151,50 +118,29 @@ const STREAM_INACTIVITY_MS = 300_000;
 const STREAM_MAX_MS = 1_800_000;
 
 /**
- * Patch net.connect to bind to the Tailscale interface when connecting
- * to Tailscale IPs (100.64.0.0/10 CGNAT range).
+ * Replace Node.js 25's built-in undici connector with the npm undici package's
+ * connector via setGlobalDispatcher.
  *
- * On macOS, Node.js 25's fetch() (via built-in undici) binds outgoing
- * sockets to the default interface (en0/Wi-Fi) instead of the Tailscale
- * interface (utun). This causes ECONNREFUSED when the remote gateway
- * listens only on its Tailscale address.
- *
- * Since undici internally uses net.connect() to create TCP sockets,
- * patching it at this level injects the correct localAddress for
- * Tailscale destinations, forcing the kernel to route via utun.
+ * Node.js 25's built-in undici has a connector bug that causes ECONNREFUSED
+ * when connecting to Tailscale IPs (100.64.0.0/10 CGNAT range) — even though
+ * curl and http.get work fine. The npm undici package's buildConnector does
+ * not have this bug. Replacing the global dispatcher fixes all fetch() calls.
  */
-function patchNetForTailscale(): void {
-  if (process.platform !== 'darwin') return;
-
-  const localTailscaleIp = getLocalTailscaleIp();
-  if (!localTailscaleIp) return;
-
-  const origConnect = net.connect;
-
-  function patched(this: typeof net, ...args: unknown[]): net.Socket {
-    const opts = args[0];
-    if (typeof opts === 'object' && opts !== null) {
-      const o = opts as Record<string, unknown>;
-      if (!o.localAddress) {
-        const host = String(o.host || o.hostname || '');
-        const m = host.match(/^100\.(\d+)\./);
-        if (m) {
-          const second = parseInt(m[1], 10);
-          if (second >= 64 && second <= 127) {
-            o.localAddress = localTailscaleIp;
-          }
-        }
-      }
-    }
-    return (origConnect as Function).apply(net, args) as net.Socket;
+function fixFetchConnector(): void {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { Agent, setGlobalDispatcher, buildConnector } = require('undici');
+    const connector = buildConnector({});
+    setGlobalDispatcher(new Agent({
+      connect: (opts: Record<string, unknown>, cb: Function) => connector(opts, cb),
+    }));
+  } catch {
+    // undici not installed — fetch uses Node's built-in connector
   }
-
-  (net as Record<string, unknown>).connect = patched;
-  (net as Record<string, unknown>).createConnection = patched;
 }
 
-// Apply Tailscale network fix at module load time
-patchNetForTailscale();
+// Fix fetch connector at module load time
+fixFetchConnector();
 
 function parseModelError(status: number, body: string, model: string): string {
   if (status === 401) return 'Authentication failed. Check your API key or gateway token.';
