@@ -484,7 +484,7 @@ export class TalkManager {
       jobs: gwTalk.jobs,
       agents: gwTalk.agents,
       gatewayTalkId: gwTalk.id,
-      isSaved: false,
+      isSaved: true,
       createdAt: gwTalk.createdAt,
       updatedAt: gwTalk.updatedAt,
     };
