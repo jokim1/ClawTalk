@@ -125,6 +125,12 @@ function parseModelError(status: number, body: string, model: string): string {
   return `Unexpected error (${status}): ${body.slice(0, 120)}`;
 }
 
+export interface GatewayResult<T = void> {
+  ok: boolean;
+  data?: T;
+  error?: string;
+}
+
 export class ChatService implements IChatService {
   private config: ChatServiceConfig;
   private sessionKey: string;
@@ -138,7 +144,9 @@ export class ChatService implements IChatService {
 
   /** Build standard auth headers for gateway requests. */
   private authHeaders(): Record<string, string> {
-    const headers: Record<string, string> = {};
+    const headers: Record<string, string> = {
+      'x-openclaw-message-channel': 'tui',
+    };
     if (this.config.gatewayToken) {
       headers['Authorization'] = `Bearer ${this.config.gatewayToken}`;
     }
@@ -150,8 +158,8 @@ export class ChatService implements IChatService {
     return {
       'Content-Type': 'application/json',
       ...this.authHeaders(),
-      'x-moltbot-agent-id': this.config.agentId,
-      'x-moltbot-session-key': this.sessionKey,
+      'x-openclaw-agent-id': this.config.agentId,
+      'x-openclaw-session-key': this.sessionKey,
     };
   }
 
@@ -175,7 +183,7 @@ export class ChatService implements IChatService {
       method: 'POST',
       headers: this.chatHeaders(),
       body: JSON.stringify({
-        model: this.config.model ?? 'moltbot',
+        model: this.config.model ?? 'openclaw',
         messages: this.buildMessages(userMessage, history),
         stream: false,
       }),
@@ -210,7 +218,7 @@ export class ChatService implements IChatService {
       method: 'POST',
       headers: this.chatHeaders(),
       body: JSON.stringify({
-        model: this.config.model ?? 'moltbot',
+        model: this.config.model ?? 'openclaw',
         messages: this.buildMessages(userMessage, history),
         stream: true,
         stream_options: { include_usage: true },
@@ -275,7 +283,7 @@ export class ChatService implements IChatService {
   // -----------------------------------------------------------------------
 
   /** Create a Talk on the gateway. Returns the gateway talk ID. */
-  async createGatewayTalk(model?: string): Promise<string | null> {
+  async createGatewayTalk(model?: string): Promise<GatewayResult<string>> {
     try {
       const response = await fetch(`${this.config.gatewayUrl}/api/talks`, {
         method: 'POST',
@@ -284,19 +292,20 @@ export class ChatService implements IChatService {
         signal: AbortSignal.timeout(10_000),
       });
       if (!response.ok) {
-        console.debug(`createGatewayTalk failed: ${response.status} ${response.statusText}`);
-        return null;
+        const body = await response.text().catch(() => '');
+        return { ok: false, error: `Gateway error (${response.status}): ${body.slice(0, 200)}` };
       }
       const data = await response.json() as { id?: string };
-      return data.id ?? null;
+      const id = data.id ?? null;
+      if (!id) return { ok: false, error: 'Gateway returned no talk ID' };
+      return { ok: true, data: id };
     } catch (err) {
-      console.debug('createGatewayTalk error:', err);
-      return null;
+      return { ok: false, error: err instanceof Error ? err.message : 'Unknown error' };
     }
   }
 
   /** Update Talk metadata on the gateway (objective, topicTitle, model). */
-  async updateGatewayTalk(talkId: string, updates: { objective?: string; topicTitle?: string; model?: string; agents?: TalkAgent[] }): Promise<boolean> {
+  async updateGatewayTalk(talkId: string, updates: { objective?: string; topicTitle?: string; model?: string; agents?: TalkAgent[] }): Promise<GatewayResult> {
     try {
       const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}`, {
         method: 'PATCH',
@@ -304,23 +313,31 @@ export class ChatService implements IChatService {
         body: JSON.stringify(updates),
         signal: AbortSignal.timeout(10_000),
       });
-      return response.ok;
-    } catch {
-      return false;
+      if (!response.ok) {
+        const body = await response.text().catch(() => '');
+        return { ok: false, error: `Gateway error (${response.status}): ${body.slice(0, 200)}` };
+      }
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : 'Unknown error' };
     }
   }
 
   /** Delete a Talk on the gateway. */
-  async deleteGatewayTalk(talkId: string): Promise<boolean> {
+  async deleteGatewayTalk(talkId: string): Promise<GatewayResult> {
     try {
       const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}`, {
         method: 'DELETE',
         headers: this.authHeaders(),
         signal: AbortSignal.timeout(10_000),
       });
-      return response.ok;
-    } catch {
-      return false;
+      if (!response.ok) {
+        const body = await response.text().catch(() => '');
+        return { ok: false, error: `Gateway error (${response.status}): ${body.slice(0, 200)}` };
+      }
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : 'Unknown error' };
     }
   }
 
@@ -818,7 +835,7 @@ export class ChatService implements IChatService {
   }
 
   async probeModel(model?: string, signal?: AbortSignal): Promise<ModelProbeResult> {
-    const targetModel = model ?? this.config.model ?? 'moltbot';
+    const targetModel = model ?? this.config.model ?? 'openclaw';
     const timeoutSignal = AbortSignal.timeout(MODEL_PROBE_TIMEOUT_MS);
     const combinedController = new AbortController();
     const onAbort = () => combinedController.abort();
@@ -832,7 +849,7 @@ export class ChatService implements IChatService {
         headers: {
           'Content-Type': 'application/json',
           ...this.authHeaders(),
-          'x-moltbot-agent-id': this.config.agentId,
+          'x-openclaw-agent-id': this.config.agentId,
         },
         body: JSON.stringify({
           model: targetModel,

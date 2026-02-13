@@ -1,7 +1,7 @@
 {
   "name": "@jokim1/clawtalk",
   "version": "0.1.0",
-  "description": "Terminal TUI client for AI chat via Moltbot gateway",
+  "description": "Terminal TUI client for AI chat via OpenClaw gateway",
   "main": "dist/cli.js",
   "types": "dist/cli.d.ts",
   "bin": {
@@ -14,7 +14,7 @@
     "test": "jest"
   },
   "keywords": [
-    "moltbot",
+    "openclaw",
     "terminal",
     "tui",
     "ai",

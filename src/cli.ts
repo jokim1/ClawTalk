@@ -17,7 +17,7 @@ const program = new Command();
 
 program
   .name('clawtalk')
-  .description('Remote LLM chat TUI for Moltbot gateway')
+  .description('Remote LLM chat TUI for OpenClaw gateway')
   .version('0.1.0')
   .option('-g, --gateway <url>', 'Gateway URL (e.g. http://100.x.x.x:18789)')
   .option('-t, --token <token>', 'Gateway authentication token')
@@ -66,7 +66,7 @@ program
           break;
         case 'connected':
           console.error(`Tailscale is connected but the gateway is unreachable at ${resolved.gatewayUrl}`);
-          console.error(`  - Is the Moltbot gateway running on the remote machine?`);
+          console.error(`  - Is the OpenClaw gateway running on the remote machine?`);
           console.error(`  - Can you reach it? curl ${resolved.gatewayUrl}/health`);
           if (!resolved.gatewayToken) {
             console.error('  - Do you need an auth token? clawtalk config --token <token>');

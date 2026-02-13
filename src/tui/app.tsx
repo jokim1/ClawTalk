@@ -507,7 +507,9 @@ function App({ options }: AppProps) {
     primaryAgentRef.current = agents.find(a => a.isPrimary) ?? null;
     const gwId = gatewayTalkIdRef.current;
     if (gwId && chatServiceRef.current) {
-      chatServiceRef.current.updateGatewayTalk(gwId, { agents });
+      chatServiceRef.current.updateGatewayTalk(gwId, { agents })
+        .then(result => { if (!result.ok) setError(`Agent sync failed: ${result.error}`); })
+        .catch(err => setError(`Agent sync failed: ${err instanceof Error ? err.message : err}`));
     }
   }, []);
 
@@ -1381,11 +1383,11 @@ function App({ options }: AppProps) {
             if (activeTalkIdRef.current) {
               talkManagerRef.current?.saveTalk(activeTalkIdRef.current);
             }
-            const gwId = await chatServiceRef.current.createGatewayTalk(currentModelRef.current);
-            if (gwId) {
-              gatewayTalkIdRef.current = gwId;
+            const result = await chatServiceRef.current.createGatewayTalk(currentModelRef.current);
+            if (result.ok && result.data) {
+              gatewayTalkIdRef.current = result.data;
               if (activeTalkIdRef.current) {
-                talkManagerRef.current?.setGatewayTalkId(activeTalkIdRef.current, gwId);
+                talkManagerRef.current?.setGatewayTalkId(activeTalkIdRef.current, result.data);
               }
             }
           }
@@ -1514,12 +1516,14 @@ function App({ options }: AppProps) {
       if (activeTalkIdRef.current) {
         talkManagerRef.current?.saveTalk(activeTalkIdRef.current);
       }
-      chatServiceRef.current.createGatewayTalk(currentModelRef.current).then(gwId => {
-        if (gwId) {
-          gatewayTalkIdRef.current = gwId;
+      chatServiceRef.current.createGatewayTalk(currentModelRef.current).then(result => {
+        if (result.ok && result.data) {
+          gatewayTalkIdRef.current = result.data;
           if (activeTalkIdRef.current) {
-            talkManagerRef.current?.setGatewayTalkId(activeTalkIdRef.current, gwId);
+            talkManagerRef.current?.setGatewayTalkId(activeTalkIdRef.current, result.data);
           }
+        } else if (!result.ok) {
+          setError(`Failed to create gateway talk: ${result.error}`);
         }
       });
     }
