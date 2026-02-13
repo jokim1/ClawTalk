@@ -10,7 +10,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "start": "NODE_OPTIONS=--dns-result-order=ipv4first node dist/cli.js",
+    "start": "node dist/cli.js",
     "test": "jest"
   },
   "keywords": [

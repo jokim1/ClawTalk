@@ -6,6 +6,10 @@
  * Entry point for the clawtalk command
  */
 
+// Force IPv4 first for Tailscale compatibility (Node 25+ fix)
+import { setDefaultResultOrder } from 'dns';
+setDefaultResultOrder('ipv4first');
+
 import { Command } from 'commander';
 import { loadConfig, saveConfig, resolveGatewayConfig, getConfigPath } from './config.js';
 import type { BillingOverride } from './config.js';
