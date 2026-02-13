@@ -5,8 +5,59 @@
  */
 
 import { randomUUID } from 'crypto';
+import { networkInterfaces } from 'os';
 import type { Message, RateLimitInfo, Job, JobReport, TalkAgent, StreamChunk } from '../types.js';
 import type { IChatService } from './interfaces.js';
+
+// Cache the local Tailscale IP to avoid repeated lookups
+let cachedLocalTailscaleIp: string | undefined;
+
+/**
+ * Detect the local Tailscale IP address (100.x.x.x range).
+ * This is needed on macOS where Node.js may bind to the wrong interface
+ * when connecting to Tailscale IPs, causing ECONNREFUSED.
+ */
+function getLocalTailscaleIp(): string | undefined {
+  if (cachedLocalTailscaleIp !== undefined) {
+    return cachedLocalTailscaleIp;
+  }
+  
+  const nets = networkInterfaces();
+  for (const [name, addrs] of Object.entries(nets)) {
+    // Tailscale interfaces are typically 'utun#' on macOS or 'tailscale0' on Linux
+    if (name.startsWith('utun') || name === 'tailscale0') {
+      for (const addr of addrs || []) {
+        if (addr.family === 'IPv4' && addr.address.startsWith('100.')) {
+          cachedLocalTailscaleIp = addr.address;
+          return cachedLocalTailscaleIp;
+        }
+      }
+    }
+  }
+  
+  // Cache null result to avoid repeated lookups
+  cachedLocalTailscaleIp = undefined;
+  return undefined;
+}
+
+/**
+ * Check if a URL is a Tailscale IP (100.64.0.0/10 range).
+ */
+function isTailscaleIp(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const hostname = parsed.hostname;
+    // Tailscale uses CGNAT range: 100.64.0.0 - 100.127.255.255
+    const match = hostname.match(/^100\.([0-9]+)\./);
+    if (match) {
+      const secondOctet = parseInt(match[1], 10);
+      return secondOctet >= 64 && secondOctet <= 127;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
 import {
   CHAT_TIMEOUT_MS,
   HEALTH_CHECK_TIMEOUT_MS,
@@ -115,6 +166,45 @@ const STREAM_INACTIVITY_MS = 300_000;
 
 /** Hard max timeout for the entire SSE connection (30 minutes). */
 const STREAM_MAX_MS = 1_800_000;
+
+/**
+ * Configure undici global dispatcher to bind to Tailscale interface
+ * only when connecting to Tailscale IPs (100.64.0.0/10).
+ * This fixes ECONNREFUSED on macOS when connecting to Tailscale IPs.
+ */
+function configureTailscaleDispatcher(): void {
+  const localTailscaleIp = getLocalTailscaleIp();
+  if (!localTailscaleIp) return;
+
+  try {
+    // @ts-expect-error - undici is built into Node.js but types may not be available
+    import('undici').then(({ Agent, setGlobalDispatcher }) => {
+      // Custom agent that only binds to Tailscale interface for Tailscale IPs
+      const agent = new Agent({
+        connect: (options: { hostname?: string }) => {
+          const hostname = options.hostname || '';
+          // Only bind to Tailscale interface when connecting to Tailscale IPs
+          const match = hostname.match(/^100\.([0-9]+)\./);
+          if (match) {
+            const secondOctet = parseInt(match[1], 10);
+            if (secondOctet >= 64 && secondOctet <= 127) {
+              return { localAddress: localTailscaleIp };
+            }
+          }
+          return {};
+        },
+      });
+      setGlobalDispatcher(agent);
+    }).catch(() => {
+      // undici not available, fetch will use default behavior
+    });
+  } catch {
+    // Ignore errors
+  }
+}
+
+// Initialize dispatcher configuration
+configureTailscaleDispatcher();
 
 function parseModelError(status: number, body: string, model: string): string {
   if (status === 401) return 'Authentication failed. Check your API key or gateway token.';
