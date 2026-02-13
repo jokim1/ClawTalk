@@ -32,14 +32,6 @@ program
       anthropicKey: opts.anthropicKey,
     });
 
-    // Auto-persist gateway/token to config when provided via CLI
-    if (opts.gateway || opts.token) {
-      const existing = loadConfig();
-      if (opts.gateway) existing.gatewayUrl = opts.gateway;
-      if (opts.token) existing.gatewayToken = opts.token;
-      saveConfig(existing);
-    }
-
     // Validate gateway is reachable before launching TUI
     const chatService = new ChatService({
       gatewayUrl: resolved.gatewayUrl,
