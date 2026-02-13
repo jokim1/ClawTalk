@@ -231,10 +231,10 @@ export async function readFileForUpload(filePath: string): Promise<{
  */
 export function detectFilePaths(message: string): Array<{ path: string; start: number; end: number }> {
   const exts = getSupportedExtensions().map(e => e.slice(1)).join('|');
-  // Match paths starting with / or ~/ , allowing backslash-escaped spaces
+  // Match paths starting with / or ~/ , allowing spaces (but not newlines) and backslash-escaped characters
   // Lookbehind: whitespace, start of string, or punctuation (handles "well./Users/..." case)
   const pathRegex = new RegExp(
-    `(?<=\\s|^|[.,;:!?)])((?:~\\/|\\/(?!\\/))(?:[^\\s\\\\]|\\\\.)*\\.(?:${exts}))(?=\\s|$|[)\\]}>",;:!?'])`,
+    `(?<=\\s|^|[.,;:!?)])((?:~\\/|\\/(?!\\/))(?:[^\\n\\r\\\\]|\\\\.)*\\.(?:${exts}))(?=\\s|$|[)\\]}>",;:!?'])`,
     'gi',
   );
 
