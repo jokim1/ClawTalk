@@ -136,6 +136,7 @@ function App({ options }: AppProps) {
     primaryAgentRef.current = agents?.find(a => a.isPrimary) ?? null;
   }, [activeTalkId]);
   const [messageQueue, setMessageQueue] = useState<string[]>([]);
+  const [queueSelectedIndex, setQueueSelectedIndex] = useState<number | null>(null);
   const [processingStartTime, setProcessingStartTime] = useState<number | null>(null);
   const [hintSelectedIndex, setHintSelectedIndex] = useState(0);
   const [pendingClear, setPendingClear] = useState(false);
@@ -257,6 +258,15 @@ function App({ options }: AppProps) {
   useEffect(() => {
     setHintSelectedIndex(0);
   }, [commandHints.length, inputText]);
+
+  // Reset queue selection when queue becomes empty
+  useEffect(() => {
+    if (messageQueue.length === 0) {
+      setQueueSelectedIndex(null);
+    } else if (queueSelectedIndex !== null && queueSelectedIndex >= messageQueue.length) {
+      setQueueSelectedIndex(messageQueue.length - 1);
+    }
+  }, [messageQueue.length, queueSelectedIndex]);
 
   // Extract file paths from input and stage them as pending files
   useEffect(() => {
@@ -1145,7 +1155,16 @@ function App({ options }: AppProps) {
       }
       return fullContent;
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      const rawMessage = err instanceof Error ? err.message : 'Unknown error';
+      // Map low-level errors to user-friendly messages
+      let errorMessage = rawMessage;
+      if (/\bterminated\b|aborted|abort/i.test(rawMessage)) {
+        errorMessage = 'Request was interrupted';
+      } else if (/fetch failed|network error|connection refused|econnrefused/i.test(rawMessage)) {
+        errorMessage = 'Connection failed';
+      } else if (/timeout/i.test(rawMessage)) {
+        errorMessage = 'Request timed out';
+      }
       const errMsg = createMessage('system', `${agent.name} error: ${errorMessage}`);
       chat.setMessages(prev => {
         const filtered = prev.filter(m => m.id !== indicatorMsg.id);
@@ -1629,9 +1648,15 @@ function App({ options }: AppProps) {
   // Process queued messages when AI finishes responding
   useEffect(() => {
     if (!chat.isProcessing && messageQueue.length > 0) {
-      const nextMessage = messageQueue[0];
-      setMessageQueue(prev => prev.slice(1));
-      chat.sendMessage(nextMessage);
+      // Small delay to ensure any cleanup from previous request completes
+      const timer = setTimeout(() => {
+        const nextMessage = messageQueue[0];
+        if (nextMessage) {
+          setMessageQueue(prev => prev.slice(1));
+          chat.sendMessage(nextMessage);
+        }
+      }, 100);
+      return () => clearTimeout(timer);
     }
   }, [chat.isProcessing, messageQueue, chat.sendMessage]);
 
@@ -1650,6 +1675,36 @@ function App({ options }: AppProps) {
       return;
     }
 
+    // Queue message selection (navigate with up/down, delete with backspace)
+    if (queueSelectedIndex !== null && messageQueue.length > 0) {
+      if (key.backspace || key.delete) {
+        setMessageQueue(prev => prev.filter((_, i) => i !== queueSelectedIndex));
+        if (queueSelectedIndex >= messageQueue.length - 1) {
+          setQueueSelectedIndex(messageQueue.length > 1 ? messageQueue.length - 2 : null);
+        }
+        return;
+      }
+      if (key.upArrow) {
+        setQueueSelectedIndex(prev => (prev !== null && prev > 0) ? prev - 1 : prev);
+        return;
+      }
+      if (key.downArrow) {
+        setQueueSelectedIndex(prev => {
+          if (prev === null) return null;
+          if (prev < messageQueue.length - 1) return prev + 1;
+          // Last item - exit selection
+          return null;
+        });
+        return;
+      }
+      if (key.escape || key.return) {
+        setQueueSelectedIndex(null);
+        return;
+      }
+      setQueueSelectedIndex(null);
+      // fall through to normal input handling
+    }
+
     // File indicator selection
     if (fileIndicatorSelected && pendingFiles.length > 0) {
       if (key.backspace || key.delete) {
@@ -1665,7 +1720,12 @@ function App({ options }: AppProps) {
       // fall through to normal input handling
     }
 
-    if (key.upArrow && inputText.length === 0 && pendingFiles.length > 0 && !showCommandHints) {
+    if (key.upArrow && inputText.length === 0 && messageQueue.length > 0 && !showCommandHints) {
+      setQueueSelectedIndex(messageQueue.length - 1);
+      return;
+    }
+
+    if (key.upArrow && inputText.length === 0 && pendingFiles.length > 0 && !showCommandHints && queueSelectedIndex === null) {
       setFileIndicatorSelected(true);
       return;
     }
@@ -1999,12 +2059,17 @@ function App({ options }: AppProps) {
         {/* Queued messages */}
         {messageQueue.length > 0 && (
           <Box flexDirection="column" paddingX={1}>
-            {messageQueue.map((msg, idx) => (
-              <Box key={idx}>
-                <Text dimColor>queued: </Text>
-                <Text color="gray">{msg.length > 60 ? msg.slice(0, 60) + '...' : msg}</Text>
-              </Box>
-            ))}
+            {messageQueue.map((msg, idx) => {
+              const isSelected = queueSelectedIndex === idx;
+              return (
+                <Box key={idx}>
+                  <Text dimColor>{isSelected ? '▶ ' : '  '}</Text>
+                  <Text dimColor>queued: </Text>
+                  <Text color={isSelected ? 'cyan' : 'gray'}>{msg.length > 60 ? msg.slice(0, 60) + '...' : msg}</Text>
+                  {isSelected && <Text dimColor>  [←/→ nav, ⌫ del, Esc cancel]</Text>}
+                </Box>
+              );
+            })}
           </Box>
         )}
 

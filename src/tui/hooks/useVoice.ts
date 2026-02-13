@@ -124,7 +124,17 @@ export function useVoice(opts: UseVoiceOpts) {
       }
     } catch (err) {
       setVoiceMode('idle');
-      setError(err instanceof Error ? err.message : 'Transcription failed');
+      const rawMessage = err instanceof Error ? err.message : 'Transcription failed';
+      // Map low-level errors to user-friendly messages
+      let errorMessage = rawMessage;
+      if (/\bterminated\b|aborted|abort/i.test(rawMessage)) {
+        errorMessage = 'Request was interrupted';
+      } else if (/fetch failed|network error|connection refused|econnrefused/i.test(rawMessage)) {
+        errorMessage = 'Connection failed - check network and gateway';
+      } else if (/timeout/i.test(rawMessage)) {
+        errorMessage = 'Request timed out';
+      }
+      setError(errorMessage);
     }
   }, []);
 

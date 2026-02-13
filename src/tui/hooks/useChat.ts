@@ -216,7 +216,17 @@ export function useChat(
         setStreamingContent('');
       }
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      const rawMessage = err instanceof Error ? err.message : 'Unknown error';
+
+      // Map low-level errors to user-friendly messages
+      let errorMessage = rawMessage;
+      if (/\bterminated\b|aborted|abort/i.test(rawMessage)) {
+        errorMessage = 'Request was interrupted. Please try again.';
+      } else if (/fetch failed|network error|connection refused|econnrefused/i.test(rawMessage)) {
+        errorMessage = 'Connection failed. Please check your network and gateway status.';
+      } else if (/timeout/i.test(rawMessage)) {
+        errorMessage = 'Request timed out. The model may be overloaded or unavailable.';
+      }
 
       if (isStillOnSameTalk()) {
         setErrorRef.current(errorMessage);
@@ -224,8 +234,8 @@ export function useChat(
         setMessages(prev => [...prev, sysMsg]);
       }
 
-      if (/\b(40[1349]|429|5\d{2})\b/.test(errorMessage)) {
-        onModelErrorRef.current(errorMessage);
+      if (/\b(40[1349]|429|5\d{2})\b/.test(rawMessage)) {
+        onModelErrorRef.current(rawMessage);
       }
     } finally {
       isProcessingRef.current = false;
