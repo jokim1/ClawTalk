@@ -5,6 +5,7 @@
  */
 
 import { randomUUID } from 'crypto';
+import net from 'net';
 import { networkInterfaces } from 'os';
 import type { Message, RateLimitInfo, Job, JobReport, TalkAgent, StreamChunk } from '../types.js';
 import type { IChatService } from './interfaces.js';
@@ -40,24 +41,6 @@ function getLocalTailscaleIp(): string | undefined {
   return undefined;
 }
 
-/**
- * Check if a URL is a Tailscale IP (100.64.0.0/10 range).
- */
-function isTailscaleIp(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    const hostname = parsed.hostname;
-    // Tailscale uses CGNAT range: 100.64.0.0 - 100.127.255.255
-    const match = hostname.match(/^100\.([0-9]+)\./);
-    if (match) {
-      const secondOctet = parseInt(match[1], 10);
-      return secondOctet >= 64 && secondOctet <= 127;
-    }
-    return false;
-  } catch {
-    return false;
-  }
-}
 import {
   CHAT_TIMEOUT_MS,
   HEALTH_CHECK_TIMEOUT_MS,
@@ -168,43 +151,50 @@ const STREAM_INACTIVITY_MS = 300_000;
 const STREAM_MAX_MS = 1_800_000;
 
 /**
- * Configure undici global dispatcher to bind to Tailscale interface
- * only when connecting to Tailscale IPs (100.64.0.0/10).
- * This fixes ECONNREFUSED on macOS when connecting to Tailscale IPs.
+ * Patch net.connect to bind to the Tailscale interface when connecting
+ * to Tailscale IPs (100.64.0.0/10 CGNAT range).
+ *
+ * On macOS, Node.js 25's fetch() (via built-in undici) binds outgoing
+ * sockets to the default interface (en0/Wi-Fi) instead of the Tailscale
+ * interface (utun). This causes ECONNREFUSED when the remote gateway
+ * listens only on its Tailscale address.
+ *
+ * Since undici internally uses net.connect() to create TCP sockets,
+ * patching it at this level injects the correct localAddress for
+ * Tailscale destinations, forcing the kernel to route via utun.
  */
-function configureTailscaleDispatcher(): void {
+function patchNetForTailscale(): void {
+  if (process.platform !== 'darwin') return;
+
   const localTailscaleIp = getLocalTailscaleIp();
   if (!localTailscaleIp) return;
 
-  try {
-    // @ts-expect-error - undici is built into Node.js but types may not be available
-    import('undici').then(({ Agent, setGlobalDispatcher }) => {
-      // Custom agent that only binds to Tailscale interface for Tailscale IPs
-      const agent = new Agent({
-        connect: (options: { hostname?: string }) => {
-          const hostname = options.hostname || '';
-          // Only bind to Tailscale interface when connecting to Tailscale IPs
-          const match = hostname.match(/^100\.([0-9]+)\./);
-          if (match) {
-            const secondOctet = parseInt(match[1], 10);
-            if (secondOctet >= 64 && secondOctet <= 127) {
-              return { localAddress: localTailscaleIp };
-            }
+  const origConnect = net.connect;
+
+  function patched(this: typeof net, ...args: unknown[]): net.Socket {
+    const opts = args[0];
+    if (typeof opts === 'object' && opts !== null) {
+      const o = opts as Record<string, unknown>;
+      if (!o.localAddress) {
+        const host = String(o.host || o.hostname || '');
+        const m = host.match(/^100\.(\d+)\./);
+        if (m) {
+          const second = parseInt(m[1], 10);
+          if (second >= 64 && second <= 127) {
+            o.localAddress = localTailscaleIp;
           }
-          return {};
-        },
-      });
-      setGlobalDispatcher(agent);
-    }).catch(() => {
-      // undici not available, fetch will use default behavior
-    });
-  } catch {
-    // Ignore errors
+        }
+      }
+    }
+    return (origConnect as Function).apply(net, args) as net.Socket;
   }
+
+  (net as Record<string, unknown>).connect = patched;
+  (net as Record<string, unknown>).createConnection = patched;
 }
 
-// Initialize dispatcher configuration
-configureTailscaleDispatcher();
+// Apply Tailscale network fix at module load time
+patchNetForTailscale();
 
 function parseModelError(status: number, body: string, model: string): string {
   if (status === 401) return 'Authentication failed. Check your API key or gateway token.';

@@ -1,7 +1,7 @@
 # ClawTalk Connection Issues - Complete History
 
 **Date:** 2026-02-13  
-**Status:** Partially Resolved - Manual Workaround Available  
+**Status:** Resolved
 **Affected:** ClawTalk client on macOS Sequoia (26.2) connecting to OpenClaw gateway via Tailscale
 
 ---
@@ -13,7 +13,7 @@ Multiple interconnected issues were discovered after the OpenClaw 2026.2.9 updat
 1. **Port conflict** - ClawTalk plugin's internal proxy using same port as gateway
 2. **macOS interface binding** - Node.js 25 binds to wrong interface for Tailscale IPs
 
-A manual workaround exists. A permanent code fix requires patching Node.js's http module.
+All issues resolved. The macOS interface binding fix patches `net.connect` to inject `localAddress` for Tailscale IPs.
 
 ---
 
@@ -120,7 +120,7 @@ Removed auto-save logic in `src/cli.ts`.
 
 ---
 
-## Problem 4: macOS Interface Binding (CURRENT ISSUE)
+## Problem 4: macOS Interface Binding (FIXED)
 
 ### Discovery
 After fixing the port conflict, curl worked but Node.js still failed.
@@ -201,6 +201,53 @@ http.request = function(options, callback) {
 ```
 
 **Not implemented** - Would require significant refactoring of all fetch calls in ClawTalk.
+
+### Fix Applied: net.connect Patching
+
+Patched `net.connect` at module load time to inject `localAddress` for Tailscale IP destinations:
+
+```typescript
+import net from 'net';
+
+function patchNetForTailscale(): void {
+  if (process.platform !== 'darwin') return;
+  const localTailscaleIp = getLocalTailscaleIp();
+  if (!localTailscaleIp) return;
+
+  const origConnect = net.connect;
+  function patched(...args: unknown[]): net.Socket {
+    const opts = args[0];
+    if (typeof opts === 'object' && opts !== null) {
+      const o = opts as Record<string, unknown>;
+      if (!o.localAddress) {
+        const host = String(o.host || o.hostname || '');
+        // Check for Tailscale CGNAT range: 100.64.0.0/10
+        const m = host.match(/^100\.(\d+)\./);
+        if (m) {
+          const second = parseInt(m[1], 10);
+          if (second >= 64 && second <= 127) {
+            o.localAddress = localTailscaleIp;
+          }
+        }
+      }
+    }
+    return origConnect.apply(net, args);
+  }
+  net.connect = patched;
+  net.createConnection = patched;
+}
+```
+
+**Why this works:**
+- Node.js's built-in `fetch()` uses undici internally
+- undici creates TCP sockets via `net.connect()`
+- Patching `net.connect` intercepts all outgoing connections
+- For Tailscale IP destinations, `localAddress` is set to the local Tailscale IP
+- This forces the kernel to bind to the utun (Tailscale) interface
+- No external dependencies needed — uses only Node.js built-in modules
+
+### Status
+✅ **Fixed in code** — `src/services/chat.ts` applies patch at module load time (macOS only)
 
 ---
 
@@ -317,10 +364,10 @@ export OPENCLAW_GATEWAY_TOKEN="your-token"
 | Gateway binding to 100.69.69.108:18789 | ✅ Working |
 | Tailscale VPN connectivity | ✅ Working |
 | curl from MacBook | ✅ Working |
-| Node.js fetch without localAddress | ❌ ECONNREFUSED |
+| Node.js fetch without localAddress | ✅ Fixed (net.connect patch) |
 | Node.js fetch with localAddress | ✅ Working |
 | ClawTalk with manual workaround | ✅ Working |
-| ClawTalk out-of-the-box | ❌ Broken on macOS + Node 25 |
+| ClawTalk out-of-the-box | ✅ Fixed (net.connect patch for macOS) |
 
 ---
 
