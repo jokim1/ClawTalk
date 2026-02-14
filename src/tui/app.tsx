@@ -582,7 +582,7 @@ function App({ options }: AppProps) {
         return;
       }
 
-      // Otherwise (^A flow), show role picker again for the new agent model
+      // Otherwise (^K flow), show role picker again for the new agent model
       setRolePickerPhase('new-agent');
       // Don't dismiss — RolePicker stays open for the new agent
       return;
@@ -1317,7 +1317,7 @@ function App({ options }: AppProps) {
 
     const agents = talkManagerRef.current.getAgents(talkId);
     if (agents.length === 0) {
-      const sysMsg = createMessage('system', 'No agents configured. Use /agent add <model> <role> or ^A → A to add one.');
+      const sysMsg = createMessage('system', 'No agents configured. Use /agent add <model> <role> or ^K → A to add one.');
       chat.setMessages(prev => [...prev, sysMsg]);
       return;
     }
@@ -1350,7 +1350,7 @@ function App({ options }: AppProps) {
 
     const agents = talkManagerRef.current.getAgents(talkId);
     if (agents.length < 2) {
-      setError('Debate requires at least 2 agents. Use /agent add or ^A to add agents.');
+      setError('Debate requires at least 2 agents. Use /agent add or ^K to add agents.');
       return;
     }
 
@@ -1769,10 +1769,10 @@ function App({ options }: AppProps) {
       return;
     }
 
-    // ^A AI Model (opens model picker)
-    if (input === 'a' && key.ctrl) {
+    // ^K AI Model (opens model picker)
+    if (input === 'k' && key.ctrl) {
       setShowModelPicker(true);
-      cleanInputChar(setInputText, 'a');
+      cleanInputChar(setInputText, 'k');
       return;
     }
 

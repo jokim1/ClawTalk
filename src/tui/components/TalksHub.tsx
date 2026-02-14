@@ -116,8 +116,8 @@ export function TalksHub({
       return;
     }
 
-    // ^A open model picker
-    if (input === 'a' && key.ctrl) {
+    // ^K open model picker
+    if (input === 'k' && key.ctrl) {
       onOpenModelPicker();
       return;
     }
