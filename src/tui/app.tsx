@@ -1163,7 +1163,7 @@ function App({ options }: AppProps) {
       return;
     }
     const lines = bindings.map((b, i) =>
-      `  ${i + 1}. platform${i + 1}: ${b.platform} "${b.scope}" (${b.permission})`
+      `  ${i + 1}. platform${i + 1}: ${b.platform} ${b.scope} (${b.permission})`
     );
     const sysMsg = createMessage('system', `Platform bindings:\n${lines.join('\n')}`);
     chat.setMessages(prev => [...prev, sysMsg]);
@@ -1201,7 +1201,7 @@ function App({ options }: AppProps) {
     const bindings = talk.platformBindings ?? [];
     if (bindings.length > 0) {
       const lines = bindings.map((b, i) =>
-        `  ${i + 1}. platform${i + 1}: ${b.platform} "${b.scope}" (${b.permission})`
+        `  ${i + 1}. platform${i + 1}: ${b.platform} ${b.scope} (${b.permission})`
       );
       sections.push(`\nPlatform bindings:\n${lines.join('\n')}`);
     } else {

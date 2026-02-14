@@ -493,7 +493,7 @@ export function SettingsPicker({
                       <Text dimColor>  {i + 1}. </Text>
                       <Text>platform{i + 1}: </Text>
                       <Text bold>{b.platform}</Text>
-                      <Text> "{b.scope}" </Text>
+                      <Text> {b.scope} </Text>
                       <Text dimColor>({b.permission})</Text>
                     </Text>
                   ))
