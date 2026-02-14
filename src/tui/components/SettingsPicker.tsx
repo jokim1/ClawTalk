@@ -516,23 +516,6 @@ export function SettingsPicker({
                   </>
                 )}
               </Box>
-
-              {/* Agents */}
-              <Box flexDirection="column">
-                <Text bold>Agents</Text>
-                {talkConfig.agents.length > 0 ? (
-                  talkConfig.agents.map((a, i) => (
-                    <Text key={i}>
-                      <Text dimColor>  </Text>
-                      <Text bold>{a.name}</Text>
-                      <Text> [{a.role}] {a.model}</Text>
-                      {a.isPrimary && <Text color="green"> (primary)</Text>}
-                    </Text>
-                  ))
-                ) : (
-                  <Text dimColor>  (none) — /agent add {'<model> <role>'}</Text>
-                )}
-              </Box>
             </>
           )}
         </Box>
