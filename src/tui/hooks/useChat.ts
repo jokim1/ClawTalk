@@ -134,6 +134,13 @@ export function useChat(
         }
       }
 
+      // If gateway streaming completed but yielded no content, treat as
+      // transient error so the retry logic below gets a chance to recover.
+      if (!fullContent.trim() && gwTalkId) {
+        const { GatewayStreamError } = await import('../../services/chat.js');
+        throw new GatewayStreamError('Stream completed without content', true, '');
+      }
+
       // If streaming yielded no content, fall back to non-streaming (only for direct mode)
       if (!fullContent.trim() && !gwTalkId) {
         if (isStillOnSameTalk()) {
