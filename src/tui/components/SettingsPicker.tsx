@@ -514,7 +514,7 @@ export function SettingsPicker({
                     <Text key={i}>
                       <Text dimColor>  {i + 1}. </Text>
                       <Text color={j.active ? undefined : 'yellow'}>[{j.active ? 'active' : 'paused'}] </Text>
-                      <Text>"{j.schedule}" — {j.prompt.length > 60 ? j.prompt.slice(0, 60) + '...' : j.prompt}</Text>
+                      <Text>"{j.schedule}" — {j.prompt}</Text>
                     </Text>
                   ))
                 ) : (
