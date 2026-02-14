@@ -758,15 +758,17 @@ function App({ options }: AppProps) {
 
     const gwId = gatewayTalkIdRef.current;
     if (gwId && chatServiceRef.current) {
-      chatServiceRef.current.createGatewayJob(gwId, schedule, prompt).then(job => {
-        if (job) {
+      chatServiceRef.current.createGatewayJob(gwId, schedule, prompt).then(result => {
+        if (typeof result === 'string') {
+          setError(`Job failed: ${result}`);
+        } else {
           // Update local cache
           talkManagerRef.current?.addJob(activeTalkId, schedule, prompt);
           const sysMsg = createMessage('system', `[${label}] "${prompt}" — ${schedule}`);
           chat.setMessages(prev => [...prev, sysMsg]);
-        } else {
-          setError('Failed to create job on gateway');
         }
+      }).catch(err => {
+        setError(`Job failed: ${err instanceof Error ? err.message : String(err)}`);
       });
     } else {
       // Jobs require a gateway connection — the client doesn't execute them

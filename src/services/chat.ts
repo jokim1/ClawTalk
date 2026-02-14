@@ -442,8 +442,8 @@ export class ChatService implements IChatService {
     }
   }
 
-  /** Create a job on a gateway talk. */
-  async createGatewayJob(talkId: string, schedule: string, prompt: string): Promise<Job | null> {
+  /** Create a job on a gateway talk. Returns the job on success, or an error string on failure. */
+  async createGatewayJob(talkId: string, schedule: string, prompt: string): Promise<Job | string> {
     try {
       const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}/jobs`, {
         method: 'POST',
@@ -451,10 +451,17 @@ export class ChatService implements IChatService {
         body: JSON.stringify({ schedule, prompt }),
         signal: AbortSignal.timeout(10_000),
       });
-      if (!response.ok) return null;
+      if (!response.ok) {
+        try {
+          const body = await response.json() as { error?: string };
+          return body.error ?? `Gateway error ${response.status}`;
+        } catch {
+          return `Gateway error ${response.status}`;
+        }
+      }
       return await response.json() as Job;
-    } catch {
-      return null;
+    } catch (err) {
+      return `Gateway unreachable: ${err instanceof Error ? err.message : String(err)}`;
     }
   }
 
