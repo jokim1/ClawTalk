@@ -121,9 +121,9 @@ export function TalksHub({
       return;
     }
 
-    // ^V toggle TTS
+    // ^V - TTS not available in Talks screen
     if (input === 'v' && key.ctrl) {
-      onToggleTts();
+      setError('You can only toggle TTS in a Talk!');
       return;
     }
 
@@ -558,7 +558,7 @@ export function TalksHub({
       ) : exportPickerIndex !== null ? (
         <Text>  <Text bold>Export:</Text> <Text dimColor>t .txt  m .md  d .docx  Esc Cancel</Text></Text>
       ) : (
-        <Text dimColor>  {'\u2191\u2193'} Navigate  Enter {selectedIndex === 0 ? 'New Talk' : 'Continue'}  {selectedIndex > 0 ? '/ Search  e Export  r Rename  d Delete  ' : ''}Esc Close</Text>
+        <Text dimColor>  {'\u2191\u2193'} Navigate  Enter {selectedIndex === 0 ? 'New Talk' : 'Continue'}  / Search  {selectedIndex > 0 ? 'e Export  r Rename  d Delete  ' : ''}Esc Close</Text>
       )}
     </Box>
   );
