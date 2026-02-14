@@ -1313,6 +1313,7 @@ function App({ options }: AppProps) {
       chatServiceRef.current?.setModelOverride(currentModel, controller.signal).catch(() => {});
 
       chat.clearStreaming();
+      setStreamingAgentName(undefined);
       chat.setMessages([]);
       setPendingFiles([]);
       setFileIndicatorSelected(false);
@@ -1330,6 +1331,7 @@ function App({ options }: AppProps) {
 
     // Show local messages immediately (or empty for gateway-only talks)
     chat.clearStreaming();
+    setStreamingAgentName(undefined);
     chat.setMessages(session?.messages ?? []);
     setSessionName(session?.name ?? talk.topicTitle ?? 'Talk');
     setActiveTalkId(talk.id);
@@ -2012,7 +2014,13 @@ function App({ options }: AppProps) {
       setPendingDocument(null);
     }
 
+    // Show primary agent name during streaming (cleared after sendMessage completes)
+    const primaryName = primaryAgentRef.current?.name;
+    if (primaryName) setStreamingAgentName(primaryName);
+
     await chat.sendMessage(finalMessage, attachment, docContent);
+
+    if (primaryName) setStreamingAgentName(undefined);
   }, [chat.sendMessage, chat.isProcessing, sendMultiAgentMessage, pendingAttachment, pendingDocument, pendingFiles]);
 
   // Process queued messages when AI finishes responding
