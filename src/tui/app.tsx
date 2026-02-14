@@ -2282,6 +2282,13 @@ function App({ options }: AppProps) {
             realtimeVoiceCaps={gateway.realtimeVoiceCaps}
             realtimeProvider={realtimeVoice.provider}
             onRealtimeProviderChange={realtimeVoice.setProvider}
+            talkConfig={activeTalk ? {
+              objective: activeTalk.objective,
+              directives: (activeTalk.directives ?? []).map(d => ({ text: d.text, active: d.active })),
+              platformBindings: (activeTalk.platformBindings ?? []).map(b => ({ platform: b.platform, scope: b.scope, permission: b.permission })),
+              jobs: (activeTalk.jobs ?? []).map(j => ({ schedule: j.schedule, prompt: j.prompt, active: j.active })),
+              agents: (activeTalk.agents ?? []).map(a => ({ name: a.name, role: a.role, model: a.model, isPrimary: a.isPrimary })),
+            } : null}
           />
         </Box>
       ) : (

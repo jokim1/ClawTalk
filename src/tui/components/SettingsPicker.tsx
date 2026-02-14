@@ -21,6 +21,14 @@ interface VoiceCapsInfo {
   ttsActiveProvider?: string;
 }
 
+interface TalkConfigInfo {
+  objective?: string;
+  directives: Array<{ text: string; active: boolean }>;
+  platformBindings: Array<{ platform: string; scope: string; permission: string }>;
+  jobs: Array<{ schedule: string; prompt: string; active: boolean }>;
+  agents: Array<{ name: string; role: string; model: string; isPrimary: boolean }>;
+}
+
 interface SettingsPickerProps {
   onClose: () => void;
   onMicChange?: (device: string) => void;
@@ -37,9 +45,11 @@ interface SettingsPickerProps {
   realtimeVoiceCaps?: RealtimeVoiceCapabilities | null;
   realtimeProvider?: RealtimeVoiceProvider | null;
   onRealtimeProviderChange?: (provider: RealtimeVoiceProvider) => void;
+  // Talk config
+  talkConfig?: TalkConfigInfo | null;
 }
 
-type SettingsTab = 'mic' | 'stt' | 'tts' | 'realtime';
+type SettingsTab = 'mic' | 'stt' | 'tts' | 'realtime' | 'talk';
 
 const PROVIDER_LABELS: Record<RealtimeVoiceProvider, string> = {
   openai: 'OpenAI Realtime',
@@ -104,6 +114,7 @@ export function SettingsPicker({
   realtimeVoiceCaps,
   realtimeProvider,
   onRealtimeProviderChange,
+  talkConfig,
 }: SettingsPickerProps) {
   const [tab, setTab] = useState<SettingsTab>('mic');
   const [devices, setDevices] = useState<AudioDevice[]>([]);
@@ -159,7 +170,7 @@ export function SettingsPicker({
     }
 
     // Tab navigation with left/right
-    const allTabs: SettingsTab[] = ['mic', 'stt', 'tts', 'realtime'];
+    const allTabs: SettingsTab[] = ['mic', 'stt', 'tts', 'realtime', 'talk'];
     if (key.leftArrow) {
       setTab(prev => {
         const idx = allTabs.indexOf(prev);
@@ -187,6 +198,7 @@ export function SettingsPicker({
         : tab === 'stt' ? sttProviders.length - 1
         : tab === 'tts' ? ttsProviders.length - 1
         : tab === 'realtime' ? realtimeProviders.length - 1
+        : tab === 'talk' ? 0
         : 0;
       setSelectedIndex(prev => Math.min(maxIndex, prev + 1));
       return;
@@ -285,12 +297,13 @@ export function SettingsPicker({
     }
   });
 
-  const tabs: SettingsTab[] = ['mic', 'stt', 'tts', 'realtime'];
+  const tabs: SettingsTab[] = ['mic', 'stt', 'tts', 'realtime', 'talk'];
   const tabLabels: Record<SettingsTab, string> = {
     mic: 'Microphone',
     stt: 'Speech-to-Text',
     tts: 'Text-to-Speech',
     realtime: 'Live Chat',
+    talk: 'Talk Config',
   };
 
   return (
@@ -423,6 +436,92 @@ export function SettingsPicker({
           <Box marginTop={1}>
             <Text dimColor>Use ^C to start Live Chat with the selected provider.</Text>
           </Box>
+        </Box>
+      )}
+
+      {tab === 'talk' && (
+        <Box flexDirection="column">
+          {!talkConfig ? (
+            <Text dimColor>No active talk. Open or create a talk first.</Text>
+          ) : (
+            <>
+              {/* Objective */}
+              <Box marginBottom={1} flexDirection="column">
+                <Text bold>Objective</Text>
+                {talkConfig.objective ? (
+                  <Text>  {talkConfig.objective}</Text>
+                ) : (
+                  <Text dimColor>  (none) — /objective {'<text>'} to set</Text>
+                )}
+              </Box>
+
+              {/* Directives */}
+              <Box marginBottom={1} flexDirection="column">
+                <Text bold>Directives</Text>
+                {talkConfig.directives.length > 0 ? (
+                  talkConfig.directives.map((d, i) => (
+                    <Text key={i}>
+                      <Text dimColor>  {i + 1}. </Text>
+                      <Text color={d.active ? undefined : 'yellow'}>[{d.active ? 'active' : 'paused'}] </Text>
+                      <Text>{d.text}</Text>
+                    </Text>
+                  ))
+                ) : (
+                  <Text dimColor>  (none) — /directive {'<text>'} to add</Text>
+                )}
+              </Box>
+
+              {/* Platform Bindings */}
+              <Box marginBottom={1} flexDirection="column">
+                <Text bold>Platform Bindings</Text>
+                {talkConfig.platformBindings.length > 0 ? (
+                  talkConfig.platformBindings.map((b, i) => (
+                    <Text key={i}>
+                      <Text dimColor>  {i + 1}. </Text>
+                      <Text bold>{b.platform}</Text>
+                      <Text> {b.scope} </Text>
+                      <Text dimColor>({b.permission})</Text>
+                    </Text>
+                  ))
+                ) : (
+                  <Text dimColor>  (none) — /platform {'<name> <scope> <perm>'} to add</Text>
+                )}
+              </Box>
+
+              {/* Jobs */}
+              <Box marginBottom={1} flexDirection="column">
+                <Text bold>Jobs</Text>
+                {talkConfig.jobs.length > 0 ? (
+                  talkConfig.jobs.map((j, i) => (
+                    <Text key={i}>
+                      <Text dimColor>  {i + 1}. </Text>
+                      <Text color={j.active ? undefined : 'yellow'}>[{j.active ? 'active' : 'paused'}] </Text>
+                      <Text>"{j.schedule}" — {j.prompt.length > 60 ? j.prompt.slice(0, 60) + '...' : j.prompt}</Text>
+                    </Text>
+                  ))
+                ) : (
+                  <Text dimColor>  (none) — /job add "schedule" prompt</Text>
+                )}
+              </Box>
+
+              {/* Agents */}
+              <Box flexDirection="column">
+                <Text bold>Agents</Text>
+                {talkConfig.agents.length > 0 ? (
+                  talkConfig.agents.map((a, i) => (
+                    <Text key={i}>
+                      <Text dimColor>  </Text>
+                      <Text bold>{a.name}</Text>
+                      <Text> [{a.role}] {a.model}</Text>
+                      {a.isPrimary && <Text color="green"> (primary)</Text>}
+                    </Text>
+                  ))
+                ) : (
+                  <Text dimColor>  (none) — /agent add {'<model> <role>'}</Text>
+                )}
+              </Box>
+            </>
+          )}
         </Box>
       )}
 
