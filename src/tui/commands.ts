@@ -124,7 +124,7 @@ function handlePinsCommand(_args: string, ctx: CommandContext): CommandResult {
 function handleJobCommand(args: string, ctx: CommandContext): CommandResult {
   const trimmed = args.trim();
   if (!trimmed) {
-    ctx.addSystemMessage('Usage: /job add "schedule" prompt | /job pause|resume|delete N\nSchedule: time (daily 9am, every 2h, cron) or event (on <scope>)');
+    ctx.addSystemMessage('Usage: /job add "schedule" prompt | /job pause|resume|delete N\nSchedule: time (daily 9am, every 2h, cron) or event (on <scope> or on platformN)');
     return { handled: true };
   }
 
@@ -504,7 +504,7 @@ export function getCommandCompletions(prefix: string): CommandInfo[] {
       if (name === 'job') {
         results.push(
           { name: 'job add "schedule" prompt', description: 'Add a scheduled job' },
-          { name: 'job add "on <scope>" prompt', description: 'Add event-driven job (triggers on platform messages)' },
+          { name: 'job add "on <scope|platformN>" prompt', description: 'Add event-driven job (triggers on platform messages)' },
           { name: 'job pause N', description: 'Pause job #N' },
           { name: 'job resume N', description: 'Resume job #N' },
           { name: 'job delete N', description: 'Delete job #N' },

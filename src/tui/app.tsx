@@ -765,8 +765,9 @@ function App({ options }: AppProps) {
           setError(`Job failed: ${result}`);
         } else {
           // Update local cache
-          talkManagerRef.current?.addJob(activeTalkId, schedule, prompt);
-          const sysMsg = createMessage('system', `[${label}] "${prompt}" — ${schedule}`);
+          const resolvedSchedule = result.schedule ?? schedule;
+          talkManagerRef.current?.addJob(activeTalkId, resolvedSchedule, prompt);
+          const sysMsg = createMessage('system', `[${label}] "${prompt}" — ${resolvedSchedule}`);
           chat.setMessages(prev => [...prev, sysMsg]);
         }
       }).catch(err => {
@@ -1162,7 +1163,7 @@ function App({ options }: AppProps) {
       return;
     }
     const lines = bindings.map((b, i) =>
-      `  ${i + 1}. ${b.platform} ${b.scope} (${b.permission})`
+      `  ${i + 1}. platform${i + 1}: ${b.platform} "${b.scope}" (${b.permission})`
     );
     const sysMsg = createMessage('system', `Platform bindings:\n${lines.join('\n')}`);
     chat.setMessages(prev => [...prev, sysMsg]);
@@ -1200,7 +1201,7 @@ function App({ options }: AppProps) {
     const bindings = talk.platformBindings ?? [];
     if (bindings.length > 0) {
       const lines = bindings.map((b, i) =>
-        `  ${i + 1}. ${b.platform} ${b.scope} (${b.permission})`
+        `  ${i + 1}. platform${i + 1}: ${b.platform} "${b.scope}" (${b.permission})`
       );
       sections.push(`\nPlatform bindings:\n${lines.join('\n')}`);
     } else {
@@ -1344,6 +1345,10 @@ function App({ options }: AppProps) {
     talkManagerRef.current?.markRead(talk.id);
     setRemoteProcessing(talk.processing === true);
     mouseScroll.scrollToBottom();
+
+    // Set primary agent ref synchronously (don't wait for useEffect)
+    const localAgentsOnSelect = talkManagerRef.current?.getAgents(talk.id) ?? [];
+    primaryAgentRef.current = localAgentsOnSelect.find(a => a.isPrimary) ?? null;
 
     // Set gateway talk ID from local mapping
     const gwId = talk.gatewayTalkId;
@@ -2428,7 +2433,7 @@ function App({ options }: AppProps) {
           currentModel={currentModel}
           pinnedMessageIds={activeTalkId && talkManagerRef.current
             ? talkManagerRef.current.getPinnedMessageIds(activeTalkId) : []}
-          streamingAgentName={streamingAgentName}
+          streamingAgentName={streamingAgentName ?? primaryAgentRef.current?.name}
           remoteProcessing={remoteProcessing}
         />
       )}
