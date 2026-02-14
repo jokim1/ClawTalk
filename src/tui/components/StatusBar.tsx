@@ -142,17 +142,15 @@ export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleS
 interface ShortcutBarProps {
   terminalWidth?: number;
   ttsEnabled?: boolean;
-  grabTextMode?: boolean;
 }
 
-export function ShortcutBar({ terminalWidth = 80, ttsEnabled = true, grabTextMode = false }: ShortcutBarProps) {
+export function ShortcutBar({ terminalWidth = 80, ttsEnabled = true }: ShortcutBarProps) {
   const row1 = [
     { key: '^T', label: 'Talks List' },
     { key: '^N', label: 'New Talk' },
     { key: '^C', label: 'Live Chat' },
     { key: '^P', label: 'Push2Talk' },
     { key: '^V', label: ttsEnabled ? 'Voice OFF' : 'Voice ON' },
-    { key: '^E', label: grabTextMode ? 'End Select' : 'Select Text' },
   ];
   const row2 = [
     { key: '^K', label: 'AI Model' },
