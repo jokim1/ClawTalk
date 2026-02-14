@@ -502,6 +502,7 @@ function App({ options }: AppProps) {
 
   const selectDefaultModel = useCallback((modelId: string) => {
     setShowModelPicker(false);
+    setShowTalks(true);
     // Save to config as the default model for new talks
     const config = loadConfig();
     config.defaultModel = modelId;
@@ -2212,7 +2213,7 @@ function App({ options }: AppProps) {
             models={pickerModels}
             currentModel={currentModel}
             onSelect={modelPickerMode === 'default' ? selectDefaultModel : selectModel}
-            onClose={() => setShowModelPicker(false)}
+            onClose={() => { setShowModelPicker(false); if (modelPickerMode === 'default') setShowTalks(true); }}
             maxHeight={overlayMaxHeight}
             onAddAgent={modelPickerMode === 'default' ? undefined : handleAddAgentRequest}
             title={modelPickerMode === 'default' ? 'Set Default Talks Model' : undefined}
@@ -2258,7 +2259,7 @@ function App({ options }: AppProps) {
             onNewChat={() => { setShowTalks(false); handleNewChat(); }}
             onToggleTts={() => { voice.handleTtsToggle?.(); }}
             onOpenSettings={() => { setShowTalks(false); setShowSettings(true); }}
-            onOpenModelPicker={() => { setShowTalks(false); setModelPickerMode('default'); setShowModelPicker(true); }}
+            onOpenModelPicker={() => { setModelPickerMode('default'); setShowModelPicker(true); }}
             exportDir={savedConfig.exportDir}
             onNewTerminal={() => { spawnNewTerminalWindow(options); }}
             onExit={() => { voiceServiceRef.current?.cleanup(); exit(); }}
