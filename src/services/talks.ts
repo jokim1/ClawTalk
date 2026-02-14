@@ -154,6 +154,15 @@ export class TalkManager {
     }
   }
 
+  /** Mark a talk as read (updates lastReadAt timestamp). */
+  markRead(talkId: string): void {
+    const talk = this.talks.get(talkId);
+    if (talk) {
+      talk.lastReadAt = Date.now();
+      if (talk.isSaved) this.persistTalk(talk);
+    }
+  }
+
   /** Remove a talk from Saved Talks (still appears in History). */
   unsaveTalk(talkId: string): boolean {
     const talk = this.talks.get(talkId);

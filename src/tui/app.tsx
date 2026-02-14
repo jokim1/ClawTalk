@@ -1312,6 +1312,7 @@ function App({ options }: AppProps) {
     setFileIndicatorSelected(false);
     talkManagerRef.current?.setActiveTalk(talk.id);
     talkManagerRef.current?.touchTalk(talk.id);
+    talkManagerRef.current?.markRead(talk.id);
     mouseScroll.scrollToBottom();
 
     // Set gateway talk ID from local mapping

@@ -236,6 +236,7 @@ export interface Talk {
   directives?: Directive[];
   platformBindings?: PlatformBinding[];
   gatewayTalkId?: string;  // Corresponding gateway-side talk ID
+  lastReadAt?: number;     // When the user last opened this talk
   createdAt: number;
   updatedAt: number;
 }
