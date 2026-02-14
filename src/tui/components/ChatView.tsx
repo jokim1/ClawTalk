@@ -38,6 +38,8 @@ interface ChatViewProps {
   pinnedMessageIds?: string[];
   /** Agent name to show during streaming (for multi-agent) */
   streamingAgentName?: string;
+  /** Gateway is actively generating a response in the background */
+  remoteProcessing?: boolean;
 }
 
 interface VisibleSlice {
@@ -170,6 +172,7 @@ export function ChatView({
   currentModel,
   pinnedMessageIds = [],
   streamingAgentName,
+  remoteProcessing,
 }: ChatViewProps) {
   const pinnedSet = useMemo(() => new Set(pinnedMessageIds), [pinnedMessageIds]);
   const contentWidth = Math.max(10, width - 2); // account for paddingX={1}
@@ -288,6 +291,11 @@ export function ChatView({
       {/* Processing timer */}
       {processingStartTime && scrollOffset === 0 && (
         <Text dimColor>* Waiting for {formatElapsed(processingStartTime)}</Text>
+      )}
+
+      {/* Remote processing indicator (gateway generating in background) */}
+      {!isProcessing && remoteProcessing && scrollOffset === 0 && (
+        <Text color="yellow">{'\u23F3'} Still generating on gateway...</Text>
       )}
 
       {/* Spacer to push down indicator to bottom */}

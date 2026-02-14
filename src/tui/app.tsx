@@ -147,6 +147,7 @@ function App({ options }: AppProps) {
   const [pendingDocument, setPendingDocument] = useState<{ filename: string; text: string } | null>(null);
   const [pendingFiles, setPendingFiles] = useState<Array<{ path: string; filename: string }>>([]);
   const [fileIndicatorSelected, setFileIndicatorSelected] = useState(false);
+  const [remoteProcessing, setRemoteProcessing] = useState(false);
 
   // --- TTS bridge ref (useChat → useVoice) ---
 
@@ -1260,12 +1261,36 @@ function App({ options }: AppProps) {
           pinnedMessageIds: gwTalk.pinnedMessageIds,
           jobs: gwTalk.jobs,
           agents: gwTalk.agents,
+          processing: gwTalk.processing,
           createdAt: gwTalk.createdAt,
           updatedAt: gwTalk.updatedAt,
         });
       }
     });
   }, [showTalks]);
+
+  // Poll gateway when remoteProcessing is active — auto-fetch completed response
+  useEffect(() => {
+    if (!remoteProcessing || !activeTalkId || !gatewayTalkIdRef.current || !chatServiceRef.current) return;
+    const gwId = gatewayTalkIdRef.current;
+    const talkId = activeTalkId;
+    const timer = setInterval(() => {
+      if (!chatServiceRef.current) return;
+      chatServiceRef.current.getGatewayTalk(gwId).then(gwTalk => {
+        if (!gwTalk || activeTalkIdRef.current !== talkId) return;
+        if (!gwTalk.processing) {
+          setRemoteProcessing(false);
+          // Fetch updated messages
+          chatServiceRef.current?.fetchGatewayMessages(gwId).then(msgs => {
+            if (msgs.length > 0 && activeTalkIdRef.current === talkId) {
+              chat.setMessages(msgs);
+            }
+          });
+        }
+      });
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [remoteProcessing, activeTalkId]);
 
   const handleNewChat = useCallback(() => {
     const session = sessionManagerRef.current?.createSession(undefined, currentModel);
@@ -1291,6 +1316,7 @@ function App({ options }: AppProps) {
       chat.setMessages([]);
       setPendingFiles([]);
       setFileIndicatorSelected(false);
+      setRemoteProcessing(false);
       setSessionName(session.name);
       const sysMsg = createMessage('system', 'New chat started.');
       chat.setMessages(prev => [...prev, sysMsg]);
@@ -1313,6 +1339,7 @@ function App({ options }: AppProps) {
     talkManagerRef.current?.setActiveTalk(talk.id);
     talkManagerRef.current?.touchTalk(talk.id);
     talkManagerRef.current?.markRead(talk.id);
+    setRemoteProcessing(talk.processing === true);
     mouseScroll.scrollToBottom();
 
     // Set gateway talk ID from local mapping
@@ -2393,6 +2420,7 @@ function App({ options }: AppProps) {
           pinnedMessageIds={activeTalkId && talkManagerRef.current
             ? talkManagerRef.current.getPinnedMessageIds(activeTalkId) : []}
           streamingAgentName={streamingAgentName}
+          remoteProcessing={remoteProcessing}
         />
       )}
 

@@ -545,6 +545,7 @@ export class TalkManager {
     agents?: TalkAgent[];
     directives?: Directive[];
     platformBindings?: PlatformBinding[];
+    processing?: boolean;
     createdAt: number;
     updatedAt: number;
   }): Talk {
@@ -575,6 +576,7 @@ export class TalkManager {
       }
       existing.directives = gwTalk.directives ?? existing.directives;
       existing.platformBindings = gwTalk.platformBindings ?? existing.platformBindings;
+      existing.processing = gwTalk.processing;
       existing.updatedAt = gwTalk.updatedAt;
       existing.gatewayTalkId = gwTalk.id;
       return existing;
@@ -594,6 +596,7 @@ export class TalkManager {
       directives: gwTalk.directives,
       platformBindings: gwTalk.platformBindings,
       gatewayTalkId: gwTalk.id,
+      processing: gwTalk.processing,
       isSaved: true,
       createdAt: gwTalk.createdAt,
       updatedAt: gwTalk.updatedAt,
