@@ -18,8 +18,8 @@ import { ChatView } from './components/ChatView.js';
 import { ModelPicker } from './components/ModelPicker.js';
 import type { Model } from './components/ModelPicker.js';
 import { RolePicker } from './components/RolePicker.js';
-import { TranscriptHub } from './components/TranscriptHub';
 import { TalksHub } from './components/TalksHub';
+import { EditMessages } from './components/EditMessages';
 import { SettingsPicker } from './components/SettingsPicker.js';
 import { ChatService } from '../services/chat';
 import { getSessionManager } from '../services/sessions';
@@ -42,6 +42,7 @@ import {
 } from '../models.js';
 import { DEFAULT_MODEL, RESIZE_DEBOUNCE_MS } from '../constants.js';
 import { createMessage, cleanInputChar } from './helpers.js';
+import { exportTranscript, exportTranscriptMd, exportTranscriptDocx } from './utils.js';
 import { dispatchCommand, getCommandCompletions } from './commands.js';
 import { CommandHints } from './components/CommandHints.js';
 import { useGateway } from './hooks/useGateway.js';
@@ -121,7 +122,7 @@ function App({ options }: AppProps) {
   const [streamingAgentName, setStreamingAgentName] = useState<string | undefined>(undefined);
   // Pending agent from /agent add command — created after primary role is selected
   const [pendingSlashAgent, setPendingSlashAgent] = useState<{ model: string; role: AgentRole } | null>(null);
-  const [showTranscript, setShowTranscript] = useState(false);
+  const [showEditMessages, setShowEditMessages] = useState(false);
   const [showTalks, setShowTalks] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
   const [sessionName, setSessionName] = useState('Session 1');
@@ -238,7 +239,7 @@ function App({ options }: AppProps) {
 
   // --- Scroll state ---
 
-  const isOverlayActive = showModelPicker || showRolePicker || showTranscript || showTalks || showSettings;
+  const isOverlayActive = showModelPicker || showRolePicker || showEditMessages || showTalks || showSettings;
 
   // --- Command hints ---
 
@@ -976,6 +977,62 @@ function App({ options }: AppProps) {
     talkManagerRef.current.unsaveTalk(talkId);
   }, []);
 
+  // --- Export / Edit handlers ---
+
+  const handleExportTalk = useCallback((format?: string, lastN?: number) => {
+    const session = sessionManagerRef.current?.getActiveSession();
+    if (!session || chat.messages.length === 0) {
+      setError('No messages to export');
+      return;
+    }
+    const talk = activeTalkId ? talkManagerRef.current?.getTalk(activeTalkId) : null;
+    const name = talk?.topicTitle ?? session.name ?? 'Chat';
+    const msgs = lastN ? chat.messages.slice(-lastN) : chat.messages;
+
+    // Normalize format aliases
+    const fmt = format === 't' ? 'txt' : format === 'm' ? 'md' : format === 'd' ? 'docx' : (format || 'md');
+
+    try {
+      if (fmt === 'docx') {
+        exportTranscriptDocx(msgs, name, savedConfig.exportDir).then(filepath => {
+          addSystemMessage(`Exported: ${filepath}`);
+        }).catch(err => {
+          setError(`Export failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+        });
+      } else if (fmt === 'txt') {
+        const filepath = exportTranscript(msgs, name, savedConfig.exportDir);
+        addSystemMessage(`Exported: ${filepath}`);
+      } else {
+        const filepath = exportTranscriptMd(msgs, name, savedConfig.exportDir);
+        addSystemMessage(`Exported: ${filepath}`);
+      }
+    } catch (err) {
+      setError(`Export failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    }
+  }, [activeTalkId, chat.messages, savedConfig.exportDir]);
+
+  const handleEditMessages = useCallback(() => {
+    const editable = chat.messages.filter(m => m.role !== 'system');
+    if (editable.length === 0) {
+      setError('No messages to edit');
+      return;
+    }
+    setShowEditMessages(true);
+  }, [chat.messages]);
+
+  const handleConfirmDeleteMessages = useCallback((messageIds: string[]) => {
+    const sessionId = sessionManagerRef.current?.getActiveSessionId();
+    if (!sessionId) return;
+
+    sessionManagerRef.current?.deleteMessages(sessionId, messageIds);
+    const session = sessionManagerRef.current?.getSession(sessionId);
+    if (session) {
+      chat.setMessages([...session.messages]);
+    }
+    addSystemMessage(`Deleted ${messageIds.length} message${messageIds.length !== 1 ? 's' : ''}.`);
+    setShowEditMessages(false);
+  }, []);
+
   // Sync gateway talks into local TalkManager when TalksHub opens
   useEffect(() => {
     if (!showTalks || !chatServiceRef.current || !talkManagerRef.current) return;
@@ -1474,6 +1531,8 @@ function App({ options }: AppProps) {
     debateAll: handleDebateAll,
     reviewLast: handleReviewLast,
     attachFile: handleAttachFile,
+    exportTalk: handleExportTalk,
+    editMessages: handleEditMessages,
   });
   commandCtx.current = {
     switchModel,
@@ -1502,6 +1561,8 @@ function App({ options }: AppProps) {
     debateAll: handleDebateAll,
     reviewLast: handleReviewLast,
     attachFile: handleAttachFile,
+    exportTalk: handleExportTalk,
+    editMessages: handleEditMessages,
   };
 
   const handleSubmit = useCallback(async (text: string) => {
@@ -1650,7 +1711,7 @@ function App({ options }: AppProps) {
   // --- Keyboard shortcuts ---
 
   useInput((input, key) => {
-    if (showModelPicker || showRolePicker || showTranscript || showTalks || showSettings) return;
+    if (showModelPicker || showRolePicker || showEditMessages || showTalks || showSettings) return;
 
     // Clear confirmation mode
     if (pendingClear) {
@@ -1795,13 +1856,6 @@ function App({ options }: AppProps) {
       return;
     }
 
-    // ^H History (transcripts)
-    const isCtrlH = input === '\x08' || key.backspace || (input === '\b');
-    if (isCtrlH && inputText.length === 0) {
-      setShowTranscript(true);
-      return;
-    }
-
     // ^V AI Voice (toggle TTS responses)
     if (input === 'v' && key.ctrl) {
       voice.handleTtsToggle?.();
@@ -1924,21 +1978,18 @@ function App({ options }: AppProps) {
             maxHeight={overlayMaxHeight}
           />
         </Box>
-      ) : showTranscript ? (
+      ) : showEditMessages ? (
         <Box flexGrow={1} paddingX={1}>
-          <TranscriptHub
-            currentMessages={chat.messages}
-            currentSessionName={sessionName}
-            sessionManager={sessionManagerRef.current!}
-            talkManager={talkManagerRef.current!}
-            exportDir={savedConfig.exportDir}
+          <EditMessages
+            messages={chat.messages}
             maxHeight={overlayMaxHeight}
             terminalWidth={terminalWidth}
-            onClose={() => setShowTranscript(false)}
-            onNewChat={() => { setShowTranscript(false); handleNewChat(); }}
+            onClose={() => setShowEditMessages(false)}
+            onConfirm={handleConfirmDeleteMessages}
+            onNewChat={() => { setShowEditMessages(false); handleNewChat(); }}
             onToggleTts={() => { voice.handleTtsToggle?.(); }}
-            onOpenTalks={() => { setShowTranscript(false); setShowTalks(true); }}
-            onOpenSettings={() => { setShowTranscript(false); setShowSettings(true); }}
+            onOpenTalks={() => { setShowEditMessages(false); setShowTalks(true); }}
+            onOpenSettings={() => { setShowEditMessages(false); setShowSettings(true); }}
             onExit={() => { voiceServiceRef.current?.cleanup(); exit(); }}
             setError={setError}
           />
@@ -1954,9 +2005,9 @@ function App({ options }: AppProps) {
             onSelectTalk={handleSelectTalk}
             onNewChat={() => { setShowTalks(false); handleNewChat(); }}
             onToggleTts={() => { voice.handleTtsToggle?.(); }}
-            onOpenHistory={() => { setShowTalks(false); setShowTranscript(true); }}
             onOpenSettings={() => { setShowTalks(false); setShowSettings(true); }}
             onOpenModelPicker={() => { setShowTalks(false); setShowModelPicker(true); }}
+            exportDir={savedConfig.exportDir}
             onNewTerminal={() => { spawnNewTerminalWindow(options); }}
             onExit={() => { voiceServiceRef.current?.cleanup(); exit(); }}
             setError={setError}
@@ -1971,7 +2022,6 @@ function App({ options }: AppProps) {
             onNewChat={() => { setShowSettings(false); handleNewChat(); }}
             onToggleTts={() => { voice.handleTtsToggle?.(); }}
             onOpenTalks={() => { setShowSettings(false); setShowTalks(true); }}
-            onOpenHistory={() => { setShowSettings(false); setShowTranscript(true); }}
             onExit={() => { voiceServiceRef.current?.cleanup(); realtimeVoiceServiceRef.current?.cleanup(); exit(); }}
             setError={setError}
             voiceCaps={{

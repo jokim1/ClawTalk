@@ -75,6 +75,7 @@ export interface ISessionManager {
   getSession(sessionId: string): Session | null;
   getActiveSessionId(): string | null;
   getSessionDir(sessionId: string): string;
+  deleteMessages(sessionId: string, messageIds: string[]): boolean;
   searchTranscripts(query: string): SearchResult[];
   getContextSummary(maxMessages?: number): string;
 }

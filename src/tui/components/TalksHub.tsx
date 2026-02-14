@@ -1,7 +1,7 @@
 /**
  * Talks Hub Component
  *
- * WhatsApp-style saved conversations list.
+ * WhatsApp-style saved conversations list with search and export.
  * Shows explicitly saved talks (via /save command) sorted by updatedAt.
  */
 
@@ -11,7 +11,7 @@ import TextInput from 'ink-text-input';
 import type { Talk, Message, Session } from '../../types';
 import type { TalkManager } from '../../services/talks';
 import type { SessionManager } from '../../services/sessions';
-import { formatRelativeTime, formatSessionTime, formatUpdatedTime } from '../utils.js';
+import { formatRelativeTime, formatSessionTime, formatUpdatedTime, exportTranscript, exportTranscriptMd, exportTranscriptDocx } from '../utils.js';
 
 interface TalksHubProps {
   talkManager: TalkManager;
@@ -22,7 +22,6 @@ interface TalksHubProps {
   onSelectTalk: (talk: Talk) => void;
   onNewChat: () => void;
   onToggleTts: () => void;
-  onOpenHistory: () => void;
   onOpenSettings: () => void;
   onOpenModelPicker: () => void;
   onNewTerminal: () => void;
@@ -30,6 +29,7 @@ interface TalksHubProps {
   setError: (error: string) => void;
   onRenameTalk?: (talkId: string, title: string) => void;
   onDeleteTalk?: (talkId: string) => void;
+  exportDir?: string;
 }
 
 export function TalksHub({
@@ -41,7 +41,6 @@ export function TalksHub({
   onSelectTalk,
   onNewChat,
   onToggleTts,
-  onOpenHistory,
   onOpenSettings,
   onOpenModelPicker,
   onNewTerminal,
@@ -49,6 +48,7 @@ export function TalksHub({
   setError,
   onRenameTalk,
   onDeleteTalk,
+  exportDir,
 }: TalksHubProps) {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [scrollOffset, setScrollOffset] = useState(0);
@@ -57,10 +57,34 @@ export function TalksHub({
   const [renameValue, setRenameValue] = useState('');
   const [confirmDeleteIndex, setConfirmDeleteIndex] = useState<number | null>(null);
 
-  const talks = useMemo(() => talkManager.listSavedTalks(), [talkManager, refreshKey]);
+  // Search state
+  const [searchMode, setSearchMode] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchInputActive, setSearchInputActive] = useState(true);
+
+  // Export picker state
+  const [exportPickerIndex, setExportPickerIndex] = useState<number | null>(null);
+
+  const allTalks = useMemo(() => talkManager.listSavedTalks(), [talkManager, refreshKey]);
+
+  // Search filtering
+  const talks = useMemo(() => {
+    if (!searchMode || !searchQuery.trim()) return allTalks;
+    const query = searchQuery.toLowerCase();
+    return allTalks.filter(talk => {
+      // Match topic title
+      if (talk.topicTitle?.toLowerCase().includes(query)) return true;
+      // Match message content
+      const session = sessionManager.getSession(talk.sessionId);
+      if (session) {
+        return session.messages.some(m => m.content.toLowerCase().includes(query));
+      }
+      return false;
+    });
+  }, [allTalks, searchMode, searchQuery, sessionManager]);
 
   // Calculate visible rows
-  const visibleRows = Math.max(3, maxHeight - 4); // title + blank + footer + blank
+  const visibleRows = Math.max(3, maxHeight - (searchMode ? 6 : 4)); // title + blank + footer + blank (+ search input + blank in search mode)
 
   const ensureVisible = (idx: number) => {
     setScrollOffset(prev => {
@@ -74,7 +98,6 @@ export function TalksHub({
   const getPreview = (talk: Talk): string => {
     const session = sessionManager.getSession(talk.sessionId);
     if (!session || session.messages.length === 0) {
-      // Gateway-only talk with no local session — show objective or placeholder
       if (talk.objective) return talk.objective.slice(0, 40) + (talk.objective.length > 40 ? '...' : '');
       return 'Gateway talk';
     }
@@ -101,12 +124,6 @@ export function TalksHub({
     // ^V toggle TTS
     if (input === 'v' && key.ctrl) {
       onToggleTts();
-      return;
-    }
-
-    // ^H open history (Ctrl+H sends backspace in terminals)
-    if (input === '\x08' || key.backspace || input === '\b') {
-      onOpenHistory();
       return;
     }
 
@@ -137,6 +154,111 @@ export function TalksHub({
     // ^C and ^P - voice not available in Talks screen
     if ((input === 'c' || input === 'p') && key.ctrl) {
       setError('You can only use voice input in a Talk!');
+      return;
+    }
+
+    // --- Search mode ---
+    if (searchMode) {
+      if (searchInputActive) {
+        // Esc exits search mode
+        if (key.escape) {
+          setSearchMode(false);
+          setSearchQuery('');
+          setSearchInputActive(true);
+          setSelectedIndex(0);
+          setScrollOffset(0);
+          return;
+        }
+        // Down/Enter moves focus to results
+        if ((key.downArrow || key.return) && talks.length > 0) {
+          setSearchInputActive(false);
+          setSelectedIndex(0);
+          setScrollOffset(0);
+          return;
+        }
+        return;
+      }
+
+      // Navigating search results
+      if (key.escape) {
+        setSearchInputActive(true);
+        return;
+      }
+
+      if (key.upArrow) {
+        if (selectedIndex === 0) {
+          setSearchInputActive(true);
+          return;
+        }
+        setSelectedIndex(prev => {
+          const next = Math.max(0, prev - 1);
+          ensureVisible(next);
+          return next;
+        });
+        return;
+      }
+
+      if (key.downArrow) {
+        setSelectedIndex(prev => {
+          const next = Math.min(talks.length - 1, prev + 1);
+          ensureVisible(next);
+          return next;
+        });
+        return;
+      }
+
+      if (key.return && talks.length > 0) {
+        const talk = talks[selectedIndex];
+        if (talk) {
+          onSelectTalk(talk);
+        }
+        return;
+      }
+      return;
+    }
+
+    // --- Export picker mode ---
+    if (exportPickerIndex !== null) {
+      if (key.escape) {
+        setExportPickerIndex(null);
+        return;
+      }
+      const talk = talks[exportPickerIndex - 1];
+      if (!talk) { setExportPickerIndex(null); return; }
+
+      const session = sessionManager.getSession(talk.sessionId);
+      const msgs = session?.messages ?? [];
+      const name = talk.topicTitle ?? session?.name ?? 'Talk';
+
+      if ((input === 't' || input === 'T') && msgs.length > 0) {
+        try {
+          const filepath = exportTranscript(msgs, name, exportDir);
+          setError(`Exported: ${filepath}`);
+        } catch (err) {
+          setError(`Export failed: ${err instanceof Error ? err.message : 'Failed'}`);
+        }
+        setExportPickerIndex(null);
+        return;
+      }
+      if ((input === 'm' || input === 'M') && msgs.length > 0) {
+        try {
+          const filepath = exportTranscriptMd(msgs, name, exportDir);
+          setError(`Exported: ${filepath}`);
+        } catch (err) {
+          setError(`Export failed: ${err instanceof Error ? err.message : 'Failed'}`);
+        }
+        setExportPickerIndex(null);
+        return;
+      }
+      if ((input === 'd' || input === 'D') && msgs.length > 0) {
+        exportTranscriptDocx(msgs, name, exportDir).then(filepath => {
+          setError(`Exported: ${filepath}`);
+        }).catch(err => {
+          setError(`Export failed: ${err instanceof Error ? err.message : 'Failed'}`);
+        });
+        setExportPickerIndex(null);
+        return;
+      }
       return;
     }
 
@@ -228,6 +350,22 @@ export function TalksHub({
       return;
     }
 
+    // '/' enters search mode (only when selectedIndex >= 0)
+    if (input === '/' && selectedIndex >= 0) {
+      setSearchMode(true);
+      setSearchQuery('');
+      setSearchInputActive(true);
+      setSelectedIndex(0);
+      setScrollOffset(0);
+      return;
+    }
+
+    // 'e' to export (only for saved talks)
+    if ((input === 'e' || input === 'E') && selectedIndex > 0) {
+      setExportPickerIndex(selectedIndex);
+      return;
+    }
+
     // 'r' to rename (only for saved talks, not New Talk)
     if ((input === 'r' || input === 'R') && selectedIndex > 0) {
       const talk = talks[selectedIndex - 1];
@@ -243,7 +381,74 @@ export function TalksHub({
     }
   });
 
-  // Total items: "New Talk" row + saved talks
+  // --- Search mode render ---
+  if (searchMode) {
+    const visibleStart = scrollOffset;
+    const visibleEnd = Math.min(talks.length, scrollOffset + visibleRows);
+    const hasMore = visibleEnd < talks.length;
+    const hasLess = scrollOffset > 0;
+
+    return (
+      <Box flexDirection="column" paddingX={1}>
+        <Text bold color="cyan">Search Talks</Text>
+        <Box>
+          <Text dimColor>Search: </Text>
+          {searchInputActive ? (
+            <TextInput
+              value={searchQuery}
+              onChange={setSearchQuery}
+              onSubmit={() => {
+                if (talks.length > 0) {
+                  setSearchInputActive(false);
+                  setSelectedIndex(0);
+                }
+              }}
+            />
+          ) : (
+            <Text>{searchQuery}<Text dimColor> ({'\u2191'} to edit)</Text></Text>
+          )}
+        </Box>
+        <Box height={1} />
+
+        {searchQuery.trim() && talks.length === 0 ? (
+          <Text dimColor>No matches found.</Text>
+        ) : talks.length > 0 ? (
+          <>
+            {hasLess && <Text dimColor>  {'\u25B2'} more</Text>}
+            {Array.from({ length: visibleEnd - visibleStart }, (_, i) => {
+              const actualIndex = visibleStart + i;
+              const talk = talks[actualIndex];
+              if (!talk) return null;
+
+              const isSelected = !searchInputActive && actualIndex === selectedIndex;
+              const session = sessionManager.getSession(talk.sessionId);
+              const msgCount = session?.messages.length ?? 0;
+              const updatedTime = formatUpdatedTime(talk.updatedAt);
+              const displayName = talk.topicTitle ?? getPreview(talk);
+
+              return (
+                <Box key={talk.id}>
+                  <Text color={isSelected ? 'cyan' : undefined}>
+                    {isSelected ? '> ' : '  '}
+                    <Text bold={isSelected}>{displayName}</Text>
+                    <Text dimColor> ({msgCount} msg{msgCount !== 1 ? 's' : ''}) | {updatedTime}</Text>
+                  </Text>
+                </Box>
+              );
+            })}
+            {hasMore && <Text dimColor>  {'\u25BC'} more</Text>}
+          </>
+        ) : !searchQuery.trim() ? (
+          <Text dimColor>Type to search across all talks.</Text>
+        ) : null}
+
+        <Box height={1} />
+        <Text dimColor>  {'\u2191\u2193'} Navigate  Enter Open  Esc {searchInputActive ? 'Cancel' : 'Back to input'}</Text>
+      </Box>
+    );
+  }
+
+  // --- Normal mode render ---
   const totalItems = 1 + talks.length;
   const visibleStart = scrollOffset;
   const visibleEnd = Math.min(totalItems, scrollOffset + visibleRows);
@@ -348,8 +553,10 @@ export function TalksHub({
           <Text color="yellow">  Delete "{talks[confirmDeleteIndex - 1]?.topicTitle || 'Talk'}"?</Text>
           <Text dimColor>  d Confirm  Esc Cancel</Text>
         </Text>
+      ) : exportPickerIndex !== null ? (
+        <Text>  <Text bold>Export:</Text> <Text dimColor>t .txt  m .md  d .docx  Esc Cancel</Text></Text>
       ) : (
-        <Text dimColor>  {'\u2191\u2193'} Navigate  Enter {selectedIndex === 0 ? 'New Talk' : 'Continue'}  {selectedIndex > 0 ? 'r Rename  d Delete  ' : ''}Esc Close</Text>
+        <Text dimColor>  {'\u2191\u2193'} Navigate  Enter {selectedIndex === 0 ? 'New Talk' : 'Continue'}  {selectedIndex > 0 ? '/ Search  e Export  r Rename  d Delete  ' : ''}Esc Close</Text>
       )}
     </Box>
   );

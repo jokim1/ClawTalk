@@ -27,7 +27,6 @@ interface SettingsPickerProps {
   onNewChat: () => void;
   onToggleTts: () => void;
   onOpenTalks: () => void;
-  onOpenHistory: () => void;
   onExit: () => void;
   setError: (error: string) => void;
   // Voice provider props
@@ -97,7 +96,6 @@ export function SettingsPicker({
   onNewChat,
   onToggleTts,
   onOpenTalks,
-  onOpenHistory,
   onExit,
   setError,
   voiceCaps,
@@ -139,10 +137,6 @@ export function SettingsPicker({
     }
     if (input === 'v' && key.ctrl) {
       onToggleTts();
-      return;
-    }
-    if (input === 'h' && key.ctrl) {
-      onOpenHistory();
       return;
     }
     if (input === 's' && key.ctrl) {

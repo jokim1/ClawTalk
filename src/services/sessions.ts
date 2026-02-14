@@ -209,6 +209,24 @@ export class SessionManager implements ISessionManager {
     return path.join(SESSIONS_DIR, sessionId);
   }
 
+  deleteMessages(sessionId: string, messageIds: string[]): boolean {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+
+    const idSet = new Set(messageIds);
+    session.messages = session.messages.filter(m => !idSet.has(m.id));
+    session.updatedAt = Date.now();
+
+    // Rewrite transcript file with remaining messages
+    const sessionPath = path.join(SESSIONS_DIR, sessionId);
+    const transcriptPath = path.join(sessionPath, 'transcript.jsonl');
+    const content = session.messages.map(m => JSON.stringify(m)).join('\n') + (session.messages.length > 0 ? '\n' : '');
+    fsp.writeFile(transcriptPath, content).catch(() => {});
+
+    this.persistSessionMeta(session);
+    return true;
+  }
+
   searchTranscripts(query: string): SearchResult[] {
     const results: SearchResult[] = [];
     const lowerQuery = query.toLowerCase();

@@ -34,6 +34,8 @@ export interface CommandContext {
   debateAll: (topic: string) => void;
   reviewLast: () => void;
   attachFile: (filePath: string, message?: string) => void;
+  exportTalk: (format?: string, lastN?: number) => void;
+  editMessages: () => void;
 }
 
 export interface CommandResult {
@@ -308,6 +310,31 @@ function handleFileCommand(args: string, ctx: CommandContext): CommandResult {
   return { handled: true };
 }
 
+/** Handle /export [format] [last N] — export current talk. */
+function handleExportCommand(args: string, ctx: CommandContext): CommandResult {
+  const parts = args.trim().split(/\s+/).filter(Boolean);
+  let format: string | undefined;
+  let lastN: number | undefined;
+
+  for (const part of parts) {
+    const num = parseInt(part, 10);
+    if (!isNaN(num) && num > 0) {
+      lastN = num;
+    } else if (/^(txt|t|md|m|docx|d)$/i.test(part)) {
+      format = part.toLowerCase();
+    }
+  }
+
+  ctx.exportTalk(format, lastN);
+  return { handled: true };
+}
+
+/** Handle /edit — open message editor overlay. */
+function handleEditCommand(_args: string, ctx: CommandContext): CommandResult {
+  ctx.editMessages();
+  return { handled: true };
+}
+
 /**
  * Registry of slash commands.
  * Add new commands here — they'll be available immediately.
@@ -330,6 +357,8 @@ const COMMANDS: Record<string, { handler: CommandHandler; description: string }>
   debate: { handler: handleDebateCommand, description: 'All agents discuss a topic' },
   review: { handler: handleReviewCommand, description: 'Agents review last response' },
   file: { handler: handleFileCommand, description: 'Attach a file (image, PDF, text)' },
+  export: { handler: handleExportCommand, description: 'Export current talk' },
+  edit: { handler: handleEditCommand, description: 'Edit messages (mark and delete)' },
 };
 
 /**
@@ -386,6 +415,10 @@ export function getCommandCompletions(prefix: string): CommandInfo[] {
       } else if (name === 'file') {
         results.push(
           { name: 'file <path> [message]', description: 'Attach image (jpg, png, heic, webp, gif)' },
+        );
+      } else if (name === 'export') {
+        results.push(
+          { name: 'export [txt|md|docx] [last N]', description: 'Export current talk' },
         );
       } else if (name === 'agent') {
         results.push(

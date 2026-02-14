@@ -55,8 +55,8 @@ src/
       ChatView.tsx         Message display
       InputArea.tsx        Text input / voice state
       ModelPicker.tsx      Model selection
-      TranscriptHub.tsx    Session browser
-      TalksHub.tsx         Talks management
+      TalksHub.tsx         Talks management (with search + export)
+      EditMessages.tsx     Message deletion overlay
       MultiLineInput.tsx   Multi-line input component
 ```
 

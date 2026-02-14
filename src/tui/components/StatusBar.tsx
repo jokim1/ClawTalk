@@ -154,7 +154,6 @@ export function ShortcutBar({ terminalWidth = 80, ttsEnabled = true }: ShortcutB
   ];
   const row2 = [
     { key: '^K', label: 'AI Model' },
-    { key: '^H', label: 'Msg History' },
     { key: '^Y', label: 'New Terminal' },
     { key: '^S', label: 'Settings' },
     { key: '^X', label: 'Exit' },
