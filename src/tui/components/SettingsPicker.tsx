@@ -47,6 +47,7 @@ interface SettingsPickerProps {
   onRealtimeProviderChange?: (provider: RealtimeVoiceProvider) => void;
   // Talk config
   talkConfig?: TalkConfigInfo | null;
+  hideTalkConfig?: boolean;
 }
 
 type SettingsTab = 'mic' | 'stt' | 'tts' | 'realtime' | 'talk';
@@ -115,8 +116,9 @@ export function SettingsPicker({
   realtimeProvider,
   onRealtimeProviderChange,
   talkConfig,
+  hideTalkConfig,
 }: SettingsPickerProps) {
-  const [tab, setTab] = useState<SettingsTab>('talk');
+  const [tab, setTab] = useState<SettingsTab>(hideTalkConfig ? 'mic' : 'talk');
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [message, setMessage] = useState<string | null>(null);
@@ -170,7 +172,9 @@ export function SettingsPicker({
     }
 
     // Tab navigation with left/right
-    const allTabs: SettingsTab[] = ['talk', 'mic', 'stt', 'tts', 'realtime'];
+    const allTabs: SettingsTab[] = hideTalkConfig
+      ? ['mic', 'stt', 'tts', 'realtime']
+      : ['talk', 'mic', 'stt', 'tts', 'realtime'];
     if (key.leftArrow) {
       setTab(prev => {
         const idx = allTabs.indexOf(prev);
@@ -297,7 +301,9 @@ export function SettingsPicker({
     }
   });
 
-  const tabs: SettingsTab[] = ['talk', 'mic', 'stt', 'tts', 'realtime'];
+  const tabs: SettingsTab[] = hideTalkConfig
+    ? ['mic', 'stt', 'tts', 'realtime']
+    : ['talk', 'mic', 'stt', 'tts', 'realtime'];
   const tabLabels: Record<SettingsTab, string> = {
     mic: 'Microphone',
     stt: 'Speech-to-Text',

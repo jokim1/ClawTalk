@@ -155,6 +155,7 @@ export function ShortcutBar({ terminalWidth = 80, ttsEnabled = true, grabTextMod
     { key: '^N', label: 'New Talk' },
     { key: '^K', label: 'AI Model' },
     { key: '^Y', label: 'New Terminal' },
+    { key: '^S', label: 'Settings' },
   ] : [
     { key: '^T', label: 'Talks List' },
     { key: '^C', label: 'Live Chat' },
@@ -162,7 +163,6 @@ export function ShortcutBar({ terminalWidth = 80, ttsEnabled = true, grabTextMod
     { key: '^V', label: ttsEnabled ? 'Voice OFF' : 'Voice ON' },
   ];
   const row2 = inTalks ? [
-    { key: '^S', label: 'Settings' },
     { key: '^X', label: 'Exit' },
   ] : [
     { key: '^K', label: 'AI Model' },

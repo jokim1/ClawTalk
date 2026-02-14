@@ -127,6 +127,7 @@ function App({ options }: AppProps) {
   const [showEditMessages, setShowEditMessages] = useState(false);
   const [showTalks, setShowTalks] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
+  const [settingsFromTalks, setSettingsFromTalks] = useState(false);
   const [sessionName, setSessionName] = useState('Session 1');
   const [activeTalkId, setActiveTalkId] = useState<string | null>(null);
   const activeTalkIdRef = useRef<string | null>(null);
@@ -511,8 +512,7 @@ function App({ options }: AppProps) {
     // Also update current model so next new talk uses it immediately
     setCurrentModel(modelId);
     chatServiceRef.current?.setModel(modelId);
-    const sysMsg = createMessage('system', `Default model set to ${getModelAlias(modelId)}. New talks will use this model.`);
-    chat.setMessages(prev => [...prev, sysMsg]);
+    setError(`Default model set to ${getModelAlias(modelId)}`);
   }, []);
 
   // Build picker model list
@@ -2114,6 +2114,7 @@ function App({ options }: AppProps) {
 
     // ^S Settings
     if (input === 's' && key.ctrl) {
+      setSettingsFromTalks(false);
       setShowSettings(true);
       cleanInputChar(setInputText, 's');
       return;
@@ -2242,7 +2243,7 @@ function App({ options }: AppProps) {
             onNewChat={() => { setShowEditMessages(false); handleNewChat(); }}
             onToggleTts={() => { voice.handleTtsToggle?.(); }}
             onOpenTalks={() => { setShowEditMessages(false); setShowTalks(true); }}
-            onOpenSettings={() => { setShowEditMessages(false); setShowSettings(true); }}
+            onOpenSettings={() => { setShowEditMessages(false); setSettingsFromTalks(false); setShowSettings(true); }}
             onExit={() => { voiceServiceRef.current?.cleanup(); exit(); }}
             setError={setError}
           />
@@ -2258,7 +2259,7 @@ function App({ options }: AppProps) {
             onSelectTalk={handleSelectTalk}
             onNewChat={() => { setShowTalks(false); handleNewChat(); }}
             onToggleTts={() => { voice.handleTtsToggle?.(); }}
-            onOpenSettings={() => { setShowTalks(false); setShowSettings(true); }}
+            onOpenSettings={() => { setShowTalks(false); setSettingsFromTalks(true); setShowSettings(true); }}
             onOpenModelPicker={() => { setModelPickerMode('default'); setShowModelPicker(true); }}
             exportDir={savedConfig.exportDir}
             onNewTerminal={() => { spawnNewTerminalWindow(options); }}
@@ -2271,10 +2272,11 @@ function App({ options }: AppProps) {
       ) : showSettings ? (
         <Box flexGrow={1} paddingX={1}>
           <SettingsPicker
-            onClose={() => setShowSettings(false)}
+            onClose={() => { setShowSettings(false); if (settingsFromTalks) { setSettingsFromTalks(false); setShowTalks(true); } }}
+            hideTalkConfig={settingsFromTalks}
             onNewChat={() => { setShowSettings(false); handleNewChat(); }}
             onToggleTts={() => { voice.handleTtsToggle?.(); }}
-            onOpenTalks={() => { setShowSettings(false); setShowTalks(true); }}
+            onOpenTalks={() => { setShowSettings(false); setSettingsFromTalks(false); setShowTalks(true); }}
             onExit={() => { voiceServiceRef.current?.cleanup(); realtimeVoiceServiceRef.current?.cleanup(); exit(); }}
             setError={setError}
             voiceCaps={{
