@@ -1368,25 +1368,38 @@ function App({ options }: AppProps) {
     message: string,
     agent: TalkAgent,
     allAgents: TalkAgent[],
+    retryAttempt = 0,
   ): Promise<string> => {
     const roleTemplate = ROLE_BY_ID[agent.role];
     if (!roleTemplate) return '';
 
+    // Guard against talk switches — compare the gateway talk ID we were
+    // started with against the currently active one. If the user navigated
+    // away, skip all UI mutations to prevent cross-talk contamination.
+    const isStillOnSameTalk = () => gatewayTalkIdRef.current === gwTalkId;
+
+    if (!isStillOnSameTalk()) return '';
+
     setStreamingAgentName(agent.name);
     const indicatorMsg = createMessage('system', `${agent.name} is responding...`);
-    chat.setMessages(prev => [...prev, indicatorMsg]);
+    if (retryAttempt === 0) {
+      chat.setMessages(prev => [...prev, indicatorMsg]);
+    }
 
     try {
       let fullContent = '';
+      const isRecovery = retryAttempt > 0;
       const stream = chatServiceRef.current!.streamAgentMessage(
         gwTalkId,
         message,
         { name: agent.name, model: agent.model, role: agent.role },
         allAgents.map(a => ({ name: a.name, role: a.role, model: a.model })),
         AGENT_PREAMBLE + roleTemplate.instructions,
+        isRecovery,
       );
 
       for await (const chunk of stream) {
+        if (!isStillOnSameTalk()) return fullContent; // user navigated away
         if (chunk.type === 'content') {
           fullContent += chunk.text;
         } else if (chunk.type === 'tool_start') {
@@ -1400,6 +1413,8 @@ function App({ options }: AppProps) {
         }
       }
 
+      if (!isStillOnSameTalk()) return fullContent;
+
       if (fullContent.trim()) {
         const model = chatServiceRef.current!.lastResponseModel ?? agent.model;
         const assistantMsg = createMessage('assistant', fullContent, model, agent.name, agent.role);
@@ -1412,6 +1427,48 @@ function App({ options }: AppProps) {
       }
       return fullContent;
     } catch (err) {
+      if (!isStillOnSameTalk()) return '';
+
+      // --- Retry on transient errors (max 1 retry) ---
+      const { isTransientError, GatewayStreamError } = await import('../services/chat.js');
+      if (retryAttempt === 0 && isTransientError(err)) {
+        const partialContent = err instanceof GatewayStreamError ? err.partialContent : '';
+
+        if (!isStillOnSameTalk()) return '';
+
+        // Update indicator to show retry
+        const retryIndicator = createMessage('system', `${agent.name}: retrying...`);
+        chat.setMessages(prev => {
+          const filtered = prev.filter(m => m.id !== indicatorMsg.id);
+          return [...filtered, retryIndicator];
+        });
+
+        // Build recovery message — the gateway has conversation history,
+        // so the LLM has full context of what was said before.
+        const recoveryMsg = partialContent
+          ? 'Your previous response was interrupted. Continue from where you left off.'
+          : message;
+
+        const retryContent = await streamAgentResponse(gwTalkId, recoveryMsg, agent, allAgents, 1);
+
+        if (!isStillOnSameTalk()) return partialContent + retryContent;
+
+        // Remove retry indicator
+        chat.setMessages(prev => prev.filter(m => m.id !== retryIndicator.id));
+
+        // Combine partial + retry content
+        const combined = (partialContent + retryContent).trim();
+        if (combined) {
+          const model = chatServiceRef.current!.lastResponseModel ?? agent.model;
+          const assistantMsg = createMessage('assistant', combined, model, agent.name, agent.role);
+          chat.setMessages(prev => {
+            const filtered = prev.filter(m => m.id !== indicatorMsg.id);
+            return [...filtered, assistantMsg];
+          });
+        }
+        return partialContent + retryContent;
+      }
+
       const rawMessage = err instanceof Error ? err.message : 'Unknown error';
       // Map low-level errors to user-friendly messages
       let errorMessage = rawMessage;
@@ -1463,6 +1520,8 @@ function App({ options }: AppProps) {
       return;
     }
 
+    const isStillOnSameTalk = () => gatewayTalkIdRef.current === gwTalkId;
+
     // Add user message
     const userMsg = createMessage('user', text);
     chat.setMessages(prev => [...prev, userMsg]);
@@ -1473,23 +1532,29 @@ function App({ options }: AppProps) {
     const allResponses: string[] = [];
 
     for (const agent of targetAgents) {
+      if (!isStillOnSameTalk()) break; // user navigated away
       const content = await streamAgentResponse(gwTalkId, text, agent, allAgents);
       respondedAgents.add(agent.name);
       if (content.trim()) allResponses.push(content);
     }
+
+    if (!isStillOnSameTalk()) return;
 
     // Follow-up round: if any response mentions agents that haven't responded,
     // give them a chance to reply (capped at 1 extra round to prevent loops)
     const combinedResponses = allResponses.join('\n');
     const followUpAgents = findMentionedAgents(combinedResponses, respondedAgents, allAgents);
     for (const agent of followUpAgents) {
+      if (!isStillOnSameTalk()) break;
       const respondedNames = [...respondedAgents].join(', ');
       const followUpMsg = `[${respondedNames} mentioned you in their response above. Please respond to their questions or comments directed at you.]`;
       await streamAgentResponse(gwTalkId, followUpMsg, agent, allAgents);
       respondedAgents.add(agent.name);
     }
 
-    setStreamingAgentName(undefined);
+    if (isStillOnSameTalk()) {
+      setStreamingAgentName(undefined);
+    }
   }, [activeTalkId, streamAgentResponse, findMentionedAgents]);
 
   // --- Agent command handlers ---

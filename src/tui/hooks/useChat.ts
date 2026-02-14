@@ -96,8 +96,8 @@ export function useChat(
       ? `<file name="${documentContent.filename}">\n${documentContent.text}\n</file>\n\n${trimmed}`
       : trimmed;
 
+    let fullContent = '';
     try {
-      let fullContent = '';
       const imageParam = attachment ? { base64: attachment.base64, mimeType: attachment.mimeType } : undefined;
 
       if (gwTalkId) {
@@ -216,6 +216,64 @@ export function useChat(
         setStreamingContent('');
       }
     } catch (err) {
+      // --- Retry on transient errors for gateway Talk mode (max 1 retry) ---
+      const { isTransientError, GatewayStreamError } = await import('../../services/chat.js');
+      if (gwTalkId && isTransientError(err)) {
+        const partialContent = err instanceof GatewayStreamError ? err.partialContent : fullContent;
+
+        if (isStillOnSameTalk()) {
+          setStreamingContent(partialContent + '\n\n[retrying...]');
+        }
+
+        try {
+          let retryContent = '';
+          const recoveryMsg = partialContent
+            ? 'Your previous response was interrupted. Continue from where you left off.'
+            : llmText;
+
+          const retryStream = chatService.streamTalkMessage(gwTalkId, recoveryMsg, undefined, undefined, true);
+          for await (const chunk of retryStream) {
+            if (chunk.type === 'content') {
+              retryContent += chunk.text;
+              if (isStillOnSameTalk()) {
+                setStreamingContent(partialContent + retryContent);
+              }
+            }
+          }
+
+          // Merge partial + retry as a single response
+          fullContent = partialContent + retryContent;
+
+          if (fullContent.trim() && isStillOnSameTalk()) {
+            const model = chatService.lastResponseModel ?? currentModelRef.current;
+            const primary = primaryAgentRef.current;
+            const assistantMsg = createMessage(
+              'assistant', fullContent, model,
+              primary?.name, primary?.role,
+            );
+            setMessages(prev => [...prev, assistantMsg]);
+            speakResponseRef.current?.(fullContent);
+          }
+
+          // Accumulate session cost
+          const usage = chatService.lastResponseUsage;
+          if (usage) {
+            const pricing = pricingRef.current;
+            const cost =
+              (usage.promptTokens * pricing.inputPer1M / 1_000_000) +
+              (usage.completionTokens * pricing.outputPer1M / 1_000_000);
+            setSessionCost(prev => prev + cost);
+          }
+
+          if (isStillOnSameTalk()) {
+            setStreamingContent('');
+          }
+          return; // Recovery succeeded — skip the error handling below
+        } catch {
+          // Retry also failed — fall through to normal error handling
+        }
+      }
+
       const rawMessage = err instanceof Error ? err.message : 'Unknown error';
 
       // Map low-level errors to user-friendly messages

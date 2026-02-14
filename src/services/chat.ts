@@ -142,6 +142,52 @@ function fixFetchConnector(): void {
 // Fix fetch connector at module load time
 fixFetchConnector();
 
+// ---------------------------------------------------------------------------
+// Error classification
+// ---------------------------------------------------------------------------
+
+const TRANSIENT_CODES = new Set([429, 500, 502, 503, 529]);
+
+/**
+ * Error thrown when the gateway sends an `event: error` SSE event.
+ * Carries the error message, transient flag, and any partial content
+ * accumulated before the error occurred.
+ */
+export class GatewayStreamError extends Error {
+  transient: boolean;
+  partialContent: string;
+
+  constructor(message: string, transient: boolean, partialContent: string) {
+    super(message);
+    this.name = 'GatewayStreamError';
+    this.transient = transient;
+    this.partialContent = partialContent;
+  }
+}
+
+/**
+ * Classify an error as transient (worth retrying) or permanent.
+ */
+export function isTransientError(err: unknown): boolean {
+  if (err instanceof GatewayStreamError) return err.transient;
+
+  if (err instanceof Error) {
+    const msg = err.message.toLowerCase();
+    if (/abort|cancel/i.test(err.name)) return true;
+    if (/econnreset|econnrefused|etimedout|epipe|socket hang up|fetch failed/i.test(msg)) return true;
+    // Check for HTTP status codes in error messages
+    const statusMatch = msg.match(/\((\d{3})\)/);
+    if (statusMatch) {
+      const code = parseInt(statusMatch[1], 10);
+      if (TRANSIENT_CODES.has(code)) return true;
+    }
+    // Generic transient patterns
+    if (/\bterminated\b|aborted|abort/i.test(msg)) return true;
+    if (/timeout/i.test(msg)) return true;
+  }
+  return false;
+}
+
 function parseModelError(status: number, body: string, model: string): string {
   if (status === 401) return 'Authentication failed. Check your API key or gateway token.';
   if (status === 403) return 'Access denied. Account may lack permission.';
@@ -540,6 +586,7 @@ export class ChatService implements IChatService {
     userMessage: string,
     model?: string,
     image?: { base64: string; mimeType: string },
+    recovery?: boolean,
   ): AsyncGenerator<StreamChunk, void, unknown> {
     // Use activity-based timeout: resets on each chunk, with a hard max.
     // This keeps the connection alive during multi-iteration tool loops
@@ -553,6 +600,7 @@ export class ChatService implements IChatService {
         message: userMessage,
         model: model ?? this.config.model,
         ...(image && { imageBase64: image.base64, imageMimeType: image.mimeType }),
+        ...(recovery && { recovery: true }),
       }),
       signal: abort.signal,
     });
@@ -569,6 +617,7 @@ export class ChatService implements IChatService {
     const decoder = new TextDecoder();
     let buffer = '';
     let pendingEvent: string | null = null;
+    let accumulatedContent = '';
     this.lastResponseModel = undefined;
     this.lastResponseUsage = undefined;
 
@@ -587,10 +636,10 @@ export class ChatService implements IChatService {
       buffer = lines.pop() ?? '';
 
       for (const line of lines) {
-        // Track event type for tool_start / tool_end
+        // Track event type for tool_start / tool_end / error
         if (line.startsWith('event: ')) {
           const eventType = line.slice(7).trim();
-          if (eventType === 'tool_start' || eventType === 'tool_end') {
+          if (eventType === 'tool_start' || eventType === 'tool_end' || eventType === 'error') {
             pendingEvent = eventType;
           } else {
             pendingEvent = null; // Skip other custom events (meta, etc.)
@@ -601,6 +650,23 @@ export class ChatService implements IChatService {
         if (line.startsWith('data: ')) {
           const data = line.slice(6);
           if (data === '[DONE]') return;
+
+          // Handle error events from the gateway
+          if (pendingEvent === 'error') {
+            try {
+              const parsed = JSON.parse(data);
+              throw new GatewayStreamError(
+                parsed.message ?? 'Unknown gateway error',
+                parsed.transient ?? false,
+                accumulatedContent,
+              );
+            } catch (e) {
+              if (e instanceof GatewayStreamError) throw e;
+              // Parse error — ignore
+            }
+            pendingEvent = null;
+            continue;
+          }
 
           // Handle tool events
           if (pendingEvent === 'tool_start') {
@@ -648,7 +714,10 @@ export class ChatService implements IChatService {
               };
             }
             const content = parsed.choices?.[0]?.delta?.content;
-            if (content) yield { type: 'content', text: stripAnsi(content) };
+            if (content) {
+              accumulatedContent += content;
+              yield { type: 'content', text: stripAnsi(content) };
+            }
           } catch (err) {
             console.debug('SSE parse error (expected for partial chunks):', err);
           }
@@ -671,6 +740,7 @@ export class ChatService implements IChatService {
     agent: { name: string; model: string; role: string },
     allAgents: { name: string; role: string; model: string }[],
     roleInstructions: string,
+    recovery?: boolean,
   ): AsyncGenerator<StreamChunk, void, unknown> {
     const abort = createActivityAbort(STREAM_INACTIVITY_MS, STREAM_MAX_MS);
 
@@ -684,6 +754,7 @@ export class ChatService implements IChatService {
         agentRole: agent.role,
         agentRoleInstructions: roleInstructions,
         otherAgents: allAgents.filter(a => a.name !== agent.name),
+        ...(recovery && { recovery: true }),
       }),
       signal: abort.signal,
     });
@@ -700,6 +771,7 @@ export class ChatService implements IChatService {
     const decoder = new TextDecoder();
     let buffer = '';
     let pendingEvent: string | null = null;
+    let accumulatedContent = '';
     this.lastResponseModel = undefined;
     this.lastResponseUsage = undefined;
 
@@ -718,10 +790,10 @@ export class ChatService implements IChatService {
       buffer = lines.pop() ?? '';
 
       for (const line of lines) {
-        // Track event type for tool_start / tool_end
+        // Track event type for tool_start / tool_end / error
         if (line.startsWith('event: ')) {
           const eventType = line.slice(7).trim();
-          if (eventType === 'tool_start' || eventType === 'tool_end') {
+          if (eventType === 'tool_start' || eventType === 'tool_end' || eventType === 'error') {
             pendingEvent = eventType;
           } else {
             pendingEvent = null;
@@ -732,6 +804,23 @@ export class ChatService implements IChatService {
         if (line.startsWith('data: ')) {
           const data = line.slice(6);
           if (data === '[DONE]') return;
+
+          // Handle error events from the gateway
+          if (pendingEvent === 'error') {
+            try {
+              const parsed = JSON.parse(data);
+              throw new GatewayStreamError(
+                parsed.message ?? 'Unknown gateway error',
+                parsed.transient ?? false,
+                accumulatedContent,
+              );
+            } catch (e) {
+              if (e instanceof GatewayStreamError) throw e;
+              // Parse error — ignore
+            }
+            pendingEvent = null;
+            continue;
+          }
 
           // Handle tool events
           if (pendingEvent === 'tool_start') {
@@ -779,7 +868,10 @@ export class ChatService implements IChatService {
               };
             }
             const content = parsed.choices?.[0]?.delta?.content;
-            if (content) yield { type: 'content', text: stripAnsi(content) };
+            if (content) {
+              accumulatedContent += content;
+              yield { type: 'content', text: stripAnsi(content) };
+            }
           } catch (err) {
             console.debug('SSE parse error (expected for partial chunks):', err);
           }
