@@ -206,6 +206,23 @@ export interface ContentChunk {
 
 export type StreamChunk = ContentChunk | ToolStartEvent | ToolEndEvent;
 
+export interface Directive {
+  id: string;
+  text: string;
+  active: boolean;
+  createdAt: number;
+}
+
+export type PlatformPermission = 'read' | 'write' | 'read+write';
+
+export interface PlatformBinding {
+  id: string;
+  platform: string;
+  scope: string;
+  permission: PlatformPermission;
+  createdAt: number;
+}
+
 export interface Talk {
   id: string;              // Same as session ID
   sessionId: string;       // Reference to underlying session
@@ -216,6 +233,8 @@ export interface Talk {
   pinnedMessageIds?: string[];  // Pinned message IDs for stable context
   jobs?: Job[];            // Background jobs for this talk
   agents?: TalkAgent[];    // Multi-agent configuration
+  directives?: Directive[];
+  platformBindings?: PlatformBinding[];
   gatewayTalkId?: string;  // Corresponding gateway-side talk ID
   createdAt: number;
   updatedAt: number;

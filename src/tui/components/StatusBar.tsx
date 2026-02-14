@@ -44,9 +44,11 @@ interface StatusBarProps {
   voiceReadiness?: VoiceReadiness;
   ttsEnabled?: boolean;
   agents?: TalkAgent[];
+  directiveCount?: number;
+  platformBindingCount?: number;
 }
 
-export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleStatus, billing, sessionName, terminalWidth = 80, voiceMode, voiceReadiness, ttsEnabled = true, agents }: StatusBarProps) {
+export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleStatus, billing, sessionName, terminalWidth = 80, voiceMode, voiceReadiness, ttsEnabled = true, agents, directiveCount = 0, platformBindingCount = 0 }: StatusBarProps) {
   const modelName = getModelAlias(model);
   const modelIndicator = modelStatus === 'checking' ? ' ◐' : '';
 
@@ -122,6 +124,8 @@ export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleS
         <Text> </Text>
         <Text dimColor>M:</Text>
         <Text color={modelColor} bold>{modelDisplay}</Text>
+        {directiveCount > 0 && <Text dimColor> D:{directiveCount}</Text>}
+        {platformBindingCount > 0 && <Text dimColor> P:{platformBindingCount}</Text>}
         <Text>  </Text>
         <Text dimColor>{billingText}</Text>
         <Text>{' '.repeat(padding)}</Text>

@@ -5,7 +5,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import type { Message, RateLimitInfo, Job, JobReport, TalkAgent, StreamChunk } from '../types.js';
+import type { Message, RateLimitInfo, Job, JobReport, TalkAgent, StreamChunk, Directive, PlatformBinding } from '../types.js';
 import type { IChatService } from './interfaces.js';
 
 import {
@@ -331,7 +331,7 @@ export class ChatService implements IChatService {
   }
 
   /** Update Talk metadata on the gateway (objective, topicTitle, model). */
-  async updateGatewayTalk(talkId: string, updates: { objective?: string; topicTitle?: string; model?: string; agents?: TalkAgent[] }): Promise<GatewayResult> {
+  async updateGatewayTalk(talkId: string, updates: { objective?: string; topicTitle?: string; model?: string; agents?: TalkAgent[]; directives?: Directive[]; platformBindings?: PlatformBinding[] }): Promise<GatewayResult> {
     try {
       const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}`, {
         method: 'PATCH',

@@ -10,7 +10,7 @@ import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
-import type { Talk, Job, TalkAgent, AgentRole } from '../types';
+import type { Talk, Job, TalkAgent, AgentRole, Directive, PlatformBinding, PlatformPermission } from '../types';
 
 /** Validate that a talk ID is safe for use as a directory name. */
 function isValidTalkId(id: string): boolean {
@@ -430,6 +430,101 @@ export class TalkManager {
     return undefined;
   }
 
+  // --- Directive methods (1-based indexes for user-facing) ---
+
+  /** Add a directive to a talk. */
+  addDirective(talkId: string, text: string): Directive | null {
+    const talk = this.talks.get(talkId);
+    if (!talk) return null;
+
+    if (!talk.directives) talk.directives = [];
+
+    const directive: Directive = {
+      id: randomUUID(),
+      text,
+      active: true,
+      createdAt: Date.now(),
+    };
+
+    talk.directives.push(directive);
+    talk.updatedAt = Date.now();
+    if (talk.isSaved) this.persistTalk(talk);
+    return directive;
+  }
+
+  /** Remove a directive by 1-based index. */
+  removeDirective(talkId: string, index: number): boolean {
+    const talk = this.talks.get(talkId);
+    if (!talk?.directives) return false;
+    if (index < 1 || index > talk.directives.length) return false;
+
+    talk.directives.splice(index - 1, 1);
+    talk.updatedAt = Date.now();
+    if (talk.isSaved) this.persistTalk(talk);
+    return true;
+  }
+
+  /** Toggle a directive active/inactive by 1-based index. */
+  toggleDirective(talkId: string, index: number): boolean {
+    const talk = this.talks.get(talkId);
+    if (!talk?.directives) return false;
+
+    const directive = talk.directives[index - 1];
+    if (!directive) return false;
+
+    directive.active = !directive.active;
+    talk.updatedAt = Date.now();
+    if (talk.isSaved) this.persistTalk(talk);
+    return true;
+  }
+
+  /** Get all directives for a talk. */
+  getDirectives(talkId: string): Directive[] {
+    const talk = this.talks.get(talkId);
+    return talk?.directives ?? [];
+  }
+
+  // --- Platform binding methods (1-based indexes for user-facing) ---
+
+  /** Add a platform binding to a talk. */
+  addPlatformBinding(talkId: string, platform: string, scope: string, permission: PlatformPermission): PlatformBinding | null {
+    const talk = this.talks.get(talkId);
+    if (!talk) return null;
+
+    if (!talk.platformBindings) talk.platformBindings = [];
+
+    const binding: PlatformBinding = {
+      id: randomUUID(),
+      platform,
+      scope,
+      permission,
+      createdAt: Date.now(),
+    };
+
+    talk.platformBindings.push(binding);
+    talk.updatedAt = Date.now();
+    if (talk.isSaved) this.persistTalk(talk);
+    return binding;
+  }
+
+  /** Remove a platform binding by 1-based index. */
+  removePlatformBinding(talkId: string, index: number): boolean {
+    const talk = this.talks.get(talkId);
+    if (!talk?.platformBindings) return false;
+    if (index < 1 || index > talk.platformBindings.length) return false;
+
+    talk.platformBindings.splice(index - 1, 1);
+    talk.updatedAt = Date.now();
+    if (talk.isSaved) this.persistTalk(talk);
+    return true;
+  }
+
+  /** Get all platform bindings for a talk. */
+  getPlatformBindings(talkId: string): PlatformBinding[] {
+    const talk = this.talks.get(talkId);
+    return talk?.platformBindings ?? [];
+  }
+
   /** Import a talk from gateway data (creates local entry if not present). */
   importGatewayTalk(gwTalk: {
     id: string;
@@ -439,6 +534,8 @@ export class TalkManager {
     pinnedMessageIds?: string[];
     jobs?: Job[];
     agents?: TalkAgent[];
+    directives?: Directive[];
+    platformBindings?: PlatformBinding[];
     createdAt: number;
     updatedAt: number;
   }): Talk {
@@ -467,6 +564,8 @@ export class TalkManager {
       if (gwAgents && gwAgents.length > 0) {
         existing.agents = gwAgents;
       }
+      existing.directives = gwTalk.directives ?? existing.directives;
+      existing.platformBindings = gwTalk.platformBindings ?? existing.platformBindings;
       existing.updatedAt = gwTalk.updatedAt;
       existing.gatewayTalkId = gwTalk.id;
       return existing;
@@ -483,6 +582,8 @@ export class TalkManager {
       pinnedMessageIds: gwTalk.pinnedMessageIds,
       jobs: gwTalk.jobs,
       agents: gwTalk.agents,
+      directives: gwTalk.directives,
+      platformBindings: gwTalk.platformBindings,
       gatewayTalkId: gwTalk.id,
       isSaved: true,
       createdAt: gwTalk.createdAt,

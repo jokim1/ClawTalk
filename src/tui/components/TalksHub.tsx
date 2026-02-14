@@ -516,13 +516,15 @@ export function TalksHub({
         // Normal display: Topic Title OR (date/time + first line preview)
         const updatedTime = formatUpdatedTime(talk.updatedAt);
         const hasJobs = (talk.jobs ?? []).some(j => j.active);
+        const hasConfig = (talk.directives ?? []).length > 0 || (talk.platformBindings ?? []).length > 0;
         const jobIndicator = hasJobs ? '\u23F0 ' : '';
+        const configIndicator = hasConfig ? '\u2699 ' : '';
         if (talk.topicTitle) {
           return (
             <Box key={talk.id}>
               <Text color={isSelected ? 'cyan' : undefined}>
                 {isSelected ? '> ' : '  '}
-                {jobIndicator}<Text bold={isSelected}>{talk.topicTitle}</Text>
+                {configIndicator}{jobIndicator}<Text bold={isSelected}>{talk.topicTitle}</Text>
                 <Text dimColor> ({msgCount} msg{msgCount !== 1 ? 's' : ''}) | {updatedTime}</Text>
               </Text>
             </Box>
@@ -535,7 +537,7 @@ export function TalksHub({
           <Box key={talk.id}>
             <Text color={isSelected ? 'cyan' : undefined}>
               {isSelected ? '> ' : '  '}
-              {jobIndicator}<Text dimColor>{sessionTime}</Text>
+              {configIndicator}{jobIndicator}<Text dimColor>{sessionTime}</Text>
               <Text> </Text>
               <Text>{preview}</Text>
               <Text dimColor> ({msgCount} msg{msgCount !== 1 ? 's' : ''}) | {updatedTime}</Text>

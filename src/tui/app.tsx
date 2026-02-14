@@ -8,7 +8,7 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { render, Box, Text, useInput, useApp, useStdout } from 'ink';
-import type { ClawTalkOptions, ModelStatus, Message, TalkAgent, AgentRole, PendingAttachment } from '../types.js';
+import type { ClawTalkOptions, ModelStatus, Message, TalkAgent, AgentRole, PendingAttachment, Directive, PlatformBinding, PlatformPermission } from '../types.js';
 import type { Talk } from '../types.js';
 import { AGENT_ROLES, ROLE_BY_ID, AGENT_PREAMBLE, generateAgentName } from '../agent-roles.js';
 import type { RoleTemplate } from '../agent-roles.js';
@@ -1033,6 +1033,188 @@ function App({ options }: AppProps) {
     setShowEditMessages(true);
   }, [chat.messages]);
 
+  // --- Directive handlers ---
+
+  const handleAddDirective = useCallback((text: string) => {
+    if (!activeTalkId || !talkManagerRef.current) return;
+    talkManagerRef.current.saveTalk(activeTalkId);
+
+    const directive = talkManagerRef.current.addDirective(activeTalkId, text);
+    if (!directive) { setError('Failed to add directive'); return; }
+
+    const sysMsg = createMessage('system', `Directive added: ${text}`);
+    chat.setMessages(prev => [...prev, sysMsg]);
+
+    // Sync to gateway
+    if (gatewayTalkIdRef.current && chatServiceRef.current) {
+      const directives = talkManagerRef.current.getDirectives(activeTalkId);
+      chatServiceRef.current.updateGatewayTalk(gatewayTalkIdRef.current, { directives });
+    }
+  }, [activeTalkId]);
+
+  const handleRemoveDirective = useCallback((index: number) => {
+    if (!activeTalkId || !talkManagerRef.current) return;
+
+    const success = talkManagerRef.current.removeDirective(activeTalkId, index);
+    if (!success) { setError(`No directive at position ${index}`); return; }
+
+    const sysMsg = createMessage('system', `Directive #${index} deleted.`);
+    chat.setMessages(prev => [...prev, sysMsg]);
+
+    if (gatewayTalkIdRef.current && chatServiceRef.current) {
+      const directives = talkManagerRef.current.getDirectives(activeTalkId);
+      chatServiceRef.current.updateGatewayTalk(gatewayTalkIdRef.current, { directives });
+    }
+  }, [activeTalkId]);
+
+  const handleToggleDirective = useCallback((index: number) => {
+    if (!activeTalkId || !talkManagerRef.current) return;
+
+    const success = talkManagerRef.current.toggleDirective(activeTalkId, index);
+    if (!success) { setError(`No directive at position ${index}`); return; }
+
+    const directives = talkManagerRef.current.getDirectives(activeTalkId);
+    const d = directives[index - 1];
+    const status = d?.active ? 'active' : 'paused';
+    const sysMsg = createMessage('system', `Directive #${index} ${status}.`);
+    chat.setMessages(prev => [...prev, sysMsg]);
+
+    if (gatewayTalkIdRef.current && chatServiceRef.current) {
+      chatServiceRef.current.updateGatewayTalk(gatewayTalkIdRef.current, { directives });
+    }
+  }, [activeTalkId]);
+
+  const handleListDirectives = useCallback(() => {
+    if (!activeTalkId || !talkManagerRef.current) return;
+    const directives = talkManagerRef.current.getDirectives(activeTalkId);
+    if (directives.length === 0) {
+      const sysMsg = createMessage('system', 'No directives for this talk. Use /directive <text> to add one.');
+      chat.setMessages(prev => [...prev, sysMsg]);
+      return;
+    }
+    const lines = directives.map((d, i) => {
+      const status = d.active ? 'active' : 'paused';
+      return `  ${i + 1}. [${status}] ${d.text}`;
+    });
+    const sysMsg = createMessage('system', `Directives:\n${lines.join('\n')}`);
+    chat.setMessages(prev => [...prev, sysMsg]);
+  }, [activeTalkId]);
+
+  // --- Platform binding handlers ---
+
+  const handleAddPlatformBinding = useCallback((platform: string, scope: string, permission: string) => {
+    if (!activeTalkId || !talkManagerRef.current) return;
+    talkManagerRef.current.saveTalk(activeTalkId);
+
+    const binding = talkManagerRef.current.addPlatformBinding(activeTalkId, platform, scope, permission as PlatformPermission);
+    if (!binding) { setError('Failed to add platform binding'); return; }
+
+    const sysMsg = createMessage('system', `Platform binding added: ${platform} ${scope} (${permission})`);
+    chat.setMessages(prev => [...prev, sysMsg]);
+
+    if (gatewayTalkIdRef.current && chatServiceRef.current) {
+      const bindings = talkManagerRef.current.getPlatformBindings(activeTalkId);
+      chatServiceRef.current.updateGatewayTalk(gatewayTalkIdRef.current, { platformBindings: bindings });
+    }
+  }, [activeTalkId]);
+
+  const handleRemovePlatformBinding = useCallback((index: number) => {
+    if (!activeTalkId || !talkManagerRef.current) return;
+
+    const success = talkManagerRef.current.removePlatformBinding(activeTalkId, index);
+    if (!success) { setError(`No platform binding at position ${index}`); return; }
+
+    const sysMsg = createMessage('system', `Platform binding #${index} removed.`);
+    chat.setMessages(prev => [...prev, sysMsg]);
+
+    if (gatewayTalkIdRef.current && chatServiceRef.current) {
+      const bindings = talkManagerRef.current.getPlatformBindings(activeTalkId);
+      chatServiceRef.current.updateGatewayTalk(gatewayTalkIdRef.current, { platformBindings: bindings });
+    }
+  }, [activeTalkId]);
+
+  const handleListPlatformBindings = useCallback(() => {
+    if (!activeTalkId || !talkManagerRef.current) return;
+    const bindings = talkManagerRef.current.getPlatformBindings(activeTalkId);
+    if (bindings.length === 0) {
+      const sysMsg = createMessage('system', 'No platform bindings for this talk. Use /platform <name> <scope> <permission> to add one.');
+      chat.setMessages(prev => [...prev, sysMsg]);
+      return;
+    }
+    const lines = bindings.map((b, i) =>
+      `  ${i + 1}. ${b.platform} ${b.scope} (${b.permission})`
+    );
+    const sysMsg = createMessage('system', `Platform bindings:\n${lines.join('\n')}`);
+    chat.setMessages(prev => [...prev, sysMsg]);
+  }, [activeTalkId]);
+
+  // --- Playbook handler ---
+
+  const handleShowPlaybook = useCallback(() => {
+    if (!activeTalkId || !talkManagerRef.current) return;
+    const talk = talkManagerRef.current.getTalk(activeTalkId);
+    if (!talk) return;
+
+    const sections: string[] = ['=== Playbook ==='];
+
+    // Objective
+    if (talk.objective) {
+      sections.push(`\nObjective:\n  ${talk.objective}`);
+    } else {
+      sections.push('\nObjective: (none)');
+    }
+
+    // Directives
+    const directives = talk.directives ?? [];
+    if (directives.length > 0) {
+      const lines = directives.map((d, i) => {
+        const status = d.active ? 'active' : 'paused';
+        return `  ${i + 1}. [${status}] ${d.text}`;
+      });
+      sections.push(`\nDirectives:\n${lines.join('\n')}`);
+    } else {
+      sections.push('\nDirectives: (none)');
+    }
+
+    // Platform bindings
+    const bindings = talk.platformBindings ?? [];
+    if (bindings.length > 0) {
+      const lines = bindings.map((b, i) =>
+        `  ${i + 1}. ${b.platform} ${b.scope} (${b.permission})`
+      );
+      sections.push(`\nPlatform bindings:\n${lines.join('\n')}`);
+    } else {
+      sections.push('\nPlatform bindings: (none)');
+    }
+
+    // Jobs
+    const jobs = talk.jobs ?? [];
+    if (jobs.length > 0) {
+      const lines = jobs.map((j, i) => {
+        const status = j.active ? 'active' : 'paused';
+        return `  ${i + 1}. [${status}] "${j.schedule}" — ${j.prompt}`;
+      });
+      sections.push(`\nJobs:\n${lines.join('\n')}`);
+    } else {
+      sections.push('\nJobs: (none)');
+    }
+
+    // Agents
+    const agents = talk.agents ?? [];
+    if (agents.length > 0) {
+      const lines = agents.map(a => {
+        const primary = a.isPrimary ? ' (primary)' : '';
+        return `  - ${a.name} [${a.role}] ${a.model}${primary}`;
+      });
+      sections.push(`\nAgents:\n${lines.join('\n')}`);
+    } else {
+      sections.push('\nAgents: (none)');
+    }
+
+    const sysMsg = createMessage('system', sections.join('\n'));
+    chat.setMessages(prev => [...prev, sysMsg]);
+  }, [activeTalkId]);
+
   const handleConfirmDeleteMessages = useCallback((messageIds: string[]) => {
     const sessionId = sessionManagerRef.current?.getActiveSessionId();
     if (!sessionId) return;
@@ -1546,6 +1728,14 @@ function App({ options }: AppProps) {
     attachFile: handleAttachFile,
     exportTalk: handleExportTalk,
     editMessages: handleEditMessages,
+    addDirective: handleAddDirective,
+    removeDirective: handleRemoveDirective,
+    toggleDirective: handleToggleDirective,
+    listDirectives: handleListDirectives,
+    addPlatformBinding: handleAddPlatformBinding,
+    removePlatformBinding: handleRemovePlatformBinding,
+    listPlatformBindings: handleListPlatformBindings,
+    showPlaybook: handleShowPlaybook,
   });
   commandCtx.current = {
     switchModel,
@@ -1576,6 +1766,14 @@ function App({ options }: AppProps) {
     attachFile: handleAttachFile,
     exportTalk: handleExportTalk,
     editMessages: handleEditMessages,
+    addDirective: handleAddDirective,
+    removeDirective: handleRemoveDirective,
+    toggleDirective: handleToggleDirective,
+    listDirectives: handleListDirectives,
+    addPlatformBinding: handleAddPlatformBinding,
+    removePlatformBinding: handleRemovePlatformBinding,
+    listPlatformBindings: handleListPlatformBindings,
+    showPlaybook: handleShowPlaybook,
   };
 
   const handleSubmit = useCallback(async (text: string) => {
@@ -1944,6 +2142,8 @@ function App({ options }: AppProps) {
         voiceReadiness={gateway.voiceCaps.readiness}
         ttsEnabled={voice.ttsEnabled}
         agents={activeTalk?.agents}
+        directiveCount={(activeTalk?.directives ?? []).filter(d => d.active).length}
+        platformBindingCount={(activeTalk?.platformBindings ?? []).length}
       />
 
       {/* Talk title / grab mode indicator (pinned below status bar) */}

@@ -36,6 +36,14 @@ export interface CommandContext {
   attachFile: (filePath: string, message?: string) => void;
   exportTalk: (format?: string, lastN?: number) => void;
   editMessages: () => void;
+  addDirective: (text: string) => void;
+  removeDirective: (index: number) => void;
+  toggleDirective: (index: number) => void;
+  listDirectives: () => void;
+  addPlatformBinding: (platform: string, scope: string, permission: string) => void;
+  removePlatformBinding: (index: number) => void;
+  listPlatformBindings: () => void;
+  showPlaybook: () => void;
 }
 
 export interface CommandResult {
@@ -335,6 +343,89 @@ function handleEditCommand(_args: string, ctx: CommandContext): CommandResult {
   return { handled: true };
 }
 
+/** Handle /directive <subcommand> — manage directives. */
+function handleDirectiveCommand(args: string, ctx: CommandContext): CommandResult {
+  const trimmed = args.trim();
+  if (!trimmed || trimmed === 'list') {
+    ctx.listDirectives();
+    return { handled: true };
+  }
+
+  const deleteMatch = trimmed.match(/^delete\s+(\d+)$/);
+  if (deleteMatch) {
+    ctx.removeDirective(parseInt(deleteMatch[1], 10));
+    return { handled: true };
+  }
+
+  const toggleMatch = trimmed.match(/^toggle\s+(\d+)$/);
+  if (toggleMatch) {
+    ctx.toggleDirective(parseInt(toggleMatch[1], 10));
+    return { handled: true };
+  }
+
+  // Everything else is treated as adding a new directive
+  ctx.addDirective(trimmed);
+  return { handled: true };
+}
+
+/** Handle /directives — list all directives. */
+function handleDirectivesCommand(args: string, ctx: CommandContext): CommandResult {
+  const trimmed = args.trim();
+  if (!trimmed) {
+    ctx.listDirectives();
+    return { handled: true };
+  }
+  // Forward subcommands to /directive handler
+  return handleDirectiveCommand(trimmed, ctx);
+}
+
+/** Handle /platform <subcommand> — manage platform bindings. */
+function handlePlatformCommand(args: string, ctx: CommandContext): CommandResult {
+  const trimmed = args.trim();
+  if (!trimmed || trimmed === 'list') {
+    ctx.listPlatformBindings();
+    return { handled: true };
+  }
+
+  const deleteMatch = trimmed.match(/^delete\s+(\d+)$/);
+  if (deleteMatch) {
+    ctx.removePlatformBinding(parseInt(deleteMatch[1], 10));
+    return { handled: true };
+  }
+
+  // Parse: platform scope permission (e.g. "slack #team-product read+write")
+  const parts = trimmed.split(/\s+/);
+  if (parts.length < 3) {
+    ctx.addSystemMessage('Usage: /platform <name> <scope> <permission>\nPermission: read, write, read+write');
+    return { handled: true };
+  }
+  const permission = parts[parts.length - 1];
+  if (!['read', 'write', 'read+write'].includes(permission)) {
+    ctx.addSystemMessage('Invalid permission. Use: read, write, or read+write');
+    return { handled: true };
+  }
+  const platform = parts[0];
+  const scope = parts.slice(1, -1).join(' ');
+  ctx.addPlatformBinding(platform, scope, permission);
+  return { handled: true };
+}
+
+/** Handle /platforms — list all platform bindings. */
+function handlePlatformsCommand(args: string, ctx: CommandContext): CommandResult {
+  const trimmed = args.trim();
+  if (!trimmed) {
+    ctx.listPlatformBindings();
+    return { handled: true };
+  }
+  return handlePlatformCommand(trimmed, ctx);
+}
+
+/** Handle /playbook — show full talk configuration overview. */
+function handlePlaybookCommand(_args: string, ctx: CommandContext): CommandResult {
+  ctx.showPlaybook();
+  return { handled: true };
+}
+
 /**
  * Registry of slash commands.
  * Add new commands here — they'll be available immediately.
@@ -359,6 +450,11 @@ const COMMANDS: Record<string, { handler: CommandHandler; description: string }>
   file: { handler: handleFileCommand, description: 'Attach a file (image, PDF, text)' },
   export: { handler: handleExportCommand, description: 'Export current talk' },
   edit: { handler: handleEditCommand, description: 'Edit messages (mark and delete)' },
+  directive: { handler: handleDirectiveCommand, description: 'Add or manage a directive' },
+  directives: { handler: handleDirectivesCommand, description: 'List directives for this talk' },
+  platform: { handler: handlePlatformCommand, description: 'Add or manage platform bindings' },
+  platforms: { handler: handlePlatformsCommand, description: 'List platform bindings' },
+  playbook: { handler: handlePlaybookCommand, description: 'Show full talk configuration' },
 };
 
 /**
@@ -425,6 +521,17 @@ export function getCommandCompletions(prefix: string): CommandInfo[] {
           { name: 'agent add <model> <role>', description: 'Add agent with role' },
           { name: 'agent remove <name>', description: 'Remove an agent' },
           { name: 'agent role <name> <role>', description: 'Change role: Analyst, Critic, Strategist, Devil\'s Advocate, Synthesizer, Editor' },
+        );
+      } else if (name === 'directive') {
+        results.push(
+          { name: 'directive <text>', description: 'Add a directive' },
+          { name: 'directive toggle N', description: 'Enable/disable directive #N' },
+          { name: 'directive delete N', description: 'Delete directive #N' },
+        );
+      } else if (name === 'platform') {
+        results.push(
+          { name: 'platform <name> <scope> <perm>', description: 'Add binding (read, write, read+write)' },
+          { name: 'platform delete N', description: 'Remove binding #N' },
         );
       } else {
         results.push({ name, description: entry.description });
