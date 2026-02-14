@@ -529,9 +529,11 @@ export function SettingsPicker({
       )}
 
       {/* Help */}
-      <Box marginTop={1}>
-        <Text dimColor>↑/↓ navigate  Enter/1-9 select  Esc close</Text>
-      </Box>
+      {tab !== 'talk' && (
+        <Box marginTop={1}>
+          <Text dimColor>↑/↓ navigate  Enter/1-9 select  Esc close</Text>
+        </Box>
+      )}
     </Box>
   );
 }
