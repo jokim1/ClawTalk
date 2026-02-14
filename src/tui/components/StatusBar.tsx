@@ -147,20 +147,26 @@ interface ShortcutBarProps {
   terminalWidth?: number;
   ttsEnabled?: boolean;
   grabTextMode?: boolean;
+  inTalks?: boolean;
 }
 
-export function ShortcutBar({ terminalWidth = 80, ttsEnabled = true, grabTextMode = false }: ShortcutBarProps) {
-  const row1 = [
-    { key: '^T', label: 'Talks List' },
+export function ShortcutBar({ terminalWidth = 80, ttsEnabled = true, grabTextMode = false, inTalks = false }: ShortcutBarProps) {
+  const row1 = inTalks ? [
     { key: '^N', label: 'New Talk' },
+    { key: '^K', label: 'AI Model' },
+    { key: '^Y', label: 'New Terminal' },
+  ] : [
+    { key: '^T', label: 'Talks List' },
     { key: '^C', label: 'Live Chat' },
     { key: '^P', label: 'Push2Talk' },
     { key: '^V', label: ttsEnabled ? 'Voice OFF' : 'Voice ON' },
   ];
-  const row2 = [
+  const row2 = inTalks ? [
+    { key: '^S', label: 'Settings' },
+    { key: '^X', label: 'Exit' },
+  ] : [
     { key: '^K', label: 'AI Model' },
     { key: '^E', label: grabTextMode ? 'End Select' : 'Select Text' },
-    { key: '^Y', label: 'New Terminal' },
     { key: '^S', label: 'Settings' },
     { key: '^X', label: 'Exit' },
   ];

@@ -2397,7 +2397,7 @@ function App({ options }: AppProps) {
       )}
 
       {/* Shortcut bar pinned at bottom (2 lines) */}
-      <ShortcutBar terminalWidth={terminalWidth} ttsEnabled={voice.ttsEnabled} grabTextMode={grabTextMode} />
+      <ShortcutBar terminalWidth={terminalWidth} ttsEnabled={voice.ttsEnabled} grabTextMode={grabTextMode} inTalks={showTalks} />
     </Box>
   );
 }
