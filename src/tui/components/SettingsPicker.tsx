@@ -519,7 +519,7 @@ export function SettingsPicker({
                 ) : (
                   <>
                     <Text dimColor>  (none) — /job add "schedule" prompt</Text>
-                    <Text dimColor italic>  e.g. /job add "10am weekdays" Check PostHog analytics focusing on FTUE funnel and report findings in #team-product</Text>
+                    <Text dimColor italic>  e.g. /job add "10am IST weekdays" Check PostHog analytics focusing on FTUE funnel and report findings in #team-product</Text>
                   </>
                 )}
               </Box>
