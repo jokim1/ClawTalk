@@ -32,7 +32,7 @@ import { RealtimeVoiceService } from '../services/realtime-voice.js';
 import { AnthropicRateLimitService } from '../services/anthropic-ratelimit.js';
 import { processImage } from '../services/image.js';
 import { processFile, detectFilePaths, readFileForUpload } from '../services/file.js';
-import { loadConfig, getBillingForProvider } from '../config.js';
+import { loadConfig, saveConfig, getBillingForProvider } from '../config.js';
 import {
   getModelAlias,
   getModelPricing,
@@ -116,6 +116,7 @@ function App({ options }: AppProps) {
 
   const [inputText, setInputText] = useState('');
   const [showModelPicker, setShowModelPicker] = useState(false);
+  const [modelPickerMode, setModelPickerMode] = useState<'switch' | 'default'>('switch');
   const [showRolePicker, setShowRolePicker] = useState(false);
   const [pendingAgentModelId, setPendingAgentModelId] = useState<string | null>(null);
   const [rolePickerPhase, setRolePickerPhase] = useState<'primary' | 'new-agent'>('new-agent');
@@ -498,6 +499,20 @@ function App({ options }: AppProps) {
     setShowModelPicker(false);
     switchModel(modelId);
   }, [switchModel]);
+
+  const selectDefaultModel = useCallback((modelId: string) => {
+    setShowModelPicker(false);
+    // Save to config as the default model for new talks
+    const config = loadConfig();
+    config.defaultModel = modelId;
+    saveConfig(config);
+    setSavedConfig(prev => ({ ...prev, defaultModel: modelId }));
+    // Also update current model so next new talk uses it immediately
+    setCurrentModel(modelId);
+    chatServiceRef.current?.setModel(modelId);
+    const sysMsg = createMessage('system', `Default model set to ${getModelAlias(modelId)}. New talks will use this model.`);
+    chat.setMessages(prev => [...prev, sysMsg]);
+  }, []);
 
   // Build picker model list
   const pickerModels: Model[] = gateway.availableModels.map(m => {
@@ -1701,7 +1716,7 @@ function App({ options }: AppProps) {
 
   const commandCtx = useRef({
     switchModel,
-    openModelPicker: () => setShowModelPicker(true),
+    openModelPicker: () => { setModelPickerMode('switch'); setShowModelPicker(true); },
     clearSession: () => { setPendingClear(true); },
     setError,
     addSystemMessage,
@@ -1739,7 +1754,7 @@ function App({ options }: AppProps) {
   });
   commandCtx.current = {
     switchModel,
-    openModelPicker: () => setShowModelPicker(true),
+    openModelPicker: () => { setModelPickerMode('switch'); setShowModelPicker(true); },
     clearSession: () => { setPendingClear(true); },
     setError,
     addSystemMessage,
@@ -2030,6 +2045,7 @@ function App({ options }: AppProps) {
 
     // ^K AI Model (opens model picker)
     if (input === 'k' && key.ctrl) {
+      setModelPickerMode('switch');
       setShowModelPicker(true);
       cleanInputChar(setInputText, 'k');
       return;
@@ -2195,10 +2211,11 @@ function App({ options }: AppProps) {
           <ModelPicker
             models={pickerModels}
             currentModel={currentModel}
-            onSelect={selectModel}
+            onSelect={modelPickerMode === 'default' ? selectDefaultModel : selectModel}
             onClose={() => setShowModelPicker(false)}
             maxHeight={overlayMaxHeight}
-            onAddAgent={handleAddAgentRequest}
+            onAddAgent={modelPickerMode === 'default' ? undefined : handleAddAgentRequest}
+            title={modelPickerMode === 'default' ? 'Set Default Talks Model' : undefined}
           />
         </Box>
       ) : showRolePicker ? (
@@ -2241,7 +2258,7 @@ function App({ options }: AppProps) {
             onNewChat={() => { setShowTalks(false); handleNewChat(); }}
             onToggleTts={() => { voice.handleTtsToggle?.(); }}
             onOpenSettings={() => { setShowTalks(false); setShowSettings(true); }}
-            onOpenModelPicker={() => { setShowTalks(false); setShowModelPicker(true); }}
+            onOpenModelPicker={() => { setShowTalks(false); setModelPickerMode('default'); setShowModelPicker(true); }}
             exportDir={savedConfig.exportDir}
             onNewTerminal={() => { spawnNewTerminalWindow(options); }}
             onExit={() => { voiceServiceRef.current?.cleanup(); exit(); }}

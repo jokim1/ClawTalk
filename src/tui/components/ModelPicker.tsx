@@ -22,13 +22,14 @@ interface ModelPickerProps {
   onClose: () => void;
   maxHeight?: number;
   onAddAgent?: (modelId: string) => void;
+  title?: string;
 }
 
 type RenderItem =
   | { type: 'header'; provider: string }
   | { type: 'model'; model: Model; flatIndex: number };
 
-export function ModelPicker({ models, currentModel, onSelect, onClose, maxHeight = 20, onAddAgent }: ModelPickerProps) {
+export function ModelPicker({ models, currentModel, onSelect, onClose, maxHeight = 20, onAddAgent, title }: ModelPickerProps) {
   // Two-phase flow: 'model' = selecting model, 'action' = choose switch vs add agent
   const [phase, setPhase] = useState<'model' | 'action'>('model');
   const [pendingModelId, setPendingModelId] = useState<string | null>(null);
@@ -170,7 +171,7 @@ export function ModelPicker({ models, currentModel, onSelect, onClose, maxHeight
 
   return (
     <Box flexDirection="column" paddingX={1}>
-      <Text bold color="cyan">Select Model (↑↓ Enter, 1-9 quick, Esc cancel)</Text>
+      <Text bold color="cyan">{title ?? 'Select Model'} (↑↓ Enter, 1-9 quick, Esc cancel)</Text>
       <Box height={1} />
 
       {hasLess ? (
