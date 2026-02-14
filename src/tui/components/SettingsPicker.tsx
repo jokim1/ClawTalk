@@ -116,7 +116,7 @@ export function SettingsPicker({
   onRealtimeProviderChange,
   talkConfig,
 }: SettingsPickerProps) {
-  const [tab, setTab] = useState<SettingsTab>('mic');
+  const [tab, setTab] = useState<SettingsTab>('talk');
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [message, setMessage] = useState<string | null>(null);
@@ -170,7 +170,7 @@ export function SettingsPicker({
     }
 
     // Tab navigation with left/right
-    const allTabs: SettingsTab[] = ['mic', 'stt', 'tts', 'realtime', 'talk'];
+    const allTabs: SettingsTab[] = ['talk', 'mic', 'stt', 'tts', 'realtime'];
     if (key.leftArrow) {
       setTab(prev => {
         const idx = allTabs.indexOf(prev);
@@ -297,7 +297,7 @@ export function SettingsPicker({
     }
   });
 
-  const tabs: SettingsTab[] = ['mic', 'stt', 'tts', 'realtime', 'talk'];
+  const tabs: SettingsTab[] = ['talk', 'mic', 'stt', 'tts', 'realtime'];
   const tabLabels: Record<SettingsTab, string> = {
     mic: 'Microphone',
     stt: 'Speech-to-Text',
@@ -310,6 +310,7 @@ export function SettingsPicker({
     <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1}>
       <Box justifyContent="center" marginBottom={1}>
         <Text bold color="cyan">Settings</Text>
+        <Text dimColor>  ({'\u2190'}/{'\u2192'} to switch tabs)</Text>
       </Box>
 
       {/* Tab bar */}
@@ -326,7 +327,6 @@ export function SettingsPicker({
             </Text>
           </React.Fragment>
         ))}
-        <Text dimColor>  (←/→ to switch tabs)</Text>
       </Box>
 
       {/* Tab content */}
@@ -451,7 +451,10 @@ export function SettingsPicker({
                 {talkConfig.objective ? (
                   <Text>  {talkConfig.objective}</Text>
                 ) : (
-                  <Text dimColor>  (none) — /objective {'<text>'} to set</Text>
+                  <>
+                    <Text dimColor>  (none) — /objective {'<text>'} to set</Text>
+                    <Text dimColor italic>  e.g. /objective Help me produce 3 high quality blog posts per week in my voice</Text>
+                  </>
                 )}
               </Box>
 
@@ -467,7 +470,11 @@ export function SettingsPicker({
                     </Text>
                   ))
                 ) : (
-                  <Text dimColor>  (none) — /directive {'<text>'} to add</Text>
+                  <>
+                    <Text dimColor>  (none) — /directive {'<text>'} to add</Text>
+                    <Text dimColor italic>  e.g. /directive Be positive and encouraging</Text>
+                    <Text dimColor italic>  e.g. /directive Answer Slack messages in real time</Text>
+                  </>
                 )}
               </Box>
 
@@ -484,7 +491,10 @@ export function SettingsPicker({
                     </Text>
                   ))
                 ) : (
-                  <Text dimColor>  (none) — /platform {'<name> <scope> <perm>'} to add</Text>
+                  <>
+                    <Text dimColor>  (none) — /platform {'<name> <scope> <perm>'} to add</Text>
+                    <Text dimColor italic>  e.g. /platform slack #team-product read+write</Text>
+                  </>
                 )}
               </Box>
 
@@ -500,7 +510,10 @@ export function SettingsPicker({
                     </Text>
                   ))
                 ) : (
-                  <Text dimColor>  (none) — /job add "schedule" prompt</Text>
+                  <>
+                    <Text dimColor>  (none) — /job add "schedule" prompt</Text>
+                    <Text dimColor italic>  e.g. /job add "daily 8am" Check PostHog analytics focusing on FTUE funnel and report findings in #team-product</Text>
+                  </>
                 )}
               </Box>
 
