@@ -91,6 +91,25 @@ export function EditMessages({
       return;
     }
 
+    // Left/right arrow for page up/down
+    if (key.leftArrow) {
+      setSelectedIndex(prev => {
+        const next = Math.max(0, prev - visibleRows);
+        ensureVisible(next);
+        return next;
+      });
+      return;
+    }
+
+    if (key.rightArrow) {
+      setSelectedIndex(prev => {
+        const next = Math.min(editableMessages.length - 1, prev + visibleRows);
+        ensureVisible(next);
+        return next;
+      });
+      return;
+    }
+
     // 'd' toggles mark for deletion
     if (input === 'd' || input === 'D') {
       const msg = editableMessages[selectedIndex];
@@ -178,7 +197,7 @@ export function EditMessages({
       {markedForDeletion.size > 0 && (
         <Text color="yellow">  {markedForDeletion.size} message{markedForDeletion.size !== 1 ? 's' : ''} marked for deletion</Text>
       )}
-      <Text dimColor>  {'\u2191\u2193'} Navigate  d Mark/Unmark  Enter Delete Marked  Esc Cancel</Text>
+      <Text dimColor>  {'\u2191\u2193'} Navigate  {'\u2190\u2192'} Page  d Mark/Unmark  Enter Delete Marked  Esc Cancel</Text>
     </Box>
   );
 }
