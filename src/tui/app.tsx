@@ -122,6 +122,7 @@ function App({ options }: AppProps) {
   const [streamingAgentName, setStreamingAgentName] = useState<string | undefined>(undefined);
   // Pending agent from /agent add command — created after primary role is selected
   const [pendingSlashAgent, setPendingSlashAgent] = useState<{ model: string; role: AgentRole } | null>(null);
+  const [grabTextMode, setGrabTextMode] = useState(false);
   const [showEditMessages, setShowEditMessages] = useState(false);
   const [showTalks, setShowTalks] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
@@ -297,7 +298,7 @@ function App({ options }: AppProps) {
   // Talk title / grab mode indicator (shown below status bar)
   const activeTalk = activeTalkId ? talkManagerRef.current?.getTalk(activeTalkId) : null;
   const talkTitle = activeTalk?.topicTitle ?? null;
-  const showTitleBar = !isOverlayActive && talkTitle;
+  const showTitleBar = !isOverlayActive && (talkTitle || grabTextMode);
   const talkTitleLines = showTitleBar ? 2 : 0; // title/indicator + separator
 
   // Calculate available height for the chat area:
@@ -327,8 +328,20 @@ function App({ options }: AppProps) {
 
   const mouseScroll = useMouseScroll({
     maxOffset: scrollMaxOffset,
-    enabled: !isOverlayActive,
+    enabled: !isOverlayActive && !grabTextMode,
   });
+
+  // Toggle mouse capture for grab text mode
+  useEffect(() => {
+    if (!stdout) return;
+    if (grabTextMode) {
+      stdout.write('\x1b[?1000l');
+      stdout.write('\x1b[?1006l');
+    } else {
+      stdout.write('\x1b[?1000h');
+      stdout.write('\x1b[?1006h');
+    }
+  }, [grabTextMode, stdout]);
 
   // Auto-scroll to bottom when new messages arrive (if already at bottom)
   const prevMessageCountRef = useRef(chat.messages.length);
@@ -1863,6 +1876,13 @@ function App({ options }: AppProps) {
       return;
     }
 
+    // ^E Select Text (toggle mouse capture for text selection)
+    if (input === 'e' && key.ctrl) {
+      setGrabTextMode(prev => !prev);
+      cleanInputChar(setInputText, 'e');
+      return;
+    }
+
     // ^N New Chat
     if (input === 'n' && key.ctrl) {
       handleNewChat();
@@ -1930,9 +1950,24 @@ function App({ options }: AppProps) {
       {showTitleBar && (
         <Box flexDirection="column">
           <Box width={terminalWidth}>
-            <Box flexGrow={1} justifyContent="center">
-              <Text bold>{talkTitle}</Text>
-            </Box>
+            {talkTitle ? (
+              <>
+                <Box flexGrow={1} justifyContent="center">
+                  <Text bold>{talkTitle}</Text>
+                </Box>
+                {grabTextMode && (
+                  <Box marginRight={1}>
+                    <Text color="yellow" bold>SELECT MODE</Text>
+                    <Text dimColor> ^E exit</Text>
+                  </Box>
+                )}
+              </>
+            ) : (
+              <Box flexGrow={1} justifyContent="center">
+                <Text color="yellow" bold>SELECT MODE</Text>
+                <Text dimColor> — drag to select, ^E to exit</Text>
+              </Box>
+            )}
           </Box>
           <Text dimColor>{'─'.repeat(terminalWidth)}</Text>
         </Box>
@@ -2155,7 +2190,7 @@ function App({ options }: AppProps) {
       )}
 
       {/* Shortcut bar pinned at bottom (2 lines) */}
-      <ShortcutBar terminalWidth={terminalWidth} ttsEnabled={voice.ttsEnabled} />
+      <ShortcutBar terminalWidth={terminalWidth} ttsEnabled={voice.ttsEnabled} grabTextMode={grabTextMode} />
     </Box>
   );
 }
