@@ -754,8 +754,9 @@ function App({ options }: AppProps) {
     // Auto-save the talk when adding a job
     talkManagerRef.current.saveTalk(activeTalkId);
 
+    const isEvent = /^on\s+/i.test(schedule);
     const isOneOff = /^(in\s|at\s)/i.test(schedule);
-    const label = isOneOff ? 'Job Scheduled' : 'Recurring Job Scheduled';
+    const label = isEvent ? 'Event Job Created' : isOneOff ? 'Job Scheduled' : 'Recurring Job Scheduled';
 
     const gwId = gatewayTalkIdRef.current;
     if (gwId && chatServiceRef.current) {

@@ -148,8 +148,8 @@ export interface VoiceState {
 
 export interface Job {
   id: string;
-  type?: 'once' | 'recurring';  // default 'recurring' for backwards compat
-  schedule: string;        // Cron expression or human-readable schedule
+  type?: 'once' | 'recurring' | 'event';  // default 'recurring' for backwards compat
+  schedule: string;        // Cron/human-readable schedule OR "on <scope>" for event-driven
   prompt: string;          // What the job should do
   active: boolean;
   createdAt: number;
