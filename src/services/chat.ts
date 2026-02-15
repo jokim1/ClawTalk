@@ -111,10 +111,10 @@ function createActivityAbort(inactivityMs: number, maxMs: number) {
   };
 }
 
-/** Inactivity timeout for SSE streams — resets on each chunk (20 min per chunk).
- *  Must be >= OpenClaw's embedded agent timeout (agents.defaults.timeoutSeconds)
- *  so the client doesn't abort the connection while the agent is still working. */
-const STREAM_INACTIVITY_MS = 1_200_000;
+/** Inactivity timeout for SSE streams — resets on each raw chunk (5 min).
+ *  With gateway keepalive relay active (sends SSE comments every 30s),
+ *  this only fires if the gateway itself is unreachable. */
+const STREAM_INACTIVITY_MS = 300_000;
 
 /** Hard max timeout for the entire SSE connection (60 minutes). */
 const STREAM_MAX_MS = 3_600_000;
@@ -808,7 +808,7 @@ export class ChatService implements IChatService {
         // Track event type for tool_start / tool_end / error
         if (line.startsWith('event: ')) {
           const eventType = line.slice(7).trim();
-          if (eventType === 'tool_start' || eventType === 'tool_end' || eventType === 'error') {
+          if (eventType === 'tool_start' || eventType === 'tool_end' || eventType === 'error' || eventType === 'content_reset') {
             pendingEvent = eventType;
           } else {
             pendingEvent = null;
