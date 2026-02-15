@@ -111,11 +111,13 @@ function createActivityAbort(inactivityMs: number, maxMs: number) {
   };
 }
 
-/** Inactivity timeout for SSE streams — resets on each chunk (5 min per chunk). */
-const STREAM_INACTIVITY_MS = 300_000;
+/** Inactivity timeout for SSE streams — resets on each chunk (20 min per chunk).
+ *  Must be >= OpenClaw's embedded agent timeout (agents.defaults.timeoutSeconds)
+ *  so the client doesn't abort the connection while the agent is still working. */
+const STREAM_INACTIVITY_MS = 1_200_000;
 
-/** Hard max timeout for the entire SSE connection (30 minutes). */
-const STREAM_MAX_MS = 1_800_000;
+/** Hard max timeout for the entire SSE connection (60 minutes). */
+const STREAM_MAX_MS = 3_600_000;
 
 
 /**
