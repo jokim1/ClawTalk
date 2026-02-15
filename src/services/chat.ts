@@ -117,12 +117,6 @@ const STREAM_INACTIVITY_MS = 300_000;
 /** Hard max timeout for the entire SSE connection (30 minutes). */
 const STREAM_MAX_MS = 1_800_000;
 
-/**
- * Content-level inactivity timeout (3 min).
- * If data is flowing (e.g. heartbeats) but no content/tool chunks are yielded
- * for this long, the stream is considered stuck and will be aborted.
- */
-const CONTENT_INACTIVITY_MS = 180_000;
 
 /**
  * Replace Node.js 25's built-in undici connector with the npm undici package's
@@ -625,7 +619,7 @@ export class ChatService implements IChatService {
     let buffer = '';
     let pendingEvent: string | null = null;
     let accumulatedContent = '';
-    let lastYieldTime = Date.now();
+
     this.lastResponseModel = undefined;
     this.lastResponseUsage = undefined;
 
@@ -635,16 +629,6 @@ export class ChatService implements IChatService {
       if (done) break;
 
       abort.touch(); // Reset inactivity timer on each chunk
-
-      // Content-level inactivity: data may be flowing (heartbeats) but if no
-      // content or tool events have been yielded, the model is likely stuck.
-      if (Date.now() - lastYieldTime > CONTENT_INACTIVITY_MS) {
-        throw new GatewayStreamError(
-          `Model unresponsive — no content received for ${Math.round((Date.now() - lastYieldTime) / 1000)}s.`,
-          true,
-          accumulatedContent,
-        );
-      }
 
       buffer += decoder.decode(value, { stream: true });
       if (buffer.length > MAX_STREAM_BUFFER_BYTES) {
@@ -697,7 +681,6 @@ export class ChatService implements IChatService {
                 name: parsed.name ?? '',
                 arguments: parsed.arguments ?? '',
               };
-              lastYieldTime = Date.now();
             } catch { /* ignore parse error */ }
             pendingEvent = null;
             continue;
@@ -714,7 +697,6 @@ export class ChatService implements IChatService {
                 content: parsed.content ?? '',
                 durationMs: parsed.durationMs ?? 0,
               };
-              lastYieldTime = Date.now();
             } catch { /* ignore parse error */ }
             pendingEvent = null;
             continue;
@@ -738,7 +720,6 @@ export class ChatService implements IChatService {
             if (content) {
               accumulatedContent += content;
               yield { type: 'content', text: stripAnsi(content) };
-              lastYieldTime = Date.now();
             }
           } catch (err) {
             console.debug('SSE parse error (expected for partial chunks):', err);
@@ -794,7 +775,7 @@ export class ChatService implements IChatService {
     let buffer = '';
     let pendingEvent: string | null = null;
     let accumulatedContent = '';
-    let lastYieldTime = Date.now();
+
     this.lastResponseModel = undefined;
     this.lastResponseUsage = undefined;
 
@@ -804,16 +785,6 @@ export class ChatService implements IChatService {
       if (done) break;
 
       abort.touch(); // Reset inactivity timer on each chunk
-
-      // Content-level inactivity: data may be flowing (heartbeats) but if no
-      // content or tool events have been yielded, the model is likely stuck.
-      if (Date.now() - lastYieldTime > CONTENT_INACTIVITY_MS) {
-        throw new GatewayStreamError(
-          `Model unresponsive — no content received for ${Math.round((Date.now() - lastYieldTime) / 1000)}s.`,
-          true,
-          accumulatedContent,
-        );
-      }
 
       buffer += decoder.decode(value, { stream: true });
       if (buffer.length > MAX_STREAM_BUFFER_BYTES) {
@@ -866,7 +837,6 @@ export class ChatService implements IChatService {
                 name: parsed.name ?? '',
                 arguments: parsed.arguments ?? '',
               };
-              lastYieldTime = Date.now();
             } catch { /* ignore parse error */ }
             pendingEvent = null;
             continue;
@@ -883,7 +853,6 @@ export class ChatService implements IChatService {
                 content: parsed.content ?? '',
                 durationMs: parsed.durationMs ?? 0,
               };
-              lastYieldTime = Date.now();
             } catch { /* ignore parse error */ }
             pendingEvent = null;
             continue;
@@ -907,7 +876,6 @@ export class ChatService implements IChatService {
             if (content) {
               accumulatedContent += content;
               yield { type: 'content', text: stripAnsi(content) };
-              lastYieldTime = Date.now();
             }
           } catch (err) {
             console.debug('SSE parse error (expected for partial chunks):', err);
