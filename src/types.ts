@@ -204,7 +204,11 @@ export interface ContentChunk {
   text: string;
 }
 
-export type StreamChunk = ContentChunk | ToolStartEvent | ToolEndEvent;
+export interface ContentResetEvent {
+  type: 'content_reset';
+}
+
+export type StreamChunk = ContentChunk | ContentResetEvent | ToolStartEvent | ToolEndEvent;
 
 export interface Directive {
   id: string;

@@ -642,7 +642,7 @@ export class ChatService implements IChatService {
         // Track event type for tool_start / tool_end / error
         if (line.startsWith('event: ')) {
           const eventType = line.slice(7).trim();
-          if (eventType === 'tool_start' || eventType === 'tool_end' || eventType === 'error') {
+          if (eventType === 'tool_start' || eventType === 'tool_end' || eventType === 'error' || eventType === 'content_reset') {
             pendingEvent = eventType;
           } else {
             pendingEvent = null; // Skip other custom events (meta, etc.)
@@ -667,6 +667,14 @@ export class ChatService implements IChatService {
               if (e instanceof GatewayStreamError) throw e;
               // Parse error — ignore
             }
+            pendingEvent = null;
+            continue;
+          }
+
+          // Handle content reset (server-side retry discarded partial content)
+          if (pendingEvent === 'content_reset') {
+            accumulatedContent = '';
+            yield { type: 'content_reset' as const };
             pendingEvent = null;
             continue;
           }
@@ -823,6 +831,14 @@ export class ChatService implements IChatService {
               if (e instanceof GatewayStreamError) throw e;
               // Parse error — ignore
             }
+            pendingEvent = null;
+            continue;
+          }
+
+          // Handle content reset (server-side retry discarded partial content)
+          if (pendingEvent === 'content_reset') {
+            accumulatedContent = '';
+            yield { type: 'content_reset' as const };
             pendingEvent = null;
             continue;
           }

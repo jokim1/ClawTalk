@@ -109,6 +109,11 @@ export function useChat(
             if (isStillOnSameTalk()) {
               setStreamingContent(fullContent);
             }
+          } else if (chunk.type === 'content_reset') {
+            fullContent = '';
+            if (isStillOnSameTalk()) {
+              setStreamingContent('');
+            }
           } else if (chunk.type === 'tool_start') {
             if (isStillOnSameTalk()) {
               const toolMsg = createMessage('system', `[Tool] ${chunk.name}(${chunk.arguments.slice(0, 100)}${chunk.arguments.length > 100 ? '...' : ''})`);
@@ -226,30 +231,30 @@ export function useChat(
       // --- Retry on transient errors for gateway Talk mode (max 1 retry) ---
       const { isTransientError, GatewayStreamError } = await import('../../services/chat.js');
       if (gwTalkId && isTransientError(err)) {
-        const partialContent = err instanceof GatewayStreamError ? err.partialContent : fullContent;
-
         if (isStillOnSameTalk()) {
-          setStreamingContent(partialContent + '\n\n[retrying...]');
+          setStreamingContent('[retrying...]');
         }
 
         try {
           let retryContent = '';
-          const recoveryMsg = partialContent
-            ? 'Your previous response was interrupted. Continue from where you left off.'
-            : llmText;
-
-          const retryStream = chatService.streamTalkMessage(gwTalkId, recoveryMsg, undefined, undefined, true);
+          // Ask the LLM to provide a fresh complete response (the gateway
+          // already has the partial in conversation history for context).
+          const retryStream = chatService.streamTalkMessage(gwTalkId, llmText, undefined, undefined, true);
           for await (const chunk of retryStream) {
             if (chunk.type === 'content') {
               retryContent += chunk.text;
               if (isStillOnSameTalk()) {
-                setStreamingContent(partialContent + retryContent);
+                setStreamingContent(retryContent);
+              }
+            } else if (chunk.type === 'content_reset') {
+              retryContent = '';
+              if (isStillOnSameTalk()) {
+                setStreamingContent('');
               }
             }
           }
 
-          // Merge partial + retry as a single response
-          fullContent = partialContent + retryContent;
+          fullContent = retryContent;
 
           if (fullContent.trim() && isStillOnSameTalk()) {
             const model = chatService.lastResponseModel ?? currentModelRef.current;
