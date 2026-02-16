@@ -85,7 +85,10 @@ function handleSaveCommand(args: string, ctx: CommandContext): CommandResult {
 /** Handle /topic <title> — set topic title and save current chat to Talks list. */
 function handleTopicCommand(args: string, ctx: CommandContext): CommandResult {
   if (!args.trim()) {
-    ctx.addSystemMessage('Usage: /topic <title>');
+    ctx.addSystemMessage(
+      'Usage: /topic <title>\n' +
+      'Example: /topic Q2 launch planning',
+    );
     return { handled: true };
   }
   ctx.saveTalk(args.trim());
@@ -96,7 +99,11 @@ function handleTopicCommand(args: string, ctx: CommandContext): CommandResult {
 function handlePinCommand(args: string, ctx: CommandContext): CommandResult {
   const n = args.trim() ? parseInt(args.trim(), 10) : undefined;
   if (n !== undefined && (isNaN(n) || n < 1)) {
-    ctx.addSystemMessage('Usage: /pin [N] — N is a positive number');
+    ctx.addSystemMessage(
+      'Usage: /pin [N]\n' +
+      'Pins the latest assistant message, or the Nth assistant message from the bottom.\n' +
+      'Examples: /pin   /pin 2',
+    );
     return { handled: true };
   }
   ctx.pinMessage(n);
@@ -107,7 +114,11 @@ function handlePinCommand(args: string, ctx: CommandContext): CommandResult {
 function handleUnpinCommand(args: string, ctx: CommandContext): CommandResult {
   const n = args.trim() ? parseInt(args.trim(), 10) : undefined;
   if (n !== undefined && (isNaN(n) || n < 1)) {
-    ctx.addSystemMessage('Usage: /unpin [N] — N is a positive number');
+    ctx.addSystemMessage(
+      'Usage: /unpin [N]\n' +
+      'Removes the most recent pin, or pin #N from /pins.\n' +
+      'Examples: /unpin   /unpin 1',
+    );
     return { handled: true };
   }
   ctx.unpinMessage(n);
@@ -124,7 +135,16 @@ function handlePinsCommand(_args: string, ctx: CommandContext): CommandResult {
 function handleJobCommand(args: string, ctx: CommandContext): CommandResult {
   const trimmed = args.trim();
   if (!trimmed) {
-    ctx.addSystemMessage('Usage: /job add "schedule" prompt | /job pause|resume|delete N\nSchedule: time (daily 9am, every 2h, cron) or event (on <scope> or on platformN)');
+    ctx.addSystemMessage(
+      'Usage:\n' +
+      '- /job add "schedule" <prompt>\n' +
+      '- /job pause N | /job resume N | /job delete N\n\n' +
+      'Schedule examples:\n' +
+      '- /job add "every 2h" Summarize open incidents\n' +
+      '- /job add "daily 9am" Draft today\'s priorities\n' +
+      '- /job add "on platform1" Respond with action items\n' +
+      '- /job add "0 9 * * 1-5" Post weekday standup checklist',
+    );
     return { handled: true };
   }
 
@@ -134,7 +154,10 @@ function handleJobCommand(args: string, ctx: CommandContext): CommandResult {
     // Parse quoted schedule: "schedule" prompt
     const match = rest.match(/^"([^"]+)"\s+(.+)$/s);
     if (!match) {
-      ctx.addSystemMessage('Usage: /job add "schedule" prompt text');
+      ctx.addSystemMessage(
+        'Usage: /job add "schedule" <prompt>\n' +
+        'Example: /job add "every 30m" Check Slack for urgent blockers',
+      );
       return { handled: true };
     }
     ctx.addJob(match[1], match[2]);
@@ -151,7 +174,12 @@ function handleJobCommand(args: string, ctx: CommandContext): CommandResult {
     return { handled: true };
   }
 
-  ctx.addSystemMessage('Usage: /job add "schedule" prompt | /job pause|resume|delete N');
+  ctx.addSystemMessage(
+    'Usage:\n' +
+    '- /job add "schedule" <prompt>\n' +
+    '- /job pause N | /job resume N | /job delete N\n' +
+    'Example: /job pause 2',
+  );
   return { handled: true };
 }
 
@@ -180,7 +208,11 @@ function handleReportsCommand(args: string, ctx: CommandContext): CommandResult 
   }
   const n = parseInt(trimmed, 10);
   if (isNaN(n) || n < 1) {
-    ctx.addSystemMessage('Usage: /reports [N] — N is a positive automation number');
+    ctx.addSystemMessage(
+      'Usage: /reports [N]\n' +
+      'Shows recent automation runs for this talk, or only automation #N.\n' +
+      'Examples: /reports   /reports 1',
+    );
     return { handled: true };
   }
   ctx.viewReports(n);
@@ -211,7 +243,15 @@ function handleObjectivesCommand(args: string, ctx: CommandContext): CommandResu
 function handleAgentCommand(args: string, ctx: CommandContext): CommandResult {
   const trimmed = args.trim();
   if (!trimmed) {
-    ctx.addSystemMessage('Usage: /agent add <model> <role> | /agent remove <name>');
+    ctx.addSystemMessage(
+      'Usage:\n' +
+      '- /agent add <model> <role>\n' +
+      '- /agent remove <name>\n' +
+      '- /agent role <name> <role>\n' +
+      'Examples:\n' +
+      '- /agent add opus strategist\n' +
+      '- /agent role Opus critic',
+    );
     return { handled: true };
   }
 
@@ -219,7 +259,10 @@ function handleAgentCommand(args: string, ctx: CommandContext): CommandResult {
     const rest = trimmed.slice(4).trim();
     const parts = rest.split(/\s+/);
     if (parts.length < 2) {
-      ctx.addSystemMessage('Usage: /agent add <model> <role>');
+      ctx.addSystemMessage(
+        'Usage: /agent add <model> <role>\n' +
+        'Example: /agent add sonnet analyst',
+      );
       return { handled: true };
     }
     const model = parts[0];
@@ -231,7 +274,10 @@ function handleAgentCommand(args: string, ctx: CommandContext): CommandResult {
   if (trimmed.startsWith('remove ')) {
     const name = trimmed.slice(7).trim();
     if (!name) {
-      ctx.addSystemMessage('Usage: /agent remove <name>');
+      ctx.addSystemMessage(
+        'Usage: /agent remove <name>\n' +
+        'Example: /agent remove Opus',
+      );
       return { handled: true };
     }
     ctx.removeAgent(name);
@@ -243,7 +289,10 @@ function handleAgentCommand(args: string, ctx: CommandContext): CommandResult {
     // Parse: "Agent Name newrole" — role is always last word
     const lastSpace = rest.lastIndexOf(' ');
     if (lastSpace === -1) {
-      ctx.addSystemMessage('Usage: /agent role <name> <new-role>');
+      ctx.addSystemMessage(
+        'Usage: /agent role <name> <new-role>\n' +
+        'Example: /agent role Sonnet strategist',
+      );
       return { handled: true };
     }
     const name = rest.slice(0, lastSpace).trim();
@@ -252,7 +301,12 @@ function handleAgentCommand(args: string, ctx: CommandContext): CommandResult {
     return { handled: true };
   }
 
-  ctx.addSystemMessage('Usage: /agent add <model> <role> | /agent remove <name> | /agent role <name> <role>');
+  ctx.addSystemMessage(
+    'Usage:\n' +
+    '- /agent add <model> <role>\n' +
+    '- /agent remove <name>\n' +
+    '- /agent role <name> <role>',
+  );
   return { handled: true };
 }
 
@@ -268,7 +322,10 @@ function handleAskCommand(args: string, ctx: CommandContext): CommandResult {
   // Parse @name from the start
   const match = trimmed.match(/^@(\S+)\s+(.+)$/s);
   if (!match) {
-    ctx.addSystemMessage('Usage: /ask @<agent-name> <message>');
+    ctx.addSystemMessage(
+      'Usage: /ask @<agent-name> <message>\n' +
+      'Example: /ask @Opus Critique this rollout plan for risk.',
+    );
     return { handled: true };
   }
   ctx.askAgent(match[1], match[2]);
@@ -279,7 +336,10 @@ function handleAskCommand(args: string, ctx: CommandContext): CommandResult {
 function handleDebateCommand(args: string, ctx: CommandContext): CommandResult {
   const trimmed = args.trim();
   if (!trimmed) {
-    ctx.addSystemMessage('Usage: /debate <topic>');
+    ctx.addSystemMessage(
+      'Usage: /debate <topic>\n' +
+      'Example: /debate Should we ship with feature flags enabled by default?',
+    );
     return { handled: true };
   }
   ctx.debateAll(trimmed);
@@ -296,7 +356,12 @@ function handleReviewCommand(_args: string, ctx: CommandContext): CommandResult 
 function handleFileCommand(args: string, ctx: CommandContext): CommandResult {
   const trimmed = args.trim();
   if (!trimmed) {
-    ctx.addSystemMessage('Usage: /file <path> [message]');
+    ctx.addSystemMessage(
+      'Usage: /file <path> [message]\n' +
+      'Examples:\n' +
+      '- /file ./docs/spec.md\n' +
+      '- /file "./screenshots/login bug.png" Explain this issue',
+    );
     return { handled: true };
   }
 
@@ -416,7 +481,13 @@ function handlePlatformCommand(args: string, ctx: CommandContext): CommandResult
   // Parse: platform scope permission (e.g. "slack #team-product read+write")
   const parts = trimmed.split(/\s+/);
   if (parts.length < 3) {
-    ctx.addSystemMessage('Usage: /channel <name> <scope> <permission> (or /platform ...)\nPermission: read, write, read+write');
+    ctx.addSystemMessage(
+      'Usage: /channel <platform> <scope> <permission> (alias: /platform)\n' +
+      'Permission: read | write | read+write\n' +
+      'Examples:\n' +
+      '- /channel slack #team-product read+write\n' +
+      '- /channel slack "kimfamily #general" read',
+    );
     return { handled: true };
   }
   const permission = parts[parts.length - 1];
@@ -482,12 +553,12 @@ const COMMANDS: Record<string, { handler: CommandHandler; description: string }>
   file: { handler: handleFileCommand, description: 'Attach a file (image, PDF, text)' },
   export: { handler: handleExportCommand, description: 'Export current talk' },
   edit: { handler: handleEditCommand, description: 'Edit messages (mark and delete)' },
-  directive: { handler: handleDirectiveCommand, description: 'Add or manage a rule' },
-  directives: { handler: handleDirectivesCommand, description: 'List rules for this talk' },
+  directive: { handler: handleDirectiveCommand, description: 'Add or manage a rule (alias: /rule)' },
+  directives: { handler: handleDirectivesCommand, description: 'List rules for this talk (alias: /rules)' },
   rule: { handler: handleRuleCommand, description: 'Add or manage a rule' },
   rules: { handler: handleRulesCommand, description: 'List rules for this talk' },
-  platform: { handler: handlePlatformCommand, description: 'Add or manage channel connections' },
-  platforms: { handler: handlePlatformsCommand, description: 'List channel connections' },
+  platform: { handler: handlePlatformCommand, description: 'Add or manage channel connections (alias: /channel)' },
+  platforms: { handler: handlePlatformsCommand, description: 'List channel connections (alias: /channels)' },
   channel: { handler: handleChannelCommand, description: 'Add or manage channel connections' },
   channels: { handler: handleChannelsCommand, description: 'List channel connections' },
   playbook: { handler: handlePlaybookCommand, description: 'Show full talk configuration' },
@@ -521,7 +592,10 @@ export function dispatchCommand(input: string, ctx: CommandContext): boolean {
 
   // Unrecognized slash command — show feedback instead of sending as chat
   const cmdWord = withoutSlash.split(/\s/)[0];
-  ctx.addSystemMessage(`Unknown command: /${cmdWord}. Type / to see available commands.`);
+  ctx.addSystemMessage(
+    `Unknown command: /${cmdWord}\n` +
+    'Type / to see command suggestions, then use ↑/↓ and Enter to pick one.',
+  );
   return true;
 }
 
@@ -559,16 +633,33 @@ export function getCommandCompletions(prefix: string): CommandInfo[] {
           { name: 'agent remove <name>', description: 'Remove an agent' },
           { name: 'agent role <name> <role>', description: 'Change role: Analyst, Critic, Strategist, Devil\'s Advocate, Synthesizer, Editor' },
         );
-      } else if (name === 'directive') {
+      } else if (name === 'directive' || name === 'rule') {
         results.push(
-          { name: 'directive <text>', description: 'Add a rule' },
-          { name: 'directive toggle N', description: 'Enable/disable rule #N' },
-          { name: 'directive delete N', description: 'Delete rule #N' },
+          { name: `${name} <text>`, description: 'Add a rule' },
+          { name: `${name} toggle N`, description: 'Enable/disable rule #N' },
+          { name: `${name} delete N`, description: 'Delete rule #N' },
         );
-      } else if (name === 'platform') {
+      } else if (name === 'platform' || name === 'channel') {
         results.push(
-          { name: 'platform <name> <scope> <perm>', description: 'Add channel connection (read, write, read+write)' },
-          { name: 'platform delete N', description: 'Remove channel connection #N' },
+          { name: `${name} <name> <scope> <perm>`, description: 'Add channel connection (read, write, read+write)' },
+          { name: `${name} delete N`, description: 'Remove channel connection #N' },
+        );
+      } else if (name === 'objective' || name === 'objectives') {
+        results.push(
+          { name: `${name} <text>`, description: 'Set one-sentence desired outcome for this talk' },
+          { name: `${name} clear`, description: 'Clear objectives for this talk' },
+        );
+      } else if (name === 'reports') {
+        results.push(
+          { name: 'reports', description: 'Show recent automation reports for this talk' },
+          { name: 'reports N', description: 'Show reports for automation #N' },
+        );
+      } else if (name === 'jobs' || name === 'automations') {
+        results.push(
+          { name: name, description: 'List automations for this talk' },
+          { name: `${name} pause N`, description: 'Pause automation #N' },
+          { name: `${name} resume N`, description: 'Resume automation #N' },
+          { name: `${name} delete N`, description: 'Delete automation #N' },
         );
       } else {
         results.push({ name, description: entry.description });

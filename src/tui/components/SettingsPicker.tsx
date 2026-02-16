@@ -462,6 +462,10 @@ export function SettingsPicker({
                     <Text dimColor italic>  e.g. /objectives Help me produce 3 high quality blog posts per week in my voice</Text>
                   </>
                 )}
+                <Text dimColor>  Commands:</Text>
+                <Text dimColor italic>  /objectives Ship the Q2 onboarding improvements with fewer support tickets</Text>
+                <Text dimColor italic>  /objective Keep responses short and decision-focused for this project</Text>
+                <Text dimColor italic>  /objective clear</Text>
               </Box>
 
               {/* Rules */}
@@ -482,6 +486,10 @@ export function SettingsPicker({
                     <Text dimColor italic>  e.g. /rule Answer Slack messages in real time</Text>
                   </>
                 )}
+                <Text dimColor>  Commands:</Text>
+                <Text dimColor italic>  /rule Keep answers under 5 bullets unless I ask for detail</Text>
+                <Text dimColor italic>  /rule Include risks and assumptions in every plan</Text>
+                <Text dimColor italic>  /rules   /rule toggle 1   /rule delete 2</Text>
               </Box>
 
               {/* Channel Connections */}
@@ -504,6 +512,10 @@ export function SettingsPicker({
                     <Text dimColor italic>  e.g. /channel slack "Lila Games #team-product" read+write</Text>
                   </>
                 )}
+                <Text dimColor>  Commands:</Text>
+                <Text dimColor italic>  /channel slack #team-product read+write</Text>
+                <Text dimColor italic>  /channel slack "kimfamily #general" read</Text>
+                <Text dimColor italic>  /channels   /channel delete 1</Text>
               </Box>
 
               {/* Automations */}
@@ -523,6 +535,11 @@ export function SettingsPicker({
                     <Text dimColor italic>  e.g. /job add "10am IST weekdays" Check PostHog analytics focusing on FTUE funnel and report findings in #team-product</Text>
                   </>
                 )}
+                <Text dimColor>  Commands:</Text>
+                <Text dimColor italic>  /job add "every 2h" Summarize unresolved issues and owners</Text>
+                <Text dimColor italic>  /job add "daily 9am" Prepare standup notes from yesterday</Text>
+                <Text dimColor italic>  /job add "on platform1" Respond with concise action items</Text>
+                <Text dimColor italic>  /jobs   /job pause 1   /job resume 1   /reports 1</Text>
               </Box>
             </>
           )}
