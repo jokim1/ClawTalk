@@ -524,30 +524,6 @@ export function SettingsPicker({
                 <Text dimColor italic>  /channels   /channel delete 1</Text>
               </Box>
 
-              {/* Automations */}
-              <Box marginBottom={1} flexDirection="column">
-                <Text bold>Automations</Text>
-                {talkConfig.jobs.length > 0 ? (
-                  talkConfig.jobs.map((j, i) => (
-                    <Text key={i}>
-                      <Text dimColor>  {i + 1}. </Text>
-                      <Text color={j.active ? undefined : 'yellow'}>[{j.active ? 'active' : 'paused'}] </Text>
-                      <Text>"{j.schedule}" — {j.prompt}</Text>
-                    </Text>
-                  ))
-                ) : (
-                  <>
-                    <Text dimColor>  (none) — /job add "schedule" prompt</Text>
-                    <Text dimColor italic>  e.g. /job add "10am IST weekdays" Check PostHog analytics focusing on FTUE funnel and report findings in #team-product</Text>
-                  </>
-                )}
-                <Text dimColor>  Commands:</Text>
-                <Text dimColor italic>  /job add "every 2h" Summarize unresolved issues and owners</Text>
-                <Text dimColor italic>  /job add "daily 9am" Prepare standup notes from yesterday</Text>
-                <Text dimColor italic>  /job add "on platform1" Respond with concise action items</Text>
-                <Text dimColor italic>  /jobs   /job pause 1   /job resume 1   /reports 1</Text>
-              </Box>
-
               {/* Channel Response Settings */}
               <Box marginBottom={1} flexDirection="column">
                 <Text bold>Channel Response Settings</Text>
@@ -570,6 +546,30 @@ export function SettingsPicker({
                 <Text dimColor italic>  /response prompt 1 Reply with concise action items and owners</Text>
                 <Text dimColor italic>  /response agent 1 Opus Strategist</Text>
                 <Text dimColor italic>  /response clear 1</Text>
+              </Box>
+
+              {/* Automations */}
+              <Box marginBottom={1} flexDirection="column">
+                <Text bold>Automations</Text>
+                {talkConfig.jobs.length > 0 ? (
+                  talkConfig.jobs.map((j, i) => (
+                    <Text key={i}>
+                      <Text dimColor>  {i + 1}. </Text>
+                      <Text color={j.active ? undefined : 'yellow'}>[{j.active ? 'active' : 'paused'}] </Text>
+                      <Text>"{j.schedule}" — {j.prompt}</Text>
+                    </Text>
+                  ))
+                ) : (
+                  <>
+                    <Text dimColor>  (none) — /job add "schedule" prompt</Text>
+                    <Text dimColor italic>  e.g. /job add "10am IST weekdays" Check PostHog analytics focusing on FTUE funnel and report findings in #team-product</Text>
+                  </>
+                )}
+                <Text dimColor>  Commands:</Text>
+                <Text dimColor italic>  /job add "every 2h" Summarize unresolved issues and owners</Text>
+                <Text dimColor italic>  /job add "daily 9am" Prepare standup notes from yesterday</Text>
+                <Text dimColor italic>  /job add "on platform1" Respond with concise action items</Text>
+                <Text dimColor italic>  /jobs   /job pause 1   /job resume 1   /reports 1</Text>
               </Box>
             </>
           )}
