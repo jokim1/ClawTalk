@@ -25,6 +25,12 @@ interface TalkConfigInfo {
   objective?: string;
   directives: Array<{ text: string; active: boolean }>;
   platformBindings: Array<{ platform: string; scope: string; permission: string }>;
+  channelResponseSettings: Array<{
+    connectionIndex: number;
+    autoRespond: boolean;
+    agentName?: string;
+    onMessagePrompt?: string;
+  }>;
   jobs: Array<{ schedule: string; prompt: string; active: boolean }>;
   agents: Array<{ name: string; role: string; model: string; isPrimary: boolean }>;
 }
@@ -458,7 +464,7 @@ export function SettingsPicker({
                   <Text>  {talkConfig.objective}</Text>
                 ) : (
                   <>
-                    <Text dimColor>  (none) — /objective {'<text>'} or /objectives {'<text>'} to set</Text>
+                    <Text dimColor>  (none) — /objectives {'<text>'} to set</Text>
                     <Text dimColor italic>  e.g. /objectives Help me produce 3 high quality blog posts per week in my voice</Text>
                   </>
                 )}
@@ -481,7 +487,7 @@ export function SettingsPicker({
                   ))
                 ) : (
                   <>
-                    <Text dimColor>  (none) — /rule {'<text>'} (or /directive {'<text>'}) to add</Text>
+                    <Text dimColor>  (none) — /rule {'<text>'} to add</Text>
                     <Text dimColor italic>  e.g. /rule Be positive and encouraging</Text>
                     <Text dimColor italic>  e.g. /rule Answer Slack messages in real time</Text>
                   </>
@@ -507,7 +513,7 @@ export function SettingsPicker({
                   ))
                 ) : (
                   <>
-                    <Text dimColor>  (none) — /channel {'<name> <scope> <perm>'} (or /platform ...) to add</Text>
+                    <Text dimColor>  (none) — /channel {'<name> <scope> <perm>'} to add</Text>
                     <Text dimColor italic>  e.g. /channel slack "KimFamily #general" read+write</Text>
                     <Text dimColor italic>  e.g. /channel slack "Lila Games #team-product" read+write</Text>
                   </>
@@ -540,6 +546,30 @@ export function SettingsPicker({
                 <Text dimColor italic>  /job add "daily 9am" Prepare standup notes from yesterday</Text>
                 <Text dimColor italic>  /job add "on platform1" Respond with concise action items</Text>
                 <Text dimColor italic>  /jobs   /job pause 1   /job resume 1   /reports 1</Text>
+              </Box>
+
+              {/* Channel Response Settings */}
+              <Box marginBottom={1} flexDirection="column">
+                <Text bold>Channel Response Settings</Text>
+                {talkConfig.channelResponseSettings.length > 0 ? (
+                  talkConfig.channelResponseSettings.map((s) => (
+                    <Text key={s.connectionIndex}>
+                      <Text dimColor>  {s.connectionIndex}. </Text>
+                      <Text>auto:</Text>
+                      <Text color={s.autoRespond ? 'green' : 'yellow'}>{s.autoRespond ? 'on' : 'off'}</Text>
+                      <Text> agent:{s.agentName ?? '(default)'} </Text>
+                      <Text>prompt:{s.onMessagePrompt ? `"${s.onMessagePrompt}"` : '(none)'}</Text>
+                    </Text>
+                  ))
+                ) : (
+                  <Text dimColor>  (none) — add channel connections first</Text>
+                )}
+                <Text dimColor>  Commands:</Text>
+                <Text dimColor italic>  /response list</Text>
+                <Text dimColor italic>  /response set 1 on</Text>
+                <Text dimColor italic>  /response prompt 1 Reply with concise action items and owners</Text>
+                <Text dimColor italic>  /response agent 1 Opus Strategist</Text>
+                <Text dimColor italic>  /response clear 1</Text>
               </Box>
             </>
           )}

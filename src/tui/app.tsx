@@ -8,7 +8,7 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { render, Box, Text, useInput, useApp, useStdout } from 'ink';
-import type { ClawTalkOptions, ModelStatus, Message, TalkAgent, AgentRole, PendingAttachment, Directive, PlatformBinding, PlatformPermission } from '../types.js';
+import type { ClawTalkOptions, ModelStatus, Message, TalkAgent, AgentRole, PendingAttachment, Directive, PlatformBinding, PlatformBehavior, PlatformPermission } from '../types.js';
 import type { Talk } from '../types.js';
 import { AGENT_ROLES, ROLE_BY_ID, AGENT_PREAMBLE, generateAgentName } from '../agent-roles.js';
 import type { RoleTemplate } from '../agent-roles.js';
@@ -1135,7 +1135,11 @@ function App({ options }: AppProps) {
 
     if (gatewayTalkIdRef.current && chatServiceRef.current) {
       const bindings = talkManagerRef.current.getPlatformBindings(activeTalkId);
-      chatServiceRef.current.updateGatewayTalk(gatewayTalkIdRef.current, { platformBindings: bindings });
+      const behaviors = talkManagerRef.current.getPlatformBehaviors(activeTalkId);
+      chatServiceRef.current.updateGatewayTalk(gatewayTalkIdRef.current, {
+        platformBindings: bindings,
+        platformBehaviors: behaviors,
+      });
     }
   }, [activeTalkId]);
 
@@ -1150,7 +1154,11 @@ function App({ options }: AppProps) {
 
     if (gatewayTalkIdRef.current && chatServiceRef.current) {
       const bindings = talkManagerRef.current.getPlatformBindings(activeTalkId);
-      chatServiceRef.current.updateGatewayTalk(gatewayTalkIdRef.current, { platformBindings: bindings });
+      const behaviors = talkManagerRef.current.getPlatformBehaviors(activeTalkId);
+      chatServiceRef.current.updateGatewayTalk(gatewayTalkIdRef.current, {
+        platformBindings: bindings,
+        platformBehaviors: behaviors,
+      });
     }
   }, [activeTalkId]);
 
@@ -1168,6 +1176,104 @@ function App({ options }: AppProps) {
     const sysMsg = createMessage('system', `Channel connections:\n${lines.join('\n')}`);
     chat.setMessages(prev => [...prev, sysMsg]);
   }, [activeTalkId]);
+
+  // --- Channel response settings handlers ---
+
+  const handleListChannelResponses = useCallback(() => {
+    if (!activeTalkId || !talkManagerRef.current) return;
+    const bindings = talkManagerRef.current.getPlatformBindings(activeTalkId);
+    if (bindings.length === 0) {
+      const sysMsg = createMessage('system', 'No channel connections yet. Add one with /channel first.');
+      chat.setMessages(prev => [...prev, sysMsg]);
+      return;
+    }
+
+    const behaviors = talkManagerRef.current.getPlatformBehaviors(activeTalkId);
+    const lines = bindings.map((binding, i) => {
+      const behavior = behaviors.find((entry) => entry.platformBindingId === binding.id);
+      const enabled = behavior?.autoRespond === false ? 'off' : 'on';
+      const prompt = behavior?.onMessagePrompt ? `"${behavior.onMessagePrompt}"` : '(none)';
+      const agent = behavior?.agentName ?? '(default)';
+      return `  ${i + 1}. ${binding.platform} ${binding.scope} -> auto:${enabled}, agent:${agent}, prompt:${prompt}`;
+    });
+    const sysMsg = createMessage('system', `Channel response settings:\n${lines.join('\n')}`);
+    chat.setMessages(prev => [...prev, sysMsg]);
+  }, [activeTalkId]);
+
+  const syncChannelResponsesToGateway = useCallback((talkId: string) => {
+    if (!gatewayTalkIdRef.current || !chatServiceRef.current || !talkManagerRef.current) return;
+    const bindings = talkManagerRef.current.getPlatformBindings(talkId);
+    const behaviors = talkManagerRef.current.getPlatformBehaviors(talkId);
+    chatServiceRef.current.updateGatewayTalk(gatewayTalkIdRef.current, {
+      platformBindings: bindings,
+      platformBehaviors: behaviors,
+    });
+  }, []);
+
+  const handleSetChannelResponseEnabled = useCallback((index: number, enabled: boolean) => {
+    if (!activeTalkId || !talkManagerRef.current) return;
+    talkManagerRef.current.saveTalk(activeTalkId);
+    const ok = talkManagerRef.current.upsertPlatformBehaviorByBindingIndex(activeTalkId, index, {
+      autoRespond: enabled,
+    });
+    if (!ok) {
+      setError(`No channel connection at position ${index}`);
+      return;
+    }
+    syncChannelResponsesToGateway(activeTalkId);
+    const sysMsg = createMessage('system', `Channel response #${index} ${enabled ? 'enabled' : 'disabled'}.`);
+    chat.setMessages(prev => [...prev, sysMsg]);
+  }, [activeTalkId, syncChannelResponsesToGateway]);
+
+  const handleSetChannelResponsePrompt = useCallback((index: number, prompt: string) => {
+    if (!activeTalkId || !talkManagerRef.current) return;
+    talkManagerRef.current.saveTalk(activeTalkId);
+    const ok = talkManagerRef.current.upsertPlatformBehaviorByBindingIndex(activeTalkId, index, {
+      autoRespond: true,
+      onMessagePrompt: prompt,
+    });
+    if (!ok) {
+      setError(`No channel connection at position ${index}`);
+      return;
+    }
+    syncChannelResponsesToGateway(activeTalkId);
+    const sysMsg = createMessage('system', `Channel response prompt set for connection #${index}.`);
+    chat.setMessages(prev => [...prev, sysMsg]);
+  }, [activeTalkId, syncChannelResponsesToGateway]);
+
+  const handleSetChannelResponseAgent = useCallback((index: number, agentName: string) => {
+    if (!activeTalkId || !talkManagerRef.current) return;
+    talkManagerRef.current.saveTalk(activeTalkId);
+    const agents = talkManagerRef.current.getAgents(activeTalkId);
+    const matched = agents.find((a) => a.name.toLowerCase() === agentName.toLowerCase());
+    if (!matched) {
+      setError(`Unknown agent "${agentName}". Use /agents to list names.`);
+      return;
+    }
+    const ok = talkManagerRef.current.upsertPlatformBehaviorByBindingIndex(activeTalkId, index, {
+      agentName: matched.name,
+    });
+    if (!ok) {
+      setError(`No channel connection at position ${index}`);
+      return;
+    }
+    syncChannelResponsesToGateway(activeTalkId);
+    const sysMsg = createMessage('system', `Channel response agent for connection #${index}: ${matched.name}`);
+    chat.setMessages(prev => [...prev, sysMsg]);
+  }, [activeTalkId, syncChannelResponsesToGateway]);
+
+  const handleClearChannelResponse = useCallback((index: number) => {
+    if (!activeTalkId || !talkManagerRef.current) return;
+    talkManagerRef.current.saveTalk(activeTalkId);
+    const ok = talkManagerRef.current.clearPlatformBehaviorByBindingIndex(activeTalkId, index);
+    if (!ok) {
+      setError(`No channel response settings found at position ${index}`);
+      return;
+    }
+    syncChannelResponsesToGateway(activeTalkId);
+    const sysMsg = createMessage('system', `Channel response settings cleared for connection #${index}.`);
+    chat.setMessages(prev => [...prev, sysMsg]);
+  }, [activeTalkId, syncChannelResponsesToGateway]);
 
   // --- Playbook handler ---
 
@@ -1206,6 +1312,21 @@ function App({ options }: AppProps) {
       sections.push(`\nChannel connections:\n${lines.join('\n')}`);
     } else {
       sections.push('\nChannel connections: (none)');
+    }
+
+    // Channel response settings
+    const behaviors = talk.platformBehaviors ?? [];
+    if (bindings.length > 0) {
+      const lines = bindings.map((binding, i) => {
+        const behavior = behaviors.find((entry) => entry.platformBindingId === binding.id);
+        const enabled = behavior?.autoRespond === false ? 'off' : 'on';
+        const agent = behavior?.agentName ?? '(default)';
+        const prompt = behavior?.onMessagePrompt ?? '(none)';
+        return `  ${i + 1}. auto:${enabled}  agent:${agent}  prompt:${prompt}`;
+      });
+      sections.push(`\nChannel response settings:\n${lines.join('\n')}`);
+    } else {
+      sections.push('\nChannel response settings: (none)');
     }
 
     // Automations
@@ -1861,6 +1982,11 @@ function App({ options }: AppProps) {
     addPlatformBinding: handleAddPlatformBinding,
     removePlatformBinding: handleRemovePlatformBinding,
     listPlatformBindings: handleListPlatformBindings,
+    listChannelResponses: handleListChannelResponses,
+    setChannelResponseEnabled: handleSetChannelResponseEnabled,
+    setChannelResponsePrompt: handleSetChannelResponsePrompt,
+    setChannelResponseAgent: handleSetChannelResponseAgent,
+    clearChannelResponse: handleClearChannelResponse,
     showPlaybook: handleShowPlaybook,
   });
   commandCtx.current = {
@@ -1899,6 +2025,11 @@ function App({ options }: AppProps) {
     addPlatformBinding: handleAddPlatformBinding,
     removePlatformBinding: handleRemovePlatformBinding,
     listPlatformBindings: handleListPlatformBindings,
+    listChannelResponses: handleListChannelResponses,
+    setChannelResponseEnabled: handleSetChannelResponseEnabled,
+    setChannelResponsePrompt: handleSetChannelResponsePrompt,
+    setChannelResponseAgent: handleSetChannelResponseAgent,
+    clearChannelResponse: handleClearChannelResponse,
     showPlaybook: handleShowPlaybook,
   };
 
@@ -2422,6 +2553,19 @@ function App({ options }: AppProps) {
               objective: activeTalk.objective,
               directives: (activeTalk.directives ?? []).map(d => ({ text: d.text, active: d.active })),
               platformBindings: (activeTalk.platformBindings ?? []).map(b => ({ platform: b.platform, scope: b.scope, permission: b.permission })),
+              channelResponseSettings: (() => {
+                const bindings = activeTalk.platformBindings ?? [];
+                const behaviors = activeTalk.platformBehaviors ?? [];
+                return bindings.map((binding, idx) => {
+                  const behavior = behaviors.find((entry) => entry.platformBindingId === binding.id);
+                  return {
+                    connectionIndex: idx + 1,
+                    autoRespond: behavior?.autoRespond !== false,
+                    agentName: behavior?.agentName,
+                    onMessagePrompt: behavior?.onMessagePrompt,
+                  };
+                });
+              })(),
               jobs: (activeTalk.jobs ?? []).map(j => ({ schedule: j.schedule, prompt: j.prompt, active: j.active })),
               agents: (activeTalk.agents ?? []).map(a => ({ name: a.name, role: a.role, model: a.model, isPrimary: a.isPrimary })),
             } : null}

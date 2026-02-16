@@ -522,7 +522,12 @@ export class TalkManager {
     if (!talk?.platformBindings) return false;
     if (index < 1 || index > talk.platformBindings.length) return false;
 
-    talk.platformBindings.splice(index - 1, 1);
+    const removed = talk.platformBindings.splice(index - 1, 1)[0];
+    if (removed?.id && talk.platformBehaviors) {
+      talk.platformBehaviors = talk.platformBehaviors.filter(
+        (behavior) => behavior.platformBindingId !== removed.id,
+      );
+    }
     talk.updatedAt = Date.now();
     if (talk.isSaved) this.persistTalk(talk);
     return true;
@@ -532,6 +537,81 @@ export class TalkManager {
   getPlatformBindings(talkId: string): PlatformBinding[] {
     const talk = this.talks.get(talkId);
     return talk?.platformBindings ?? [];
+  }
+
+  /** Get all platform behaviors for a talk. */
+  getPlatformBehaviors(talkId: string): PlatformBehavior[] {
+    const talk = this.talks.get(talkId);
+    return talk?.platformBehaviors ?? [];
+  }
+
+  /**
+   * Upsert response settings for a channel connection by 1-based binding index.
+   * Returns false when the binding index is invalid.
+   */
+  upsertPlatformBehaviorByBindingIndex(
+    talkId: string,
+    bindingIndex: number,
+    updates: Partial<Pick<PlatformBehavior, 'autoRespond' | 'agentName' | 'onMessagePrompt'>>,
+  ): boolean {
+    const talk = this.talks.get(talkId);
+    if (!talk?.platformBindings) return false;
+    if (bindingIndex < 1 || bindingIndex > talk.platformBindings.length) return false;
+
+    const binding = talk.platformBindings[bindingIndex - 1];
+    if (!binding?.id) return false;
+
+    if (!talk.platformBehaviors) talk.platformBehaviors = [];
+    let behavior = talk.platformBehaviors.find((entry) => entry.platformBindingId === binding.id);
+    const now = Date.now();
+
+    if (!behavior) {
+      behavior = {
+        id: randomUUID(),
+        platformBindingId: binding.id,
+        createdAt: now,
+        updatedAt: now,
+      };
+      talk.platformBehaviors.push(behavior);
+    }
+
+    if (updates.autoRespond !== undefined) {
+      behavior.autoRespond = updates.autoRespond;
+    }
+    if (updates.agentName !== undefined) {
+      const next = updates.agentName.trim();
+      if (next) behavior.agentName = next;
+      else delete behavior.agentName;
+    }
+    if (updates.onMessagePrompt !== undefined) {
+      const next = updates.onMessagePrompt.trim();
+      if (next) behavior.onMessagePrompt = next;
+      else delete behavior.onMessagePrompt;
+    }
+    behavior.updatedAt = now;
+
+    talk.updatedAt = now;
+    if (talk.isSaved) this.persistTalk(talk);
+    return true;
+  }
+
+  /** Remove response settings for a channel connection by 1-based binding index. */
+  clearPlatformBehaviorByBindingIndex(talkId: string, bindingIndex: number): boolean {
+    const talk = this.talks.get(talkId);
+    if (!talk?.platformBindings || !talk.platformBehaviors) return false;
+    if (bindingIndex < 1 || bindingIndex > talk.platformBindings.length) return false;
+
+    const binding = talk.platformBindings[bindingIndex - 1];
+    if (!binding?.id) return false;
+    const before = talk.platformBehaviors.length;
+    talk.platformBehaviors = talk.platformBehaviors.filter(
+      (entry) => entry.platformBindingId !== binding.id,
+    );
+    if (talk.platformBehaviors.length === before) return false;
+
+    talk.updatedAt = Date.now();
+    if (talk.isSaved) this.persistTalk(talk);
+    return true;
   }
 
   /** Import a talk from gateway data (creates local entry if not present). */

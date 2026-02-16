@@ -43,6 +43,11 @@ export interface CommandContext {
   addPlatformBinding: (platform: string, scope: string, permission: string) => void;
   removePlatformBinding: (index: number) => void;
   listPlatformBindings: () => void;
+  listChannelResponses: () => void;
+  setChannelResponseEnabled: (index: number, enabled: boolean) => void;
+  setChannelResponsePrompt: (index: number, prompt: string) => void;
+  setChannelResponseAgent: (index: number, agentName: string) => void;
+  clearChannelResponse: (index: number) => void;
   showPlaybook: () => void;
 }
 
@@ -482,7 +487,7 @@ function handlePlatformCommand(args: string, ctx: CommandContext): CommandResult
   const parts = trimmed.split(/\s+/);
   if (parts.length < 3) {
     ctx.addSystemMessage(
-      'Usage: /channel <platform> <scope> <permission> (alias: /platform)\n' +
+      'Usage: /channel <platform> <scope> <permission>\n' +
       'Permission: read | write | read+write\n' +
       'Examples:\n' +
       '- /channel slack #team-product read+write\n' +
@@ -521,6 +526,73 @@ function handleChannelsCommand(args: string, ctx: CommandContext): CommandResult
   return handlePlatformsCommand(args, ctx);
 }
 
+/** Handle /response <subcommand> — manage channel response settings. */
+function handleResponseCommand(args: string, ctx: CommandContext): CommandResult {
+  const trimmed = args.trim();
+  if (!trimmed || trimmed === 'list') {
+    ctx.listChannelResponses();
+    return { handled: true };
+  }
+
+  const setMatch = trimmed.match(/^set\s+(\d+)\s+(on|off)$/i);
+  if (setMatch) {
+    const index = parseInt(setMatch[1], 10);
+    const enabled = setMatch[2].toLowerCase() === 'on';
+    ctx.setChannelResponseEnabled(index, enabled);
+    return { handled: true };
+  }
+
+  const promptMatch = trimmed.match(/^prompt\s+(\d+)\s+(.+)$/is);
+  if (promptMatch) {
+    const index = parseInt(promptMatch[1], 10);
+    const prompt = promptMatch[2].trim();
+    if (!prompt) {
+      ctx.addSystemMessage('Usage: /response prompt <connectionN> <text>');
+      return { handled: true };
+    }
+    ctx.setChannelResponsePrompt(index, prompt);
+    return { handled: true };
+  }
+
+  const agentMatch = trimmed.match(/^agent\s+(\d+)\s+(.+)$/is);
+  if (agentMatch) {
+    const index = parseInt(agentMatch[1], 10);
+    const agentName = agentMatch[2].trim();
+    if (!agentName) {
+      ctx.addSystemMessage('Usage: /response agent <connectionN> <agent name>');
+      return { handled: true };
+    }
+    ctx.setChannelResponseAgent(index, agentName);
+    return { handled: true };
+  }
+
+  const clearMatch = trimmed.match(/^clear\s+(\d+)$/i);
+  if (clearMatch) {
+    const index = parseInt(clearMatch[1], 10);
+    ctx.clearChannelResponse(index);
+    return { handled: true };
+  }
+
+  ctx.addSystemMessage(
+    'Usage:\n' +
+    '- /response list\n' +
+    '- /response set <connectionN> on|off\n' +
+    '- /response prompt <connectionN> <text>\n' +
+    '- /response agent <connectionN> <agent name>\n' +
+    '- /response clear <connectionN>\n' +
+    'Examples:\n' +
+    '- /response set 1 on\n' +
+    '- /response prompt 1 Reply with concise action items and owners\n' +
+    '- /response agent 1 Opus Strategist',
+  );
+  return { handled: true };
+}
+
+/** Handle /responses — alias of /response. */
+function handleResponsesCommand(args: string, ctx: CommandContext): CommandResult {
+  return handleResponseCommand(args, ctx);
+}
+
 /** Handle /playbook — show full talk configuration overview. */
 function handlePlaybookCommand(_args: string, ctx: CommandContext): CommandResult {
   ctx.showPlaybook();
@@ -542,26 +614,35 @@ const COMMANDS: Record<string, { handler: CommandHandler; description: string }>
   job: { handler: handleJobCommand, description: 'Add or manage an automation' },
   jobs: { handler: handleJobsCommand, description: 'List automations for this talk' },
   automations: { handler: handleAutomationsCommand, description: 'List automations for this talk' },
-  objective: { handler: handleObjectiveCommand, description: 'Set talk objectives (desired outcome)' },
   objectives: { handler: handleObjectivesCommand, description: 'Set talk objectives (desired outcome)' },
   reports: { handler: handleReportsCommand, description: 'View automation reports' },
   agent: { handler: handleAgentCommand, description: 'Add or remove an agent' },
   agents: { handler: handleAgentsCommand, description: 'List agents for this talk' },
   ask: { handler: handleAskCommand, description: 'Ask a specific agent' },
   debate: { handler: handleDebateCommand, description: 'All agents discuss a topic' },
-  review: { handler: handleReviewCommand, description: 'Agents review last response' },
   file: { handler: handleFileCommand, description: 'Attach a file (image, PDF, text)' },
   export: { handler: handleExportCommand, description: 'Export current talk' },
   edit: { handler: handleEditCommand, description: 'Edit messages (mark and delete)' },
-  directive: { handler: handleDirectiveCommand, description: 'Add or manage a rule (alias: /rule)' },
-  directives: { handler: handleDirectivesCommand, description: 'List rules for this talk (alias: /rules)' },
   rule: { handler: handleRuleCommand, description: 'Add or manage a rule' },
   rules: { handler: handleRulesCommand, description: 'List rules for this talk' },
-  platform: { handler: handlePlatformCommand, description: 'Add or manage channel connections (alias: /channel)' },
-  platforms: { handler: handlePlatformsCommand, description: 'List channel connections (alias: /channels)' },
   channel: { handler: handleChannelCommand, description: 'Add or manage channel connections' },
   channels: { handler: handleChannelsCommand, description: 'List channel connections' },
+  response: { handler: handleResponseCommand, description: 'Manage channel response settings' },
+  responses: { handler: handleResponsesCommand, description: 'List channel response settings' },
   playbook: { handler: handlePlaybookCommand, description: 'Show full talk configuration' },
+};
+
+/**
+ * Hidden compatibility commands.
+ * These keep old command names working without advertising them in help/completions.
+ */
+const HIDDEN_COMMANDS: Record<string, CommandHandler> = {
+  objective: handleObjectiveCommand,
+  directive: handleDirectiveCommand,
+  directives: handleDirectivesCommand,
+  platform: handlePlatformCommand,
+  platforms: handlePlatformsCommand,
+  review: handleReviewCommand,
 };
 
 /**
@@ -578,6 +659,15 @@ export function dispatchCommand(input: string, ctx: CommandContext): boolean {
     if (withoutSlash === name || withoutSlash.startsWith(name + ' ')) {
       const args = withoutSlash.slice(name.length).trim();
       entry.handler(args, ctx);
+      return true;
+    }
+  }
+
+  // Hidden compatibility commands (not shown in suggestions/help)
+  for (const [name, handler] of Object.entries(HIDDEN_COMMANDS)) {
+    if (withoutSlash === name || withoutSlash.startsWith(name + ' ')) {
+      const args = withoutSlash.slice(name.length).trim();
+      handler(args, ctx);
       return true;
     }
   }
@@ -633,18 +723,26 @@ export function getCommandCompletions(prefix: string): CommandInfo[] {
           { name: 'agent remove <name>', description: 'Remove an agent' },
           { name: 'agent role <name> <role>', description: 'Change role: Analyst, Critic, Strategist, Devil\'s Advocate, Synthesizer, Editor' },
         );
-      } else if (name === 'directive' || name === 'rule') {
+      } else if (name === 'rule') {
         results.push(
           { name: `${name} <text>`, description: 'Add a rule' },
           { name: `${name} toggle N`, description: 'Enable/disable rule #N' },
           { name: `${name} delete N`, description: 'Delete rule #N' },
         );
-      } else if (name === 'platform' || name === 'channel') {
+      } else if (name === 'channel') {
         results.push(
           { name: `${name} <name> <scope> <perm>`, description: 'Add channel connection (read, write, read+write)' },
           { name: `${name} delete N`, description: 'Remove channel connection #N' },
         );
-      } else if (name === 'objective' || name === 'objectives') {
+      } else if (name === 'response' || name === 'responses') {
+        results.push(
+          { name: `${name} list`, description: 'List channel response settings' },
+          { name: `${name} set N on|off`, description: 'Enable/disable auto-response for channel #N' },
+          { name: `${name} prompt N <text>`, description: 'Set response instruction for channel #N' },
+          { name: `${name} agent N <name>`, description: 'Set responder agent for channel #N' },
+          { name: `${name} clear N`, description: 'Clear response settings for channel #N' },
+        );
+      } else if (name === 'objectives') {
         results.push(
           { name: `${name} <text>`, description: 'Set one-sentence desired outcome for this talk' },
           { name: `${name} clear`, description: 'Clear objectives for this talk' },
