@@ -1076,7 +1076,26 @@ function App({ options }: AppProps) {
       // Stop if superseded while request was in flight
       if (talkConfigSyncVersionRef.current[key] !== nextVersion) return;
 
-      if (result.ok) return;
+      if (result.ok) {
+        const gwTalk = result.data;
+        if (gwTalk && talkManagerRef.current) {
+          talkManagerRef.current.importGatewayTalk({
+            id: gwTalk.id,
+            topicTitle: gwTalk.topicTitle,
+            objective: gwTalk.objective,
+            model: gwTalk.model,
+            pinnedMessageIds: gwTalk.pinnedMessageIds,
+            jobs: gwTalk.jobs,
+            agents: gwTalk.agents,
+            directives: gwTalk.directives,
+            platformBindings: gwTalk.platformBindings,
+            processing: gwTalk.processing,
+            createdAt: gwTalk.createdAt,
+            updatedAt: gwTalk.updatedAt,
+          });
+        }
+        return;
+      }
 
       if (attempt < 2) {
         const delay = 500 * (2 ** attempt);
@@ -1090,6 +1109,16 @@ function App({ options }: AppProps) {
     };
 
     void run(0);
+  }, []);
+
+  const formatPlatformScope = useCallback((binding: PlatformBinding): string => {
+    const scope = binding.scope;
+    const display = binding.displayScope?.trim();
+    const accountPrefix = binding.accountId?.trim() ? `${binding.accountId.trim()}:` : '';
+    if (!display || display.toLowerCase() === scope.toLowerCase()) {
+      return `${accountPrefix}${scope}`;
+    }
+    return `${accountPrefix}${display} [${scope}]`;
   }, []);
 
   // --- Directive handlers ---
@@ -1162,12 +1191,15 @@ function App({ options }: AppProps) {
     const binding = talkManagerRef.current.addPlatformBinding(activeTalkId, platform, scope, permission as PlatformPermission);
     if (!binding) { setError('Failed to add platform binding'); return; }
 
-    const sysMsg = createMessage('system', `Platform binding added: ${platform} ${scope} (${permission})`);
+    const sysMsg = createMessage(
+      'system',
+      `Platform binding added: ${platform} ${formatPlatformScope(binding)} (${permission})`,
+    );
     chat.setMessages(prev => [...prev, sysMsg]);
 
     const bindings = talkManagerRef.current.getPlatformBindings(activeTalkId);
     syncGatewayTalkConfig(gatewayTalkIdRef.current, { platformBindings: bindings }, 'platformBindings');
-  }, [activeTalkId, syncGatewayTalkConfig]);
+  }, [activeTalkId, formatPlatformScope, syncGatewayTalkConfig]);
 
   const handleRemovePlatformBinding = useCallback((index: number) => {
     if (!activeTalkId || !talkManagerRef.current) return;
@@ -1191,11 +1223,11 @@ function App({ options }: AppProps) {
       return;
     }
     const lines = bindings.map((b, i) =>
-      `  ${i + 1}. platform${i + 1}: ${b.platform} ${b.scope} (${b.permission})`
+      `  ${i + 1}. platform${i + 1}: ${b.platform} ${formatPlatformScope(b)} (${b.permission})`
     );
     const sysMsg = createMessage('system', `Platform bindings:\n${lines.join('\n')}`);
     chat.setMessages(prev => [...prev, sysMsg]);
-  }, [activeTalkId]);
+  }, [activeTalkId, formatPlatformScope]);
 
   // --- Playbook handler ---
 
@@ -1229,7 +1261,7 @@ function App({ options }: AppProps) {
     const bindings = talk.platformBindings ?? [];
     if (bindings.length > 0) {
       const lines = bindings.map((b, i) =>
-        `  ${i + 1}. platform${i + 1}: ${b.platform} ${b.scope} (${b.permission})`
+        `  ${i + 1}. platform${i + 1}: ${b.platform} ${formatPlatformScope(b)} (${b.permission})`
       );
       sections.push(`\nPlatform bindings:\n${lines.join('\n')}`);
     } else {
@@ -1262,7 +1294,7 @@ function App({ options }: AppProps) {
 
     const sysMsg = createMessage('system', sections.join('\n'));
     chat.setMessages(prev => [...prev, sysMsg]);
-  }, [activeTalkId]);
+  }, [activeTalkId, formatPlatformScope]);
 
   const handleConfirmDeleteMessages = useCallback((messageIds: string[]) => {
     const sessionId = sessionManagerRef.current?.getActiveSessionId();
@@ -1291,6 +1323,8 @@ function App({ options }: AppProps) {
           pinnedMessageIds: gwTalk.pinnedMessageIds,
           jobs: gwTalk.jobs,
           agents: gwTalk.agents,
+          directives: gwTalk.directives,
+          platformBindings: gwTalk.platformBindings,
           processing: gwTalk.processing,
           createdAt: gwTalk.createdAt,
           updatedAt: gwTalk.updatedAt,
@@ -2442,7 +2476,11 @@ function App({ options }: AppProps) {
             talkConfig={activeTalk ? {
               objective: activeTalk.objective,
               directives: (activeTalk.directives ?? []).map(d => ({ text: d.text, active: d.active })),
-              platformBindings: (activeTalk.platformBindings ?? []).map(b => ({ platform: b.platform, scope: b.scope, permission: b.permission })),
+              platformBindings: (activeTalk.platformBindings ?? []).map(b => ({
+                platform: b.platform,
+                scope: formatPlatformScope(b),
+                permission: b.permission,
+              })),
               jobs: (activeTalk.jobs ?? []).map(j => ({ schedule: j.schedule, prompt: j.prompt, active: j.active })),
               agents: (activeTalk.agents ?? []).map(a => ({ name: a.name, role: a.role, model: a.model, isPrimary: a.isPrimary })),
             } : null}

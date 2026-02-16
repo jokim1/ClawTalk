@@ -223,6 +223,10 @@ export interface PlatformBinding {
   id: string;
   platform: string;
   scope: string;
+  /** Optional Slack account/workspace identifier from OpenClaw config. */
+  accountId?: string;
+  /** Optional human-friendly scope label (for example "#general"). */
+  displayScope?: string;
   permission: PlatformPermission;
   createdAt: number;
 }

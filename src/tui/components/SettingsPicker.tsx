@@ -500,8 +500,8 @@ export function SettingsPicker({
                 ) : (
                   <>
                     <Text dimColor>  (none) — /platform {'<name> <scope> <perm>'} to add</Text>
-                    <Text dimColor italic>  e.g. /platform slack "KimFamily #general" read+write</Text>
-                    <Text dimColor italic>  e.g. /platform slack "Lila Games #team-product" read+write</Text>
+                    <Text dimColor italic>  e.g. /platform slack #general read+write</Text>
+                    <Text dimColor italic>  e.g. /platform slack kimfamily:#general read+write</Text>
                   </>
                 )}
               </Box>

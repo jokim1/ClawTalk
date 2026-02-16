@@ -206,6 +206,22 @@ export interface GatewayResult<T = void> {
   error?: string;
 }
 
+export interface GatewayTalkMeta {
+  id: string;
+  topicTitle?: string;
+  objective?: string;
+  model?: string;
+  pinnedMessageIds: string[];
+  jobs: Job[];
+  agents?: TalkAgent[];
+  directives?: Directive[];
+  platformBindings?: PlatformBinding[];
+  processing?: boolean;
+  createdAt: number;
+  updatedAt: number;
+  contextMd?: string;
+}
+
 export class ChatService implements IChatService {
   private config: ChatServiceConfig;
   private sessionKey: string;
@@ -380,7 +396,17 @@ export class ChatService implements IChatService {
   }
 
   /** Update Talk metadata on the gateway (objective, topicTitle, model). */
-  async updateGatewayTalk(talkId: string, updates: { objective?: string; topicTitle?: string; model?: string; agents?: TalkAgent[]; directives?: Directive[]; platformBindings?: PlatformBinding[] }): Promise<GatewayResult> {
+  async updateGatewayTalk(
+    talkId: string,
+    updates: {
+      objective?: string;
+      topicTitle?: string;
+      model?: string;
+      agents?: TalkAgent[];
+      directives?: Directive[];
+      platformBindings?: PlatformBinding[];
+    },
+  ): Promise<GatewayResult<GatewayTalkMeta>> {
     try {
       const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}`, {
         method: 'PATCH',
@@ -392,7 +418,8 @@ export class ChatService implements IChatService {
         const body = await response.text().catch(() => '');
         return { ok: false, error: `Gateway error (${response.status}): ${body.slice(0, 200)}` };
       }
-      return { ok: true };
+      const data = await response.json().catch(() => null) as GatewayTalkMeta | null;
+      return data ? { ok: true, data } : { ok: true };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : 'Unknown error' };
     }
@@ -417,18 +444,7 @@ export class ChatService implements IChatService {
   }
 
   /** Fetch Talk metadata from gateway. */
-  async getGatewayTalk(talkId: string): Promise<{
-    id: string;
-    topicTitle?: string;
-    objective?: string;
-    model?: string;
-    pinnedMessageIds: string[];
-    agents?: TalkAgent[];
-    directives?: Directive[];
-    platformBindings?: PlatformBinding[];
-    processing?: boolean;
-    contextMd?: string;
-  } | null> {
+  async getGatewayTalk(talkId: string): Promise<GatewayTalkMeta | null> {
     try {
       const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}`, {
         method: 'GET',
@@ -443,20 +459,7 @@ export class ChatService implements IChatService {
   }
 
   /** List all talks from the gateway. */
-  async listGatewayTalks(): Promise<Array<{
-    id: string;
-    topicTitle?: string;
-    objective?: string;
-    model?: string;
-    pinnedMessageIds: string[];
-    jobs: Job[];
-    agents?: TalkAgent[];
-    directives?: Directive[];
-    platformBindings?: PlatformBinding[];
-    processing?: boolean;
-    createdAt: number;
-    updatedAt: number;
-  }>> {
+  async listGatewayTalks(): Promise<GatewayTalkMeta[]> {
     try {
       const response = await fetch(`${this.config.gatewayUrl}/api/talks`, {
         method: 'GET',

@@ -496,7 +496,13 @@ export class TalkManager {
   // --- Platform binding methods (1-based indexes for user-facing) ---
 
   /** Add a platform binding to a talk. */
-  addPlatformBinding(talkId: string, platform: string, scope: string, permission: PlatformPermission): PlatformBinding | null {
+  addPlatformBinding(
+    talkId: string,
+    platform: string,
+    scope: string,
+    permission: PlatformPermission,
+    options?: { accountId?: string; displayScope?: string },
+  ): PlatformBinding | null {
     const talk = this.talks.get(talkId);
     if (!talk) return null;
 
@@ -506,6 +512,8 @@ export class TalkManager {
       id: randomUUID(),
       platform,
       scope,
+      ...(options?.accountId ? { accountId: options.accountId } : {}),
+      ...(options?.displayScope ? { displayScope: options.displayScope } : {}),
       permission,
       createdAt: Date.now(),
     };

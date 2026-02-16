@@ -58,24 +58,83 @@ export interface CommandInfo {
 }
 
 function normalizeSlackScope(scope: string): string | null {
-  const trimmed = scope.trim();
+  const rawTrimmed = scope.trim();
+  if (!rawTrimmed) return null;
+
+  const quoted =
+    (rawTrimmed.startsWith('"') && rawTrimmed.endsWith('"')) ||
+    (rawTrimmed.startsWith("'") && rawTrimmed.endsWith("'"));
+  const trimmed = quoted ? rawTrimmed.slice(1, -1).trim() : rawTrimmed;
   if (!trimmed) return null;
 
-  if (/^(?:\*|all|slack:\*)$/i.test(trimmed)) {
-    return 'slack:*';
+  const normalizeInner = (value: string): string | null => {
+    const inner = value.trim();
+    if (!inner) return null;
+
+    if (/^(?:\*|all|slack:\*)$/i.test(inner)) {
+      return 'slack:*';
+    }
+
+    const channel = inner.match(/^channel:([a-z0-9]+)$/i) ?? inner.match(/^slack:channel:([a-z0-9]+)$/i);
+    if (channel?.[1]) {
+      return `channel:${channel[1].toUpperCase()}`;
+    }
+
+    const user = inner.match(/^user:([a-z0-9]+)$/i) ?? inner.match(/^slack:user:([a-z0-9]+)$/i);
+    if (user?.[1]) {
+      return `user:${user[1].toUpperCase()}`;
+    }
+
+    const namedChannel =
+      inner.match(/^#([a-z0-9._-]+)$/i) ??
+      inner.match(/^channel:#?([a-z0-9._-]+)$/i) ??
+      inner.match(/^slack:channel:#?([a-z0-9._-]+)$/i);
+    if (namedChannel?.[1]) {
+      return `#${namedChannel[1].toLowerCase()}`;
+    }
+
+    if (/^[a-z0-9._-]+$/i.test(inner)) {
+      return `#${inner.toLowerCase()}`;
+    }
+
+    return null;
+  };
+
+  const accountViaKeyword = trimmed.match(/^account:([a-z0-9._-]+):(.+)$/i);
+  if (accountViaKeyword?.[1] && accountViaKeyword?.[2]) {
+    const normalizedInner = normalizeInner(accountViaKeyword[2]);
+    if (!normalizedInner) return null;
+    return `${accountViaKeyword[1].toLowerCase()}:${normalizedInner}`;
   }
 
-  const channel = trimmed.match(/^channel:([a-z0-9]+)$/i) ?? trimmed.match(/^slack:channel:([a-z0-9]+)$/i);
-  if (channel?.[1]) {
-    return `channel:${channel[1].toUpperCase()}`;
+  const accountViaSpace = trimmed.match(/^([a-z0-9._-]+)\s+(#?[a-z0-9._-]+)$/i);
+  if (accountViaSpace?.[1] && accountViaSpace?.[2] && accountViaSpace[2].startsWith('#')) {
+    const normalizedInner = normalizeInner(accountViaSpace[2]);
+    if (!normalizedInner) return null;
+    return `${accountViaSpace[1].toLowerCase()}:${normalizedInner}`;
   }
 
-  const user = trimmed.match(/^user:([a-z0-9]+)$/i) ?? trimmed.match(/^slack:user:([a-z0-9]+)$/i);
-  if (user?.[1]) {
-    return `user:${user[1].toUpperCase()}`;
+  const accountViaPrefix = trimmed.match(/^([a-z0-9._-]+):(.+)$/i);
+  if (accountViaPrefix?.[1] && accountViaPrefix?.[2]) {
+    const prefix = accountViaPrefix[1].toLowerCase();
+    const scoped = accountViaPrefix[2].trim();
+    const looksAccountScoped =
+      !['channel', 'user', 'slack'].includes(prefix) &&
+      (scoped.startsWith('#') ||
+        /^channel:/i.test(scoped) ||
+        /^user:/i.test(scoped) ||
+        /^slack:\*/i.test(scoped) ||
+        scoped === '*' ||
+        scoped === 'all');
+    if (looksAccountScoped) {
+      const normalizedInner = normalizeInner(scoped);
+      if (normalizedInner) {
+        return `${prefix}:${normalizedInner}`;
+      }
+    }
   }
 
-  return null;
+  return normalizeInner(trimmed);
 }
 
 /** Handle /model <alias|id> — switch the active model. */
@@ -414,8 +473,11 @@ function handlePlatformCommand(args: string, ctx: CommandContext): CommandResult
     return { handled: true };
   }
 
+  const addPrefix = trimmed.match(/^add\s+(.+)$/i);
+  const payload = addPrefix?.[1] ? addPrefix[1].trim() : trimmed;
+
   // Parse: platform scope permission (e.g. "slack #team-product read+write")
-  const parts = trimmed.split(/\s+/);
+  const parts = payload.split(/\s+/);
   if (parts.length < 3) {
     ctx.addSystemMessage('Usage: /platform <name> <scope> <permission>\nPermission: read, write, read+write');
     return { handled: true };
@@ -431,7 +493,8 @@ function handlePlatformCommand(args: string, ctx: CommandContext): CommandResult
     const normalizedScope = normalizeSlackScope(rawScope);
     if (!normalizedScope) {
       ctx.addSystemMessage(
-        'Invalid Slack scope. Use channel:<ID>, user:<ID>, or slack:* (examples: channel:C12345678, user:U12345678).',
+        'Invalid Slack scope. Use channel:<ID>, user:<ID>, #channel, account:#channel, or slack:* ' +
+        '(examples: #general, kimfamily:#general, channel:C12345678).',
       );
       return { handled: true };
     }
@@ -563,7 +626,8 @@ export function getCommandCompletions(prefix: string): CommandInfo[] {
         );
       } else if (name === 'platform') {
         results.push(
-          { name: 'platform <name> <scope> <perm>', description: 'Add binding (Slack: channel:<id>, user:<id>, or slack:*)' },
+          { name: 'platform add <name> <scope> <perm>', description: 'Add binding (Slack: #channel, account:#channel, channel:<id>, user:<id>, or slack:*)' },
+          { name: 'platform <name> <scope> <perm>', description: 'Shorthand for platform add' },
           { name: 'platform delete N', description: 'Remove binding #N' },
         );
       } else {
