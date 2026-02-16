@@ -164,6 +164,7 @@ function App({ options }: AppProps) {
   // --- Primary agent ref (used by useChat for speaker labels) ---
 
   const primaryAgentRef = useRef<TalkAgent | null>(null);
+  const talkConfigSyncVersionRef = useRef<Record<string, number>>({});
 
   // --- Hooks ---
 
@@ -1054,6 +1055,43 @@ function App({ options }: AppProps) {
     setShowEditMessages(true);
   }, [chat.messages]);
 
+  const syncGatewayTalkConfig = useCallback((
+    gatewayTalkId: string | null,
+    updates: { directives?: Directive[]; platformBindings?: PlatformBinding[] },
+    label: 'directives' | 'platformBindings',
+  ) => {
+    const service = chatServiceRef.current;
+    if (!gatewayTalkId || !service) return;
+
+    const key = `${gatewayTalkId}:${label}`;
+    const nextVersion = (talkConfigSyncVersionRef.current[key] ?? 0) + 1;
+    talkConfigSyncVersionRef.current[key] = nextVersion;
+
+    const run = async (attempt: number): Promise<void> => {
+      // Stop stale retries from older writes
+      if (talkConfigSyncVersionRef.current[key] !== nextVersion) return;
+
+      const result = await service.updateGatewayTalk(gatewayTalkId, updates);
+
+      // Stop if superseded while request was in flight
+      if (talkConfigSyncVersionRef.current[key] !== nextVersion) return;
+
+      if (result.ok) return;
+
+      if (attempt < 2) {
+        const delay = 500 * (2 ** attempt);
+        setTimeout(() => {
+          void run(attempt + 1);
+        }, delay);
+        return;
+      }
+
+      setError(`Failed to sync ${label} to gateway: ${result.error ?? 'unknown error'}`);
+    };
+
+    void run(0);
+  }, []);
+
   // --- Directive handlers ---
 
   const handleAddDirective = useCallback((text: string) => {
@@ -1067,11 +1105,9 @@ function App({ options }: AppProps) {
     chat.setMessages(prev => [...prev, sysMsg]);
 
     // Sync to gateway
-    if (gatewayTalkIdRef.current && chatServiceRef.current) {
-      const directives = talkManagerRef.current.getDirectives(activeTalkId);
-      chatServiceRef.current.updateGatewayTalk(gatewayTalkIdRef.current, { directives });
-    }
-  }, [activeTalkId]);
+    const directives = talkManagerRef.current.getDirectives(activeTalkId);
+    syncGatewayTalkConfig(gatewayTalkIdRef.current, { directives }, 'directives');
+  }, [activeTalkId, syncGatewayTalkConfig]);
 
   const handleRemoveDirective = useCallback((index: number) => {
     if (!activeTalkId || !talkManagerRef.current) return;
@@ -1082,11 +1118,9 @@ function App({ options }: AppProps) {
     const sysMsg = createMessage('system', `Directive #${index} deleted.`);
     chat.setMessages(prev => [...prev, sysMsg]);
 
-    if (gatewayTalkIdRef.current && chatServiceRef.current) {
-      const directives = talkManagerRef.current.getDirectives(activeTalkId);
-      chatServiceRef.current.updateGatewayTalk(gatewayTalkIdRef.current, { directives });
-    }
-  }, [activeTalkId]);
+    const directives = talkManagerRef.current.getDirectives(activeTalkId);
+    syncGatewayTalkConfig(gatewayTalkIdRef.current, { directives }, 'directives');
+  }, [activeTalkId, syncGatewayTalkConfig]);
 
   const handleToggleDirective = useCallback((index: number) => {
     if (!activeTalkId || !talkManagerRef.current) return;
@@ -1100,10 +1134,8 @@ function App({ options }: AppProps) {
     const sysMsg = createMessage('system', `Directive #${index} ${status}.`);
     chat.setMessages(prev => [...prev, sysMsg]);
 
-    if (gatewayTalkIdRef.current && chatServiceRef.current) {
-      chatServiceRef.current.updateGatewayTalk(gatewayTalkIdRef.current, { directives });
-    }
-  }, [activeTalkId]);
+    syncGatewayTalkConfig(gatewayTalkIdRef.current, { directives }, 'directives');
+  }, [activeTalkId, syncGatewayTalkConfig]);
 
   const handleListDirectives = useCallback(() => {
     if (!activeTalkId || !talkManagerRef.current) return;
@@ -1133,11 +1165,9 @@ function App({ options }: AppProps) {
     const sysMsg = createMessage('system', `Platform binding added: ${platform} ${scope} (${permission})`);
     chat.setMessages(prev => [...prev, sysMsg]);
 
-    if (gatewayTalkIdRef.current && chatServiceRef.current) {
-      const bindings = talkManagerRef.current.getPlatformBindings(activeTalkId);
-      chatServiceRef.current.updateGatewayTalk(gatewayTalkIdRef.current, { platformBindings: bindings });
-    }
-  }, [activeTalkId]);
+    const bindings = talkManagerRef.current.getPlatformBindings(activeTalkId);
+    syncGatewayTalkConfig(gatewayTalkIdRef.current, { platformBindings: bindings }, 'platformBindings');
+  }, [activeTalkId, syncGatewayTalkConfig]);
 
   const handleRemovePlatformBinding = useCallback((index: number) => {
     if (!activeTalkId || !talkManagerRef.current) return;
@@ -1148,11 +1178,9 @@ function App({ options }: AppProps) {
     const sysMsg = createMessage('system', `Platform binding #${index} removed.`);
     chat.setMessages(prev => [...prev, sysMsg]);
 
-    if (gatewayTalkIdRef.current && chatServiceRef.current) {
-      const bindings = talkManagerRef.current.getPlatformBindings(activeTalkId);
-      chatServiceRef.current.updateGatewayTalk(gatewayTalkIdRef.current, { platformBindings: bindings });
-    }
-  }, [activeTalkId]);
+    const bindings = talkManagerRef.current.getPlatformBindings(activeTalkId);
+    syncGatewayTalkConfig(gatewayTalkIdRef.current, { platformBindings: bindings }, 'platformBindings');
+  }, [activeTalkId, syncGatewayTalkConfig]);
 
   const handleListPlatformBindings = useCallback(() => {
     if (!activeTalkId || !talkManagerRef.current) return;
