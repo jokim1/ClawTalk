@@ -8,7 +8,7 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { render, Box, Text, useInput, useApp, useStdout } from 'ink';
-import type { ClawTalkOptions, ModelStatus, Message, TalkAgent, AgentRole, PendingAttachment, Directive, PlatformBinding, PlatformBehavior, PlatformPermission } from '../types.js';
+import type { ClawTalkOptions, ModelStatus, Message, TalkAgent, AgentRole, PendingAttachment, Directive, PlatformBinding, PlatformBehavior, PlatformPermission, Job } from '../types.js';
 import type { Talk } from '../types.js';
 import { AGENT_ROLES, ROLE_BY_ID, AGENT_PREAMBLE, generateAgentName } from '../agent-roles.js';
 import type { RoleTemplate } from '../agent-roles.js';
@@ -21,6 +21,7 @@ import { RolePicker } from './components/RolePicker.js';
 import { TalksHub } from './components/TalksHub';
 import { EditMessages } from './components/EditMessages';
 import { ChannelConfigPicker } from './components/ChannelConfigPicker';
+import { JobsConfigPicker } from './components/JobsConfigPicker';
 import { SettingsPicker } from './components/SettingsPicker.js';
 import { ChatService } from '../services/chat';
 import type { SlackAccountOption, SlackChannelOption } from '../services/chat';
@@ -68,6 +69,66 @@ function formatBindingScopeLabel(binding: {
     return `${binding.accountId}:${scopeLabel}`;
   }
   return scopeLabel;
+}
+
+function normalizeJobScheduleForBindings(
+  schedule: string,
+  bindings: PlatformBinding[],
+): { schedule: string; error?: string } {
+  const trimmed = schedule.trim();
+  if (!trimmed) return { schedule: trimmed, error: 'Schedule cannot be empty.' };
+
+  const eventMatch = trimmed.match(/^on\s+(.+)$/i);
+  if (!eventMatch?.[1]) return { schedule: trimmed };
+
+  const target = eventMatch[1].trim();
+  if (!target) return { schedule: trimmed, error: 'Event target cannot be empty.' };
+
+  const aliasMatch = target.match(/^(platform|channel|connection)(\d+)$/i);
+  if (aliasMatch) {
+    const idx = parseInt(aliasMatch[2], 10);
+    if (idx < 1 || idx > bindings.length) {
+      return {
+        schedule: trimmed,
+        error: `No channel connection at position ${idx}.`,
+      };
+    }
+    const resolved = bindings[idx - 1]?.scope?.trim();
+    if (!resolved) {
+      return {
+        schedule: trimmed,
+        error: `Channel connection #${idx} has no valid scope.`,
+      };
+    }
+    return { schedule: `on ${resolved}` };
+  }
+
+  const directScope = bindings.find((binding) => binding.scope.toLowerCase() === target.toLowerCase());
+  if (directScope) {
+    return { schedule: `on ${directScope.scope}` };
+  }
+
+  const formattedMatches = bindings.filter(
+    (binding) => formatBindingScopeLabel(binding).toLowerCase() === target.toLowerCase(),
+  );
+  if (formattedMatches.length === 1 && formattedMatches[0]) {
+    return { schedule: `on ${formattedMatches[0].scope}` };
+  }
+
+  const displayScopeMatches = bindings.filter(
+    (binding) => (binding.displayScope?.trim().toLowerCase() ?? '') === target.toLowerCase(),
+  );
+  if (displayScopeMatches.length === 1 && displayScopeMatches[0]) {
+    return { schedule: `on ${displayScopeMatches[0].scope}` };
+  }
+  if (displayScopeMatches.length > 1) {
+    return {
+      schedule: trimmed,
+      error: `Multiple channel connections match "${target}". Use full connection label.`,
+    };
+  }
+
+  return { schedule: trimmed };
 }
 
 function App({ options }: AppProps) {
@@ -142,6 +203,7 @@ function App({ options }: AppProps) {
   const [showTalks, setShowTalks] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
   const [showChannelConfig, setShowChannelConfig] = useState(false);
+  const [showJobsConfig, setShowJobsConfig] = useState(false);
   const [settingsFromTalks, setSettingsFromTalks] = useState(false);
   const [slackAccountHints, setSlackAccountHints] = useState<SlackAccountOption[]>([]);
   const [slackChannelsByAccount, setSlackChannelsByAccount] = useState<Record<string, SlackChannelOption[]>>({});
@@ -263,7 +325,7 @@ function App({ options }: AppProps) {
 
   // --- Scroll state ---
 
-  const isOverlayActive = showModelPicker || showRolePicker || showEditMessages || showTalks || showChannelConfig || showSettings;
+  const isOverlayActive = showModelPicker || showRolePicker || showEditMessages || showTalks || showChannelConfig || showJobsConfig || showSettings;
 
   // --- Command hints ---
 
@@ -769,165 +831,239 @@ function App({ options }: AppProps) {
 
   // --- Automation handlers ---
 
-  const handleAddJob = useCallback((schedule: string, prompt: string) => {
-    if (!activeTalkId || !talkManagerRef.current) return;
-    // Auto-save the talk when adding an automation
+  const getGatewayTalkIdForActiveTalk = useCallback((): string | null => {
+    if (gatewayTalkIdRef.current) return gatewayTalkIdRef.current;
+    if (!activeTalkId || !talkManagerRef.current) return null;
+    return talkManagerRef.current.getGatewayTalkId(activeTalkId) ?? null;
+  }, [activeTalkId]);
+
+  const refreshJobsFromSource = useCallback(async (): Promise<Job[]> => {
+    if (!activeTalkId || !talkManagerRef.current) return [];
+
+    const gwId = getGatewayTalkIdForActiveTalk();
+    if (gwId && chatServiceRef.current) {
+      const jobs = await chatServiceRef.current.listGatewayJobs(gwId);
+      talkManagerRef.current.replaceJobs(activeTalkId, jobs);
+      return jobs;
+    }
+
+    return talkManagerRef.current.getJobs(activeTalkId);
+  }, [activeTalkId, getGatewayTalkIdForActiveTalk]);
+
+  /** Helper: resolve automation ID by 1-based index via gateway. */
+  const resolveGatewayJobByIndex = useCallback(async (index: number): Promise<{ jobId: string; jobs: Job[] } | null> => {
+    const gwId = getGatewayTalkIdForActiveTalk();
+    if (!gwId || !chatServiceRef.current) return null;
+    const jobs = await refreshJobsFromSource();
+    const job = jobs[index - 1];
+    if (!job?.id) return null;
+    return { jobId: job.id, jobs };
+  }, [getGatewayTalkIdForActiveTalk, refreshJobsFromSource]);
+
+  const updateJobByIndex = useCallback(async (
+    index: number,
+    updates: Partial<Pick<Job, 'active' | 'schedule' | 'prompt'>>,
+  ): Promise<boolean> => {
+    if (!activeTalkId || !talkManagerRef.current) return false;
+
+    const bindings = talkManagerRef.current.getPlatformBindings(activeTalkId);
+    let normalizedUpdates = { ...updates };
+    if (updates.schedule !== undefined) {
+      const normalized = normalizeJobScheduleForBindings(updates.schedule, bindings);
+      if (normalized.error) {
+        setError(normalized.error);
+        return false;
+      }
+      normalizedUpdates.schedule = normalized.schedule;
+    }
+
+    const gwId = getGatewayTalkIdForActiveTalk();
+    if (gwId && chatServiceRef.current) {
+      const result = await resolveGatewayJobByIndex(index);
+      if (!result) {
+        setError(`No automation at position ${index}`);
+        return false;
+      }
+      const ok = await chatServiceRef.current.updateGatewayJob(gwId, result.jobId, normalizedUpdates);
+      if (!ok) return false;
+      await refreshJobsFromSource();
+      return true;
+    }
+
+    const ok = talkManagerRef.current.updateJobByIndex(activeTalkId, index, normalizedUpdates);
+    if (!ok) {
+      setError(`No automation at position ${index}`);
+      return false;
+    }
+    return true;
+  }, [activeTalkId, getGatewayTalkIdForActiveTalk, refreshJobsFromSource, resolveGatewayJobByIndex]);
+
+  const deleteJobByIndex = useCallback(async (index: number): Promise<boolean> => {
+    if (!activeTalkId || !talkManagerRef.current) return false;
+
+    const gwId = getGatewayTalkIdForActiveTalk();
+    if (gwId && chatServiceRef.current) {
+      const result = await resolveGatewayJobByIndex(index);
+      if (!result) {
+        setError(`No automation at position ${index}`);
+        return false;
+      }
+      const ok = await chatServiceRef.current.deleteGatewayJob(gwId, result.jobId);
+      if (!ok) return false;
+      await refreshJobsFromSource();
+      return true;
+    }
+
+    const ok = talkManagerRef.current.deleteJob(activeTalkId, index);
+    if (!ok) {
+      setError(`No automation at position ${index}`);
+      return false;
+    }
+    return true;
+  }, [activeTalkId, getGatewayTalkIdForActiveTalk, refreshJobsFromSource, resolveGatewayJobByIndex]);
+
+  const handleAddJob = useCallback(async (schedule: string, prompt: string): Promise<boolean> => {
+    if (!activeTalkId || !talkManagerRef.current) return false;
     talkManagerRef.current.saveTalk(activeTalkId);
 
-    const isEvent = /^on\s+/i.test(schedule);
-    const isOneOff = /^(in\s|at\s)/i.test(schedule);
+    const bindings = talkManagerRef.current.getPlatformBindings(activeTalkId);
+    const scheduleResolution = normalizeJobScheduleForBindings(schedule, bindings);
+    if (scheduleResolution.error) {
+      setError(scheduleResolution.error);
+      return false;
+    }
+    const normalizedSchedule = scheduleResolution.schedule.trim();
+    const normalizedPrompt = prompt.trim();
+    if (!normalizedSchedule || !normalizedPrompt) {
+      setError('Automation schedule and prompt are required.');
+      return false;
+    }
+
+    const isEvent = /^on\s+/i.test(normalizedSchedule);
+    const isOneOff = /^(in\s|at\s)/i.test(normalizedSchedule);
     const label = isEvent ? 'Event Automation Created' : isOneOff ? 'Automation Scheduled' : 'Recurring Automation Scheduled';
 
-    const gwId = gatewayTalkIdRef.current;
-    if (gwId && chatServiceRef.current) {
-      chatServiceRef.current.createGatewayJob(gwId, schedule, prompt).then(result => {
-        if (typeof result === 'string') {
-          setError(`Automation failed: ${result}`);
-        } else {
-          // Update local cache
-          const resolvedSchedule = result.schedule ?? schedule;
-          talkManagerRef.current?.addJob(activeTalkId, resolvedSchedule, prompt);
-          const sysMsg = createMessage('system', `[${label}] "${prompt}" — ${resolvedSchedule}`);
-          chat.setMessages(prev => [...prev, sysMsg]);
-        }
-      }).catch(err => {
-        setError(`Automation failed: ${err instanceof Error ? err.message : String(err)}`);
-      });
-    } else {
-      // Automations require a gateway connection — the client doesn't execute them
+    const gwId = getGatewayTalkIdForActiveTalk();
+    if (!gwId || !chatServiceRef.current) {
       const sysMsg = createMessage('system', 'Cannot create automation: no gateway connection. Automations run server-side — connect to a gateway first.');
       chat.setMessages(prev => [...prev, sysMsg]);
+      return false;
     }
-  }, [activeTalkId]);
+
+    try {
+      const result = await chatServiceRef.current.createGatewayJob(gwId, normalizedSchedule, normalizedPrompt);
+      if (typeof result === 'string') {
+        setError(`Automation failed: ${result}`);
+        return false;
+      }
+
+      await refreshJobsFromSource();
+      const resolvedSchedule = result.schedule ?? normalizedSchedule;
+      const sysMsg = createMessage('system', `[${label}] "${normalizedPrompt}" — ${resolvedSchedule}`);
+      chat.setMessages(prev => [...prev, sysMsg]);
+      return true;
+    } catch (err) {
+      setError(`Automation failed: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }, [activeTalkId, getGatewayTalkIdForActiveTalk, refreshJobsFromSource]);
 
   const handleListJobs = useCallback(() => {
     if (!activeTalkId) return;
 
-    const gwId = gatewayTalkIdRef.current;
-    if (gwId && chatServiceRef.current) {
-      chatServiceRef.current.listGatewayJobs(gwId).then(jobs => {
-        if (jobs.length === 0) {
-          const sysMsg = createMessage('system', 'No automations for this talk.');
-          chat.setMessages(prev => [...prev, sysMsg]);
-          return;
-        }
-        const lines = jobs.map((j, i) => {
-          const status = j.active ? 'active' : 'paused';
-          const lastRun = j.lastRunAt ? ` (last: ${new Date(j.lastRunAt).toLocaleString()})` : '';
-          return `  ${i + 1}. [${status}] "${j.schedule}" — ${j.prompt}${lastRun}`;
-        });
-        const sysMsg = createMessage('system', `Automations:\n${lines.join('\n')}`);
-        chat.setMessages(prev => [...prev, sysMsg]);
-      });
-    } else if (talkManagerRef.current) {
-      const jobs = talkManagerRef.current.getJobs(activeTalkId);
+    void (async () => {
+      const jobs = await refreshJobsFromSource();
       if (jobs.length === 0) {
         const sysMsg = createMessage('system', 'No automations for this talk.');
         chat.setMessages(prev => [...prev, sysMsg]);
         return;
       }
+
       const lines = jobs.map((j, i) => {
         const status = j.active ? 'active' : 'paused';
-        return `  ${i + 1}. [${status}] "${j.schedule}" — ${j.prompt}`;
+        const lastRun = j.lastRunAt ? ` (last: ${new Date(j.lastRunAt).toLocaleString()})` : '';
+        return `  ${i + 1}. [${status}] "${j.schedule}" — ${j.prompt}${lastRun}`;
       });
       const sysMsg = createMessage('system', `Automations:\n${lines.join('\n')}`);
       chat.setMessages(prev => [...prev, sysMsg]);
-    }
-  }, [activeTalkId]);
+    })();
+  }, [activeTalkId, refreshJobsFromSource]);
 
-  /** Helper: resolve automation ID by 1-based index via gateway. */
-  const resolveGatewayJobByIndex = useCallback(async (index: number): Promise<{ jobId: string; jobs: import('../types.js').Job[] } | null> => {
-    const gwId = gatewayTalkIdRef.current;
-    if (!gwId || !chatServiceRef.current) return null;
-    const jobs = await chatServiceRef.current.listGatewayJobs(gwId);
-    const job = jobs[index - 1];
-    if (!job) return null;
-    return { jobId: job.id, jobs };
-  }, []);
-
-  const handlePauseJob = useCallback((index: number) => {
-    if (!activeTalkId) return;
-
-    const gwId = gatewayTalkIdRef.current;
-    if (gwId && chatServiceRef.current) {
-      resolveGatewayJobByIndex(index).then(result => {
-        if (!result) { setError(`No automation at position ${index}`); return; }
-        chatServiceRef.current?.updateGatewayJob(gwId, result.jobId, { active: false }).then(ok => {
-          if (ok) {
-            talkManagerRef.current?.pauseJob(activeTalkId, index);
-            const sysMsg = createMessage('system', `Automation #${index} paused.`);
-            chat.setMessages(prev => [...prev, sysMsg]);
-          } else {
-            setError(`Failed to pause automation #${index}`);
-          }
-        });
-      });
-    } else if (talkManagerRef.current) {
-      const success = talkManagerRef.current.pauseJob(activeTalkId, index);
-      if (success) {
-        const sysMsg = createMessage('system', `Automation #${index} paused.`);
-        chat.setMessages(prev => [...prev, sysMsg]);
-      } else {
-        setError(`No automation at position ${index}`);
+  const handleSetJobActive = useCallback(async (index: number, active: boolean): Promise<boolean> => {
+    const ok = await updateJobByIndex(index, { active });
+    if (!ok) {
+      if (!error) {
+        setError(`Failed to ${active ? 'resume' : 'pause'} automation #${index}`);
       }
+      return false;
     }
-  }, [activeTalkId, resolveGatewayJobByIndex]);
+    return true;
+  }, [error, updateJobByIndex]);
 
-  const handleResumeJob = useCallback((index: number) => {
-    if (!activeTalkId) return;
-
-    const gwId = gatewayTalkIdRef.current;
-    if (gwId && chatServiceRef.current) {
-      resolveGatewayJobByIndex(index).then(result => {
-        if (!result) { setError(`No automation at position ${index}`); return; }
-        chatServiceRef.current?.updateGatewayJob(gwId, result.jobId, { active: true }).then(ok => {
-          if (ok) {
-            talkManagerRef.current?.resumeJob(activeTalkId, index);
-            const sysMsg = createMessage('system', `Automation #${index} resumed.`);
-            chat.setMessages(prev => [...prev, sysMsg]);
-          } else {
-            setError(`Failed to resume automation #${index}`);
-          }
-        });
-      });
-    } else if (talkManagerRef.current) {
-      const success = talkManagerRef.current.resumeJob(activeTalkId, index);
-      if (success) {
-        const sysMsg = createMessage('system', `Automation #${index} resumed.`);
-        chat.setMessages(prev => [...prev, sysMsg]);
-      } else {
-        setError(`No automation at position ${index}`);
+  const handleSetJobSchedule = useCallback(async (index: number, schedule: string): Promise<boolean> => {
+    const ok = await updateJobByIndex(index, { schedule });
+    if (!ok) {
+      if (!error) {
+        setError(`Failed to update schedule for automation #${index}`);
       }
+      return false;
     }
-  }, [activeTalkId, resolveGatewayJobByIndex]);
+    return true;
+  }, [error, updateJobByIndex]);
+
+  const handleSetJobPrompt = useCallback(async (index: number, prompt: string): Promise<boolean> => {
+    const ok = await updateJobByIndex(index, { prompt });
+    if (!ok) {
+      if (!error) {
+        setError(`Failed to update prompt for automation #${index}`);
+      }
+      return false;
+    }
+    return true;
+  }, [error, updateJobByIndex]);
 
   const handleDeleteJob = useCallback((index: number) => {
-    if (!activeTalkId) return;
-
-    const gwId = gatewayTalkIdRef.current;
-    if (gwId && chatServiceRef.current) {
-      resolveGatewayJobByIndex(index).then(result => {
-        if (!result) { setError(`No automation at position ${index}`); return; }
-        chatServiceRef.current?.deleteGatewayJob(gwId, result.jobId).then(ok => {
-          if (ok) {
-            talkManagerRef.current?.deleteJob(activeTalkId, index);
-            const sysMsg = createMessage('system', `Automation #${index} deleted.`);
-            chat.setMessages(prev => [...prev, sysMsg]);
-          } else {
-        setError(`Failed to delete automation #${index}`);
-          }
-        });
-      });
-    } else if (talkManagerRef.current) {
-      const success = talkManagerRef.current.deleteJob(activeTalkId, index);
-      if (success) {
-        const sysMsg = createMessage('system', `Automation #${index} deleted.`);
-        chat.setMessages(prev => [...prev, sysMsg]);
-      } else {
-        setError(`No automation at position ${index}`);
+    void (async () => {
+      const ok = await deleteJobByIndex(index);
+      if (!ok) {
+        if (!error) {
+          setError(`Failed to delete automation #${index}`);
+        }
+        return;
       }
+      const sysMsg = createMessage('system', `Automation #${index} deleted.`);
+      chat.setMessages(prev => [...prev, sysMsg]);
+    })();
+  }, [deleteJobByIndex, error]);
+
+  const handleDeleteJobForPicker = useCallback(async (index: number): Promise<boolean> => {
+    const ok = await deleteJobByIndex(index);
+    if (!ok) {
+      if (!error) {
+        setError(`Failed to delete automation #${index}`);
+      }
+      return false;
     }
-  }, [activeTalkId, resolveGatewayJobByIndex]);
+    return true;
+  }, [deleteJobByIndex, error]);
+
+  const handlePauseJob = useCallback((index: number) => {
+    void (async () => {
+      const ok = await handleSetJobActive(index, false);
+      if (!ok) return;
+      const sysMsg = createMessage('system', `Automation #${index} paused.`);
+      chat.setMessages(prev => [...prev, sysMsg]);
+    })();
+  }, [handleSetJobActive]);
+
+  const handleResumeJob = useCallback((index: number) => {
+    void (async () => {
+      const ok = await handleSetJobActive(index, true);
+      if (!ok) return;
+      const sysMsg = createMessage('system', `Automation #${index} resumed.`);
+      chat.setMessages(prev => [...prev, sysMsg]);
+    })();
+  }, [handleSetJobActive]);
 
   // --- Objective handlers ---
 
@@ -2456,7 +2592,7 @@ function App({ options }: AppProps) {
   // --- Keyboard shortcuts ---
 
   useInput((input, key) => {
-    if (showModelPicker || showRolePicker || showEditMessages || showTalks || showChannelConfig || showSettings) return;
+    if (showModelPicker || showRolePicker || showEditMessages || showTalks || showChannelConfig || showJobsConfig || showSettings) return;
 
     // Clear confirmation mode
     if (pendingClear) {
@@ -2641,6 +2777,17 @@ function App({ options }: AppProps) {
       return;
     }
 
+    // ^J Jobs Config
+    if (input === 'j' && key.ctrl) {
+      if (!activeTalkId || !talkManagerRef.current) {
+        setError('No active talk to configure.');
+      } else {
+        setShowJobsConfig(true);
+      }
+      cleanInputChar(setInputText, 'j');
+      return;
+    }
+
     // ^S Settings
     if (input === 's' && key.ctrl) {
       setSettingsFromTalks(false);
@@ -2819,6 +2966,24 @@ function App({ options }: AppProps) {
             onSetPrompt={handleSetChannelResponsePrompt}
             onSetAgentChoice={handleSetChannelResponseAgentChoice}
             onClearBehavior={handleClearChannelResponse}
+          />
+        </Box>
+      ) : showJobsConfig ? (
+        <Box flexGrow={1} paddingX={1}>
+          <JobsConfigPicker
+            maxHeight={overlayMaxHeight}
+            terminalWidth={terminalWidth}
+            jobs={activeTalk?.jobs ?? []}
+            platformBindings={activeTalk?.platformBindings ?? []}
+            gatewayConnected={Boolean((gatewayTalkIdRef.current ?? activeTalk?.gatewayTalkId) && chatServiceRef.current)}
+            onClose={() => setShowJobsConfig(false)}
+            onRefreshJobs={refreshJobsFromSource}
+            onAddJob={handleAddJob}
+            onSetJobActive={handleSetJobActive}
+            onSetJobSchedule={handleSetJobSchedule}
+            onSetJobPrompt={handleSetJobPrompt}
+            onDeleteJob={handleDeleteJobForPicker}
+            onViewReports={handleViewReports}
           />
         </Box>
       ) : showSettings ? (

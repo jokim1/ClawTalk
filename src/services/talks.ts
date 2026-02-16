@@ -336,6 +336,49 @@ export class TalkManager {
     return true;
   }
 
+  /** Replace all jobs for a talk (used when syncing from gateway). */
+  replaceJobs(talkId: string, jobs: Job[]): boolean {
+    const talk = this.talks.get(talkId);
+    if (!talk) return false;
+
+    talk.jobs = jobs.map((job) => ({ ...job }));
+    talk.updatedAt = Date.now();
+    if (talk.isSaved) this.persistTalk(talk);
+    return true;
+  }
+
+  /** Update a job by 1-based index. */
+  updateJobByIndex(
+    talkId: string,
+    index: number,
+    updates: Partial<Pick<Job, 'active' | 'schedule' | 'prompt'>>,
+  ): boolean {
+    const talk = this.talks.get(talkId);
+    if (!talk?.jobs) return false;
+    if (index < 1 || index > talk.jobs.length) return false;
+
+    const job = talk.jobs[index - 1];
+    if (!job) return false;
+
+    if (updates.active !== undefined) {
+      job.active = updates.active;
+    }
+    if (updates.schedule !== undefined) {
+      const next = updates.schedule.trim();
+      if (!next) return false;
+      job.schedule = next;
+    }
+    if (updates.prompt !== undefined) {
+      const next = updates.prompt.trim();
+      if (!next) return false;
+      job.prompt = next;
+    }
+
+    talk.updatedAt = Date.now();
+    if (talk.isSaved) this.persistTalk(talk);
+    return true;
+  }
+
   /** Get all jobs for a talk. */
   getJobs(talkId: string): Job[] {
     const talk = this.talks.get(talkId);
