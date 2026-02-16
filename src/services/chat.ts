@@ -5,7 +5,17 @@
  */
 
 import { randomUUID } from 'crypto';
-import type { Message, RateLimitInfo, Job, JobReport, TalkAgent, StreamChunk, Directive, PlatformBinding } from '../types.js';
+import type {
+  Message,
+  RateLimitInfo,
+  Job,
+  JobReport,
+  TalkAgent,
+  StreamChunk,
+  Directive,
+  PlatformBinding,
+  PlatformBehavior,
+} from '../types.js';
 import type { IChatService } from './interfaces.js';
 
 import {
@@ -216,6 +226,7 @@ export interface GatewayTalkMeta {
   agents?: TalkAgent[];
   directives?: Directive[];
   platformBindings?: PlatformBinding[];
+  platformBehaviors?: PlatformBehavior[];
   processing?: boolean;
   createdAt: number;
   updatedAt: number;
@@ -405,6 +416,7 @@ export class ChatService implements IChatService {
       agents?: TalkAgent[];
       directives?: Directive[];
       platformBindings?: PlatformBinding[];
+      platformBehaviors?: PlatformBehavior[];
     },
   ): Promise<GatewayResult<GatewayTalkMeta>> {
     try {

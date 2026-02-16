@@ -43,6 +43,11 @@ export interface CommandContext {
   addPlatformBinding: (platform: string, scope: string, permission: string) => void;
   removePlatformBinding: (index: number) => void;
   listPlatformBindings: () => void;
+  setPlatformBehavior: (
+    platformRef: string,
+    updates: { agentName?: string | null; onMessagePrompt?: string | null },
+  ) => void;
+  listPlatformBehaviors: () => void;
   showPlaybook: () => void;
 }
 
@@ -137,6 +142,34 @@ function normalizeSlackScope(scope: string): string | null {
   return normalizeInner(trimmed);
 }
 
+function consumeOptionValue(input: string): { value?: string; rest: string; error?: string } {
+  const trimmed = input.trimStart();
+  if (!trimmed) {
+    return { rest: '', error: 'missing value' };
+  }
+
+  if (trimmed.startsWith('"') || trimmed.startsWith("'")) {
+    const quote = trimmed[0];
+    const closeIdx = trimmed.indexOf(quote, 1);
+    if (closeIdx === -1) {
+      return { rest: '', error: `missing closing ${quote}` };
+    }
+    return {
+      value: trimmed.slice(1, closeIdx),
+      rest: trimmed.slice(closeIdx + 1).trimStart(),
+    };
+  }
+
+  const tokenMatch = trimmed.match(/^(\S+)(?:\s+|$)([\s\S]*)$/);
+  if (!tokenMatch) {
+    return { rest: '', error: 'missing value' };
+  }
+  return {
+    value: tokenMatch[1],
+    rest: tokenMatch[2] ?? '',
+  };
+}
+
 /** Handle /model <alias|id> — switch the active model. */
 function handleModelCommand(args: string, ctx: CommandContext): CommandResult {
   if (!args) {
@@ -204,7 +237,11 @@ function handlePinsCommand(_args: string, ctx: CommandContext): CommandResult {
 function handleJobCommand(args: string, ctx: CommandContext): CommandResult {
   const trimmed = args.trim();
   if (!trimmed) {
-    ctx.addSystemMessage('Usage: /job add "schedule" prompt | /job pause|resume|delete N\nSchedule: time (daily 9am, every 2h, cron) or event (on <scope> or on platformN)');
+    ctx.addSystemMessage(
+      'Usage: /job add "schedule" prompt | /job pause|resume|delete N\n' +
+      'Schedule: time (daily 9am, every 2h, cron) or event (on <scope> or on platformN)\n' +
+      'Tip: For auto-replies on a platform binding, prefer /platform behavior set platformN --on-message "<prompt>".',
+    );
     return { handled: true };
   }
 
@@ -459,12 +496,101 @@ function handleDirectivesCommand(args: string, ctx: CommandContext): CommandResu
   return handleDirectiveCommand(trimmed, ctx);
 }
 
+/** Handle /platform behavior ... — per-binding behavior config. */
+function handlePlatformBehaviorCommand(args: string, ctx: CommandContext): CommandResult {
+  const trimmed = args.trim();
+  if (!trimmed || trimmed === 'list') {
+    ctx.listPlatformBehaviors();
+    return { handled: true };
+  }
+
+  const clearMatch = trimmed.match(/^clear\s+(\S+)$/i);
+  if (clearMatch) {
+    ctx.setPlatformBehavior(clearMatch[1], { agentName: null, onMessagePrompt: null });
+    return { handled: true };
+  }
+
+  const payload = trimmed.match(/^set\s+(.+)$/i)?.[1]?.trim() ?? trimmed;
+  const firstToken = payload.match(/^(\S+)(?:\s+([\s\S]+))?$/);
+  if (!firstToken?.[1]) {
+    ctx.addSystemMessage(
+      'Usage: /platform behavior [list] | /platform behavior set <platformN> [--agent <name|off>] [--on-message "<prompt|off>"]',
+    );
+    return { handled: true };
+  }
+
+  const platformRef = firstToken[1];
+  let rest = (firstToken[2] ?? '').trimStart();
+
+  let hasAgent = false;
+  let hasOnMessage = false;
+  let agentName: string | null | undefined;
+  let onMessagePrompt: string | null | undefined;
+
+  while (rest.length > 0) {
+    if (rest.startsWith('--agent')) {
+      hasAgent = true;
+      const consumed = consumeOptionValue(rest.slice('--agent'.length));
+      if (!consumed.value || consumed.error) {
+        ctx.addSystemMessage('Usage: --agent <name|off>');
+        return { handled: true };
+      }
+      const raw = consumed.value.trim();
+      agentName = /^(off|none|default)$/i.test(raw) ? null : raw;
+      rest = consumed.rest;
+      continue;
+    }
+
+    if (rest.startsWith('--on-message')) {
+      hasOnMessage = true;
+      const consumed = consumeOptionValue(rest.slice('--on-message'.length));
+      if (consumed.value === undefined || consumed.error) {
+        ctx.addSystemMessage('Usage: --on-message "<prompt|off>"');
+        return { handled: true };
+      }
+      const raw = consumed.value.trim();
+      onMessagePrompt = /^(off|none|disable|disabled)$/i.test(raw) ? null : raw;
+      rest = consumed.rest;
+      continue;
+    }
+
+    const badToken = rest.split(/\s+/)[0];
+    ctx.addSystemMessage(
+      `Unknown option "${badToken}". ` +
+      'Use: /platform behavior set <platformN> [--agent <name|off>] [--on-message "<prompt|off>"]',
+    );
+    return { handled: true };
+  }
+
+  if (!hasAgent && !hasOnMessage) {
+    ctx.addSystemMessage(
+      'Usage: /platform behavior set <platformN> [--agent <name|off>] [--on-message "<prompt|off>"]\n' +
+      'Examples:\n' +
+      '  /platform behavior set platform1 --agent DeepSeek\n' +
+      '  /platform behavior set platform1 --on-message "Reply only if asked directly."\n' +
+      '  /platform behavior clear platform1',
+    );
+    return { handled: true };
+  }
+
+  ctx.setPlatformBehavior(platformRef, {
+    ...(hasAgent ? { agentName: agentName ?? null } : {}),
+    ...(hasOnMessage ? { onMessagePrompt: onMessagePrompt ?? null } : {}),
+  });
+  return { handled: true };
+}
+
 /** Handle /platform <subcommand> — manage platform bindings. */
 function handlePlatformCommand(args: string, ctx: CommandContext): CommandResult {
   const trimmed = args.trim();
   if (!trimmed || trimmed === 'list') {
     ctx.listPlatformBindings();
     return { handled: true };
+  }
+
+  const behaviorMatch = trimmed.match(/^behavior(?:\s+([\s\S]+))?$/i);
+  if (behaviorMatch) {
+    return handlePlatformBehaviorCommand(behaviorMatch[1] ?? '', ctx);
   }
 
   const deleteMatch = trimmed.match(/^delete\s+(\d+)$/);
@@ -479,7 +605,14 @@ function handlePlatformCommand(args: string, ctx: CommandContext): CommandResult
   // Parse: platform scope permission (e.g. "slack #team-product read+write")
   const parts = payload.split(/\s+/);
   if (parts.length < 3) {
-    ctx.addSystemMessage('Usage: /platform <name> <scope> <permission>\nPermission: read, write, read+write');
+    ctx.addSystemMessage(
+      'Usage: /platform <name> <scope> <permission>\n' +
+      'Permission: read, write, read+write\n' +
+      'Examples:\n' +
+      '  /platform slack kimfamily:#general read+write\n' +
+      '  /platform slack channel:C01234567 read+write\n' +
+      '  /platform behavior set platform1 --agent DeepSeek --on-message "Reply with concise action items."',
+    );
     return { handled: true };
   }
   const permission = parts[parts.length - 1];
@@ -547,7 +680,7 @@ const COMMANDS: Record<string, { handler: CommandHandler; description: string }>
   edit: { handler: handleEditCommand, description: 'Edit messages (mark and delete)' },
   directive: { handler: handleDirectiveCommand, description: 'Add or manage a directive' },
   directives: { handler: handleDirectivesCommand, description: 'List directives for this talk' },
-  platform: { handler: handlePlatformCommand, description: 'Add or manage platform bindings' },
+  platform: { handler: handlePlatformCommand, description: 'Add bindings or set platform behaviors' },
   platforms: { handler: handlePlatformsCommand, description: 'List platform bindings' },
   playbook: { handler: handlePlaybookCommand, description: 'Show full talk configuration' },
 };
@@ -599,7 +732,7 @@ export function getCommandCompletions(prefix: string): CommandInfo[] {
       if (name === 'job') {
         results.push(
           { name: 'job add "schedule" prompt', description: 'Add a scheduled job' },
-          { name: 'job add "on <scope|platformN>" prompt', description: 'Add event-driven job (triggers on platform messages)' },
+          { name: 'job add "on <scope|platformN>" prompt', description: 'Add event-driven job (legacy path; prefer /platform behavior for inbound auto-replies)' },
           { name: 'job pause N', description: 'Pause job #N' },
           { name: 'job resume N', description: 'Resume job #N' },
           { name: 'job delete N', description: 'Delete job #N' },
@@ -626,9 +759,13 @@ export function getCommandCompletions(prefix: string): CommandInfo[] {
         );
       } else if (name === 'platform') {
         results.push(
-          { name: 'platform add <name> <scope> <perm>', description: 'Add binding (Slack: #channel, account:#channel, channel:<id>, user:<id>, or slack:*)' },
+          { name: 'platform add <name> <scope> <perm>', description: 'Add binding (Slack examples: kimfamily:#general, channel:<id>, user:<id>, slack:*)' },
           { name: 'platform <name> <scope> <perm>', description: 'Shorthand for platform add' },
           { name: 'platform delete N', description: 'Remove binding #N' },
+          { name: 'platform behavior', description: 'List platform behavior rules' },
+          { name: 'platform behavior set platformN --agent <name>', description: 'Set per-platform responder agent (does not auto-reply by itself)' },
+          { name: 'platform behavior set platformN --on-message "<prompt>"', description: 'Enable inbound auto-reply prompt for platformN' },
+          { name: 'platform behavior clear platformN', description: 'Clear behavior config for platformN' },
         );
       } else {
         results.push({ name, description: entry.description });

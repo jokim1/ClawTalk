@@ -10,7 +10,16 @@ import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
-import type { Talk, Job, TalkAgent, AgentRole, Directive, PlatformBinding, PlatformPermission } from '../types';
+import type {
+  Talk,
+  Job,
+  TalkAgent,
+  AgentRole,
+  Directive,
+  PlatformBinding,
+  PlatformBehavior,
+  PlatformPermission,
+} from '../types';
 
 /** Validate that a talk ID is safe for use as a directory name. */
 function isValidTalkId(id: string): boolean {
@@ -46,6 +55,17 @@ export class TalkManager {
         if (fs.existsSync(metaPath)) {
           try {
             const talk = JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as Talk;
+            const bindingIds = new Set((talk.platformBindings ?? []).map((binding) => binding.id));
+            talk.platformBehaviors = Array.isArray(talk.platformBehaviors)
+              ? talk.platformBehaviors
+                .filter((behavior) =>
+                  Boolean(
+                    behavior &&
+                    bindingIds.has(behavior.platformBindingId) &&
+                    (behavior.agentName || behavior.onMessagePrompt),
+                  ),
+                )
+              : [];
             // Only load saved talks
             if (talk.isSaved) {
               this.talks.set(talk.id, talk);
@@ -530,7 +550,12 @@ export class TalkManager {
     if (!talk?.platformBindings) return false;
     if (index < 1 || index > talk.platformBindings.length) return false;
 
-    talk.platformBindings.splice(index - 1, 1);
+    const removed = talk.platformBindings.splice(index - 1, 1)[0];
+    if (removed?.id && talk.platformBehaviors?.length) {
+      talk.platformBehaviors = talk.platformBehaviors.filter(
+        (behavior) => behavior.platformBindingId !== removed.id,
+      );
+    }
     talk.updatedAt = Date.now();
     if (talk.isSaved) this.persistTalk(talk);
     return true;
@@ -540,6 +565,90 @@ export class TalkManager {
   getPlatformBindings(talkId: string): PlatformBinding[] {
     const talk = this.talks.get(talkId);
     return talk?.platformBindings ?? [];
+  }
+
+  // --- Platform behavior methods (bound to a platform binding ID) ---
+
+  /**
+   * Upsert behavior for a binding. Passing null clears a field.
+   * If both fields end up empty, the behavior row is removed.
+   */
+  upsertPlatformBehavior(
+    talkId: string,
+    platformBindingId: string,
+    updates: {
+      agentName?: string | null;
+      onMessagePrompt?: string | null;
+    },
+  ): PlatformBehavior | null {
+    const talk = this.talks.get(talkId);
+    if (!talk) return null;
+
+    const bindings = talk.platformBindings ?? [];
+    if (!bindings.some((binding) => binding.id === platformBindingId)) {
+      return null;
+    }
+
+    if (!talk.platformBehaviors) talk.platformBehaviors = [];
+    const existing = talk.platformBehaviors.find(
+      (behavior) => behavior.platformBindingId === platformBindingId,
+    );
+
+    const normalizeText = (value: string | null | undefined): string | undefined => {
+      if (value === undefined) return undefined;
+      if (value === null) return undefined;
+      const trimmed = value.trim();
+      return trimmed ? trimmed : undefined;
+    };
+
+    const nextAgentName = updates.agentName === undefined
+      ? existing?.agentName
+      : normalizeText(updates.agentName);
+    const nextOnMessagePrompt = updates.onMessagePrompt === undefined
+      ? existing?.onMessagePrompt
+      : normalizeText(updates.onMessagePrompt);
+
+    // Empty behavior means "unset" for this binding.
+    if (!nextAgentName && !nextOnMessagePrompt) {
+      if (existing) {
+        talk.platformBehaviors = talk.platformBehaviors.filter(
+          (behavior) => behavior.id !== existing.id,
+        );
+        talk.updatedAt = Date.now();
+        if (talk.isSaved) this.persistTalk(talk);
+      }
+      return null;
+    }
+
+    const now = Date.now();
+    if (existing) {
+      existing.agentName = nextAgentName;
+      existing.onMessagePrompt = nextOnMessagePrompt;
+      existing.updatedAt = now;
+      talk.updatedAt = now;
+      if (talk.isSaved) this.persistTalk(talk);
+      return existing;
+    }
+
+    const behavior: PlatformBehavior = {
+      id: randomUUID(),
+      platformBindingId,
+      ...(nextAgentName ? { agentName: nextAgentName } : {}),
+      ...(nextOnMessagePrompt ? { onMessagePrompt: nextOnMessagePrompt } : {}),
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    talk.platformBehaviors.push(behavior);
+    talk.updatedAt = now;
+    if (talk.isSaved) this.persistTalk(talk);
+    return behavior;
+  }
+
+  /** Get all platform behaviors for a talk. */
+  getPlatformBehaviors(talkId: string): PlatformBehavior[] {
+    const talk = this.talks.get(talkId);
+    return talk?.platformBehaviors ?? [];
   }
 
   /** Import a talk from gateway data (creates local entry if not present). */
@@ -553,6 +662,7 @@ export class TalkManager {
     agents?: TalkAgent[];
     directives?: Directive[];
     platformBindings?: PlatformBinding[];
+    platformBehaviors?: PlatformBehavior[];
     processing?: boolean;
     createdAt: number;
     updatedAt: number;
@@ -584,6 +694,7 @@ export class TalkManager {
       }
       existing.directives = gwTalk.directives ?? existing.directives;
       existing.platformBindings = gwTalk.platformBindings ?? existing.platformBindings;
+      existing.platformBehaviors = gwTalk.platformBehaviors ?? existing.platformBehaviors;
       existing.processing = gwTalk.processing;
       existing.updatedAt = gwTalk.updatedAt;
       existing.gatewayTalkId = gwTalk.id;
@@ -603,6 +714,7 @@ export class TalkManager {
       agents: gwTalk.agents,
       directives: gwTalk.directives,
       platformBindings: gwTalk.platformBindings,
+      platformBehaviors: gwTalk.platformBehaviors,
       gatewayTalkId: gwTalk.id,
       processing: gwTalk.processing,
       isSaved: true,

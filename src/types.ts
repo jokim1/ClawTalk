@@ -231,6 +231,21 @@ export interface PlatformBinding {
   createdAt: number;
 }
 
+export interface PlatformBehavior {
+  id: string;
+  /** Foreign key to PlatformBinding.id. */
+  platformBindingId: string;
+  /** Optional talk agent name override for this binding. */
+  agentName?: string;
+  /**
+   * Optional auto-response instruction for inbound messages on this binding.
+   * If omitted, automatic inbound replies are disabled for this binding.
+   */
+  onMessagePrompt?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface Talk {
   id: string;              // Same as session ID
   sessionId: string;       // Reference to underlying session
@@ -243,6 +258,7 @@ export interface Talk {
   agents?: TalkAgent[];    // Multi-agent configuration
   directives?: Directive[];
   platformBindings?: PlatformBinding[];
+  platformBehaviors?: PlatformBehavior[];
   gatewayTalkId?: string;  // Corresponding gateway-side talk ID
   processing?: boolean;    // Gateway is actively generating a response
   lastReadAt?: number;     // When the user last opened this talk

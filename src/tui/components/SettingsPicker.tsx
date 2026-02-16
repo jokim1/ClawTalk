@@ -25,6 +25,12 @@ interface TalkConfigInfo {
   objective?: string;
   directives: Array<{ text: string; active: boolean }>;
   platformBindings: Array<{ platform: string; scope: string; permission: string }>;
+  platformBehaviors: Array<{
+    platformRef: string;
+    bindingLabel: string;
+    agentName?: string;
+    onMessagePrompt?: string;
+  }>;
   jobs: Array<{ schedule: string; prompt: string; active: boolean }>;
   agents: Array<{ name: string; role: string; model: string; isPrimary: boolean }>;
 }
@@ -500,8 +506,32 @@ export function SettingsPicker({
                 ) : (
                   <>
                     <Text dimColor>  (none) — /platform {'<name> <scope> <perm>'} to add</Text>
-                    <Text dimColor italic>  e.g. /platform slack #general read+write</Text>
                     <Text dimColor italic>  e.g. /platform slack kimfamily:#general read+write</Text>
+                    <Text dimColor italic>  e.g. /platform slack channel:C01234567 read+write</Text>
+                  </>
+                )}
+              </Box>
+
+              {/* Platform Behaviors */}
+              <Box marginBottom={1} flexDirection="column">
+                <Text bold>Platform Behaviors</Text>
+                {talkConfig.platformBehaviors.length > 0 ? (
+                  talkConfig.platformBehaviors.map((behavior, i) => (
+                    <Text key={i}>
+                      <Text dimColor>  {i + 1}. </Text>
+                      <Text>{behavior.platformRef}: </Text>
+                      <Text>{behavior.bindingLabel} </Text>
+                      <Text dimColor>agent=</Text>
+                      <Text>{behavior.agentName ?? 'primary'} </Text>
+                      <Text dimColor>on-message=</Text>
+                      <Text>{behavior.onMessagePrompt ? `"${behavior.onMessagePrompt}"` : 'off'}</Text>
+                    </Text>
+                  ))
+                ) : (
+                  <>
+                    <Text dimColor>  (none) — /platform behavior set platformN --on-message {'"<prompt>"'}</Text>
+                    <Text dimColor italic>  e.g. /platform behavior set platform1 --agent DeepSeek</Text>
+                    <Text dimColor italic>  e.g. /platform behavior set platform1 --on-message "Reply with concise action items."</Text>
                   </>
                 )}
               </Box>
@@ -520,6 +550,7 @@ export function SettingsPicker({
                 ) : (
                   <>
                     <Text dimColor>  (none) — /job add "schedule" prompt</Text>
+                    <Text dimColor italic>  tip: use /platform behavior set platformN --on-message for inbound auto-replies</Text>
                     <Text dimColor italic>  e.g. /job add "10am IST weekdays" Check PostHog analytics focusing on FTUE funnel and report findings in #team-product</Text>
                   </>
                 )}

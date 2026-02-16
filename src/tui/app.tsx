@@ -8,7 +8,18 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { render, Box, Text, useInput, useApp, useStdout } from 'ink';
-import type { ClawTalkOptions, ModelStatus, Message, TalkAgent, AgentRole, PendingAttachment, Directive, PlatformBinding, PlatformPermission } from '../types.js';
+import type {
+  ClawTalkOptions,
+  ModelStatus,
+  Message,
+  TalkAgent,
+  AgentRole,
+  PendingAttachment,
+  Directive,
+  PlatformBinding,
+  PlatformBehavior,
+  PlatformPermission,
+} from '../types.js';
 import type { Talk } from '../types.js';
 import { AGENT_ROLES, ROLE_BY_ID, AGENT_PREAMBLE, generateAgentName } from '../agent-roles.js';
 import type { RoleTemplate } from '../agent-roles.js';
@@ -1057,8 +1068,12 @@ function App({ options }: AppProps) {
 
   const syncGatewayTalkConfig = useCallback((
     gatewayTalkId: string | null,
-    updates: { directives?: Directive[]; platformBindings?: PlatformBinding[] },
-    label: 'directives' | 'platformBindings',
+    updates: {
+      directives?: Directive[];
+      platformBindings?: PlatformBinding[];
+      platformBehaviors?: PlatformBehavior[];
+    },
+    label: 'directives' | 'platformBindings' | 'platformBehaviors',
   ) => {
     const service = chatServiceRef.current;
     if (!gatewayTalkId || !service) return;
@@ -1089,6 +1104,7 @@ function App({ options }: AppProps) {
             agents: gwTalk.agents,
             directives: gwTalk.directives,
             platformBindings: gwTalk.platformBindings,
+            platformBehaviors: gwTalk.platformBehaviors,
             processing: gwTalk.processing,
             createdAt: gwTalk.createdAt,
             updatedAt: gwTalk.updatedAt,
@@ -1184,6 +1200,32 @@ function App({ options }: AppProps) {
 
   // --- Platform binding handlers ---
 
+  const resolvePlatformBindingRef = useCallback((talkId: string, platformRef: string): {
+    binding: PlatformBinding;
+    index: number;
+    total: number;
+  } | null => {
+    if (!talkManagerRef.current) return null;
+    const bindings = talkManagerRef.current.getPlatformBindings(talkId);
+    const total = bindings.length;
+    if (total === 0) return null;
+
+    const trimmed = platformRef.trim();
+    let index = -1;
+
+    const numbered = trimmed.match(/^platform(\d+)$/i);
+    if (numbered?.[1]) {
+      index = parseInt(numbered[1], 10) - 1;
+    } else if (/^\d+$/.test(trimmed)) {
+      index = parseInt(trimmed, 10) - 1;
+    } else {
+      index = bindings.findIndex((binding) => binding.id === trimmed);
+    }
+
+    if (index < 0 || index >= total) return null;
+    return { binding: bindings[index], index: index + 1, total };
+  }, []);
+
   const handleAddPlatformBinding = useCallback((platform: string, scope: string, permission: string) => {
     if (!activeTalkId || !talkManagerRef.current) return;
     talkManagerRef.current.saveTalk(activeTalkId);
@@ -1211,14 +1253,25 @@ function App({ options }: AppProps) {
     chat.setMessages(prev => [...prev, sysMsg]);
 
     const bindings = talkManagerRef.current.getPlatformBindings(activeTalkId);
-    syncGatewayTalkConfig(gatewayTalkIdRef.current, { platformBindings: bindings }, 'platformBindings');
+    const behaviors = talkManagerRef.current.getPlatformBehaviors(activeTalkId);
+    syncGatewayTalkConfig(
+      gatewayTalkIdRef.current,
+      { platformBindings: bindings, platformBehaviors: behaviors },
+      'platformBindings',
+    );
   }, [activeTalkId, syncGatewayTalkConfig]);
 
   const handleListPlatformBindings = useCallback(() => {
     if (!activeTalkId || !talkManagerRef.current) return;
     const bindings = talkManagerRef.current.getPlatformBindings(activeTalkId);
     if (bindings.length === 0) {
-      const sysMsg = createMessage('system', 'No platform bindings for this talk. Use /platform <name> <scope> <permission> to add one.');
+      const sysMsg = createMessage(
+        'system',
+        'No platform bindings for this talk.\n' +
+        'Examples:\n' +
+        '  /platform slack kimfamily:#general read+write\n' +
+        '  /platform slack channel:C01234567 read+write',
+      );
       chat.setMessages(prev => [...prev, sysMsg]);
       return;
     }
@@ -1226,6 +1279,91 @@ function App({ options }: AppProps) {
       `  ${i + 1}. platform${i + 1}: ${b.platform} ${formatPlatformScope(b)} (${b.permission})`
     );
     const sysMsg = createMessage('system', `Platform bindings:\n${lines.join('\n')}`);
+    chat.setMessages(prev => [...prev, sysMsg]);
+  }, [activeTalkId, formatPlatformScope]);
+
+  // --- Platform behavior handlers ---
+
+  const handleSetPlatformBehavior = useCallback((
+    platformRef: string,
+    updates: { agentName?: string | null; onMessagePrompt?: string | null },
+  ) => {
+    if (!activeTalkId || !talkManagerRef.current) return;
+    talkManagerRef.current.saveTalk(activeTalkId);
+
+    const resolved = resolvePlatformBindingRef(activeTalkId, platformRef);
+    if (!resolved) {
+      const count = talkManagerRef.current.getPlatformBindings(activeTalkId).length;
+      if (count === 0) {
+        setError('No platform bindings found. Add one first with /platform <name> <scope> <permission>.');
+      } else {
+        setError(`Unknown platform reference "${platformRef}". Use platform1..platform${count} or /platform list.`);
+      }
+      return;
+    }
+
+    const behavior = talkManagerRef.current.upsertPlatformBehavior(
+      activeTalkId,
+      resolved.binding.id,
+      updates,
+    );
+    const behaviors = talkManagerRef.current.getPlatformBehaviors(activeTalkId);
+    syncGatewayTalkConfig(gatewayTalkIdRef.current, { platformBehaviors: behaviors }, 'platformBehaviors');
+
+    if (!behavior) {
+      const sysMsg = createMessage(
+        'system',
+        `Platform behavior cleared: platform${resolved.index} (${resolved.binding.platform} ${formatPlatformScope(resolved.binding)}).`,
+      );
+      chat.setMessages(prev => [...prev, sysMsg]);
+      return;
+    }
+
+    const agent = behavior.agentName ?? 'primary talk agent';
+    const onMessage = behavior.onMessagePrompt ? `"${behavior.onMessagePrompt}"` : 'off';
+    const sysMsg = createMessage(
+      'system',
+      `Platform behavior set: platform${resolved.index} (${resolved.binding.platform} ${formatPlatformScope(resolved.binding)})\n` +
+      `  agent: ${agent}\n` +
+      `  on-message: ${onMessage}`,
+    );
+    chat.setMessages(prev => [...prev, sysMsg]);
+  }, [activeTalkId, formatPlatformScope, resolvePlatformBindingRef, syncGatewayTalkConfig]);
+
+  const handleListPlatformBehaviors = useCallback(() => {
+    if (!activeTalkId || !talkManagerRef.current) return;
+
+    const talk = talkManagerRef.current.getTalk(activeTalkId);
+    if (!talk) return;
+    const bindings = talk.platformBindings ?? [];
+    const behaviors = talk.platformBehaviors ?? [];
+
+    if (behaviors.length === 0) {
+      const sysMsg = createMessage(
+        'system',
+        'No platform behaviors configured.\n' +
+        'Examples:\n' +
+        '  /platform behavior set platform1 --agent DeepSeek\n' +
+        '  /platform behavior set platform1 --on-message "Reply with concise action items."\n' +
+        '  /platform behavior clear platform1',
+      );
+      chat.setMessages(prev => [...prev, sysMsg]);
+      return;
+    }
+
+    const lines = behaviors.map((behavior, i) => {
+      const bindingIndex = bindings.findIndex((binding) => binding.id === behavior.platformBindingId);
+      if (bindingIndex === -1) {
+        return `  ${i + 1}. [missing binding] agent=${behavior.agentName ?? 'primary'} on-message=${behavior.onMessagePrompt ? `"${behavior.onMessagePrompt}"` : 'off'}`;
+      }
+      const binding = bindings[bindingIndex];
+      return (
+        `  ${i + 1}. platform${bindingIndex + 1}: ${binding.platform} ${formatPlatformScope(binding)} ` +
+        `— agent=${behavior.agentName ?? 'primary'} | on-message=${behavior.onMessagePrompt ? `"${behavior.onMessagePrompt}"` : 'off'}`
+      );
+    });
+
+    const sysMsg = createMessage('system', `Platform behaviors:\n${lines.join('\n')}`);
     chat.setMessages(prev => [...prev, sysMsg]);
   }, [activeTalkId, formatPlatformScope]);
 
@@ -1266,6 +1404,25 @@ function App({ options }: AppProps) {
       sections.push(`\nPlatform bindings:\n${lines.join('\n')}`);
     } else {
       sections.push('\nPlatform bindings: (none)');
+    }
+
+    // Platform behaviors
+    const behaviors = talk.platformBehaviors ?? [];
+    if (behaviors.length > 0) {
+      const lines = behaviors.map((behavior, i) => {
+        const bindingIndex = bindings.findIndex((binding) => binding.id === behavior.platformBindingId);
+        if (bindingIndex === -1) {
+          return `  ${i + 1}. [missing binding] agent=${behavior.agentName ?? 'primary'} on-message=${behavior.onMessagePrompt ? `"${behavior.onMessagePrompt}"` : 'off'}`;
+        }
+        return (
+          `  ${i + 1}. platform${bindingIndex + 1} ` +
+          `agent=${behavior.agentName ?? 'primary'} ` +
+          `on-message=${behavior.onMessagePrompt ? `"${behavior.onMessagePrompt}"` : 'off'}`
+        );
+      });
+      sections.push(`\nPlatform behaviors:\n${lines.join('\n')}`);
+    } else {
+      sections.push('\nPlatform behaviors: (none)');
     }
 
     // Jobs
@@ -1325,6 +1482,7 @@ function App({ options }: AppProps) {
           agents: gwTalk.agents,
           directives: gwTalk.directives,
           platformBindings: gwTalk.platformBindings,
+          platformBehaviors: gwTalk.platformBehaviors,
           processing: gwTalk.processing,
           createdAt: gwTalk.createdAt,
           updatedAt: gwTalk.updatedAt,
@@ -1916,6 +2074,8 @@ function App({ options }: AppProps) {
     addPlatformBinding: handleAddPlatformBinding,
     removePlatformBinding: handleRemovePlatformBinding,
     listPlatformBindings: handleListPlatformBindings,
+    setPlatformBehavior: handleSetPlatformBehavior,
+    listPlatformBehaviors: handleListPlatformBehaviors,
     showPlaybook: handleShowPlaybook,
   });
   commandCtx.current = {
@@ -1954,6 +2114,8 @@ function App({ options }: AppProps) {
     addPlatformBinding: handleAddPlatformBinding,
     removePlatformBinding: handleRemovePlatformBinding,
     listPlatformBindings: handleListPlatformBindings,
+    setPlatformBehavior: handleSetPlatformBehavior,
+    listPlatformBehaviors: handleListPlatformBehaviors,
     showPlaybook: handleShowPlaybook,
   };
 
@@ -2481,6 +2643,17 @@ function App({ options }: AppProps) {
                 scope: formatPlatformScope(b),
                 permission: b.permission,
               })),
+              platformBehaviors: (activeTalk.platformBehaviors ?? []).map(behavior => {
+                const bindings = activeTalk.platformBindings ?? [];
+                const bindingIndex = bindings.findIndex((binding) => binding.id === behavior.platformBindingId);
+                const binding = bindingIndex >= 0 ? bindings[bindingIndex] : null;
+                return {
+                  platformRef: bindingIndex >= 0 ? `platform${bindingIndex + 1}` : behavior.platformBindingId,
+                  bindingLabel: binding ? `${binding.platform} ${formatPlatformScope(binding)}` : '(missing binding)',
+                  agentName: behavior.agentName,
+                  onMessagePrompt: behavior.onMessagePrompt,
+                };
+              }),
               jobs: (activeTalk.jobs ?? []).map(j => ({ schedule: j.schedule, prompt: j.prompt, active: j.active })),
               agents: (activeTalk.agents ?? []).map(a => ({ name: a.name, role: a.role, model: a.model, isPrimary: a.isPrimary })),
             } : null}
