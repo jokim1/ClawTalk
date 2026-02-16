@@ -160,6 +160,7 @@ function App({ options }: AppProps) {
   // --- Gateway Talk ID ref (used by useChat to route through /api/talks/:id/chat) ---
 
   const gatewayTalkIdRef = useRef<string | null>(null);
+  const creatingGatewayTalkRef = useRef<Promise<string | null> | null>(null);
 
   // --- Primary agent ref (used by useChat for speaker labels) ---
 
@@ -1524,6 +1525,42 @@ function App({ options }: AppProps) {
     setShowTalks(false);
   }, [activeTalkId, chat.messages, syncAgentsToGateway]);
 
+  /** Ensure a gateway talk exists before sending messages, so all turns use talk-scoped context. */
+  const ensureGatewayTalk = useCallback(async (): Promise<string | null> => {
+    if (gatewayTalkIdRef.current) return gatewayTalkIdRef.current;
+    if (!chatServiceRef.current) {
+      setError('Chat service unavailable');
+      return null;
+    }
+    if (creatingGatewayTalkRef.current) {
+      return creatingGatewayTalkRef.current;
+    }
+
+    creatingGatewayTalkRef.current = (async () => {
+      if (activeTalkIdRef.current) {
+        talkManagerRef.current?.saveTalk(activeTalkIdRef.current);
+      }
+
+      const result = await chatServiceRef.current!.createGatewayTalk(currentModelRef.current);
+      if (!result.ok || !result.data) {
+        setError(`Failed to create gateway talk: ${result.error ?? 'Unknown error'}`);
+        return null;
+      }
+
+      gatewayTalkIdRef.current = result.data;
+      if (activeTalkIdRef.current) {
+        talkManagerRef.current?.setGatewayTalkId(activeTalkIdRef.current, result.data);
+      }
+      return result.data;
+    })();
+
+    try {
+      return await creatingGatewayTalkRef.current;
+    } finally {
+      creatingGatewayTalkRef.current = null;
+    }
+  }, []);
+
   // --- Multi-agent messaging ---
 
   /** Stream a single agent's response. Returns the full content or empty string on error. */
@@ -1882,21 +1919,8 @@ function App({ options }: AppProps) {
           chat.setMessages(prev => prev.filter(m => m.id !== sysMsg.id));
           const confirmMsg = createMessage('system', `[attached] ${attachment.filename} (${attachment.width}x${attachment.height}, ${sizeKB}KB)`);
           chat.setMessages(prev => [...prev, confirmMsg]);
-
-          // Lazy gateway talk creation
-          if (!gatewayTalkIdRef.current && chatServiceRef.current) {
-            if (activeTalkIdRef.current) {
-              talkManagerRef.current?.saveTalk(activeTalkIdRef.current);
-            }
-            const result = await chatServiceRef.current.createGatewayTalk(currentModelRef.current);
-            if (result.ok && result.data) {
-              gatewayTalkIdRef.current = result.data;
-              if (activeTalkIdRef.current) {
-                talkManagerRef.current?.setGatewayTalkId(activeTalkIdRef.current, result.data);
-              }
-            }
-          }
-
+          const gwTalkId = await ensureGatewayTalk();
+          if (!gwTalkId) return;
           await chat.sendMessage(message, attachment);
         } else {
           setPendingAttachment(attachment);
@@ -1917,6 +1941,8 @@ function App({ options }: AppProps) {
         chat.setMessages(prev => [...prev, confirmMsg]);
 
         if (message) {
+          const gwTalkId = await ensureGatewayTalk();
+          if (!gwTalkId) return;
           await chat.sendMessage(message, undefined, { filename: result.filename, text: result.text });
         } else {
           // Store document content for next message
@@ -1928,7 +1954,7 @@ function App({ options }: AppProps) {
       const errMessage = err instanceof Error ? err.message : 'Unknown error';
       setError(`File error: ${errMessage}`);
     }
-  }, []);
+  }, [chat.sendMessage, ensureGatewayTalk]);
 
   // --- Submit handler (command registry + chat) ---
 
@@ -2045,29 +2071,14 @@ function App({ options }: AppProps) {
     setInputText('');
     mouseScroll.scrollToBottom();
 
-    // Lazy gateway talk creation + auto-save on first user message
-    if (!gatewayTalkIdRef.current && chatServiceRef.current) {
-      // Auto-save: this talk now has activity
-      if (activeTalkIdRef.current) {
-        talkManagerRef.current?.saveTalk(activeTalkIdRef.current);
-      }
-      chatServiceRef.current.createGatewayTalk(currentModelRef.current).then(result => {
-        if (result.ok && result.data) {
-          gatewayTalkIdRef.current = result.data;
-          if (activeTalkIdRef.current) {
-            talkManagerRef.current?.setGatewayTalkId(activeTalkIdRef.current, result.data);
-          }
-        } else if (!result.ok) {
-          setError(`Failed to create gateway talk: ${result.error}`);
-        }
-      });
-    }
-
     // If already processing, queue the message
     if (chat.isProcessing) {
       setMessageQueue(prev => [...prev, trimmed]);
       return;
     }
+
+    const gwTalkId = await ensureGatewayTalk();
+    if (!gwTalkId) return;
 
     // Process staged pending files before routing (applies to both agent and regular paths)
     let finalMessage = trimmed;
@@ -2165,7 +2176,7 @@ function App({ options }: AppProps) {
     await chat.sendMessage(finalMessage, attachment, docContent);
 
     if (primaryName) setStreamingAgentName(undefined);
-  }, [chat.sendMessage, chat.isProcessing, sendMultiAgentMessage, pendingAttachment, pendingDocument, pendingFiles]);
+  }, [chat.sendMessage, chat.isProcessing, sendMultiAgentMessage, pendingAttachment, pendingDocument, pendingFiles, ensureGatewayTalk]);
 
   // Process queued messages when AI finishes responding
   useEffect(() => {
@@ -2175,12 +2186,16 @@ function App({ options }: AppProps) {
         const nextMessage = messageQueue[0];
         if (nextMessage) {
           setMessageQueue(prev => prev.slice(1));
-          chat.sendMessage(nextMessage);
+          void (async () => {
+            const gwTalkId = await ensureGatewayTalk();
+            if (!gwTalkId) return;
+            await chat.sendMessage(nextMessage);
+          })();
         }
       }, 100);
       return () => clearTimeout(timer);
     }
-  }, [chat.isProcessing, messageQueue, chat.sendMessage]);
+  }, [chat.isProcessing, messageQueue, chat.sendMessage, ensureGatewayTalk]);
 
   // --- Keyboard shortcuts ---
 
