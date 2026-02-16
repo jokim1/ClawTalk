@@ -1215,6 +1215,72 @@ export class ChatService implements IChatService {
       return null;
     }
   }
+
+  async getSlackOptions(accountId?: string): Promise<SlackOptionsResult | null> {
+    try {
+      const query = accountId
+        ? `?accountId=${encodeURIComponent(accountId)}`
+        : '';
+      const response = await fetch(`${this.config.gatewayUrl}/api/events/slack/options${query}`, {
+        method: 'GET',
+        headers: this.authHeaders(),
+        signal: AbortSignal.timeout(PROVIDER_LIST_TIMEOUT_MS),
+      });
+      if (!response.ok) return null;
+
+      const raw = await response.json() as Record<string, unknown>;
+      const accountsRaw = Array.isArray(raw.accounts) ? raw.accounts : [];
+      const channelsRaw = Array.isArray(raw.channels) ? raw.channels : [];
+
+      const accounts: SlackAccountOption[] = accountsRaw
+        .filter((entry) => Boolean(entry && typeof entry === 'object'))
+        .map((entry) => {
+          const row = entry as Record<string, unknown>;
+          const id = typeof row.id === 'string' ? row.id.trim().toLowerCase() : '';
+          if (!id) return null;
+          return {
+            id,
+            isDefault: row.isDefault === true,
+            hasBotToken: row.hasBotToken === true,
+          };
+        })
+        .filter((entry): entry is SlackAccountOption => Boolean(entry));
+
+      const channels: SlackChannelOption[] = channelsRaw
+        .filter((entry) => Boolean(entry && typeof entry === 'object'))
+        .map((entry) => {
+          const row = entry as Record<string, unknown>;
+          const id = typeof row.id === 'string' ? row.id.trim().toUpperCase() : '';
+          const scope = typeof row.scope === 'string' ? row.scope.trim() : '';
+          const displayScope = typeof row.displayScope === 'string' ? row.displayScope.trim() : '';
+          if (!id || !scope || !displayScope) return null;
+          return {
+            id,
+            scope,
+            displayScope,
+            ...(typeof row.name === 'string' && row.name.trim() ? { name: row.name.trim() } : {}),
+          };
+        })
+        .filter((entry): entry is SlackChannelOption => Boolean(entry));
+
+      const selectedAccountId = typeof raw.selectedAccountId === 'string'
+        ? raw.selectedAccountId.trim().toLowerCase()
+        : undefined;
+      const channelsSource = raw.channelsSource === 'slack-api' || raw.channelsSource === 'talk-bindings' || raw.channelsSource === 'none'
+        ? raw.channelsSource
+        : undefined;
+
+      return {
+        accounts,
+        channels,
+        ...(selectedAccountId ? { selectedAccountId } : {}),
+        ...(channelsSource ? { channelsSource } : {}),
+      };
+    } catch (err) {
+      console.debug('getSlackOptions failed:', err);
+      return null;
+    }
+  }
 }
 
 export interface ProviderInfo {
@@ -1224,6 +1290,26 @@ export interface ProviderInfo {
     plan?: string;
     monthlyPrice?: number;
   };
+}
+
+export interface SlackAccountOption {
+  id: string;
+  isDefault: boolean;
+  hasBotToken: boolean;
+}
+
+export interface SlackChannelOption {
+  id: string;
+  name?: string;
+  scope: string;
+  displayScope: string;
+}
+
+export interface SlackOptionsResult {
+  accounts: SlackAccountOption[];
+  selectedAccountId?: string;
+  channels: SlackChannelOption[];
+  channelsSource?: 'slack-api' | 'talk-bindings' | 'none';
 }
 
 export interface CostUsageResult {

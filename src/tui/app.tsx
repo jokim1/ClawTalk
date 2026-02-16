@@ -23,6 +23,7 @@ import { EditMessages } from './components/EditMessages';
 import { ChannelConfigPicker } from './components/ChannelConfigPicker';
 import { SettingsPicker } from './components/SettingsPicker.js';
 import { ChatService } from '../services/chat';
+import type { SlackAccountOption, SlackChannelOption } from '../services/chat';
 import { getSessionManager } from '../services/sessions';
 import type { SessionManager } from '../services/sessions';
 import { getTalkManager } from '../services/talks';
@@ -142,6 +143,10 @@ function App({ options }: AppProps) {
   const [showSettings, setShowSettings] = useState(false);
   const [showChannelConfig, setShowChannelConfig] = useState(false);
   const [settingsFromTalks, setSettingsFromTalks] = useState(false);
+  const [slackAccountHints, setSlackAccountHints] = useState<SlackAccountOption[]>([]);
+  const [slackChannelsByAccount, setSlackChannelsByAccount] = useState<Record<string, SlackChannelOption[]>>({});
+  const [slackHintsLoading, setSlackHintsLoading] = useState(false);
+  const [slackHintsError, setSlackHintsError] = useState<string | null>(null);
   const [sessionName, setSessionName] = useState('Session 1');
   const [activeTalkId, setActiveTalkId] = useState<string | null>(null);
   const activeTalkIdRef = useRef<string | null>(null);
@@ -1280,6 +1285,59 @@ function App({ options }: AppProps) {
     chat.setMessages(prev => [...prev, sysMsg]);
   }, [activeTalkId, syncChannelResponsesToGateway]);
 
+  const handleSetChannelResponseAgentChoice = useCallback((index: number, agentName?: string) => {
+    if (!activeTalkId || !talkManagerRef.current) return;
+    talkManagerRef.current.saveTalk(activeTalkId);
+
+    if (!agentName) {
+      const bindings = talkManagerRef.current.getPlatformBindings(activeTalkId);
+      if (index < 1 || index > bindings.length) {
+        setError(`No channel connection at position ${index}`);
+        return;
+      }
+      const binding = bindings[index - 1];
+      const existing = talkManagerRef.current
+        .getPlatformBehaviors(activeTalkId)
+        .find((entry) => entry.platformBindingId === binding.id);
+
+      if (!existing) {
+        return;
+      }
+
+      const hasPrompt = Boolean(existing.onMessagePrompt?.trim());
+      const explicitlyOff = existing.autoRespond === false;
+      const ok = !hasPrompt && !explicitlyOff
+        ? talkManagerRef.current.clearPlatformBehaviorByBindingIndex(activeTalkId, index)
+        : talkManagerRef.current.upsertPlatformBehaviorByBindingIndex(activeTalkId, index, {
+            agentName: '',
+          });
+
+      if (!ok) {
+        setError(`No channel connection at position ${index}`);
+        return;
+      }
+
+      syncChannelResponsesToGateway(activeTalkId);
+      return;
+    }
+
+    const agents = talkManagerRef.current.getAgents(activeTalkId);
+    const matched = agents.find((a) => a.name.toLowerCase() === agentName.toLowerCase());
+    if (!matched) {
+      setError(`Unknown agent "${agentName}". Use /agents to list names.`);
+      return;
+    }
+
+    const ok = talkManagerRef.current.upsertPlatformBehaviorByBindingIndex(activeTalkId, index, {
+      agentName: matched.name,
+    });
+    if (!ok) {
+      setError(`No channel connection at position ${index}`);
+      return;
+    }
+    syncChannelResponsesToGateway(activeTalkId);
+  }, [activeTalkId, syncChannelResponsesToGateway]);
+
   const handleClearChannelResponse = useCallback((index: number) => {
     if (!activeTalkId || !talkManagerRef.current) return;
     talkManagerRef.current.saveTalk(activeTalkId);
@@ -1292,6 +1350,59 @@ function App({ options }: AppProps) {
     const sysMsg = createMessage('system', `Channel response settings cleared for connection #${index}.`);
     chat.setMessages(prev => [...prev, sysMsg]);
   }, [activeTalkId, syncChannelResponsesToGateway]);
+
+  const loadSlackHints = useCallback(async () => {
+    if (!chatServiceRef.current) return;
+
+    setSlackHintsLoading(true);
+    setSlackHintsError(null);
+
+    try {
+      const base = await chatServiceRef.current.getSlackOptions();
+      if (!base) {
+        setSlackAccountHints([]);
+        setSlackChannelsByAccount({});
+        setSlackHintsError('Slack discovery unavailable on this gateway.');
+        return;
+      }
+
+      const normalizedAccounts = base.accounts.length > 0
+        ? base.accounts
+        : [{
+            id: base.selectedAccountId ?? 'default',
+            isDefault: true,
+            hasBotToken: false,
+          }];
+      const channelsByAccount: Record<string, SlackChannelOption[]> = {};
+      if (base.selectedAccountId) {
+        channelsByAccount[base.selectedAccountId] = base.channels;
+      }
+
+      await Promise.all(
+        normalizedAccounts
+          .filter((account) => account.hasBotToken && account.id !== base.selectedAccountId)
+          .map(async (account) => {
+            const result = await chatServiceRef.current?.getSlackOptions(account.id);
+            channelsByAccount[account.id] = result?.channels ?? [];
+          }),
+      );
+
+      setSlackAccountHints(normalizedAccounts);
+      setSlackChannelsByAccount(channelsByAccount);
+    } catch (err) {
+      console.debug('loadSlackHints failed:', err);
+      setSlackAccountHints([]);
+      setSlackChannelsByAccount({});
+      setSlackHintsError('Failed to load Slack discovery data.');
+    } finally {
+      setSlackHintsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!showChannelConfig) return;
+    void loadSlackHints();
+  }, [showChannelConfig, loadSlackHints]);
 
   // --- Playbook handler ---
 
@@ -2567,12 +2678,17 @@ function App({ options }: AppProps) {
             bindings={activeTalk?.platformBindings ?? []}
             behaviors={activeTalk?.platformBehaviors ?? []}
             agents={activeTalk?.agents ?? []}
+            slackAccounts={slackAccountHints}
+            slackChannelsByAccount={slackChannelsByAccount}
+            slackHintsLoading={slackHintsLoading}
+            slackHintsError={slackHintsError}
+            onRefreshSlackHints={() => { void loadSlackHints(); }}
             onClose={() => setShowChannelConfig(false)}
             onAddBinding={handleAddPlatformBinding}
             onRemoveBinding={handleRemovePlatformBinding}
             onSetAutoRespond={handleSetChannelResponseEnabled}
             onSetPrompt={handleSetChannelResponsePrompt}
-            onSetAgent={handleSetChannelResponseAgent}
+            onSetAgentChoice={handleSetChannelResponseAgentChoice}
             onClearBehavior={handleClearChannelResponse}
           />
         </Box>
