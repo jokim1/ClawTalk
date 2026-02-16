@@ -20,6 +20,7 @@ import type { Model } from './components/ModelPicker.js';
 import { RolePicker } from './components/RolePicker.js';
 import { TalksHub } from './components/TalksHub';
 import { EditMessages } from './components/EditMessages';
+import { ChannelConfigPicker } from './components/ChannelConfigPicker';
 import { SettingsPicker } from './components/SettingsPicker.js';
 import { ChatService } from '../services/chat';
 import { getSessionManager } from '../services/sessions';
@@ -139,6 +140,7 @@ function App({ options }: AppProps) {
   const [showEditMessages, setShowEditMessages] = useState(false);
   const [showTalks, setShowTalks] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
+  const [showChannelConfig, setShowChannelConfig] = useState(false);
   const [settingsFromTalks, setSettingsFromTalks] = useState(false);
   const [sessionName, setSessionName] = useState('Session 1');
   const [activeTalkId, setActiveTalkId] = useState<string | null>(null);
@@ -256,7 +258,7 @@ function App({ options }: AppProps) {
 
   // --- Scroll state ---
 
-  const isOverlayActive = showModelPicker || showRolePicker || showEditMessages || showTalks || showSettings;
+  const isOverlayActive = showModelPicker || showRolePicker || showEditMessages || showTalks || showChannelConfig || showSettings;
 
   // --- Command hints ---
 
@@ -2215,7 +2217,7 @@ function App({ options }: AppProps) {
   // --- Keyboard shortcuts ---
 
   useInput((input, key) => {
-    if (showModelPicker || showRolePicker || showEditMessages || showTalks || showSettings) return;
+    if (showModelPicker || showRolePicker || showEditMessages || showTalks || showChannelConfig || showSettings) return;
 
     // Clear confirmation mode
     if (pendingClear) {
@@ -2389,6 +2391,17 @@ function App({ options }: AppProps) {
       return;
     }
 
+    // ^B Channel Config
+    if (input === 'b' && key.ctrl) {
+      if (!activeTalkId || !talkManagerRef.current) {
+        setError('No active talk to configure.');
+      } else {
+        setShowChannelConfig(true);
+      }
+      cleanInputChar(setInputText, 'b');
+      return;
+    }
+
     // ^S Settings
     if (input === 's' && key.ctrl) {
       setSettingsFromTalks(false);
@@ -2544,6 +2557,23 @@ function App({ options }: AppProps) {
             setError={setError}
             onRenameTalk={handleRenameTalk}
             onDeleteTalk={handleDeleteTalk}
+          />
+        </Box>
+      ) : showChannelConfig ? (
+        <Box flexGrow={1} paddingX={1}>
+          <ChannelConfigPicker
+            maxHeight={overlayMaxHeight}
+            terminalWidth={terminalWidth}
+            bindings={activeTalk?.platformBindings ?? []}
+            behaviors={activeTalk?.platformBehaviors ?? []}
+            agents={activeTalk?.agents ?? []}
+            onClose={() => setShowChannelConfig(false)}
+            onAddBinding={handleAddPlatformBinding}
+            onRemoveBinding={handleRemovePlatformBinding}
+            onSetAutoRespond={handleSetChannelResponseEnabled}
+            onSetPrompt={handleSetChannelResponsePrompt}
+            onSetAgent={handleSetChannelResponseAgent}
+            onClearBehavior={handleClearChannelResponse}
           />
         </Box>
       ) : showSettings ? (

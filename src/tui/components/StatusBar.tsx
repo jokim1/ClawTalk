@@ -166,6 +166,7 @@ export function ShortcutBar({ terminalWidth = 80, ttsEnabled = true, grabTextMod
     { key: '^X', label: 'Exit' },
   ] : [
     { key: '^K', label: 'AI Model' },
+    { key: '^B', label: 'Channels' },
     { key: '^E', label: grabTextMode ? 'End Select' : 'Select Text' },
     { key: '^S', label: 'Settings' },
     { key: '^X', label: 'Exit' },
