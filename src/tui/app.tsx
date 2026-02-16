@@ -1391,6 +1391,8 @@ function App({ options }: AppProps) {
   const handleSetChannelResponseAgentChoice = useCallback((index: number, agentName?: string) => {
     if (!activeTalkId || !talkManagerRef.current) return;
     talkManagerRef.current.saveTalk(activeTalkId);
+    const prevBindings = talkManagerRef.current.getPlatformBindings(activeTalkId).map((row) => ({ ...row }));
+    const prevBehaviors = talkManagerRef.current.getPlatformBehaviors(activeTalkId).map((row) => ({ ...row }));
 
     if (!agentName) {
       const bindings = talkManagerRef.current.getPlatformBindings(activeTalkId);
@@ -1419,8 +1421,14 @@ function App({ options }: AppProps) {
         setError(`No channel connection at position ${index}`);
         return;
       }
-
-      syncChannelResponsesToGateway(activeTalkId);
+      void (async () => {
+        const synced = await syncTalkBindingsToGateway(activeTalkId);
+        if (!synced) {
+          restoreTalkRoutingState(activeTalkId, prevBindings, prevBehaviors);
+          const failMsg = createMessage('system', 'Failed to save channel response settings; reverted local change.');
+          chat.setMessages(prev => [...prev, failMsg]);
+        }
+      })();
       return;
     }
 
@@ -1438,8 +1446,15 @@ function App({ options }: AppProps) {
       setError(`No channel connection at position ${index}`);
       return;
     }
-    syncChannelResponsesToGateway(activeTalkId);
-  }, [activeTalkId, syncChannelResponsesToGateway]);
+    void (async () => {
+      const synced = await syncTalkBindingsToGateway(activeTalkId);
+      if (!synced) {
+        restoreTalkRoutingState(activeTalkId, prevBindings, prevBehaviors);
+        const failMsg = createMessage('system', 'Failed to save channel response settings; reverted local change.');
+        chat.setMessages(prev => [...prev, failMsg]);
+      }
+    })();
+  }, [activeTalkId, restoreTalkRoutingState, syncTalkBindingsToGateway]);
 
   const handleClearChannelResponse = useCallback((index: number) => {
     if (!activeTalkId || !talkManagerRef.current) return;
