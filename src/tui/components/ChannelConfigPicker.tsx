@@ -147,6 +147,7 @@ export function ChannelConfigPicker({
   const [permissionSelection, setPermissionSelection] = useState(2);
 
   const [editFieldIndex, setEditFieldIndex] = useState(0);
+  const [editValueMode, setEditValueMode] = useState(false);
   const [promptInput, setPromptInput] = useState('');
 
   const behaviorByBindingId = useMemo(() => {
@@ -234,6 +235,12 @@ export function ChannelConfigPicker({
   }, [mode, rows.length, selectedIndex]);
 
   useEffect(() => {
+    if (mode !== 'edit-connection') {
+      setEditValueMode(false);
+    }
+  }, [mode]);
+
+  useEffect(() => {
     if (workspaceSelection > slackAccounts.length - 1) {
       setWorkspaceSelection(0);
     }
@@ -279,6 +286,7 @@ export function ChannelConfigPicker({
       setStatusMessage('No channel connection selected.');
       return;
     }
+    setEditValueMode(false);
     setPromptInput(selectedRow.prompt ?? '');
     setMode('edit-prompt');
   };
@@ -406,6 +414,7 @@ export function ChannelConfigPicker({
           return;
         }
         setEditFieldIndex(0);
+        setEditValueMode(false);
         setMode('edit-connection');
         return;
       }
@@ -460,19 +469,35 @@ export function ChannelConfigPicker({
 
     if (mode === 'edit-connection') {
       if (key.leftArrow) {
+        if (editValueMode) {
+          setStatusMessage('Press Enter to stop editing this field first.');
+          return;
+        }
         setEditFieldIndex((prev) => cycleIndex(prev, EDIT_FIELDS.length, -1));
         return;
       }
       if (key.rightArrow) {
+        if (editValueMode) {
+          setStatusMessage('Press Enter to stop editing this field first.');
+          return;
+        }
         setEditFieldIndex((prev) => cycleIndex(prev, EDIT_FIELDS.length, 1));
         return;
       }
       if (key.upArrow) {
-        adjustEditField(-1);
+        if (editValueMode) {
+          adjustEditField(-1);
+        } else {
+          setEditFieldIndex((prev) => cycleIndex(prev, EDIT_FIELDS.length, -1));
+        }
         return;
       }
       if (key.downArrow) {
-        adjustEditField(1);
+        if (editValueMode) {
+          adjustEditField(1);
+        } else {
+          setEditFieldIndex((prev) => cycleIndex(prev, EDIT_FIELDS.length, 1));
+        }
         return;
       }
       if (key.return) {
@@ -481,7 +506,13 @@ export function ChannelConfigPicker({
           openPromptEditor();
           return;
         }
-        setStatusMessage('Use ↑/↓ to change value. ←/→ moves between fields.');
+        if (editValueMode) {
+          setEditValueMode(false);
+          setStatusMessage(`Stopped editing ${field}.`);
+        } else {
+          setEditValueMode(true);
+          setStatusMessage(`Editing ${field}. Use ↑/↓ to change value, Enter when done.`);
+        }
         return;
       }
       if (input === 'p') {
@@ -676,7 +707,11 @@ export function ChannelConfigPicker({
         <>
           <Box height={1} />
           <Text bold color="cyan">Edit Connection #{selectedRow?.index ?? '?'}</Text>
-          <Text dimColor>↑/↓ change value  ←/→ choose field  Enter edit prompt  Esc back</Text>
+          <Text dimColor>
+            {editValueMode
+              ? 'Value mode: ↑/↓ change value  Enter done  Esc back'
+              : 'Field mode: ↑/↓ choose field  Enter edit field  ←/→ choose field  Esc back'}
+          </Text>
           {selectedRow ? (
             <>
               <Text color={activeEditField === 'scope' ? 'cyan' : undefined}>
