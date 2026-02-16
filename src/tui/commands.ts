@@ -483,15 +483,23 @@ function handlePlatformCommand(args: string, ctx: CommandContext): CommandResult
     return { handled: true };
   }
 
-  // Parse: platform scope permission (e.g. "slack #team-product read+write")
+  // Parse: platform scope permission (e.g. "slack channel:C123 read+write")
   const parts = trimmed.split(/\s+/);
   if (parts.length < 3) {
     ctx.addSystemMessage(
       'Usage: /channel <platform> <scope> <permission>\n' +
+      'Platforms: slack (full support), telegram/whatsapp (connection + event jobs)\n' +
+      'Slack scope formats:\n' +
+      '- channel:C12345678 (recommended)\n' +
+      '- #general (default connected Slack account)\n' +
+      '- kimfamily:#general (explicit account + channel)\n' +
       'Permission: read | write | read+write\n' +
       'Examples:\n' +
-      '- /channel slack #team-product read+write\n' +
-      '- /channel slack "kimfamily #general" read',
+      '- /channel slack channel:C0AF9BZ3V3L read+write\n' +
+      '- /channel slack kimfamily:#general read+write\n' +
+      '- /channel slack #general read\n' +
+      '- /channel telegram group:-1001234567890 read\n' +
+      '- /channel whatsapp group:1203630... read',
     );
     return { handled: true };
   }
@@ -731,7 +739,10 @@ export function getCommandCompletions(prefix: string): CommandInfo[] {
         );
       } else if (name === 'channel') {
         results.push(
-          { name: `${name} <name> <scope> <perm>`, description: 'Add channel connection (read, write, read+write)' },
+          {
+            name: `${name} <platform> <scope> <perm>`,
+            description: 'Add connection (Slack full support; Telegram/WhatsApp for event jobs)',
+          },
           { name: `${name} delete N`, description: 'Remove channel connection #N' },
         );
       } else if (name === 'response' || name === 'responses') {

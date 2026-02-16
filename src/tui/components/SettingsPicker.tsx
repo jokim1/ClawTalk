@@ -24,7 +24,13 @@ interface VoiceCapsInfo {
 interface TalkConfigInfo {
   objective?: string;
   directives: Array<{ text: string; active: boolean }>;
-  platformBindings: Array<{ platform: string; scope: string; permission: string }>;
+  platformBindings: Array<{
+    platform: string;
+    scope: string;
+    displayScope?: string;
+    accountId?: string;
+    permission: string;
+  }>;
   channelResponseSettings: Array<{
     connectionIndex: number;
     autoRespond: boolean;
@@ -65,6 +71,18 @@ const PROVIDER_LABELS: Record<RealtimeVoiceProvider, string> = {
   gemini: 'Google Gemini Live',
   cartesia: 'Cartesia',
 };
+
+function formatBindingScopeLabel(binding: {
+  scope: string;
+  displayScope?: string;
+  accountId?: string;
+}): string {
+  const scopeLabel = binding.displayScope?.trim() || binding.scope;
+  if (binding.accountId?.trim()) {
+    return `${binding.accountId}:${scopeLabel}`;
+  }
+  return scopeLabel;
+}
 
 function getInputDevices(): AudioDevice[] {
   try {
@@ -507,26 +525,30 @@ export function SettingsPicker({
                       <Text dimColor>  {i + 1}. </Text>
                       <Text>platform{i + 1}: </Text>
                       <Text bold>{b.platform}</Text>
-                      <Text> {b.scope} </Text>
+                      <Text> {formatBindingScopeLabel(b)} </Text>
                       <Text dimColor>({b.permission})</Text>
                     </Text>
                   ))
                 ) : (
                   <>
                     <Text dimColor>  (none) — /channel {'<name> <scope> <perm>'} to add</Text>
-                    <Text dimColor italic>  e.g. /channel slack "KimFamily #general" read+write</Text>
-                    <Text dimColor italic>  e.g. /channel slack "Lila Games #team-product" read+write</Text>
+                    <Text dimColor italic>  Slack full support (auto-response + connection)</Text>
+                    <Text dimColor italic>  Telegram/WhatsApp: connection + event jobs</Text>
+                    <Text dimColor italic>  e.g. /channel slack channel:C0AF9BZ3V3L read+write</Text>
+                    <Text dimColor italic>  e.g. /channel slack kimfamily:#general read+write</Text>
                   </>
                 )}
                 <Text dimColor>  Commands:</Text>
-                <Text dimColor italic>  /channel slack #team-product read+write</Text>
-                <Text dimColor italic>  /channel slack "kimfamily #general" read</Text>
+                <Text dimColor italic>  /channel slack channel:C0AF9BZ3V3L read+write</Text>
+                <Text dimColor italic>  /channel slack kimfamily:#general read</Text>
+                <Text dimColor italic>  /channel telegram group:-1001234567890 read</Text>
                 <Text dimColor italic>  /channels   /channel delete 1</Text>
               </Box>
 
               {/* Channel Response Settings */}
               <Box marginBottom={1} flexDirection="column">
                 <Text bold>Channel Response Settings</Text>
+                <Text dimColor>  Applies to Slack channel connections.</Text>
                 {talkConfig.channelResponseSettings.length > 0 ? (
                   talkConfig.channelResponseSettings.map((s) => (
                     <Text key={s.connectionIndex}>

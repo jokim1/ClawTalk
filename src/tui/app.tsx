@@ -56,6 +56,18 @@ interface AppProps {
   options: ClawTalkOptions;
 }
 
+function formatBindingScopeLabel(binding: {
+  scope: string;
+  displayScope?: string;
+  accountId?: string;
+}): string {
+  const scopeLabel = binding.displayScope?.trim() || binding.scope;
+  if (binding.accountId?.trim()) {
+    return `${binding.accountId}:${scopeLabel}`;
+  }
+  return scopeLabel;
+}
+
 function App({ options }: AppProps) {
   const { exit } = useApp();
   const { stdout } = useStdout();
@@ -1167,12 +1179,15 @@ function App({ options }: AppProps) {
     if (!activeTalkId || !talkManagerRef.current) return;
     const bindings = talkManagerRef.current.getPlatformBindings(activeTalkId);
     if (bindings.length === 0) {
-      const sysMsg = createMessage('system', 'No channel connections for this talk. Use /channel <name> <scope> <permission> to add one.');
+      const sysMsg = createMessage(
+        'system',
+        'No channel connections for this talk. Use /channel <platform> <scope> <permission> (Slack full support; Telegram/WhatsApp for event jobs).',
+      );
       chat.setMessages(prev => [...prev, sysMsg]);
       return;
     }
     const lines = bindings.map((b, i) =>
-      `  ${i + 1}. platform${i + 1}: ${b.platform} ${b.scope} (${b.permission})`
+      `  ${i + 1}. platform${i + 1}: ${b.platform} ${formatBindingScopeLabel(b)} (${b.permission})`
     );
     const sysMsg = createMessage('system', `Channel connections:\n${lines.join('\n')}`);
     chat.setMessages(prev => [...prev, sysMsg]);
@@ -1195,7 +1210,7 @@ function App({ options }: AppProps) {
       const enabled = behavior?.autoRespond === false ? 'off' : 'on';
       const prompt = behavior?.onMessagePrompt ? `"${behavior.onMessagePrompt}"` : '(none)';
       const agent = behavior?.agentName ?? '(default)';
-      return `  ${i + 1}. ${binding.platform} ${binding.scope} -> auto:${enabled}, agent:${agent}, prompt:${prompt}`;
+      return `  ${i + 1}. ${binding.platform} ${formatBindingScopeLabel(binding)} -> auto:${enabled}, agent:${agent}, prompt:${prompt}`;
     });
     const sysMsg = createMessage('system', `Channel response settings:\n${lines.join('\n')}`);
     chat.setMessages(prev => [...prev, sysMsg]);
@@ -1308,7 +1323,7 @@ function App({ options }: AppProps) {
     const bindings = talk.platformBindings ?? [];
     if (bindings.length > 0) {
       const lines = bindings.map((b, i) =>
-        `  ${i + 1}. platform${i + 1}: ${b.platform} ${b.scope} (${b.permission})`
+        `  ${i + 1}. platform${i + 1}: ${b.platform} ${formatBindingScopeLabel(b)} (${b.permission})`
       );
       sections.push(`\nChannel connections:\n${lines.join('\n')}`);
     } else {
@@ -2567,7 +2582,13 @@ function App({ options }: AppProps) {
             talkConfig={activeTalk ? {
               objective: activeTalk.objective,
               directives: (activeTalk.directives ?? []).map(d => ({ text: d.text, active: d.active })),
-              platformBindings: (activeTalk.platformBindings ?? []).map(b => ({ platform: b.platform, scope: b.scope, permission: b.permission })),
+              platformBindings: (activeTalk.platformBindings ?? []).map(b => ({
+                platform: b.platform,
+                scope: b.scope,
+                displayScope: b.displayScope,
+                accountId: b.accountId,
+                permission: b.permission,
+              })),
               channelResponseSettings: (() => {
                 const bindings = activeTalk.platformBindings ?? [];
                 const behaviors = activeTalk.platformBehaviors ?? [];

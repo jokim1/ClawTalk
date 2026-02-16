@@ -223,6 +223,8 @@ export interface PlatformBinding {
   id: string;
   platform: string;
   scope: string;
+  accountId?: string;
+  displayScope?: string;
   permission: PlatformPermission;
   createdAt: number;
 }
