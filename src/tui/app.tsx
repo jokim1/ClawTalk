@@ -176,6 +176,7 @@ function App({ options }: AppProps) {
 
   const primaryAgentRef = useRef<TalkAgent | null>(null);
   const talkConfigSyncVersionRef = useRef<Record<string, number>>({});
+  const ensuringGatewayTalkRef = useRef<Promise<string | null> | null>(null);
 
   // --- Hooks ---
 
@@ -759,6 +760,49 @@ function App({ options }: AppProps) {
     chat.setMessages(prev => [...prev, sysMsg]);
   }, [activeTalkId, chat.messages]);
 
+  /**
+   * Ensure the current local talk has a corresponding gateway talk.
+   * Deduplicates concurrent create attempts.
+   */
+  const ensureGatewayTalk = useCallback(async (): Promise<string | null> => {
+    if (gatewayTalkIdRef.current) return gatewayTalkIdRef.current;
+    if (!chatServiceRef.current) {
+      setError('Gateway is not initialized.');
+      return null;
+    }
+    if (ensuringGatewayTalkRef.current) {
+      return ensuringGatewayTalkRef.current;
+    }
+
+    const pending = (async () => {
+      const localTalkId = activeTalkIdRef.current;
+      if (localTalkId) {
+        talkManagerRef.current?.saveTalk(localTalkId);
+      }
+
+      const result = await chatServiceRef.current!.createGatewayTalk(currentModelRef.current);
+      if (!result.ok || !result.data) {
+        setError(`Failed to create gateway talk: ${result.error ?? 'unknown error'}`);
+        return null;
+      }
+
+      gatewayTalkIdRef.current = result.data;
+      if (localTalkId) {
+        talkManagerRef.current?.setGatewayTalkId(localTalkId, result.data);
+      }
+      return result.data;
+    })();
+
+    ensuringGatewayTalkRef.current = pending;
+    try {
+      return await pending;
+    } finally {
+      if (ensuringGatewayTalkRef.current === pending) {
+        ensuringGatewayTalkRef.current = null;
+      }
+    }
+  }, []);
+
   // --- Job handlers ---
 
   const handleAddJob = useCallback((schedule: string, prompt: string) => {
@@ -770,27 +814,34 @@ function App({ options }: AppProps) {
     const isOneOff = /^(in\s|at\s)/i.test(schedule);
     const label = isEvent ? 'Event Job Created' : isOneOff ? 'Job Scheduled' : 'Recurring Job Scheduled';
 
-    const gwId = gatewayTalkIdRef.current;
-    if (gwId && chatServiceRef.current) {
-      chatServiceRef.current.createGatewayJob(gwId, schedule, prompt).then(result => {
+    void (async () => {
+      const gwId = await ensureGatewayTalk();
+      if (!gwId || !chatServiceRef.current) {
+        const sysMsg = createMessage(
+          'system',
+          'Cannot create job: failed to initialize gateway talk. Jobs run server-side.',
+        );
+        chat.setMessages(prev => [...prev, sysMsg]);
+        return;
+      }
+
+      try {
+        const result = await chatServiceRef.current.createGatewayJob(gwId, schedule, prompt);
         if (typeof result === 'string') {
           setError(`Job failed: ${result}`);
-        } else {
-          // Update local cache
-          const resolvedSchedule = result.schedule ?? schedule;
-          talkManagerRef.current?.addJob(activeTalkId, resolvedSchedule, prompt);
-          const sysMsg = createMessage('system', `[${label}] "${prompt}" — ${resolvedSchedule}`);
-          chat.setMessages(prev => [...prev, sysMsg]);
+          return;
         }
-      }).catch(err => {
+
+        // Update local cache
+        const resolvedSchedule = result.schedule ?? schedule;
+        talkManagerRef.current?.addJob(activeTalkId, resolvedSchedule, prompt);
+        const sysMsg = createMessage('system', `[${label}] "${prompt}" — ${resolvedSchedule}`);
+        chat.setMessages(prev => [...prev, sysMsg]);
+      } catch (err) {
         setError(`Job failed: ${err instanceof Error ? err.message : String(err)}`);
-      });
-    } else {
-      // Jobs require a gateway connection — the client doesn't execute them
-      const sysMsg = createMessage('system', 'Cannot create job: no gateway connection. Jobs run server-side — connect to a gateway first.');
-      chat.setMessages(prev => [...prev, sysMsg]);
-    }
-  }, [activeTalkId]);
+      }
+    })();
+  }, [activeTalkId, ensureGatewayTalk]);
 
   const handleListJobs = useCallback(() => {
     if (!activeTalkId) return;
@@ -1075,57 +1126,63 @@ function App({ options }: AppProps) {
     },
     label: 'directives' | 'platformBindings' | 'platformBehaviors',
   ) => {
-    const service = chatServiceRef.current;
-    if (!gatewayTalkId || !service) return;
+    void (async () => {
+      const resolvedGatewayTalkId = gatewayTalkId ?? await ensureGatewayTalk();
+      const service = chatServiceRef.current;
+      if (!resolvedGatewayTalkId || !service) {
+        setError(`Failed to sync ${label} to gateway: talk is not connected to gateway.`);
+        return;
+      }
 
-    const key = `${gatewayTalkId}:${label}`;
-    const nextVersion = (talkConfigSyncVersionRef.current[key] ?? 0) + 1;
-    talkConfigSyncVersionRef.current[key] = nextVersion;
+      const key = `${resolvedGatewayTalkId}:${label}`;
+      const nextVersion = (talkConfigSyncVersionRef.current[key] ?? 0) + 1;
+      talkConfigSyncVersionRef.current[key] = nextVersion;
 
-    const run = async (attempt: number): Promise<void> => {
-      // Stop stale retries from older writes
-      if (talkConfigSyncVersionRef.current[key] !== nextVersion) return;
+      const run = async (attempt: number): Promise<void> => {
+        // Stop stale retries from older writes
+        if (talkConfigSyncVersionRef.current[key] !== nextVersion) return;
 
-      const result = await service.updateGatewayTalk(gatewayTalkId, updates);
+        const result = await service.updateGatewayTalk(resolvedGatewayTalkId, updates);
 
-      // Stop if superseded while request was in flight
-      if (talkConfigSyncVersionRef.current[key] !== nextVersion) return;
+        // Stop if superseded while request was in flight
+        if (talkConfigSyncVersionRef.current[key] !== nextVersion) return;
 
-      if (result.ok) {
-        const gwTalk = result.data;
-        if (gwTalk && talkManagerRef.current) {
-          talkManagerRef.current.importGatewayTalk({
-            id: gwTalk.id,
-            topicTitle: gwTalk.topicTitle,
-            objective: gwTalk.objective,
-            model: gwTalk.model,
-            pinnedMessageIds: gwTalk.pinnedMessageIds,
-            jobs: gwTalk.jobs,
-            agents: gwTalk.agents,
-            directives: gwTalk.directives,
-            platformBindings: gwTalk.platformBindings,
-            platformBehaviors: gwTalk.platformBehaviors,
-            processing: gwTalk.processing,
-            createdAt: gwTalk.createdAt,
-            updatedAt: gwTalk.updatedAt,
-          });
+        if (result.ok) {
+          const gwTalk = result.data;
+          if (gwTalk && talkManagerRef.current) {
+            talkManagerRef.current.importGatewayTalk({
+              id: gwTalk.id,
+              topicTitle: gwTalk.topicTitle,
+              objective: gwTalk.objective,
+              model: gwTalk.model,
+              pinnedMessageIds: gwTalk.pinnedMessageIds,
+              jobs: gwTalk.jobs,
+              agents: gwTalk.agents,
+              directives: gwTalk.directives,
+              platformBindings: gwTalk.platformBindings,
+              platformBehaviors: gwTalk.platformBehaviors,
+              processing: gwTalk.processing,
+              createdAt: gwTalk.createdAt,
+              updatedAt: gwTalk.updatedAt,
+            });
+          }
+          return;
         }
-        return;
-      }
 
-      if (attempt < 2) {
-        const delay = 500 * (2 ** attempt);
-        setTimeout(() => {
-          void run(attempt + 1);
-        }, delay);
-        return;
-      }
+        if (attempt < 2) {
+          const delay = 500 * (2 ** attempt);
+          setTimeout(() => {
+            void run(attempt + 1);
+          }, delay);
+          return;
+        }
 
-      setError(`Failed to sync ${label} to gateway: ${result.error ?? 'unknown error'}`);
-    };
+        setError(`Failed to sync ${label} to gateway: ${result.error ?? 'unknown error'}`);
+      };
 
-    void run(0);
-  }, []);
+      void run(0);
+    })();
+  }, [ensureGatewayTalk]);
 
   const formatPlatformScope = useCallback((binding: PlatformBinding): string => {
     const scope = binding.scope;
@@ -1976,17 +2033,8 @@ function App({ options }: AppProps) {
           chat.setMessages(prev => [...prev, confirmMsg]);
 
           // Lazy gateway talk creation
-          if (!gatewayTalkIdRef.current && chatServiceRef.current) {
-            if (activeTalkIdRef.current) {
-              talkManagerRef.current?.saveTalk(activeTalkIdRef.current);
-            }
-            const result = await chatServiceRef.current.createGatewayTalk(currentModelRef.current);
-            if (result.ok && result.data) {
-              gatewayTalkIdRef.current = result.data;
-              if (activeTalkIdRef.current) {
-                talkManagerRef.current?.setGatewayTalkId(activeTalkIdRef.current, result.data);
-              }
-            }
+          if (!gatewayTalkIdRef.current) {
+            await ensureGatewayTalk();
           }
 
           await chat.sendMessage(message, attachment);
@@ -2020,7 +2068,7 @@ function App({ options }: AppProps) {
       const errMessage = err instanceof Error ? err.message : 'Unknown error';
       setError(`File error: ${errMessage}`);
     }
-  }, []);
+  }, [ensureGatewayTalk]);
 
   // --- Submit handler (command registry + chat) ---
 
@@ -2132,21 +2180,8 @@ function App({ options }: AppProps) {
     mouseScroll.scrollToBottom();
 
     // Lazy gateway talk creation + auto-save on first user message
-    if (!gatewayTalkIdRef.current && chatServiceRef.current) {
-      // Auto-save: this talk now has activity
-      if (activeTalkIdRef.current) {
-        talkManagerRef.current?.saveTalk(activeTalkIdRef.current);
-      }
-      chatServiceRef.current.createGatewayTalk(currentModelRef.current).then(result => {
-        if (result.ok && result.data) {
-          gatewayTalkIdRef.current = result.data;
-          if (activeTalkIdRef.current) {
-            talkManagerRef.current?.setGatewayTalkId(activeTalkIdRef.current, result.data);
-          }
-        } else if (!result.ok) {
-          setError(`Failed to create gateway talk: ${result.error}`);
-        }
-      });
+    if (!gatewayTalkIdRef.current) {
+      await ensureGatewayTalk();
     }
 
     // If already processing, queue the message
@@ -2251,7 +2286,7 @@ function App({ options }: AppProps) {
     await chat.sendMessage(finalMessage, attachment, docContent);
 
     if (primaryName) setStreamingAgentName(undefined);
-  }, [chat.sendMessage, chat.isProcessing, sendMultiAgentMessage, pendingAttachment, pendingDocument, pendingFiles]);
+  }, [chat.sendMessage, chat.isProcessing, sendMultiAgentMessage, pendingAttachment, pendingDocument, pendingFiles, ensureGatewayTalk]);
 
   // Process queued messages when AI finishes responding
   useEffect(() => {
