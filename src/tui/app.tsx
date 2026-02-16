@@ -8,18 +8,7 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { render, Box, Text, useInput, useApp, useStdout } from 'ink';
-import type {
-  ClawTalkOptions,
-  ModelStatus,
-  Message,
-  TalkAgent,
-  AgentRole,
-  PendingAttachment,
-  Directive,
-  PlatformBinding,
-  PlatformBehavior,
-  PlatformPermission,
-} from '../types.js';
+import type { ClawTalkOptions, ModelStatus, Message, TalkAgent, AgentRole, PendingAttachment, Directive, PlatformBinding, PlatformPermission } from '../types.js';
 import type { Talk } from '../types.js';
 import { AGENT_ROLES, ROLE_BY_ID, AGENT_PREAMBLE, generateAgentName } from '../agent-roles.js';
 import type { RoleTemplate } from '../agent-roles.js';
@@ -175,8 +164,6 @@ function App({ options }: AppProps) {
   // --- Primary agent ref (used by useChat for speaker labels) ---
 
   const primaryAgentRef = useRef<TalkAgent | null>(null);
-  const talkConfigSyncVersionRef = useRef<Record<string, number>>({});
-  const ensuringGatewayTalkRef = useRef<Promise<string | null> | null>(null);
 
   // --- Hooks ---
 
@@ -760,88 +747,38 @@ function App({ options }: AppProps) {
     chat.setMessages(prev => [...prev, sysMsg]);
   }, [activeTalkId, chat.messages]);
 
-  /**
-   * Ensure the current local talk has a corresponding gateway talk.
-   * Deduplicates concurrent create attempts.
-   */
-  const ensureGatewayTalk = useCallback(async (): Promise<string | null> => {
-    if (gatewayTalkIdRef.current) return gatewayTalkIdRef.current;
-    if (!chatServiceRef.current) {
-      setError('Gateway is not initialized.');
-      return null;
-    }
-    if (ensuringGatewayTalkRef.current) {
-      return ensuringGatewayTalkRef.current;
-    }
-
-    const pending = (async () => {
-      const localTalkId = activeTalkIdRef.current;
-      if (localTalkId) {
-        talkManagerRef.current?.saveTalk(localTalkId);
-      }
-
-      const result = await chatServiceRef.current!.createGatewayTalk(currentModelRef.current);
-      if (!result.ok || !result.data) {
-        setError(`Failed to create gateway talk: ${result.error ?? 'unknown error'}`);
-        return null;
-      }
-
-      gatewayTalkIdRef.current = result.data;
-      if (localTalkId) {
-        talkManagerRef.current?.setGatewayTalkId(localTalkId, result.data);
-      }
-      return result.data;
-    })();
-
-    ensuringGatewayTalkRef.current = pending;
-    try {
-      return await pending;
-    } finally {
-      if (ensuringGatewayTalkRef.current === pending) {
-        ensuringGatewayTalkRef.current = null;
-      }
-    }
-  }, []);
-
-  // --- Job handlers ---
+  // --- Automation handlers ---
 
   const handleAddJob = useCallback((schedule: string, prompt: string) => {
     if (!activeTalkId || !talkManagerRef.current) return;
-    // Auto-save the talk when adding a job
+    // Auto-save the talk when adding an automation
     talkManagerRef.current.saveTalk(activeTalkId);
 
     const isEvent = /^on\s+/i.test(schedule);
     const isOneOff = /^(in\s|at\s)/i.test(schedule);
-    const label = isEvent ? 'Event Job Created' : isOneOff ? 'Job Scheduled' : 'Recurring Job Scheduled';
+    const label = isEvent ? 'Event Automation Created' : isOneOff ? 'Automation Scheduled' : 'Recurring Automation Scheduled';
 
-    void (async () => {
-      const gwId = await ensureGatewayTalk();
-      if (!gwId || !chatServiceRef.current) {
-        const sysMsg = createMessage(
-          'system',
-          'Cannot create job: failed to initialize gateway talk. Jobs run server-side.',
-        );
-        chat.setMessages(prev => [...prev, sysMsg]);
-        return;
-      }
-
-      try {
-        const result = await chatServiceRef.current.createGatewayJob(gwId, schedule, prompt);
+    const gwId = gatewayTalkIdRef.current;
+    if (gwId && chatServiceRef.current) {
+      chatServiceRef.current.createGatewayJob(gwId, schedule, prompt).then(result => {
         if (typeof result === 'string') {
-          setError(`Job failed: ${result}`);
-          return;
+          setError(`Automation failed: ${result}`);
+        } else {
+          // Update local cache
+          const resolvedSchedule = result.schedule ?? schedule;
+          talkManagerRef.current?.addJob(activeTalkId, resolvedSchedule, prompt);
+          const sysMsg = createMessage('system', `[${label}] "${prompt}" — ${resolvedSchedule}`);
+          chat.setMessages(prev => [...prev, sysMsg]);
         }
-
-        // Update local cache
-        const resolvedSchedule = result.schedule ?? schedule;
-        talkManagerRef.current?.addJob(activeTalkId, resolvedSchedule, prompt);
-        const sysMsg = createMessage('system', `[${label}] "${prompt}" — ${resolvedSchedule}`);
-        chat.setMessages(prev => [...prev, sysMsg]);
-      } catch (err) {
-        setError(`Job failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    })();
-  }, [activeTalkId, ensureGatewayTalk]);
+      }).catch(err => {
+        setError(`Automation failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    } else {
+      // Automations require a gateway connection — the client doesn't execute them
+      const sysMsg = createMessage('system', 'Cannot create automation: no gateway connection. Automations run server-side — connect to a gateway first.');
+      chat.setMessages(prev => [...prev, sysMsg]);
+    }
+  }, [activeTalkId]);
 
   const handleListJobs = useCallback(() => {
     if (!activeTalkId) return;
@@ -850,7 +787,7 @@ function App({ options }: AppProps) {
     if (gwId && chatServiceRef.current) {
       chatServiceRef.current.listGatewayJobs(gwId).then(jobs => {
         if (jobs.length === 0) {
-          const sysMsg = createMessage('system', 'No jobs for this talk.');
+          const sysMsg = createMessage('system', 'No automations for this talk.');
           chat.setMessages(prev => [...prev, sysMsg]);
           return;
         }
@@ -859,13 +796,13 @@ function App({ options }: AppProps) {
           const lastRun = j.lastRunAt ? ` (last: ${new Date(j.lastRunAt).toLocaleString()})` : '';
           return `  ${i + 1}. [${status}] "${j.schedule}" — ${j.prompt}${lastRun}`;
         });
-        const sysMsg = createMessage('system', `Jobs:\n${lines.join('\n')}`);
+        const sysMsg = createMessage('system', `Automations:\n${lines.join('\n')}`);
         chat.setMessages(prev => [...prev, sysMsg]);
       });
     } else if (talkManagerRef.current) {
       const jobs = talkManagerRef.current.getJobs(activeTalkId);
       if (jobs.length === 0) {
-        const sysMsg = createMessage('system', 'No jobs for this talk.');
+        const sysMsg = createMessage('system', 'No automations for this talk.');
         chat.setMessages(prev => [...prev, sysMsg]);
         return;
       }
@@ -873,12 +810,12 @@ function App({ options }: AppProps) {
         const status = j.active ? 'active' : 'paused';
         return `  ${i + 1}. [${status}] "${j.schedule}" — ${j.prompt}`;
       });
-      const sysMsg = createMessage('system', `Jobs:\n${lines.join('\n')}`);
+      const sysMsg = createMessage('system', `Automations:\n${lines.join('\n')}`);
       chat.setMessages(prev => [...prev, sysMsg]);
     }
   }, [activeTalkId]);
 
-  /** Helper: resolve job ID by 1-based index via gateway. */
+  /** Helper: resolve automation ID by 1-based index via gateway. */
   const resolveGatewayJobByIndex = useCallback(async (index: number): Promise<{ jobId: string; jobs: import('../types.js').Job[] } | null> => {
     const gwId = gatewayTalkIdRef.current;
     if (!gwId || !chatServiceRef.current) return null;
@@ -894,24 +831,24 @@ function App({ options }: AppProps) {
     const gwId = gatewayTalkIdRef.current;
     if (gwId && chatServiceRef.current) {
       resolveGatewayJobByIndex(index).then(result => {
-        if (!result) { setError(`No job at position ${index}`); return; }
+        if (!result) { setError(`No automation at position ${index}`); return; }
         chatServiceRef.current?.updateGatewayJob(gwId, result.jobId, { active: false }).then(ok => {
           if (ok) {
             talkManagerRef.current?.pauseJob(activeTalkId, index);
-            const sysMsg = createMessage('system', `Job #${index} paused.`);
+            const sysMsg = createMessage('system', `Automation #${index} paused.`);
             chat.setMessages(prev => [...prev, sysMsg]);
           } else {
-            setError(`Failed to pause job #${index}`);
+            setError(`Failed to pause automation #${index}`);
           }
         });
       });
     } else if (talkManagerRef.current) {
       const success = talkManagerRef.current.pauseJob(activeTalkId, index);
       if (success) {
-        const sysMsg = createMessage('system', `Job #${index} paused.`);
+        const sysMsg = createMessage('system', `Automation #${index} paused.`);
         chat.setMessages(prev => [...prev, sysMsg]);
       } else {
-        setError(`No job at position ${index}`);
+        setError(`No automation at position ${index}`);
       }
     }
   }, [activeTalkId, resolveGatewayJobByIndex]);
@@ -922,24 +859,24 @@ function App({ options }: AppProps) {
     const gwId = gatewayTalkIdRef.current;
     if (gwId && chatServiceRef.current) {
       resolveGatewayJobByIndex(index).then(result => {
-        if (!result) { setError(`No job at position ${index}`); return; }
+        if (!result) { setError(`No automation at position ${index}`); return; }
         chatServiceRef.current?.updateGatewayJob(gwId, result.jobId, { active: true }).then(ok => {
           if (ok) {
             talkManagerRef.current?.resumeJob(activeTalkId, index);
-            const sysMsg = createMessage('system', `Job #${index} resumed.`);
+            const sysMsg = createMessage('system', `Automation #${index} resumed.`);
             chat.setMessages(prev => [...prev, sysMsg]);
           } else {
-            setError(`Failed to resume job #${index}`);
+            setError(`Failed to resume automation #${index}`);
           }
         });
       });
     } else if (talkManagerRef.current) {
       const success = talkManagerRef.current.resumeJob(activeTalkId, index);
       if (success) {
-        const sysMsg = createMessage('system', `Job #${index} resumed.`);
+        const sysMsg = createMessage('system', `Automation #${index} resumed.`);
         chat.setMessages(prev => [...prev, sysMsg]);
       } else {
-        setError(`No job at position ${index}`);
+        setError(`No automation at position ${index}`);
       }
     }
   }, [activeTalkId, resolveGatewayJobByIndex]);
@@ -950,24 +887,24 @@ function App({ options }: AppProps) {
     const gwId = gatewayTalkIdRef.current;
     if (gwId && chatServiceRef.current) {
       resolveGatewayJobByIndex(index).then(result => {
-        if (!result) { setError(`No job at position ${index}`); return; }
+        if (!result) { setError(`No automation at position ${index}`); return; }
         chatServiceRef.current?.deleteGatewayJob(gwId, result.jobId).then(ok => {
           if (ok) {
             talkManagerRef.current?.deleteJob(activeTalkId, index);
-            const sysMsg = createMessage('system', `Job #${index} deleted.`);
+            const sysMsg = createMessage('system', `Automation #${index} deleted.`);
             chat.setMessages(prev => [...prev, sysMsg]);
           } else {
-            setError(`Failed to delete job #${index}`);
+        setError(`Failed to delete automation #${index}`);
           }
         });
       });
     } else if (talkManagerRef.current) {
       const success = talkManagerRef.current.deleteJob(activeTalkId, index);
       if (success) {
-        const sysMsg = createMessage('system', `Job #${index} deleted.`);
+        const sysMsg = createMessage('system', `Automation #${index} deleted.`);
         chat.setMessages(prev => [...prev, sysMsg]);
       } else {
-        setError(`No job at position ${index}`);
+        setError(`No automation at position ${index}`);
       }
     }
   }, [activeTalkId, resolveGatewayJobByIndex]);
@@ -982,10 +919,10 @@ function App({ options }: AppProps) {
       chatServiceRef.current?.updateGatewayTalk(gatewayTalkIdRef.current, { objective: text ?? '' });
     }
     if (text) {
-      const sysMsg = createMessage('system', `Objective set: ${text}`);
+      const sysMsg = createMessage('system', `Objectives set: ${text}`);
       chat.setMessages(prev => [...prev, sysMsg]);
     } else {
-      const sysMsg = createMessage('system', 'Objective cleared.');
+      const sysMsg = createMessage('system', 'Objectives cleared.');
       chat.setMessages(prev => [...prev, sysMsg]);
     }
   }, [activeTalkId]);
@@ -994,8 +931,8 @@ function App({ options }: AppProps) {
     if (!activeTalkId || !talkManagerRef.current) return;
     const objective = talkManagerRef.current.getObjective(activeTalkId);
     const text = objective
-      ? `Current objective: ${objective}`
-      : 'No objective set. Use /objective <text> to set one.';
+      ? `Current objectives: ${objective}`
+      : 'No objectives set. Use /objective <text> (or /objectives <text>) to set one.';
     const sysMsg = createMessage('system', text);
     chat.setMessages(prev => [...prev, sysMsg]);
   }, [activeTalkId]);
@@ -1012,16 +949,16 @@ function App({ options }: AppProps) {
       return;
     }
 
-    // If jobIndex is given, resolve the job ID first
+    // If jobIndex is given, resolve the automation ID first
     if (jobIndex !== undefined) {
       resolveGatewayJobByIndex(jobIndex).then(result => {
         if (!result) {
-          setError(`No job at position ${jobIndex}`);
+          setError(`No automation at position ${jobIndex}`);
           return;
         }
         chatServiceRef.current?.fetchGatewayReports(gwId, result.jobId, 10).then(reports => {
           if (reports.length === 0) {
-            const sysMsg = createMessage('system', `No reports for job #${jobIndex}.`);
+          const sysMsg = createMessage('system', `No reports for automation #${jobIndex}.`);
             chat.setMessages(prev => [...prev, sysMsg]);
             return;
           }
@@ -1030,14 +967,14 @@ function App({ options }: AppProps) {
             const icon = r.status === 'success' ? '✓' : '✗';
             return `  ${icon} [${ts}] ${r.summary}`;
           });
-          const sysMsg = createMessage('system', `Reports for job #${jobIndex}:\n${lines.join('\n')}`);
+          const sysMsg = createMessage('system', `Reports for automation #${jobIndex}:\n${lines.join('\n')}`);
           chat.setMessages(prev => [...prev, sysMsg]);
         });
       });
     } else {
       chatServiceRef.current.fetchGatewayReports(gwId, undefined, 10).then(reports => {
         if (reports.length === 0) {
-          const sysMsg = createMessage('system', 'No job reports for this talk.');
+          const sysMsg = createMessage('system', 'No automation reports for this talk.');
           chat.setMessages(prev => [...prev, sysMsg]);
           return;
         }
@@ -1046,7 +983,7 @@ function App({ options }: AppProps) {
           const icon = r.status === 'success' ? '✓' : '✗';
           return `  ${icon} [${ts}] ${r.summary}`;
         });
-        const sysMsg = createMessage('system', `Job reports:\n${lines.join('\n')}`);
+        const sysMsg = createMessage('system', `Automation reports:\n${lines.join('\n')}`);
         chat.setMessages(prev => [...prev, sysMsg]);
       });
     }
@@ -1117,83 +1054,6 @@ function App({ options }: AppProps) {
     setShowEditMessages(true);
   }, [chat.messages]);
 
-  const syncGatewayTalkConfig = useCallback((
-    gatewayTalkId: string | null,
-    updates: {
-      directives?: Directive[];
-      platformBindings?: PlatformBinding[];
-      platformBehaviors?: PlatformBehavior[];
-    },
-    label: 'directives' | 'platformBindings' | 'platformBehaviors',
-  ) => {
-    void (async () => {
-      const resolvedGatewayTalkId = gatewayTalkId ?? await ensureGatewayTalk();
-      const service = chatServiceRef.current;
-      if (!resolvedGatewayTalkId || !service) {
-        setError(`Failed to sync ${label} to gateway: talk is not connected to gateway.`);
-        return;
-      }
-
-      const key = `${resolvedGatewayTalkId}:${label}`;
-      const nextVersion = (talkConfigSyncVersionRef.current[key] ?? 0) + 1;
-      talkConfigSyncVersionRef.current[key] = nextVersion;
-
-      const run = async (attempt: number): Promise<void> => {
-        // Stop stale retries from older writes
-        if (talkConfigSyncVersionRef.current[key] !== nextVersion) return;
-
-        const result = await service.updateGatewayTalk(resolvedGatewayTalkId, updates);
-
-        // Stop if superseded while request was in flight
-        if (talkConfigSyncVersionRef.current[key] !== nextVersion) return;
-
-        if (result.ok) {
-          const gwTalk = result.data;
-          if (gwTalk && talkManagerRef.current) {
-            talkManagerRef.current.importGatewayTalk({
-              id: gwTalk.id,
-              topicTitle: gwTalk.topicTitle,
-              objective: gwTalk.objective,
-              model: gwTalk.model,
-              pinnedMessageIds: gwTalk.pinnedMessageIds,
-              jobs: gwTalk.jobs,
-              agents: gwTalk.agents,
-              directives: gwTalk.directives,
-              platformBindings: gwTalk.platformBindings,
-              platformBehaviors: gwTalk.platformBehaviors,
-              processing: gwTalk.processing,
-              createdAt: gwTalk.createdAt,
-              updatedAt: gwTalk.updatedAt,
-            });
-          }
-          return;
-        }
-
-        if (attempt < 2) {
-          const delay = 500 * (2 ** attempt);
-          setTimeout(() => {
-            void run(attempt + 1);
-          }, delay);
-          return;
-        }
-
-        setError(`Failed to sync ${label} to gateway: ${result.error ?? 'unknown error'}`);
-      };
-
-      void run(0);
-    })();
-  }, [ensureGatewayTalk]);
-
-  const formatPlatformScope = useCallback((binding: PlatformBinding): string => {
-    const scope = binding.scope;
-    const display = binding.displayScope?.trim();
-    const accountPrefix = binding.accountId?.trim() ? `${binding.accountId.trim()}:` : '';
-    if (!display || display.toLowerCase() === scope.toLowerCase()) {
-      return `${accountPrefix}${scope}`;
-    }
-    return `${accountPrefix}${display} [${scope}]`;
-  }, []);
-
   // --- Directive handlers ---
 
   const handleAddDirective = useCallback((text: string) => {
@@ -1201,49 +1061,55 @@ function App({ options }: AppProps) {
     talkManagerRef.current.saveTalk(activeTalkId);
 
     const directive = talkManagerRef.current.addDirective(activeTalkId, text);
-    if (!directive) { setError('Failed to add directive'); return; }
+    if (!directive) { setError('Failed to add rule'); return; }
 
-    const sysMsg = createMessage('system', `Directive added: ${text}`);
+    const sysMsg = createMessage('system', `Rule added: ${text}`);
     chat.setMessages(prev => [...prev, sysMsg]);
 
     // Sync to gateway
-    const directives = talkManagerRef.current.getDirectives(activeTalkId);
-    syncGatewayTalkConfig(gatewayTalkIdRef.current, { directives }, 'directives');
-  }, [activeTalkId, syncGatewayTalkConfig]);
+    if (gatewayTalkIdRef.current && chatServiceRef.current) {
+      const directives = talkManagerRef.current.getDirectives(activeTalkId);
+      chatServiceRef.current.updateGatewayTalk(gatewayTalkIdRef.current, { directives });
+    }
+  }, [activeTalkId]);
 
   const handleRemoveDirective = useCallback((index: number) => {
     if (!activeTalkId || !talkManagerRef.current) return;
 
     const success = talkManagerRef.current.removeDirective(activeTalkId, index);
-    if (!success) { setError(`No directive at position ${index}`); return; }
+    if (!success) { setError(`No rule at position ${index}`); return; }
 
-    const sysMsg = createMessage('system', `Directive #${index} deleted.`);
+    const sysMsg = createMessage('system', `Rule #${index} deleted.`);
     chat.setMessages(prev => [...prev, sysMsg]);
 
-    const directives = talkManagerRef.current.getDirectives(activeTalkId);
-    syncGatewayTalkConfig(gatewayTalkIdRef.current, { directives }, 'directives');
-  }, [activeTalkId, syncGatewayTalkConfig]);
+    if (gatewayTalkIdRef.current && chatServiceRef.current) {
+      const directives = talkManagerRef.current.getDirectives(activeTalkId);
+      chatServiceRef.current.updateGatewayTalk(gatewayTalkIdRef.current, { directives });
+    }
+  }, [activeTalkId]);
 
   const handleToggleDirective = useCallback((index: number) => {
     if (!activeTalkId || !talkManagerRef.current) return;
 
     const success = talkManagerRef.current.toggleDirective(activeTalkId, index);
-    if (!success) { setError(`No directive at position ${index}`); return; }
+    if (!success) { setError(`No rule at position ${index}`); return; }
 
     const directives = talkManagerRef.current.getDirectives(activeTalkId);
     const d = directives[index - 1];
     const status = d?.active ? 'active' : 'paused';
-    const sysMsg = createMessage('system', `Directive #${index} ${status}.`);
+    const sysMsg = createMessage('system', `Rule #${index} ${status}.`);
     chat.setMessages(prev => [...prev, sysMsg]);
 
-    syncGatewayTalkConfig(gatewayTalkIdRef.current, { directives }, 'directives');
-  }, [activeTalkId, syncGatewayTalkConfig]);
+    if (gatewayTalkIdRef.current && chatServiceRef.current) {
+      chatServiceRef.current.updateGatewayTalk(gatewayTalkIdRef.current, { directives });
+    }
+  }, [activeTalkId]);
 
   const handleListDirectives = useCallback(() => {
     if (!activeTalkId || !talkManagerRef.current) return;
     const directives = talkManagerRef.current.getDirectives(activeTalkId);
     if (directives.length === 0) {
-      const sysMsg = createMessage('system', 'No directives for this talk. Use /directive <text> to add one.');
+      const sysMsg = createMessage('system', 'No rules for this talk. Use /rule <text> to add one.');
       chat.setMessages(prev => [...prev, sysMsg]);
       return;
     }
@@ -1251,178 +1117,57 @@ function App({ options }: AppProps) {
       const status = d.active ? 'active' : 'paused';
       return `  ${i + 1}. [${status}] ${d.text}`;
     });
-    const sysMsg = createMessage('system', `Directives:\n${lines.join('\n')}`);
+    const sysMsg = createMessage('system', `Rules:\n${lines.join('\n')}`);
     chat.setMessages(prev => [...prev, sysMsg]);
   }, [activeTalkId]);
 
   // --- Platform binding handlers ---
-
-  const resolvePlatformBindingRef = useCallback((talkId: string, platformRef: string): {
-    binding: PlatformBinding;
-    index: number;
-    total: number;
-  } | null => {
-    if (!talkManagerRef.current) return null;
-    const bindings = talkManagerRef.current.getPlatformBindings(talkId);
-    const total = bindings.length;
-    if (total === 0) return null;
-
-    const trimmed = platformRef.trim();
-    let index = -1;
-
-    const numbered = trimmed.match(/^platform(\d+)$/i);
-    if (numbered?.[1]) {
-      index = parseInt(numbered[1], 10) - 1;
-    } else if (/^\d+$/.test(trimmed)) {
-      index = parseInt(trimmed, 10) - 1;
-    } else {
-      index = bindings.findIndex((binding) => binding.id === trimmed);
-    }
-
-    if (index < 0 || index >= total) return null;
-    return { binding: bindings[index], index: index + 1, total };
-  }, []);
 
   const handleAddPlatformBinding = useCallback((platform: string, scope: string, permission: string) => {
     if (!activeTalkId || !talkManagerRef.current) return;
     talkManagerRef.current.saveTalk(activeTalkId);
 
     const binding = talkManagerRef.current.addPlatformBinding(activeTalkId, platform, scope, permission as PlatformPermission);
-    if (!binding) { setError('Failed to add platform binding'); return; }
+    if (!binding) { setError('Failed to add channel connection'); return; }
 
-    const sysMsg = createMessage(
-      'system',
-      `Platform binding added: ${platform} ${formatPlatformScope(binding)} (${permission})`,
-    );
+    const sysMsg = createMessage('system', `Channel connection added: ${platform} ${scope} (${permission})`);
     chat.setMessages(prev => [...prev, sysMsg]);
 
-    const bindings = talkManagerRef.current.getPlatformBindings(activeTalkId);
-    syncGatewayTalkConfig(gatewayTalkIdRef.current, { platformBindings: bindings }, 'platformBindings');
-  }, [activeTalkId, formatPlatformScope, syncGatewayTalkConfig]);
+    if (gatewayTalkIdRef.current && chatServiceRef.current) {
+      const bindings = talkManagerRef.current.getPlatformBindings(activeTalkId);
+      chatServiceRef.current.updateGatewayTalk(gatewayTalkIdRef.current, { platformBindings: bindings });
+    }
+  }, [activeTalkId]);
 
   const handleRemovePlatformBinding = useCallback((index: number) => {
     if (!activeTalkId || !talkManagerRef.current) return;
 
     const success = talkManagerRef.current.removePlatformBinding(activeTalkId, index);
-    if (!success) { setError(`No platform binding at position ${index}`); return; }
+    if (!success) { setError(`No channel connection at position ${index}`); return; }
 
-    const sysMsg = createMessage('system', `Platform binding #${index} removed.`);
+    const sysMsg = createMessage('system', `Channel connection #${index} removed.`);
     chat.setMessages(prev => [...prev, sysMsg]);
 
-    const bindings = talkManagerRef.current.getPlatformBindings(activeTalkId);
-    const behaviors = talkManagerRef.current.getPlatformBehaviors(activeTalkId);
-    syncGatewayTalkConfig(
-      gatewayTalkIdRef.current,
-      { platformBindings: bindings, platformBehaviors: behaviors },
-      'platformBindings',
-    );
-  }, [activeTalkId, syncGatewayTalkConfig]);
+    if (gatewayTalkIdRef.current && chatServiceRef.current) {
+      const bindings = talkManagerRef.current.getPlatformBindings(activeTalkId);
+      chatServiceRef.current.updateGatewayTalk(gatewayTalkIdRef.current, { platformBindings: bindings });
+    }
+  }, [activeTalkId]);
 
   const handleListPlatformBindings = useCallback(() => {
     if (!activeTalkId || !talkManagerRef.current) return;
     const bindings = talkManagerRef.current.getPlatformBindings(activeTalkId);
     if (bindings.length === 0) {
-      const sysMsg = createMessage(
-        'system',
-        'No platform bindings for this talk.\n' +
-        'Examples:\n' +
-        '  /platform slack kimfamily:#general read+write\n' +
-        '  /platform slack channel:C01234567 read+write',
-      );
+      const sysMsg = createMessage('system', 'No channel connections for this talk. Use /channel <name> <scope> <permission> to add one.');
       chat.setMessages(prev => [...prev, sysMsg]);
       return;
     }
     const lines = bindings.map((b, i) =>
-      `  ${i + 1}. platform${i + 1}: ${b.platform} ${formatPlatformScope(b)} (${b.permission})`
+      `  ${i + 1}. platform${i + 1}: ${b.platform} ${b.scope} (${b.permission})`
     );
-    const sysMsg = createMessage('system', `Platform bindings:\n${lines.join('\n')}`);
+    const sysMsg = createMessage('system', `Channel connections:\n${lines.join('\n')}`);
     chat.setMessages(prev => [...prev, sysMsg]);
-  }, [activeTalkId, formatPlatformScope]);
-
-  // --- Platform behavior handlers ---
-
-  const handleSetPlatformBehavior = useCallback((
-    platformRef: string,
-    updates: { agentName?: string | null; onMessagePrompt?: string | null },
-  ) => {
-    if (!activeTalkId || !talkManagerRef.current) return;
-    talkManagerRef.current.saveTalk(activeTalkId);
-
-    const resolved = resolvePlatformBindingRef(activeTalkId, platformRef);
-    if (!resolved) {
-      const count = talkManagerRef.current.getPlatformBindings(activeTalkId).length;
-      if (count === 0) {
-        setError('No platform bindings found. Add one first with /platform <name> <scope> <permission>.');
-      } else {
-        setError(`Unknown platform reference "${platformRef}". Use platform1..platform${count} or /platform list.`);
-      }
-      return;
-    }
-
-    const behavior = talkManagerRef.current.upsertPlatformBehavior(
-      activeTalkId,
-      resolved.binding.id,
-      updates,
-    );
-    const behaviors = talkManagerRef.current.getPlatformBehaviors(activeTalkId);
-    syncGatewayTalkConfig(gatewayTalkIdRef.current, { platformBehaviors: behaviors }, 'platformBehaviors');
-
-    if (!behavior) {
-      const sysMsg = createMessage(
-        'system',
-        `Platform behavior cleared: platform${resolved.index} (${resolved.binding.platform} ${formatPlatformScope(resolved.binding)}).`,
-      );
-      chat.setMessages(prev => [...prev, sysMsg]);
-      return;
-    }
-
-    const agent = behavior.agentName ?? 'primary talk agent';
-    const onMessage = behavior.onMessagePrompt ? `"${behavior.onMessagePrompt}"` : 'off';
-    const sysMsg = createMessage(
-      'system',
-      `Platform behavior set: platform${resolved.index} (${resolved.binding.platform} ${formatPlatformScope(resolved.binding)})\n` +
-      `  agent: ${agent}\n` +
-      `  on-message: ${onMessage}`,
-    );
-    chat.setMessages(prev => [...prev, sysMsg]);
-  }, [activeTalkId, formatPlatformScope, resolvePlatformBindingRef, syncGatewayTalkConfig]);
-
-  const handleListPlatformBehaviors = useCallback(() => {
-    if (!activeTalkId || !talkManagerRef.current) return;
-
-    const talk = talkManagerRef.current.getTalk(activeTalkId);
-    if (!talk) return;
-    const bindings = talk.platformBindings ?? [];
-    const behaviors = talk.platformBehaviors ?? [];
-
-    if (behaviors.length === 0) {
-      const sysMsg = createMessage(
-        'system',
-        'No platform behaviors configured.\n' +
-        'Examples:\n' +
-        '  /platform behavior set platform1 --agent DeepSeek\n' +
-        '  /platform behavior set platform1 --on-message "Reply with concise action items."\n' +
-        '  /platform behavior clear platform1',
-      );
-      chat.setMessages(prev => [...prev, sysMsg]);
-      return;
-    }
-
-    const lines = behaviors.map((behavior, i) => {
-      const bindingIndex = bindings.findIndex((binding) => binding.id === behavior.platformBindingId);
-      if (bindingIndex === -1) {
-        return `  ${i + 1}. [missing binding] agent=${behavior.agentName ?? 'primary'} on-message=${behavior.onMessagePrompt ? `"${behavior.onMessagePrompt}"` : 'off'}`;
-      }
-      const binding = bindings[bindingIndex];
-      return (
-        `  ${i + 1}. platform${bindingIndex + 1}: ${binding.platform} ${formatPlatformScope(binding)} ` +
-        `— agent=${behavior.agentName ?? 'primary'} | on-message=${behavior.onMessagePrompt ? `"${behavior.onMessagePrompt}"` : 'off'}`
-      );
-    });
-
-    const sysMsg = createMessage('system', `Platform behaviors:\n${lines.join('\n')}`);
-    chat.setMessages(prev => [...prev, sysMsg]);
-  }, [activeTalkId, formatPlatformScope]);
+  }, [activeTalkId]);
 
   // --- Playbook handler ---
 
@@ -1433,65 +1178,46 @@ function App({ options }: AppProps) {
 
     const sections: string[] = ['=== Playbook ==='];
 
-    // Objective
+    // Objectives
     if (talk.objective) {
-      sections.push(`\nObjective:\n  ${talk.objective}`);
+      sections.push(`\nObjectives:\n  ${talk.objective}`);
     } else {
-      sections.push('\nObjective: (none)');
+      sections.push('\nObjectives: (none)');
     }
 
-    // Directives
+    // Rules
     const directives = talk.directives ?? [];
     if (directives.length > 0) {
       const lines = directives.map((d, i) => {
         const status = d.active ? 'active' : 'paused';
         return `  ${i + 1}. [${status}] ${d.text}`;
       });
-      sections.push(`\nDirectives:\n${lines.join('\n')}`);
+      sections.push(`\nRules:\n${lines.join('\n')}`);
     } else {
-      sections.push('\nDirectives: (none)');
+      sections.push('\nRules: (none)');
     }
 
-    // Platform bindings
+    // Channel connections
     const bindings = talk.platformBindings ?? [];
     if (bindings.length > 0) {
       const lines = bindings.map((b, i) =>
-        `  ${i + 1}. platform${i + 1}: ${b.platform} ${formatPlatformScope(b)} (${b.permission})`
+        `  ${i + 1}. platform${i + 1}: ${b.platform} ${b.scope} (${b.permission})`
       );
-      sections.push(`\nPlatform bindings:\n${lines.join('\n')}`);
+      sections.push(`\nChannel connections:\n${lines.join('\n')}`);
     } else {
-      sections.push('\nPlatform bindings: (none)');
+      sections.push('\nChannel connections: (none)');
     }
 
-    // Platform behaviors
-    const behaviors = talk.platformBehaviors ?? [];
-    if (behaviors.length > 0) {
-      const lines = behaviors.map((behavior, i) => {
-        const bindingIndex = bindings.findIndex((binding) => binding.id === behavior.platformBindingId);
-        if (bindingIndex === -1) {
-          return `  ${i + 1}. [missing binding] agent=${behavior.agentName ?? 'primary'} on-message=${behavior.onMessagePrompt ? `"${behavior.onMessagePrompt}"` : 'off'}`;
-        }
-        return (
-          `  ${i + 1}. platform${bindingIndex + 1} ` +
-          `agent=${behavior.agentName ?? 'primary'} ` +
-          `on-message=${behavior.onMessagePrompt ? `"${behavior.onMessagePrompt}"` : 'off'}`
-        );
-      });
-      sections.push(`\nPlatform behaviors:\n${lines.join('\n')}`);
-    } else {
-      sections.push('\nPlatform behaviors: (none)');
-    }
-
-    // Jobs
+    // Automations
     const jobs = talk.jobs ?? [];
     if (jobs.length > 0) {
       const lines = jobs.map((j, i) => {
         const status = j.active ? 'active' : 'paused';
         return `  ${i + 1}. [${status}] "${j.schedule}" — ${j.prompt}`;
       });
-      sections.push(`\nJobs:\n${lines.join('\n')}`);
+      sections.push(`\nAutomations:\n${lines.join('\n')}`);
     } else {
-      sections.push('\nJobs: (none)');
+      sections.push('\nAutomations: (none)');
     }
 
     // Agents
@@ -1508,7 +1234,7 @@ function App({ options }: AppProps) {
 
     const sysMsg = createMessage('system', sections.join('\n'));
     chat.setMessages(prev => [...prev, sysMsg]);
-  }, [activeTalkId, formatPlatformScope]);
+  }, [activeTalkId]);
 
   const handleConfirmDeleteMessages = useCallback((messageIds: string[]) => {
     const sessionId = sessionManagerRef.current?.getActiveSessionId();
@@ -1533,13 +1259,17 @@ function App({ options }: AppProps) {
           id: gwTalk.id,
           topicTitle: gwTalk.topicTitle,
           objective: gwTalk.objective,
+          objectives: gwTalk.objectives,
           model: gwTalk.model,
           pinnedMessageIds: gwTalk.pinnedMessageIds,
           jobs: gwTalk.jobs,
           agents: gwTalk.agents,
           directives: gwTalk.directives,
+          rules: gwTalk.rules,
           platformBindings: gwTalk.platformBindings,
+          channelConnections: gwTalk.channelConnections,
           platformBehaviors: gwTalk.platformBehaviors,
+          channelResponseSettings: gwTalk.channelResponseSettings,
           processing: gwTalk.processing,
           createdAt: gwTalk.createdAt,
           updatedAt: gwTalk.updatedAt,
@@ -2033,8 +1763,17 @@ function App({ options }: AppProps) {
           chat.setMessages(prev => [...prev, confirmMsg]);
 
           // Lazy gateway talk creation
-          if (!gatewayTalkIdRef.current) {
-            await ensureGatewayTalk();
+          if (!gatewayTalkIdRef.current && chatServiceRef.current) {
+            if (activeTalkIdRef.current) {
+              talkManagerRef.current?.saveTalk(activeTalkIdRef.current);
+            }
+            const result = await chatServiceRef.current.createGatewayTalk(currentModelRef.current);
+            if (result.ok && result.data) {
+              gatewayTalkIdRef.current = result.data;
+              if (activeTalkIdRef.current) {
+                talkManagerRef.current?.setGatewayTalkId(activeTalkIdRef.current, result.data);
+              }
+            }
           }
 
           await chat.sendMessage(message, attachment);
@@ -2068,7 +1807,7 @@ function App({ options }: AppProps) {
       const errMessage = err instanceof Error ? err.message : 'Unknown error';
       setError(`File error: ${errMessage}`);
     }
-  }, [ensureGatewayTalk]);
+  }, []);
 
   // --- Submit handler (command registry + chat) ---
 
@@ -2122,8 +1861,6 @@ function App({ options }: AppProps) {
     addPlatformBinding: handleAddPlatformBinding,
     removePlatformBinding: handleRemovePlatformBinding,
     listPlatformBindings: handleListPlatformBindings,
-    setPlatformBehavior: handleSetPlatformBehavior,
-    listPlatformBehaviors: handleListPlatformBehaviors,
     showPlaybook: handleShowPlaybook,
   });
   commandCtx.current = {
@@ -2162,8 +1899,6 @@ function App({ options }: AppProps) {
     addPlatformBinding: handleAddPlatformBinding,
     removePlatformBinding: handleRemovePlatformBinding,
     listPlatformBindings: handleListPlatformBindings,
-    setPlatformBehavior: handleSetPlatformBehavior,
-    listPlatformBehaviors: handleListPlatformBehaviors,
     showPlaybook: handleShowPlaybook,
   };
 
@@ -2180,8 +1915,21 @@ function App({ options }: AppProps) {
     mouseScroll.scrollToBottom();
 
     // Lazy gateway talk creation + auto-save on first user message
-    if (!gatewayTalkIdRef.current) {
-      await ensureGatewayTalk();
+    if (!gatewayTalkIdRef.current && chatServiceRef.current) {
+      // Auto-save: this talk now has activity
+      if (activeTalkIdRef.current) {
+        talkManagerRef.current?.saveTalk(activeTalkIdRef.current);
+      }
+      chatServiceRef.current.createGatewayTalk(currentModelRef.current).then(result => {
+        if (result.ok && result.data) {
+          gatewayTalkIdRef.current = result.data;
+          if (activeTalkIdRef.current) {
+            talkManagerRef.current?.setGatewayTalkId(activeTalkIdRef.current, result.data);
+          }
+        } else if (!result.ok) {
+          setError(`Failed to create gateway talk: ${result.error}`);
+        }
+      });
     }
 
     // If already processing, queue the message
@@ -2286,7 +2034,7 @@ function App({ options }: AppProps) {
     await chat.sendMessage(finalMessage, attachment, docContent);
 
     if (primaryName) setStreamingAgentName(undefined);
-  }, [chat.sendMessage, chat.isProcessing, sendMultiAgentMessage, pendingAttachment, pendingDocument, pendingFiles, ensureGatewayTalk]);
+  }, [chat.sendMessage, chat.isProcessing, sendMultiAgentMessage, pendingAttachment, pendingDocument, pendingFiles]);
 
   // Process queued messages when AI finishes responding
   useEffect(() => {
@@ -2673,22 +2421,7 @@ function App({ options }: AppProps) {
             talkConfig={activeTalk ? {
               objective: activeTalk.objective,
               directives: (activeTalk.directives ?? []).map(d => ({ text: d.text, active: d.active })),
-              platformBindings: (activeTalk.platformBindings ?? []).map(b => ({
-                platform: b.platform,
-                scope: formatPlatformScope(b),
-                permission: b.permission,
-              })),
-              platformBehaviors: (activeTalk.platformBehaviors ?? []).map(behavior => {
-                const bindings = activeTalk.platformBindings ?? [];
-                const bindingIndex = bindings.findIndex((binding) => binding.id === behavior.platformBindingId);
-                const binding = bindingIndex >= 0 ? bindings[bindingIndex] : null;
-                return {
-                  platformRef: bindingIndex >= 0 ? `platform${bindingIndex + 1}` : behavior.platformBindingId,
-                  bindingLabel: binding ? `${binding.platform} ${formatPlatformScope(binding)}` : '(missing binding)',
-                  agentName: behavior.agentName,
-                  onMessagePrompt: behavior.onMessagePrompt,
-                };
-              }),
+              platformBindings: (activeTalk.platformBindings ?? []).map(b => ({ platform: b.platform, scope: b.scope, permission: b.permission })),
               jobs: (activeTalk.jobs ?? []).map(j => ({ schedule: j.schedule, prompt: j.prompt, active: j.active })),
               agents: (activeTalk.agents ?? []).map(a => ({ name: a.name, role: a.role, model: a.model, isPrimary: a.isPrimary })),
             } : null}

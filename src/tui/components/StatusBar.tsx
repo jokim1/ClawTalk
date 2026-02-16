@@ -124,8 +124,8 @@ export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleS
         <Text> </Text>
         <Text dimColor>M:</Text>
         <Text color={modelColor} bold>{modelDisplay}</Text>
-        {directiveCount > 0 && <Text dimColor> D:{directiveCount}</Text>}
-        {platformBindingCount > 0 && <Text dimColor> P:{platformBindingCount}</Text>}
+        {directiveCount > 0 && <Text dimColor> R:{directiveCount}</Text>}
+        {platformBindingCount > 0 && <Text dimColor> C:{platformBindingCount}</Text>}
         <Text>  </Text>
         <Text dimColor>{billingText}</Text>
         <Text>{' '.repeat(padding)}</Text>

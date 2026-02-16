@@ -5,17 +5,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import type {
-  Message,
-  RateLimitInfo,
-  Job,
-  JobReport,
-  TalkAgent,
-  StreamChunk,
-  Directive,
-  PlatformBinding,
-  PlatformBehavior,
-} from '../types.js';
+import type { Message, RateLimitInfo, Job, JobReport, TalkAgent, StreamChunk, Directive, PlatformBinding, PlatformBehavior } from '../types.js';
 import type { IChatService } from './interfaces.js';
 
 import {
@@ -61,6 +51,49 @@ export interface ChatResponse {
 export type ModelProbeResult =
   | { ok: true; actualModel?: string }
   | { ok: false; code: number; reason: string; actualModel?: string };
+
+type TalkUpdatePayload = {
+  topicTitle?: string;
+  model?: string;
+  objective?: string;
+  objectives?: string;
+  directives?: Directive[];
+  rules?: Directive[];
+  platformBindings?: PlatformBinding[];
+  channelConnections?: PlatformBinding[];
+  platformBehaviors?: PlatformBehavior[];
+  channelResponseSettings?: PlatformBehavior[];
+  agents?: TalkAgent[];
+};
+
+function toTalkUpdatePayload(updates: {
+  objective?: string;
+  topicTitle?: string;
+  model?: string;
+  agents?: TalkAgent[];
+  directives?: Directive[];
+  platformBindings?: PlatformBinding[];
+  platformBehaviors?: PlatformBehavior[];
+}): TalkUpdatePayload {
+  const payload: TalkUpdatePayload = {
+    topicTitle: updates.topicTitle,
+    model: updates.model,
+    agents: updates.agents,
+  };
+  if (updates.objective !== undefined) {
+    payload.objectives = updates.objective;
+  }
+  if (updates.directives !== undefined) {
+    payload.rules = updates.directives;
+  }
+  if (updates.platformBindings !== undefined) {
+    payload.channelConnections = updates.platformBindings;
+  }
+  if (updates.platformBehaviors !== undefined) {
+    payload.channelResponseSettings = updates.platformBehaviors;
+  }
+  return payload;
+}
 
 /** Read a response body with a size limit to prevent memory exhaustion. */
 async function readLimitedBody(response: Response, maxBytes: number): Promise<string> {
@@ -214,23 +247,6 @@ export interface GatewayResult<T = void> {
   ok: boolean;
   data?: T;
   error?: string;
-}
-
-export interface GatewayTalkMeta {
-  id: string;
-  topicTitle?: string;
-  objective?: string;
-  model?: string;
-  pinnedMessageIds: string[];
-  jobs: Job[];
-  agents?: TalkAgent[];
-  directives?: Directive[];
-  platformBindings?: PlatformBinding[];
-  platformBehaviors?: PlatformBehavior[];
-  processing?: boolean;
-  createdAt: number;
-  updatedAt: number;
-  contextMd?: string;
 }
 
 export class ChatService implements IChatService {
@@ -406,32 +422,29 @@ export class ChatService implements IChatService {
     }
   }
 
-  /** Update Talk metadata on the gateway (objective, topicTitle, model). */
-  async updateGatewayTalk(
-    talkId: string,
-    updates: {
-      objective?: string;
-      topicTitle?: string;
-      model?: string;
-      agents?: TalkAgent[];
-      directives?: Directive[];
-      platformBindings?: PlatformBinding[];
-      platformBehaviors?: PlatformBehavior[];
-    },
-  ): Promise<GatewayResult<GatewayTalkMeta>> {
+  /** Update Talk metadata on the gateway (objectives, topicTitle, model). */
+  async updateGatewayTalk(talkId: string, updates: {
+    objective?: string;
+    topicTitle?: string;
+    model?: string;
+    agents?: TalkAgent[];
+    directives?: Directive[];
+    platformBindings?: PlatformBinding[];
+    platformBehaviors?: PlatformBehavior[];
+  }): Promise<GatewayResult> {
     try {
+      const payload = toTalkUpdatePayload(updates);
       const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
-        body: JSON.stringify(updates),
+        body: JSON.stringify(payload),
         signal: AbortSignal.timeout(10_000),
       });
       if (!response.ok) {
         const body = await response.text().catch(() => '');
         return { ok: false, error: `Gateway error (${response.status}): ${body.slice(0, 200)}` };
       }
-      const data = await response.json().catch(() => null) as GatewayTalkMeta | null;
-      return data ? { ok: true, data } : { ok: true };
+      return { ok: true };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : 'Unknown error' };
     }
@@ -456,7 +469,23 @@ export class ChatService implements IChatService {
   }
 
   /** Fetch Talk metadata from gateway. */
-  async getGatewayTalk(talkId: string): Promise<GatewayTalkMeta | null> {
+  async getGatewayTalk(talkId: string): Promise<{
+    id: string;
+    topicTitle?: string;
+    objective?: string;
+    objectives?: string | string[];
+    model?: string;
+    pinnedMessageIds: string[];
+    agents?: TalkAgent[];
+    directives?: Directive[];
+    rules?: Directive[];
+    platformBindings?: PlatformBinding[];
+    channelConnections?: PlatformBinding[];
+    platformBehaviors?: PlatformBehavior[];
+    channelResponseSettings?: PlatformBehavior[];
+    processing?: boolean;
+    contextMd?: string;
+  } | null> {
     try {
       const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}`, {
         method: 'GET',
@@ -471,7 +500,25 @@ export class ChatService implements IChatService {
   }
 
   /** List all talks from the gateway. */
-  async listGatewayTalks(): Promise<GatewayTalkMeta[]> {
+  async listGatewayTalks(): Promise<Array<{
+    id: string;
+    topicTitle?: string;
+    objective?: string;
+    objectives?: string | string[];
+    model?: string;
+    pinnedMessageIds: string[];
+    jobs: Job[];
+    agents?: TalkAgent[];
+    directives?: Directive[];
+    rules?: Directive[];
+    platformBindings?: PlatformBinding[];
+    channelConnections?: PlatformBinding[];
+    platformBehaviors?: PlatformBehavior[];
+    channelResponseSettings?: PlatformBehavior[];
+    processing?: boolean;
+    createdAt: number;
+    updatedAt: number;
+  }>> {
     try {
       const response = await fetch(`${this.config.gatewayUrl}/api/talks`, {
         method: 'GET',

@@ -194,11 +194,11 @@ export function useChat(
         if (isStillOnSameTalk()) {
           setMessages(prev => [...prev, assistantMsg]);
 
-          // Show confirmation for any auto-created jobs
+          // Show confirmation for any auto-created automations
           const jobBlocks = parseJobBlocks(fullContent);
           for (const { schedule, prompt } of jobBlocks) {
             const isOneOff = /^(in\s|at\s)/i.test(schedule);
-            const label = isOneOff ? 'Job Scheduled' : 'Recurring Job Scheduled';
+            const label = isOneOff ? 'Automation Scheduled' : 'Recurring Automation Scheduled';
             const jobMsg = createMessage('system', `[${label}] "${prompt}" — ${schedule}`);
             setMessages(prev => [...prev, jobMsg]);
           }

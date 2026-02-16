@@ -10,16 +10,7 @@ import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
-import type {
-  Talk,
-  Job,
-  TalkAgent,
-  AgentRole,
-  Directive,
-  PlatformBinding,
-  PlatformBehavior,
-  PlatformPermission,
-} from '../types';
+import type { Talk, Job, TalkAgent, AgentRole, Directive, PlatformBinding, PlatformBehavior, PlatformPermission } from '../types';
 
 /** Validate that a talk ID is safe for use as a directory name. */
 function isValidTalkId(id: string): boolean {
@@ -55,17 +46,6 @@ export class TalkManager {
         if (fs.existsSync(metaPath)) {
           try {
             const talk = JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as Talk;
-            const bindingIds = new Set((talk.platformBindings ?? []).map((binding) => binding.id));
-            talk.platformBehaviors = Array.isArray(talk.platformBehaviors)
-              ? talk.platformBehaviors
-                .filter((behavior) =>
-                  Boolean(
-                    behavior &&
-                    bindingIds.has(behavior.platformBindingId) &&
-                    (behavior.agentName || behavior.onMessagePrompt),
-                  ),
-                )
-              : [];
             // Only load saved talks
             if (talk.isSaved) {
               this.talks.set(talk.id, talk);
@@ -516,13 +496,7 @@ export class TalkManager {
   // --- Platform binding methods (1-based indexes for user-facing) ---
 
   /** Add a platform binding to a talk. */
-  addPlatformBinding(
-    talkId: string,
-    platform: string,
-    scope: string,
-    permission: PlatformPermission,
-    options?: { accountId?: string; displayScope?: string },
-  ): PlatformBinding | null {
+  addPlatformBinding(talkId: string, platform: string, scope: string, permission: PlatformPermission): PlatformBinding | null {
     const talk = this.talks.get(talkId);
     if (!talk) return null;
 
@@ -532,8 +506,6 @@ export class TalkManager {
       id: randomUUID(),
       platform,
       scope,
-      ...(options?.accountId ? { accountId: options.accountId } : {}),
-      ...(options?.displayScope ? { displayScope: options.displayScope } : {}),
       permission,
       createdAt: Date.now(),
     };
@@ -550,12 +522,7 @@ export class TalkManager {
     if (!talk?.platformBindings) return false;
     if (index < 1 || index > talk.platformBindings.length) return false;
 
-    const removed = talk.platformBindings.splice(index - 1, 1)[0];
-    if (removed?.id && talk.platformBehaviors?.length) {
-      talk.platformBehaviors = talk.platformBehaviors.filter(
-        (behavior) => behavior.platformBindingId !== removed.id,
-      );
-    }
+    talk.platformBindings.splice(index - 1, 1);
     talk.updatedAt = Date.now();
     if (talk.isSaved) this.persistTalk(talk);
     return true;
@@ -567,106 +534,35 @@ export class TalkManager {
     return talk?.platformBindings ?? [];
   }
 
-  // --- Platform behavior methods (bound to a platform binding ID) ---
-
-  /**
-   * Upsert behavior for a binding. Passing null clears a field.
-   * If both fields end up empty, the behavior row is removed.
-   */
-  upsertPlatformBehavior(
-    talkId: string,
-    platformBindingId: string,
-    updates: {
-      agentName?: string | null;
-      onMessagePrompt?: string | null;
-    },
-  ): PlatformBehavior | null {
-    const talk = this.talks.get(talkId);
-    if (!talk) return null;
-
-    const bindings = talk.platformBindings ?? [];
-    if (!bindings.some((binding) => binding.id === platformBindingId)) {
-      return null;
-    }
-
-    if (!talk.platformBehaviors) talk.platformBehaviors = [];
-    const existing = talk.platformBehaviors.find(
-      (behavior) => behavior.platformBindingId === platformBindingId,
-    );
-
-    const normalizeText = (value: string | null | undefined): string | undefined => {
-      if (value === undefined) return undefined;
-      if (value === null) return undefined;
-      const trimmed = value.trim();
-      return trimmed ? trimmed : undefined;
-    };
-
-    const nextAgentName = updates.agentName === undefined
-      ? existing?.agentName
-      : normalizeText(updates.agentName);
-    const nextOnMessagePrompt = updates.onMessagePrompt === undefined
-      ? existing?.onMessagePrompt
-      : normalizeText(updates.onMessagePrompt);
-
-    // Empty behavior means "unset" for this binding.
-    if (!nextAgentName && !nextOnMessagePrompt) {
-      if (existing) {
-        talk.platformBehaviors = talk.platformBehaviors.filter(
-          (behavior) => behavior.id !== existing.id,
-        );
-        talk.updatedAt = Date.now();
-        if (talk.isSaved) this.persistTalk(talk);
-      }
-      return null;
-    }
-
-    const now = Date.now();
-    if (existing) {
-      existing.agentName = nextAgentName;
-      existing.onMessagePrompt = nextOnMessagePrompt;
-      existing.updatedAt = now;
-      talk.updatedAt = now;
-      if (talk.isSaved) this.persistTalk(talk);
-      return existing;
-    }
-
-    const behavior: PlatformBehavior = {
-      id: randomUUID(),
-      platformBindingId,
-      ...(nextAgentName ? { agentName: nextAgentName } : {}),
-      ...(nextOnMessagePrompt ? { onMessagePrompt: nextOnMessagePrompt } : {}),
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    talk.platformBehaviors.push(behavior);
-    talk.updatedAt = now;
-    if (talk.isSaved) this.persistTalk(talk);
-    return behavior;
-  }
-
-  /** Get all platform behaviors for a talk. */
-  getPlatformBehaviors(talkId: string): PlatformBehavior[] {
-    const talk = this.talks.get(talkId);
-    return talk?.platformBehaviors ?? [];
-  }
-
   /** Import a talk from gateway data (creates local entry if not present). */
   importGatewayTalk(gwTalk: {
     id: string;
     topicTitle?: string;
     objective?: string;
+    objectives?: string | string[];
     model?: string;
     pinnedMessageIds?: string[];
     jobs?: Job[];
     agents?: TalkAgent[];
     directives?: Directive[];
+    rules?: Directive[];
     platformBindings?: PlatformBinding[];
+    channelConnections?: PlatformBinding[];
     platformBehaviors?: PlatformBehavior[];
+    channelResponseSettings?: PlatformBehavior[];
     processing?: boolean;
     createdAt: number;
     updatedAt: number;
   }): Talk {
+    const resolvedObjective = typeof gwTalk.objective === 'string'
+      ? gwTalk.objective
+      : (Array.isArray(gwTalk.objectives)
+        ? gwTalk.objectives.find(v => typeof v === 'string' && v.trim()) ?? undefined
+        : (typeof gwTalk.objectives === 'string' ? gwTalk.objectives : undefined));
+    const resolvedDirectives = gwTalk.directives ?? gwTalk.rules;
+    const resolvedBindings = gwTalk.platformBindings ?? gwTalk.channelConnections;
+    const resolvedBehaviors = gwTalk.platformBehaviors ?? gwTalk.channelResponseSettings;
+
     // Check by gateway talk ID first, then check if any local talk maps to it
     let existing = this.talks.get(gwTalk.id);
     if (!existing) {
@@ -681,7 +577,7 @@ export class TalkManager {
     if (existing) {
       // Update local metadata from gateway (gateway is source of truth)
       existing.topicTitle = gwTalk.topicTitle ?? existing.topicTitle;
-      existing.objective = gwTalk.objective ?? existing.objective;
+      existing.objective = resolvedObjective ?? existing.objective;
       existing.model = gwTalk.model ?? existing.model;
       existing.pinnedMessageIds = gwTalk.pinnedMessageIds ?? existing.pinnedMessageIds;
       existing.jobs = gwTalk.jobs ?? existing.jobs;
@@ -692,9 +588,9 @@ export class TalkManager {
       if (gwAgents && gwAgents.length > 0) {
         existing.agents = gwAgents;
       }
-      existing.directives = gwTalk.directives ?? existing.directives;
-      existing.platformBindings = gwTalk.platformBindings ?? existing.platformBindings;
-      existing.platformBehaviors = gwTalk.platformBehaviors ?? existing.platformBehaviors;
+      existing.directives = resolvedDirectives ?? existing.directives;
+      existing.platformBindings = resolvedBindings ?? existing.platformBindings;
+      existing.platformBehaviors = resolvedBehaviors ?? existing.platformBehaviors;
       existing.processing = gwTalk.processing;
       existing.updatedAt = gwTalk.updatedAt;
       existing.gatewayTalkId = gwTalk.id;
@@ -707,14 +603,14 @@ export class TalkManager {
       id: gwTalk.id,
       sessionId: gwTalk.id,
       topicTitle: gwTalk.topicTitle,
-      objective: gwTalk.objective,
+      objective: resolvedObjective,
       model: gwTalk.model,
       pinnedMessageIds: gwTalk.pinnedMessageIds,
       jobs: gwTalk.jobs,
       agents: gwTalk.agents,
-      directives: gwTalk.directives,
-      platformBindings: gwTalk.platformBindings,
-      platformBehaviors: gwTalk.platformBehaviors,
+      directives: resolvedDirectives,
+      platformBindings: resolvedBindings,
+      platformBehaviors: resolvedBehaviors,
       gatewayTalkId: gwTalk.id,
       processing: gwTalk.processing,
       isSaved: true,

@@ -223,24 +223,15 @@ export interface PlatformBinding {
   id: string;
   platform: string;
   scope: string;
-  /** Optional Slack account/workspace identifier from OpenClaw config. */
-  accountId?: string;
-  /** Optional human-friendly scope label (for example "#general"). */
-  displayScope?: string;
   permission: PlatformPermission;
   createdAt: number;
 }
 
 export interface PlatformBehavior {
   id: string;
-  /** Foreign key to PlatformBinding.id. */
   platformBindingId: string;
-  /** Optional talk agent name override for this binding. */
+  autoRespond?: boolean;
   agentName?: string;
-  /**
-   * Optional auto-response instruction for inbound messages on this binding.
-   * If omitted, automatic inbound replies are disabled for this binding.
-   */
   onMessagePrompt?: string;
   createdAt: number;
   updatedAt: number;

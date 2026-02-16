@@ -25,12 +25,6 @@ interface TalkConfigInfo {
   objective?: string;
   directives: Array<{ text: string; active: boolean }>;
   platformBindings: Array<{ platform: string; scope: string; permission: string }>;
-  platformBehaviors: Array<{
-    platformRef: string;
-    bindingLabel: string;
-    agentName?: string;
-    onMessagePrompt?: string;
-  }>;
   jobs: Array<{ schedule: string; prompt: string; active: boolean }>;
   agents: Array<{ name: string; role: string; model: string; isPrimary: boolean }>;
 }
@@ -457,22 +451,22 @@ export function SettingsPicker({
             <Text dimColor>No active talk. Open or create a talk first.</Text>
           ) : (
             <>
-              {/* Objective */}
+              {/* Objectives */}
               <Box marginBottom={1} flexDirection="column">
-                <Text bold>Objective</Text>
+                <Text bold>Objectives</Text>
                 {talkConfig.objective ? (
                   <Text>  {talkConfig.objective}</Text>
                 ) : (
                   <>
-                    <Text dimColor>  (none) — /objective {'<text>'} to set</Text>
-                    <Text dimColor italic>  e.g. /objective Help me produce 3 high quality blog posts per week in my voice</Text>
+                    <Text dimColor>  (none) — /objective {'<text>'} or /objectives {'<text>'} to set</Text>
+                    <Text dimColor italic>  e.g. /objectives Help me produce 3 high quality blog posts per week in my voice</Text>
                   </>
                 )}
               </Box>
 
-              {/* Directives */}
+              {/* Rules */}
               <Box marginBottom={1} flexDirection="column">
-                <Text bold>Directives</Text>
+                <Text bold>Rules</Text>
                 {talkConfig.directives.length > 0 ? (
                   talkConfig.directives.map((d, i) => (
                     <Text key={i}>
@@ -483,16 +477,16 @@ export function SettingsPicker({
                   ))
                 ) : (
                   <>
-                    <Text dimColor>  (none) — /directive {'<text>'} to add</Text>
-                    <Text dimColor italic>  e.g. /directive Be positive and encouraging</Text>
-                    <Text dimColor italic>  e.g. /directive Answer Slack messages in real time</Text>
+                    <Text dimColor>  (none) — /rule {'<text>'} (or /directive {'<text>'}) to add</Text>
+                    <Text dimColor italic>  e.g. /rule Be positive and encouraging</Text>
+                    <Text dimColor italic>  e.g. /rule Answer Slack messages in real time</Text>
                   </>
                 )}
               </Box>
 
-              {/* Platform Bindings */}
+              {/* Channel Connections */}
               <Box marginBottom={1} flexDirection="column">
-                <Text bold>Platform Bindings</Text>
+                <Text bold>Channel Connections</Text>
                 {talkConfig.platformBindings.length > 0 ? (
                   talkConfig.platformBindings.map((b, i) => (
                     <Text key={i}>
@@ -505,40 +499,16 @@ export function SettingsPicker({
                   ))
                 ) : (
                   <>
-                    <Text dimColor>  (none) — /platform {'<name> <scope> <perm>'} to add</Text>
-                    <Text dimColor italic>  e.g. /platform slack kimfamily:#general read+write</Text>
-                    <Text dimColor italic>  e.g. /platform slack channel:C01234567 read+write</Text>
+                    <Text dimColor>  (none) — /channel {'<name> <scope> <perm>'} (or /platform ...) to add</Text>
+                    <Text dimColor italic>  e.g. /channel slack "KimFamily #general" read+write</Text>
+                    <Text dimColor italic>  e.g. /channel slack "Lila Games #team-product" read+write</Text>
                   </>
                 )}
               </Box>
 
-              {/* Platform Behaviors */}
+              {/* Automations */}
               <Box marginBottom={1} flexDirection="column">
-                <Text bold>Platform Behaviors</Text>
-                {talkConfig.platformBehaviors.length > 0 ? (
-                  talkConfig.platformBehaviors.map((behavior, i) => (
-                    <Text key={i}>
-                      <Text dimColor>  {i + 1}. </Text>
-                      <Text>{behavior.platformRef}: </Text>
-                      <Text>{behavior.bindingLabel} </Text>
-                      <Text dimColor>agent=</Text>
-                      <Text>{behavior.agentName ?? 'primary'} </Text>
-                      <Text dimColor>on-message=</Text>
-                      <Text>{behavior.onMessagePrompt ? `"${behavior.onMessagePrompt}"` : 'off'}</Text>
-                    </Text>
-                  ))
-                ) : (
-                  <>
-                    <Text dimColor>  (none) — /platform behavior set platformN --on-message {'"<prompt>"'}</Text>
-                    <Text dimColor italic>  e.g. /platform behavior set platform1 --agent DeepSeek</Text>
-                    <Text dimColor italic>  e.g. /platform behavior set platform1 --on-message "Reply with concise action items."</Text>
-                  </>
-                )}
-              </Box>
-
-              {/* Jobs */}
-              <Box marginBottom={1} flexDirection="column">
-                <Text bold>Jobs</Text>
+                <Text bold>Automations</Text>
                 {talkConfig.jobs.length > 0 ? (
                   talkConfig.jobs.map((j, i) => (
                     <Text key={i}>
@@ -550,7 +520,6 @@ export function SettingsPicker({
                 ) : (
                   <>
                     <Text dimColor>  (none) — /job add "schedule" prompt</Text>
-                    <Text dimColor italic>  tip: use /platform behavior set platformN --on-message for inbound auto-replies</Text>
                     <Text dimColor italic>  e.g. /job add "10am IST weekdays" Check PostHog analytics focusing on FTUE funnel and report findings in #team-product</Text>
                   </>
                 )}
