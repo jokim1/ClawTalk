@@ -624,7 +624,24 @@ export class TalkManager {
     }
 
     if (!changed) return true;
+    talk.updatedAt = Date.now();
+    if (talk.isSaved) this.persistTalk(talk);
+    return true;
+  }
 
+  /** Remove a platform binding by binding ID. */
+  removePlatformBindingById(talkId: string, bindingId: string): boolean {
+    const talk = this.talks.get(talkId);
+    if (!talk?.platformBindings) return false;
+    const idx = talk.platformBindings.findIndex((binding) => binding.id === bindingId);
+    if (idx < 0) return false;
+
+    const removed = talk.platformBindings.splice(idx, 1)[0];
+    if (removed?.id && talk.platformBehaviors) {
+      talk.platformBehaviors = talk.platformBehaviors.filter(
+        (behavior) => behavior.platformBindingId !== removed.id,
+      );
+    }
     talk.updatedAt = Date.now();
     if (talk.isSaved) this.persistTalk(talk);
     return true;

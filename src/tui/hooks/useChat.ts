@@ -286,6 +286,43 @@ export function useChat(
         }
       }
 
+      // If streaming failed but the gateway still persisted an assistant reply,
+      // recover it from talk history instead of showing a false terminal error.
+      if (gwTalkId) {
+        try {
+          const persisted = await chatService.fetchGatewayMessages(gwTalkId, 40);
+          const recovered = [...persisted].reverse().find((m) =>
+            m.role === 'assistant'
+            && typeof m.content === 'string'
+            && m.content.trim().length > 0
+            && typeof m.timestamp === 'number'
+            && m.timestamp >= userMsg.timestamp,
+          );
+          if (recovered && isStillOnSameTalk()) {
+            const alreadyPresent = messagesRef.current.some((m) =>
+              m.role === 'assistant'
+              && m.content === recovered.content
+              && typeof m.timestamp === 'number'
+              && Math.abs(m.timestamp - recovered.timestamp) < 2000,
+            );
+            if (!alreadyPresent) {
+              const model = recovered.model ?? chatService.lastResponseModel ?? currentModelRef.current;
+              const primary = primaryAgentRef.current;
+              const assistantMsg = createMessage(
+                'assistant', recovered.content, model,
+                primary?.name, primary?.role,
+              );
+              setMessages(prev => [...prev, assistantMsg]);
+              speakResponseRef.current?.(recovered.content);
+            }
+            setStreamingContent('');
+            return;
+          }
+        } catch {
+          // Ignore recovery errors and continue with normal error handling.
+        }
+      }
+
       const rawMessage = err instanceof Error ? err.message : 'Unknown error';
 
       // Map low-level errors to user-friendly messages

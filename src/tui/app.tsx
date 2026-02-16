@@ -1143,6 +1143,58 @@ function App({ options }: AppProps) {
 
   // --- Platform binding handlers ---
 
+  const syncTalkBindingsToGateway = useCallback(async (talkId: string): Promise<boolean> => {
+    if (!gatewayTalkIdRef.current || !chatServiceRef.current || !talkManagerRef.current) {
+      return true;
+    }
+
+    const bindings = talkManagerRef.current.getPlatformBindings(talkId);
+    const behaviors = talkManagerRef.current.getPlatformBehaviors(talkId);
+    const result = await chatServiceRef.current.updateGatewayTalk(gatewayTalkIdRef.current, {
+      platformBindings: bindings,
+      platformBehaviors: behaviors,
+    });
+    if (!result.ok) {
+      setError(result.error ?? 'Failed to sync channel settings to gateway');
+      return false;
+    }
+
+    const gwTalk = await chatServiceRef.current.getGatewayTalk(gatewayTalkIdRef.current);
+    if (gwTalk) {
+      talkManagerRef.current.importGatewayTalk({
+        id: gwTalk.id,
+        topicTitle: gwTalk.topicTitle,
+        objective: gwTalk.objective,
+        objectives: gwTalk.objectives,
+        model: gwTalk.model,
+        pinnedMessageIds: gwTalk.pinnedMessageIds,
+        jobs: [],
+        agents: gwTalk.agents,
+        directives: gwTalk.directives,
+        rules: gwTalk.rules,
+        platformBindings: gwTalk.platformBindings,
+        channelConnections: gwTalk.channelConnections,
+        platformBehaviors: gwTalk.platformBehaviors,
+        channelResponseSettings: gwTalk.channelResponseSettings,
+        processing: gwTalk.processing,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+    }
+
+    return true;
+  }, []);
+
+  const restoreTalkRoutingState = useCallback((talkId: string, bindings: PlatformBinding[], behaviors: PlatformBehavior[]) => {
+    if (!talkManagerRef.current) return;
+    const talk = talkManagerRef.current.getTalk(talkId);
+    if (!talk) return;
+    talk.platformBindings = bindings;
+    talk.platformBehaviors = behaviors;
+    talk.updatedAt = Date.now();
+    talkManagerRef.current.saveTalk(talkId);
+  }, []);
+
   const handleAddPlatformBinding = useCallback((platform: string, scope: string, permission: string) => {
     if (!activeTalkId || !talkManagerRef.current) return;
     talkManagerRef.current.saveTalk(activeTalkId);
@@ -1150,37 +1202,45 @@ function App({ options }: AppProps) {
     const binding = talkManagerRef.current.addPlatformBinding(activeTalkId, platform, scope, permission as PlatformPermission);
     if (!binding) { setError('Failed to add channel connection'); return; }
 
-    const sysMsg = createMessage('system', `Channel connection added: ${platform} ${scope} (${permission})`);
-    chat.setMessages(prev => [...prev, sysMsg]);
+    void (async () => {
+      const ok = await syncTalkBindingsToGateway(activeTalkId);
+      if (!ok) {
+        talkManagerRef.current?.removePlatformBindingById(activeTalkId, binding.id);
+        const failMsg = createMessage('system', 'Failed to save channel connection to gateway; reverted local change.');
+        chat.setMessages(prev => [...prev, failMsg]);
+        return;
+      }
 
-    if (gatewayTalkIdRef.current && chatServiceRef.current) {
-      const bindings = talkManagerRef.current.getPlatformBindings(activeTalkId);
-      const behaviors = talkManagerRef.current.getPlatformBehaviors(activeTalkId);
-      chatServiceRef.current.updateGatewayTalk(gatewayTalkIdRef.current, {
-        platformBindings: bindings,
-        platformBehaviors: behaviors,
-      });
-    }
-  }, [activeTalkId]);
+      const latest = talkManagerRef.current?.getPlatformBindings(activeTalkId).find((row) => row.id === binding.id) ?? binding;
+      const sysMsg = createMessage(
+        'system',
+        `Channel connection added: ${latest.platform} ${formatBindingScopeLabel(latest)} (${latest.permission})`,
+      );
+      chat.setMessages(prev => [...prev, sysMsg]);
+    })();
+  }, [activeTalkId, syncTalkBindingsToGateway]);
 
   const handleRemovePlatformBinding = useCallback((index: number) => {
     if (!activeTalkId || !talkManagerRef.current) return;
 
+    const prevBindings = talkManagerRef.current.getPlatformBindings(activeTalkId).map((row) => ({ ...row }));
+    const prevBehaviors = talkManagerRef.current.getPlatformBehaviors(activeTalkId).map((row) => ({ ...row }));
     const success = talkManagerRef.current.removePlatformBinding(activeTalkId, index);
     if (!success) { setError(`No channel connection at position ${index}`); return; }
 
-    const sysMsg = createMessage('system', `Channel connection #${index} removed.`);
-    chat.setMessages(prev => [...prev, sysMsg]);
+    void (async () => {
+      const ok = await syncTalkBindingsToGateway(activeTalkId);
+      if (!ok) {
+        restoreTalkRoutingState(activeTalkId, prevBindings, prevBehaviors);
+        const failMsg = createMessage('system', 'Failed to remove channel connection on gateway; reverted local change.');
+        chat.setMessages(prev => [...prev, failMsg]);
+        return;
+      }
 
-    if (gatewayTalkIdRef.current && chatServiceRef.current) {
-      const bindings = talkManagerRef.current.getPlatformBindings(activeTalkId);
-      const behaviors = talkManagerRef.current.getPlatformBehaviors(activeTalkId);
-      chatServiceRef.current.updateGatewayTalk(gatewayTalkIdRef.current, {
-        platformBindings: bindings,
-        platformBehaviors: behaviors,
-      });
-    }
-  }, [activeTalkId]);
+      const sysMsg = createMessage('system', `Channel connection #${index} removed.`);
+      chat.setMessages(prev => [...prev, sysMsg]);
+    })();
+  }, [activeTalkId, restoreTalkRoutingState, syncTalkBindingsToGateway]);
 
   const handleUpdatePlatformBinding = useCallback((
     index: number,
@@ -1246,19 +1306,11 @@ function App({ options }: AppProps) {
     chat.setMessages(prev => [...prev, sysMsg]);
   }, [activeTalkId]);
 
-  const syncChannelResponsesToGateway = useCallback((talkId: string) => {
-    if (!gatewayTalkIdRef.current || !chatServiceRef.current || !talkManagerRef.current) return;
-    const bindings = talkManagerRef.current.getPlatformBindings(talkId);
-    const behaviors = talkManagerRef.current.getPlatformBehaviors(talkId);
-    chatServiceRef.current.updateGatewayTalk(gatewayTalkIdRef.current, {
-      platformBindings: bindings,
-      platformBehaviors: behaviors,
-    });
-  }, []);
-
   const handleSetChannelResponseEnabled = useCallback((index: number, enabled: boolean) => {
     if (!activeTalkId || !talkManagerRef.current) return;
     talkManagerRef.current.saveTalk(activeTalkId);
+    const prevBindings = talkManagerRef.current.getPlatformBindings(activeTalkId).map((row) => ({ ...row }));
+    const prevBehaviors = talkManagerRef.current.getPlatformBehaviors(activeTalkId).map((row) => ({ ...row }));
     const ok = talkManagerRef.current.upsertPlatformBehaviorByBindingIndex(activeTalkId, index, {
       autoRespond: enabled,
     });
@@ -1266,14 +1318,24 @@ function App({ options }: AppProps) {
       setError(`No channel connection at position ${index}`);
       return;
     }
-    syncChannelResponsesToGateway(activeTalkId);
-    const sysMsg = createMessage('system', `Channel response #${index} ${enabled ? 'enabled' : 'disabled'}.`);
-    chat.setMessages(prev => [...prev, sysMsg]);
-  }, [activeTalkId, syncChannelResponsesToGateway]);
+    void (async () => {
+      const synced = await syncTalkBindingsToGateway(activeTalkId);
+      if (!synced) {
+        restoreTalkRoutingState(activeTalkId, prevBindings, prevBehaviors);
+        const failMsg = createMessage('system', 'Failed to save channel response settings; reverted local change.');
+        chat.setMessages(prev => [...prev, failMsg]);
+        return;
+      }
+      const sysMsg = createMessage('system', `Channel response #${index} ${enabled ? 'enabled' : 'disabled'}.`);
+      chat.setMessages(prev => [...prev, sysMsg]);
+    })();
+  }, [activeTalkId, restoreTalkRoutingState, syncTalkBindingsToGateway]);
 
   const handleSetChannelResponsePrompt = useCallback((index: number, prompt: string) => {
     if (!activeTalkId || !talkManagerRef.current) return;
     talkManagerRef.current.saveTalk(activeTalkId);
+    const prevBindings = talkManagerRef.current.getPlatformBindings(activeTalkId).map((row) => ({ ...row }));
+    const prevBehaviors = talkManagerRef.current.getPlatformBehaviors(activeTalkId).map((row) => ({ ...row }));
     const ok = talkManagerRef.current.upsertPlatformBehaviorByBindingIndex(activeTalkId, index, {
       autoRespond: true,
       onMessagePrompt: prompt,
@@ -1282,10 +1344,18 @@ function App({ options }: AppProps) {
       setError(`No channel connection at position ${index}`);
       return;
     }
-    syncChannelResponsesToGateway(activeTalkId);
-    const sysMsg = createMessage('system', `Channel response prompt set for connection #${index}.`);
-    chat.setMessages(prev => [...prev, sysMsg]);
-  }, [activeTalkId, syncChannelResponsesToGateway]);
+    void (async () => {
+      const synced = await syncTalkBindingsToGateway(activeTalkId);
+      if (!synced) {
+        restoreTalkRoutingState(activeTalkId, prevBindings, prevBehaviors);
+        const failMsg = createMessage('system', 'Failed to save channel response settings; reverted local change.');
+        chat.setMessages(prev => [...prev, failMsg]);
+        return;
+      }
+      const sysMsg = createMessage('system', `Channel response prompt set for connection #${index}.`);
+      chat.setMessages(prev => [...prev, sysMsg]);
+    })();
+  }, [activeTalkId, restoreTalkRoutingState, syncTalkBindingsToGateway]);
 
   const handleSetChannelResponseAgent = useCallback((index: number, agentName: string) => {
     if (!activeTalkId || !talkManagerRef.current) return;
@@ -1296,6 +1366,8 @@ function App({ options }: AppProps) {
       setError(`Unknown agent "${agentName}". Use /agents to list names.`);
       return;
     }
+    const prevBindings = talkManagerRef.current.getPlatformBindings(activeTalkId).map((row) => ({ ...row }));
+    const prevBehaviors = talkManagerRef.current.getPlatformBehaviors(activeTalkId).map((row) => ({ ...row }));
     const ok = talkManagerRef.current.upsertPlatformBehaviorByBindingIndex(activeTalkId, index, {
       agentName: matched.name,
     });
@@ -1303,10 +1375,18 @@ function App({ options }: AppProps) {
       setError(`No channel connection at position ${index}`);
       return;
     }
-    syncChannelResponsesToGateway(activeTalkId);
-    const sysMsg = createMessage('system', `Channel response agent for connection #${index}: ${matched.name}`);
-    chat.setMessages(prev => [...prev, sysMsg]);
-  }, [activeTalkId, syncChannelResponsesToGateway]);
+    void (async () => {
+      const synced = await syncTalkBindingsToGateway(activeTalkId);
+      if (!synced) {
+        restoreTalkRoutingState(activeTalkId, prevBindings, prevBehaviors);
+        const failMsg = createMessage('system', 'Failed to save channel response settings; reverted local change.');
+        chat.setMessages(prev => [...prev, failMsg]);
+        return;
+      }
+      const sysMsg = createMessage('system', `Channel response agent for connection #${index}: ${matched.name}`);
+      chat.setMessages(prev => [...prev, sysMsg]);
+    })();
+  }, [activeTalkId, restoreTalkRoutingState, syncTalkBindingsToGateway]);
 
   const handleSetChannelResponseAgentChoice = useCallback((index: number, agentName?: string) => {
     if (!activeTalkId || !talkManagerRef.current) return;
@@ -1364,15 +1444,25 @@ function App({ options }: AppProps) {
   const handleClearChannelResponse = useCallback((index: number) => {
     if (!activeTalkId || !talkManagerRef.current) return;
     talkManagerRef.current.saveTalk(activeTalkId);
+    const prevBindings = talkManagerRef.current.getPlatformBindings(activeTalkId).map((row) => ({ ...row }));
+    const prevBehaviors = talkManagerRef.current.getPlatformBehaviors(activeTalkId).map((row) => ({ ...row }));
     const ok = talkManagerRef.current.clearPlatformBehaviorByBindingIndex(activeTalkId, index);
     if (!ok) {
       setError(`No channel response settings found at position ${index}`);
       return;
     }
-    syncChannelResponsesToGateway(activeTalkId);
-    const sysMsg = createMessage('system', `Channel response settings cleared for connection #${index}.`);
-    chat.setMessages(prev => [...prev, sysMsg]);
-  }, [activeTalkId, syncChannelResponsesToGateway]);
+    void (async () => {
+      const synced = await syncTalkBindingsToGateway(activeTalkId);
+      if (!synced) {
+        restoreTalkRoutingState(activeTalkId, prevBindings, prevBehaviors);
+        const failMsg = createMessage('system', 'Failed to clear channel response settings on gateway; reverted local change.');
+        chat.setMessages(prev => [...prev, failMsg]);
+        return;
+      }
+      const sysMsg = createMessage('system', `Channel response settings cleared for connection #${index}.`);
+      chat.setMessages(prev => [...prev, sysMsg]);
+    })();
+  }, [activeTalkId, restoreTalkRoutingState, syncTalkBindingsToGateway]);
 
   const loadSlackHints = useCallback(async () => {
     if (!chatServiceRef.current) return;

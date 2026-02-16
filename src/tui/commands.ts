@@ -484,15 +484,15 @@ function handlePlatformCommand(args: string, ctx: CommandContext): CommandResult
   }
 
   // Parse: platform scope permission (e.g. "slack channel:C123 read+write")
-  const parts = trimmed.split(/\s+/);
-  if (parts.length < 3) {
+  const match = trimmed.match(/^(\S+)\s+(.+)\s+(read\+write|read|write)$/i);
+  if (!match) {
     ctx.addSystemMessage(
       'Usage: /channel <platform> <scope> <permission>\n' +
       'Platforms: slack (full support), telegram/whatsapp (connection + event jobs)\n' +
       'Slack scope formats:\n' +
       '- channel:C12345678 (recommended)\n' +
       '- #general (default connected Slack account)\n' +
-      '- kimfamily:#general (explicit account + channel)\n' +
+      '- kimfamily:#general (explicit account ID + channel)\n' +
       'Permission: read | write | read+write\n' +
       'Examples:\n' +
       '- /channel slack channel:C0AF9BZ3V3L read+write\n' +
@@ -503,13 +503,36 @@ function handlePlatformCommand(args: string, ctx: CommandContext): CommandResult
     );
     return { handled: true };
   }
-  const permission = parts[parts.length - 1];
-  if (!['read', 'write', 'read+write'].includes(permission)) {
-    ctx.addSystemMessage('Invalid permission. Use: read, write, or read+write');
+  const platform = match[1];
+  const permission = match[3].toLowerCase();
+  let scope = match[2].trim();
+  if (
+    (scope.startsWith('"') && scope.endsWith('"')) ||
+    (scope.startsWith('\'') && scope.endsWith('\''))
+  ) {
+    scope = scope.slice(1, -1).trim();
+  }
+  if (!scope) {
+    ctx.addSystemMessage('Scope cannot be empty. Use /channel <platform> <scope> <permission>.');
     return { handled: true };
   }
-  const platform = parts[0];
-  const scope = parts.slice(1, -1).join(' ');
+  if (platform.toLowerCase() === 'slack') {
+    const looksLikeDisplayLabel = /\s+#/.test(scope)
+      && !scope.startsWith('#')
+      && !/^[a-z0-9._-]+:#/i.test(scope)
+      && !/^account:[a-z0-9._-]+:/i.test(scope)
+      && !/^channel:/i.test(scope)
+      && !/^user:/i.test(scope)
+      && !/^slack:/i.test(scope);
+    if (looksLikeDisplayLabel) {
+      ctx.addSystemMessage(
+        'Slack scope looks like a display label. Use account ID format instead, for example:\n' +
+        '- /channel slack lilagames:#team-product read+write\n' +
+        '- /channel slack channel:C01JZCR4ATU read+write',
+      );
+      return { handled: true };
+    }
+  }
   ctx.addPlatformBinding(platform, scope, permission);
   return { handled: true };
 }
