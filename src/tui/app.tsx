@@ -1182,6 +1182,29 @@ function App({ options }: AppProps) {
     }
   }, [activeTalkId]);
 
+  const handleUpdatePlatformBinding = useCallback((
+    index: number,
+    updates: Partial<Pick<PlatformBinding, 'platform' | 'scope' | 'permission'>>,
+  ) => {
+    if (!activeTalkId || !talkManagerRef.current) return;
+    talkManagerRef.current.saveTalk(activeTalkId);
+
+    const success = talkManagerRef.current.updatePlatformBindingByIndex(activeTalkId, index, updates);
+    if (!success) {
+      setError(`No channel connection at position ${index}`);
+      return;
+    }
+
+    if (gatewayTalkIdRef.current && chatServiceRef.current) {
+      const bindings = talkManagerRef.current.getPlatformBindings(activeTalkId);
+      const behaviors = talkManagerRef.current.getPlatformBehaviors(activeTalkId);
+      chatServiceRef.current.updateGatewayTalk(gatewayTalkIdRef.current, {
+        platformBindings: bindings,
+        platformBehaviors: behaviors,
+      });
+    }
+  }, [activeTalkId]);
+
   const handleListPlatformBindings = useCallback(() => {
     if (!activeTalkId || !talkManagerRef.current) return;
     const bindings = talkManagerRef.current.getPlatformBindings(activeTalkId);
@@ -2685,6 +2708,7 @@ function App({ options }: AppProps) {
             onRefreshSlackHints={() => { void loadSlackHints(); }}
             onClose={() => setShowChannelConfig(false)}
             onAddBinding={handleAddPlatformBinding}
+            onUpdateBinding={handleUpdatePlatformBinding}
             onRemoveBinding={handleRemovePlatformBinding}
             onSetAutoRespond={handleSetChannelResponseEnabled}
             onSetPrompt={handleSetChannelResponsePrompt}

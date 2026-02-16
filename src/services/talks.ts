@@ -17,6 +17,22 @@ function isValidTalkId(id: string): boolean {
   return /^[\w-]+$/.test(id) && !id.includes('..');
 }
 
+function getSlackAccountIdFromScope(scope: string): string | undefined {
+  const trimmed = scope.trim();
+  if (!trimmed) return undefined;
+
+  const accountMatch = trimmed.match(/^account:([a-z0-9._-]+):/i);
+  if (accountMatch?.[1]) return accountMatch[1];
+
+  const prefixMatch = trimmed.match(/^([a-z0-9._-]+):/i);
+  if (!prefixMatch?.[1]) return undefined;
+  const prefix = prefixMatch[1].toLowerCase();
+  if (prefix === 'slack' || prefix === 'channel' || prefix === 'user' || prefix === 'group') {
+    return undefined;
+  }
+  return prefixMatch[1];
+}
+
 export const TALKS_DIR = path.join(process.env.HOME || '~', '.clawtalk', 'talks');
 
 export class TalkManager {
@@ -528,6 +544,87 @@ export class TalkManager {
         (behavior) => behavior.platformBindingId !== removed.id,
       );
     }
+    talk.updatedAt = Date.now();
+    if (talk.isSaved) this.persistTalk(talk);
+    return true;
+  }
+
+  /** Update a platform binding by 1-based index. */
+  updatePlatformBindingByIndex(
+    talkId: string,
+    index: number,
+    updates: Partial<Pick<PlatformBinding, 'platform' | 'scope' | 'permission'>>,
+  ): boolean {
+    const talk = this.talks.get(talkId);
+    if (!talk?.platformBindings) return false;
+    if (index < 1 || index > talk.platformBindings.length) return false;
+
+    const binding = talk.platformBindings[index - 1];
+    if (!binding) return false;
+
+    let changed = false;
+
+    if (updates.platform !== undefined) {
+      const nextPlatform = updates.platform.trim();
+      if (!nextPlatform) return false;
+      if (binding.platform !== nextPlatform) {
+        binding.platform = nextPlatform;
+        changed = true;
+      }
+      if (nextPlatform !== 'slack') {
+        if (binding.accountId !== undefined) {
+          delete binding.accountId;
+          changed = true;
+        }
+        if (binding.displayScope !== undefined) {
+          delete binding.displayScope;
+          changed = true;
+        }
+      }
+    }
+
+    if (updates.scope !== undefined) {
+      const nextScope = updates.scope.trim();
+      if (!nextScope) return false;
+      if (binding.scope !== nextScope) {
+        binding.scope = nextScope;
+        changed = true;
+      }
+      if (binding.displayScope !== undefined) {
+        delete binding.displayScope;
+        changed = true;
+      }
+    }
+
+    if (updates.permission !== undefined && binding.permission !== updates.permission) {
+      binding.permission = updates.permission;
+      changed = true;
+    }
+
+    if (binding.platform === 'slack') {
+      const accountId = getSlackAccountIdFromScope(binding.scope);
+      if (accountId) {
+        if (binding.accountId !== accountId) {
+          binding.accountId = accountId;
+          changed = true;
+        }
+      } else if (binding.accountId !== undefined) {
+        delete binding.accountId;
+        changed = true;
+      }
+    } else {
+      if (binding.accountId !== undefined) {
+        delete binding.accountId;
+        changed = true;
+      }
+      if (binding.displayScope !== undefined) {
+        delete binding.displayScope;
+        changed = true;
+      }
+    }
+
+    if (!changed) return true;
+
     talk.updatedAt = Date.now();
     if (talk.isSaved) this.persistTalk(talk);
     return true;

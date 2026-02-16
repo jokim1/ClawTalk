@@ -23,6 +23,10 @@ interface ChannelConfigPickerProps {
   onRefreshSlackHints: () => void;
   onClose: () => void;
   onAddBinding: (platform: string, scope: string, permission: PlatformPermission) => void;
+  onUpdateBinding: (
+    index: number,
+    updates: Partial<Pick<PlatformBinding, 'platform' | 'scope' | 'permission'>>,
+  ) => void;
   onRemoveBinding: (index: number) => void;
   onSetAutoRespond: (index: number, enabled: boolean) => void;
   onSetPrompt: (index: number, prompt: string) => void;
@@ -32,16 +36,17 @@ interface ChannelConfigPickerProps {
 
 type PickerMode =
   | 'list'
+  | 'edit-connection'
   | 'add-platform'
   | 'add-workspace'
   | 'add-scope'
   | 'add-permission'
   | 'edit-prompt'
-  | 'pick-agent'
   | 'confirm-delete';
 
-type ListFocus = 'connections' | 'auto' | 'agent';
+type EditField = 'scope' | 'permission' | 'capability' | 'auto' | 'agent' | 'prompt';
 
+const EDIT_FIELDS: EditField[] = ['scope', 'permission', 'capability', 'auto', 'agent', 'prompt'];
 const PLATFORM_OPTIONS = ['slack', 'telegram', 'whatsapp'] as const;
 const PERMISSION_OPTIONS: PlatformPermission[] = ['read', 'write', 'read+write'];
 
@@ -75,15 +80,23 @@ function platformCapability(platform: string): string {
   return 'Connection + event jobs';
 }
 
+function parseSlackAccountPrefix(scope: string): string | undefined {
+  const trimmed = scope.trim();
+  if (!trimmed) return undefined;
+  const match = trimmed.match(/^([a-z0-9._-]+):/i);
+  if (!match?.[1]) return undefined;
+  const prefix = match[1].toLowerCase();
+  if (prefix === 'slack' || prefix === 'channel' || prefix === 'user' || prefix === 'account') {
+    return undefined;
+  }
+  return match[1];
+}
+
 function hasSlackAccountPrefix(scope: string): boolean {
   const trimmed = scope.trim();
   if (!trimmed) return false;
   if (/^account:[a-z0-9._-]+:/i.test(trimmed)) return true;
-  const prefixMatch = trimmed.match(/^([a-z0-9._-]+):/i);
-  if (!prefixMatch?.[1]) return false;
-  const prefix = prefixMatch[1].toLowerCase();
-  if (prefix === 'slack' || prefix === 'channel' || prefix === 'user') return false;
-  return true;
+  return Boolean(parseSlackAccountPrefix(trimmed));
 }
 
 function maybePrefixSlackAccount(scope: string, accountId: string | undefined): string {
@@ -91,6 +104,12 @@ function maybePrefixSlackAccount(scope: string, accountId: string | undefined): 
   if (!trimmed || !accountId) return trimmed;
   if (hasSlackAccountPrefix(trimmed)) return trimmed;
   return `${accountId}:${trimmed}`;
+}
+
+function cycleIndex(current: number, max: number, direction: -1 | 1): number {
+  if (max <= 0) return 0;
+  if (direction < 0) return current <= 0 ? max - 1 : current - 1;
+  return current >= max - 1 ? 0 : current + 1;
 }
 
 export function ChannelConfigPicker({
@@ -106,6 +125,7 @@ export function ChannelConfigPicker({
   onRefreshSlackHints,
   onClose,
   onAddBinding,
+  onUpdateBinding,
   onRemoveBinding,
   onSetAutoRespond,
   onSetPrompt,
@@ -113,7 +133,6 @@ export function ChannelConfigPicker({
   onClearBehavior,
 }: ChannelConfigPickerProps) {
   const [mode, setMode] = useState<PickerMode>('list');
-  const [listFocus, setListFocus] = useState<ListFocus>('connections');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [scrollOffset, setScrollOffset] = useState(0);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -123,11 +142,12 @@ export function ChannelConfigPicker({
   const [workspaceSelection, setWorkspaceSelection] = useState(0);
   const [pendingSlackAccountId, setPendingSlackAccountId] = useState<string | undefined>(undefined);
   const [scopeInput, setScopeInput] = useState('');
+  const [scopeSuggestionSelection, setScopeSuggestionSelection] = useState(0);
   const [pendingScope, setPendingScope] = useState('');
   const [permissionSelection, setPermissionSelection] = useState(2);
 
+  const [editFieldIndex, setEditFieldIndex] = useState(0);
   const [promptInput, setPromptInput] = useState('');
-  const [agentSelection, setAgentSelection] = useState(0);
 
   const behaviorByBindingId = useMemo(() => {
     const map = new Map<string, PlatformBehavior>();
@@ -155,23 +175,85 @@ export function ChannelConfigPicker({
   const channelsForSelectedWorkspace = pendingSlackAccountId
     ? (slackChannelsByAccount[pendingSlackAccountId] ?? [])
     : [];
+  const suggestedSlackChannels = useMemo(
+    () => channelsForSelectedWorkspace.slice(0, 8),
+    [channelsForSelectedWorkspace],
+  );
+  const slackScopeSuggestions = useMemo(() => {
+    const seen = new Set<string>();
+    const scopes: string[] = [];
+    for (const channel of suggestedSlackChannels) {
+      const next = channel.displayScope?.trim();
+      if (!next || seen.has(next.toLowerCase())) continue;
+      seen.add(next.toLowerCase());
+      scopes.push(next);
+    }
+    return scopes;
+  }, [suggestedSlackChannels]);
+
+  const editableSlackScopes = useMemo(() => {
+    if (!selectedRow || selectedRow.binding.platform !== 'slack') return [selectedRow?.binding.scope ?? ''];
+    const accountId = selectedRow.binding.accountId ?? parseSlackAccountPrefix(selectedRow.binding.scope);
+    const accountChannels = accountId ? (slackChannelsByAccount[accountId] ?? []) : [];
+    const choices: string[] = [];
+    const seen = new Set<string>();
+    const pushChoice = (value: string) => {
+      const trimmed = value.trim();
+      if (!trimmed) return;
+      const key = trimmed.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      choices.push(trimmed);
+    };
+
+    pushChoice(selectedRow.binding.scope);
+    for (const channel of accountChannels) {
+      pushChoice(maybePrefixSlackAccount(channel.displayScope, accountId));
+    }
+    if (accountId) {
+      pushChoice(`${accountId}:*`);
+    } else {
+      pushChoice('*');
+    }
+
+    return choices;
+  }, [selectedRow, slackChannelsByAccount]);
 
   useEffect(() => {
     if (rows.length === 0) {
       setSelectedIndex(0);
       setScrollOffset(0);
+      if (mode === 'edit-connection' || mode === 'confirm-delete' || mode === 'edit-prompt') {
+        setMode('list');
+      }
       return;
     }
     if (selectedIndex > rows.length - 1) {
       setSelectedIndex(rows.length - 1);
     }
-  }, [rows.length, selectedIndex]);
+  }, [mode, rows.length, selectedIndex]);
 
   useEffect(() => {
     if (workspaceSelection > slackAccounts.length - 1) {
       setWorkspaceSelection(0);
     }
   }, [slackAccounts.length, workspaceSelection]);
+
+  useEffect(() => {
+    if (scopeSuggestionSelection > slackScopeSuggestions.length - 1) {
+      setScopeSuggestionSelection(0);
+    }
+  }, [scopeSuggestionSelection, slackScopeSuggestions.length]);
+
+  useEffect(() => {
+    if (mode !== 'add-scope' || pendingPlatform !== 'slack') return;
+    const normalized = scopeInput.trim().toLowerCase();
+    if (!normalized) return;
+    const matchIdx = slackScopeSuggestions.findIndex((candidate) => candidate.toLowerCase() === normalized);
+    if (matchIdx >= 0 && matchIdx !== scopeSuggestionSelection) {
+      setScopeSuggestionSelection(matchIdx);
+    }
+  }, [mode, pendingPlatform, scopeInput, slackScopeSuggestions, scopeSuggestionSelection]);
 
   const visibleRows = Math.max(3, maxHeight - 20);
   const ensureVisible = (idx: number) => {
@@ -180,6 +262,96 @@ export function ChannelConfigPicker({
       if (idx >= prev + visibleRows) return idx - visibleRows + 1;
       return prev;
     });
+  };
+
+  const cycleSelectedConnection = (direction: -1 | 1) => {
+    setSelectedIndex((prev) => {
+      const next = direction < 0
+        ? Math.max(0, prev - 1)
+        : Math.min(Math.max(rows.length - 1, 0), prev + 1);
+      ensureVisible(next);
+      return next;
+    });
+  };
+
+  const openPromptEditor = () => {
+    if (!selectedRow) {
+      setStatusMessage('No channel connection selected.');
+      return;
+    }
+    setPromptInput(selectedRow.prompt ?? '');
+    setMode('edit-prompt');
+  };
+
+  const adjustEditField = (direction: -1 | 1) => {
+    if (!selectedRow) {
+      setStatusMessage('No channel connection selected.');
+      return;
+    }
+    const field = EDIT_FIELDS[editFieldIndex];
+
+    if (field === 'scope') {
+      if (selectedRow.binding.platform !== 'slack') {
+        setStatusMessage('Scope arrows are currently supported for Slack channel suggestions.');
+        return;
+      }
+      if (editableSlackScopes.length <= 1) {
+        setStatusMessage('No alternate Slack channels discovered for this workspace.');
+        return;
+      }
+      const currentScope = selectedRow.binding.scope.trim().toLowerCase();
+      const currentIdx = editableSlackScopes.findIndex((scope) => scope.toLowerCase() === currentScope);
+      const nextIdx = cycleIndex(currentIdx >= 0 ? currentIdx : 0, editableSlackScopes.length, direction);
+      const nextScope = editableSlackScopes[nextIdx];
+      onUpdateBinding(selectedRow.index, { scope: nextScope });
+      setStatusMessage(`Connection #${selectedRow.index} scope: ${nextScope}.`);
+      return;
+    }
+
+    if (field === 'permission') {
+      const currentIdx = PERMISSION_OPTIONS.findIndex((permission) => permission === selectedRow.binding.permission);
+      const nextIdx = cycleIndex(currentIdx >= 0 ? currentIdx : 0, PERMISSION_OPTIONS.length, direction);
+      const nextPermission = PERMISSION_OPTIONS[nextIdx];
+      onUpdateBinding(selectedRow.index, { permission: nextPermission });
+      setStatusMessage(`Connection #${selectedRow.index} permission: ${nextPermission}.`);
+      return;
+    }
+
+    if (field === 'capability') {
+      const currentIdx = PLATFORM_OPTIONS.findIndex((platform) => platform === selectedRow.binding.platform);
+      const nextIdx = cycleIndex(currentIdx >= 0 ? currentIdx : 0, PLATFORM_OPTIONS.length, direction);
+      const nextPlatform = PLATFORM_OPTIONS[nextIdx];
+      onUpdateBinding(selectedRow.index, { platform: nextPlatform });
+      setStatusMessage(
+        `Connection #${selectedRow.index} capability: ${platformCapability(nextPlatform)} (${nextPlatform}).`,
+      );
+      return;
+    }
+
+    if (field === 'auto') {
+      const nextEnabled = direction < 0;
+      if (selectedRow.autoRespond !== nextEnabled) {
+        onSetAutoRespond(selectedRow.index, nextEnabled);
+      }
+      setStatusMessage(`Connection #${selectedRow.index} auto-response ${nextEnabled ? 'enabled' : 'disabled'}.`);
+      return;
+    }
+
+    if (field === 'agent') {
+      const choices: Array<string | undefined> = [undefined, ...agents.map((agent) => agent.name)];
+      const currentIdx = selectedRow.agentName
+        ? choices.findIndex((choice) => choice?.toLowerCase() === selectedRow.agentName?.toLowerCase())
+        : 0;
+      const nextIdx = cycleIndex(currentIdx >= 0 ? currentIdx : 0, choices.length, direction);
+      const nextChoice = choices[nextIdx];
+      onSetAgentChoice(selectedRow.index, nextChoice);
+      setStatusMessage(`Connection #${selectedRow.index} responder: ${nextChoice ?? '(default primary)'}.`);
+      return;
+    }
+
+    if (field === 'prompt') {
+      setStatusMessage('Press Enter to edit prompt text.');
+    }
   };
 
   useInput((input, key) => {
@@ -194,97 +366,55 @@ export function ChannelConfigPicker({
       return;
     }
 
-    if (mode === 'add-scope' || mode === 'edit-prompt') {
+    if (mode === 'edit-prompt') {
+      return;
+    }
+
+    if (mode === 'add-scope') {
+      if (pendingPlatform === 'slack' && key.upArrow && slackScopeSuggestions.length > 0) {
+        const next = cycleIndex(scopeSuggestionSelection, slackScopeSuggestions.length, -1);
+        setScopeSuggestionSelection(next);
+        setScopeInput(slackScopeSuggestions[next] ?? '');
+        return;
+      }
+      if (pendingPlatform === 'slack' && key.downArrow && slackScopeSuggestions.length > 0) {
+        const next = cycleIndex(scopeSuggestionSelection, slackScopeSuggestions.length, 1);
+        setScopeSuggestionSelection(next);
+        setScopeInput(slackScopeSuggestions[next] ?? '');
+        return;
+      }
+      if (input === 'r') {
+        onRefreshSlackHints();
+        setStatusMessage('Refreshing Slack workspaces/channels...');
+        return;
+      }
       return;
     }
 
     if (mode === 'list') {
-      if (key.leftArrow || key.rightArrow) {
-        const order: ListFocus[] = ['connections', 'auto', 'agent'];
-        const current = order.indexOf(listFocus);
-        const next = key.rightArrow
-          ? order[(current + 1) % order.length]
-          : order[(current - 1 + order.length) % order.length];
-        setListFocus(next);
-        return;
-      }
-
       if (key.upArrow) {
-        if (listFocus === 'connections') {
-          setSelectedIndex((prev) => {
-            const next = Math.max(0, prev - 1);
-            ensureVisible(next);
-            return next;
-          });
-          return;
-        }
-        if (!selectedRow) {
-          setStatusMessage('No channel connection selected.');
-          return;
-        }
-        if (listFocus === 'auto') {
-          if (!selectedRow.autoRespond) {
-            onSetAutoRespond(selectedRow.index, true);
-            setStatusMessage(`Connection #${selectedRow.index} auto-response enabled.`);
-          }
-          return;
-        }
-        if (listFocus === 'agent') {
-          const choices: Array<string | undefined> = [undefined, ...agents.map((agent) => agent.name)];
-          const currentIdx = selectedRow.agentName
-            ? choices.findIndex((choice) => choice?.toLowerCase() === selectedRow.agentName?.toLowerCase())
-            : 0;
-          const nextIdx = currentIdx <= 0 ? choices.length - 1 : currentIdx - 1;
-          const nextChoice = choices[nextIdx];
-          onSetAgentChoice(selectedRow.index, nextChoice);
-          setStatusMessage(
-            `Connection #${selectedRow.index} responder: ${nextChoice ?? '(default primary)'}.`,
-          );
-          return;
-        }
+        cycleSelectedConnection(-1);
         return;
       }
       if (key.downArrow) {
-        if (listFocus === 'connections') {
-          setSelectedIndex((prev) => {
-            const next = Math.min(Math.max(rows.length - 1, 0), prev + 1);
-            ensureVisible(next);
-            return next;
-          });
-          return;
-        }
+        cycleSelectedConnection(1);
+        return;
+      }
+      if (key.return) {
         if (!selectedRow) {
           setStatusMessage('No channel connection selected.');
           return;
         }
-        if (listFocus === 'auto') {
-          if (selectedRow.autoRespond) {
-            onSetAutoRespond(selectedRow.index, false);
-            setStatusMessage(`Connection #${selectedRow.index} auto-response disabled.`);
-          }
-          return;
-        }
-        if (listFocus === 'agent') {
-          const choices: Array<string | undefined> = [undefined, ...agents.map((agent) => agent.name)];
-          const currentIdx = selectedRow.agentName
-            ? choices.findIndex((choice) => choice?.toLowerCase() === selectedRow.agentName?.toLowerCase())
-            : 0;
-          const nextIdx = currentIdx >= choices.length - 1 ? 0 : currentIdx + 1;
-          const nextChoice = choices[nextIdx];
-          onSetAgentChoice(selectedRow.index, nextChoice);
-          setStatusMessage(
-            `Connection #${selectedRow.index} responder: ${nextChoice ?? '(default primary)'}.`,
-          );
-          return;
-        }
+        setEditFieldIndex(0);
+        setMode('edit-connection');
         return;
       }
-
       if (input === 'a') {
         setPlatformSelection(0);
         setPendingPlatform(PLATFORM_OPTIONS[0]);
         setPendingSlackAccountId(undefined);
         setScopeInput('');
+        setScopeSuggestionSelection(0);
         setPermissionSelection(2);
         setMode('add-platform');
         return;
@@ -314,28 +444,7 @@ export function ChannelConfigPicker({
         return;
       }
       if (input === 'p') {
-        if (!selectedRow) {
-          setStatusMessage('No channel connection selected.');
-          return;
-        }
-        setPromptInput(selectedRow.prompt ?? '');
-        setMode('edit-prompt');
-        return;
-      }
-      if (input === 'g') {
-        if (!selectedRow) {
-          setStatusMessage('No channel connection selected.');
-          return;
-        }
-        if (agents.length === 0) {
-          setStatusMessage('No agents configured. Add an agent first.');
-          return;
-        }
-        const currentAgentIndex = selectedRow.agentName
-          ? agents.findIndex((agent) => agent.name.toLowerCase() === selectedRow.agentName?.toLowerCase())
-          : -1;
-        setAgentSelection(currentAgentIndex >= 0 ? currentAgentIndex : 0);
-        setMode('pick-agent');
+        openPromptEditor();
         return;
       }
       if (input === 'c') {
@@ -345,6 +454,60 @@ export function ChannelConfigPicker({
         }
         onClearBehavior(selectedRow.index);
         setStatusMessage(`Cleared response settings for connection #${selectedRow.index}.`);
+      }
+      return;
+    }
+
+    if (mode === 'edit-connection') {
+      if (key.leftArrow) {
+        setEditFieldIndex((prev) => cycleIndex(prev, EDIT_FIELDS.length, -1));
+        return;
+      }
+      if (key.rightArrow) {
+        setEditFieldIndex((prev) => cycleIndex(prev, EDIT_FIELDS.length, 1));
+        return;
+      }
+      if (key.upArrow) {
+        adjustEditField(-1);
+        return;
+      }
+      if (key.downArrow) {
+        adjustEditField(1);
+        return;
+      }
+      if (key.return) {
+        const field = EDIT_FIELDS[editFieldIndex];
+        if (field === 'prompt') {
+          openPromptEditor();
+          return;
+        }
+        setStatusMessage('Use ↑/↓ to change value. ←/→ moves between fields.');
+        return;
+      }
+      if (input === 'p') {
+        openPromptEditor();
+        return;
+      }
+      if (input === 'd') {
+        if (!selectedRow) {
+          setStatusMessage('No channel connection selected.');
+          return;
+        }
+        setMode('confirm-delete');
+        return;
+      }
+      if (input === 'c') {
+        if (!selectedRow) {
+          setStatusMessage('No channel connection selected.');
+          return;
+        }
+        onClearBehavior(selectedRow.index);
+        setStatusMessage(`Cleared response settings for connection #${selectedRow.index}.`);
+        return;
+      }
+      if (input === 'r') {
+        onRefreshSlackHints();
+        setStatusMessage('Refreshing Slack workspaces/channels...');
         return;
       }
       return;
@@ -379,6 +542,7 @@ export function ChannelConfigPicker({
 
         setPendingSlackAccountId(undefined);
         setScopeInput(chosen === 'slack' ? '#' : '');
+        setScopeSuggestionSelection(0);
         setMode('add-scope');
       }
       return;
@@ -388,6 +552,7 @@ export function ChannelConfigPicker({
       if (slackAccounts.length === 0) {
         setPendingSlackAccountId(undefined);
         setScopeInput('#');
+        setScopeSuggestionSelection(0);
         setMode('add-scope');
         return;
       }
@@ -407,7 +572,10 @@ export function ChannelConfigPicker({
       if (key.return) {
         const chosen = selectedWorkspace;
         setPendingSlackAccountId(chosen?.id);
-        setScopeInput('#');
+        const knownChannels = chosen?.id ? (slackChannelsByAccount[chosen.id] ?? []) : [];
+        const firstScope = knownChannels[0]?.displayScope ?? '#';
+        setScopeInput(firstScope);
+        setScopeSuggestionSelection(0);
         setMode('add-scope');
       }
       return;
@@ -432,33 +600,6 @@ export function ChannelConfigPicker({
       return;
     }
 
-    if (mode === 'pick-agent') {
-      if (agents.length === 0) {
-        setMode('list');
-        return;
-      }
-      if (key.upArrow) {
-        setAgentSelection((prev) => Math.max(0, prev - 1));
-        return;
-      }
-      if (key.downArrow) {
-        setAgentSelection((prev) => Math.min(agents.length - 1, prev + 1));
-        return;
-      }
-      if (key.return) {
-        if (!selectedRow) {
-          setMode('list');
-          return;
-        }
-        const chosen = agents[agentSelection];
-        if (!chosen) return;
-        onSetAgentChoice(selectedRow.index, chosen.name);
-        setStatusMessage(`Connection #${selectedRow.index} responder: ${chosen.name}.`);
-        setMode('list');
-      }
-      return;
-    }
-
     if (mode === 'confirm-delete') {
       if (key.return || input.toLowerCase() === 'y') {
         if (selectedRow) {
@@ -476,6 +617,7 @@ export function ChannelConfigPicker({
 
   const visibleStart = scrollOffset;
   const visibleEnd = Math.min(rows.length, scrollOffset + visibleRows);
+  const activeEditField = EDIT_FIELDS[editFieldIndex];
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} width={terminalWidth}>
@@ -484,10 +626,10 @@ export function ChannelConfigPicker({
 
       {mode === 'list' && (
         <>
-          <Text dimColor>↑/↓ adjust focus target  ←/→ move focus (list/auto/agent)  a add  d delete  p prompt  c clear  r refresh Slack  Esc/^B close</Text>
+          <Text dimColor>↑/↓ select connection  Enter edit  a add  d delete  p prompt  c clear  r refresh Slack  Esc/^B close</Text>
           <Box height={1} />
 
-          <Text bold color={listFocus === 'connections' ? 'cyan' : undefined}>Connections</Text>
+          <Text bold color="cyan">Connections</Text>
           {rows.length === 0 ? (
             <Text dimColor>  No channel connections yet. Press "a" to add one.</Text>
           ) : (
@@ -516,12 +658,8 @@ export function ChannelConfigPicker({
               <Text>  scope: {formatBindingScopeLabel(selectedRow.binding)}</Text>
               <Text>  permission: {selectedRow.binding.permission}</Text>
               <Text>  capability: {platformCapability(selectedRow.binding.platform)}</Text>
-              <Text color={listFocus === 'auto' ? 'cyan' : undefined}>
-                {listFocus === 'auto' ? '▸ ' : '  '}auto-response: {selectedRow.autoRespond ? 'on' : 'off'}
-              </Text>
-              <Text color={listFocus === 'agent' ? 'cyan' : undefined}>
-                {listFocus === 'agent' ? '▸ ' : '  '}responder agent: {selectedRow.agentName ?? '(default primary)'}
-              </Text>
+              <Text>  auto-response: {selectedRow.autoRespond ? 'on' : 'off'}</Text>
+              <Text>  responder agent: {selectedRow.agentName ?? '(default primary)'}</Text>
               <Text>  prompt:</Text>
               <Text dimColor>
                 {'    '}
@@ -530,6 +668,50 @@ export function ChannelConfigPicker({
             </>
           ) : (
             <Text dimColor>  No connection selected.</Text>
+          )}
+        </>
+      )}
+
+      {mode === 'edit-connection' && (
+        <>
+          <Box height={1} />
+          <Text bold color="cyan">Edit Connection #{selectedRow?.index ?? '?'}</Text>
+          <Text dimColor>↑/↓ change value  ←/→ choose field  Enter edit prompt  Esc back</Text>
+          {selectedRow ? (
+            <>
+              <Text color={activeEditField === 'scope' ? 'cyan' : undefined}>
+                {activeEditField === 'scope' ? '▸ ' : '  '}
+                scope: {formatBindingScopeLabel(selectedRow.binding)}
+              </Text>
+              <Text color={activeEditField === 'permission' ? 'cyan' : undefined}>
+                {activeEditField === 'permission' ? '▸ ' : '  '}
+                permission: {selectedRow.binding.permission}
+              </Text>
+              <Text color={activeEditField === 'capability' ? 'cyan' : undefined}>
+                {activeEditField === 'capability' ? '▸ ' : '  '}
+                capability: {platformCapability(selectedRow.binding.platform)}
+              </Text>
+              <Text color={activeEditField === 'auto' ? 'cyan' : undefined}>
+                {activeEditField === 'auto' ? '▸ ' : '  '}
+                auto-response: {selectedRow.autoRespond ? 'on' : 'off'}
+              </Text>
+              <Text color={activeEditField === 'agent' ? 'cyan' : undefined}>
+                {activeEditField === 'agent' ? '▸ ' : '  '}
+                responder agent: {selectedRow.agentName ?? '(default primary)'}
+              </Text>
+              <Text color={activeEditField === 'prompt' ? 'cyan' : undefined}>
+                {activeEditField === 'prompt' ? '▸ ' : '  '}
+                prompt: {selectedRow.prompt ? truncate(selectedRow.prompt, Math.max(30, terminalWidth - 20)) : '(none)'}
+              </Text>
+              {selectedRow.binding.platform === 'slack' && editableSlackScopes.length > 1 && (
+                <Text dimColor>Slack scopes discovered for arrows: {editableSlackScopes.length}</Text>
+              )}
+              {activeEditField === 'agent' && agents.length === 0 && (
+                <Text dimColor>No agents configured; default primary responder is used.</Text>
+              )}
+            </>
+          ) : (
+            <Text dimColor>No selected connection.</Text>
           )}
         </>
       )}
@@ -585,12 +767,12 @@ export function ChannelConfigPicker({
               <Text dimColor>Examples: #general, channel:C12345678, user:U12345678, *</Text>
               {slackHintsLoading && <Text dimColor>Loading channel suggestions...</Text>}
               {slackHintsError && <Text color="yellow">{slackHintsError}</Text>}
-              {channelsForSelectedWorkspace.length > 0 ? (
+              {suggestedSlackChannels.length > 0 ? (
                 <>
                   <Text>Known channels for this workspace:</Text>
-                  {channelsForSelectedWorkspace.slice(0, 8).map((channel) => (
-                    <Text key={channel.id} dimColor>
-                      {'  '}
+                  {suggestedSlackChannels.map((channel, idx) => (
+                    <Text key={channel.id} color={idx === scopeSuggestionSelection ? 'cyan' : undefined}>
+                      {idx === scopeSuggestionSelection ? '▸ ' : '  '}
                       {channel.displayScope}  ({channel.scope})
                     </Text>
                   ))}
@@ -609,21 +791,25 @@ export function ChannelConfigPicker({
               value={scopeInput}
               onChange={setScopeInput}
               onSubmit={(value) => {
-                const trimmed = value.trim();
-                if (!trimmed) {
+                const typed = value.trim();
+                const fallbackScope = pendingPlatform === 'slack'
+                  ? slackScopeSuggestions[scopeSuggestionSelection] ?? ''
+                  : '';
+                const resolvedScope = typed || fallbackScope;
+                if (!resolvedScope) {
                   setStatusMessage('Scope cannot be empty.');
                   return;
                 }
                 const finalScope = pendingPlatform === 'slack'
-                  ? maybePrefixSlackAccount(trimmed, pendingSlackAccountId)
-                  : trimmed;
+                  ? maybePrefixSlackAccount(resolvedScope, pendingSlackAccountId)
+                  : resolvedScope;
                 setPendingScope(finalScope);
                 setPermissionSelection(2);
                 setMode('add-permission');
               }}
             />
           </Box>
-          <Text dimColor>Enter continue  Esc cancel</Text>
+          <Text dimColor>↑/↓ pick channel  Enter continue  Esc cancel</Text>
         </>
       )}
 
@@ -666,34 +852,15 @@ export function ChannelConfigPicker({
                   return;
                 }
                 if (!trimmed) {
-                  setStatusMessage('Prompt cannot be empty. Use "c" in list mode to clear settings.');
+                  setStatusMessage('Prompt cannot be empty. Use "c" to clear response settings.');
                   return;
                 }
                 onSetPrompt(selectedRow.index, trimmed);
                 setStatusMessage(`Updated prompt for connection #${selectedRow.index}.`);
-                setMode('list');
+                setMode('edit-connection');
               }}
             />
           </Box>
-          <Text dimColor>Enter save  Esc cancel</Text>
-        </>
-      )}
-
-      {mode === 'pick-agent' && (
-        <>
-          <Box height={1} />
-          <Text bold>Select Responder Agent</Text>
-          {agents.length === 0 ? (
-            <Text dimColor>No agents configured.</Text>
-          ) : (
-            agents.map((agent, idx) => (
-              <Text key={agent.name} color={idx === agentSelection ? 'cyan' : undefined}>
-                {idx === agentSelection ? '▸ ' : '  '}
-                {agent.name} [{agent.role}]
-              </Text>
-            ))
-          )}
-          <Box height={1} />
           <Text dimColor>Enter save  Esc cancel</Text>
         </>
       )}
