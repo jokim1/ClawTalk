@@ -57,6 +57,27 @@ export interface CommandInfo {
   description: string;
 }
 
+function normalizeSlackScope(scope: string): string | null {
+  const trimmed = scope.trim();
+  if (!trimmed) return null;
+
+  if (/^(?:\*|all|slack:\*)$/i.test(trimmed)) {
+    return 'slack:*';
+  }
+
+  const channel = trimmed.match(/^channel:([a-z0-9]+)$/i) ?? trimmed.match(/^slack:channel:([a-z0-9]+)$/i);
+  if (channel?.[1]) {
+    return `channel:${channel[1].toUpperCase()}`;
+  }
+
+  const user = trimmed.match(/^user:([a-z0-9]+)$/i) ?? trimmed.match(/^slack:user:([a-z0-9]+)$/i);
+  if (user?.[1]) {
+    return `user:${user[1].toUpperCase()}`;
+  }
+
+  return null;
+}
+
 /** Handle /model <alias|id> — switch the active model. */
 function handleModelCommand(args: string, ctx: CommandContext): CommandResult {
   if (!args) {
@@ -404,9 +425,20 @@ function handlePlatformCommand(args: string, ctx: CommandContext): CommandResult
     ctx.addSystemMessage('Invalid permission. Use: read, write, or read+write');
     return { handled: true };
   }
-  const platform = parts[0];
-  const scope = parts.slice(1, -1).join(' ');
-  ctx.addPlatformBinding(platform, scope, permission);
+  const platform = parts[0].trim().toLowerCase();
+  const rawScope = parts.slice(1, -1).join(' ');
+  if (platform === 'slack') {
+    const normalizedScope = normalizeSlackScope(rawScope);
+    if (!normalizedScope) {
+      ctx.addSystemMessage(
+        'Invalid Slack scope. Use channel:<ID>, user:<ID>, or slack:* (examples: channel:C12345678, user:U12345678).',
+      );
+      return { handled: true };
+    }
+    ctx.addPlatformBinding(platform, normalizedScope, permission);
+    return { handled: true };
+  }
+  ctx.addPlatformBinding(platform, rawScope, permission);
   return { handled: true };
 }
 
@@ -531,7 +563,7 @@ export function getCommandCompletions(prefix: string): CommandInfo[] {
         );
       } else if (name === 'platform') {
         results.push(
-          { name: 'platform <name> <scope> <perm>', description: 'Add binding (read, write, read+write)' },
+          { name: 'platform <name> <scope> <perm>', description: 'Add binding (Slack: channel:<id>, user:<id>, or slack:*)' },
           { name: 'platform delete N', description: 'Remove binding #N' },
         );
       } else {
