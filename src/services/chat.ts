@@ -60,6 +60,15 @@ export interface ChatResponse {
   };
 }
 
+export interface GoogleDocsAuthStatus {
+  tokenPath: string;
+  hasClientId: boolean;
+  hasClientSecret: boolean;
+  hasRefreshToken: boolean;
+  accessTokenReady: boolean;
+  error?: string;
+}
+
 export type ModelProbeResult =
   | { ok: true; actualModel?: string }
   | { ok: false; code: number; reason: string; actualModel?: string };
@@ -614,6 +623,48 @@ export class ChatService implements IChatService {
       });
       if (!response.ok) return null;
       return await response.json() as TalkToolPolicy;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Get Google Docs auth readiness from gateway. */
+  async getGoogleDocsAuthStatus(): Promise<GoogleDocsAuthStatus | null> {
+    try {
+      const response = await fetch(`${this.config.gatewayUrl}/api/tools`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+        body: JSON.stringify({ action: 'google_auth_status' }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) return null;
+      const data = await response.json() as { status?: GoogleDocsAuthStatus };
+      return data.status ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Update Google Docs OAuth config on gateway (typically refresh token). */
+  async updateGoogleDocsAuthConfig(updates: {
+    refreshToken?: string;
+    clientId?: string;
+    clientSecret?: string;
+    tokenUri?: string;
+  }): Promise<GoogleDocsAuthStatus | null> {
+    try {
+      const response = await fetch(`${this.config.gatewayUrl}/api/tools`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+        body: JSON.stringify({
+          action: 'google_auth_config',
+          ...updates,
+        }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) return null;
+      const data = await response.json() as { status?: GoogleDocsAuthStatus };
+      return data.status ?? null;
     } catch {
       return null;
     }

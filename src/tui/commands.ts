@@ -56,6 +56,8 @@ export interface CommandContext {
   addDeniedTool: (toolName: string) => void;
   removeDeniedTool: (toolName: string) => void;
   clearDeniedTools: () => void;
+  showGoogleDocsAuthStatus: () => void;
+  setGoogleDocsRefreshToken: (token: string) => void;
   showPlaybook: () => void;
 }
 
@@ -676,16 +678,35 @@ function handleToolsCommand(args: string, ctx: CommandContext): CommandResult {
     return { handled: true };
   }
 
+  if (/^auth\s+status$/i.test(trimmed)) {
+    ctx.showGoogleDocsAuthStatus();
+    return { handled: true };
+  }
+
+  const authSetMatch = trimmed.match(/^auth\s+set-refresh\s+(.+)$/i);
+  if (authSetMatch) {
+    const token = authSetMatch[1].trim();
+    if (!token) {
+      ctx.addSystemMessage('Usage: /tools auth set-refresh <google-refresh-token>');
+      return { handled: true };
+    }
+    ctx.setGoogleDocsRefreshToken(token);
+    return { handled: true };
+  }
+
   ctx.addSystemMessage(
     'Usage:\n' +
     '- /tools\n' +
     '- /tools mode off|confirm|auto\n' +
     '- /tools allow add <tool> | /tools allow remove <tool> | /tools allow clear\n' +
     '- /tools deny add <tool> | /tools deny remove <tool> | /tools deny clear\n' +
+    '- /tools auth status\n' +
+    '- /tools auth set-refresh <google-refresh-token>\n' +
     'Examples:\n' +
     '- /tools mode confirm\n' +
     '- /tools allow add google_docs_write\n' +
-    '- /tools deny add shell_exec',
+    '- /tools deny add shell_exec\n' +
+    '- /tools auth status',
   );
   return { handled: true };
 }
@@ -701,7 +722,6 @@ function handlePlaybookCommand(_args: string, ctx: CommandContext): CommandResul
  * Add new commands here — they'll be available immediately.
  */
 const COMMANDS: Record<string, { handler: CommandHandler; description: string }> = {
-  model: { handler: handleModelCommand, description: 'Switch AI model' },
   clear: { handler: handleClearCommand, description: 'Clear current session' },
   save: { handler: handleSaveCommand, description: 'Save chat to Talks' },
   topic: { handler: handleTopicCommand, description: 'Set topic title and save' },
@@ -719,7 +739,6 @@ const COMMANDS: Record<string, { handler: CommandHandler; description: string }>
   edit: { handler: handleEditCommand, description: 'Edit messages (mark and delete)' },
   rule: { handler: handleRuleCommand, description: 'Add or manage a rule' },
   rules: { handler: handleRulesCommand, description: 'List rules for this talk' },
-  channel: { handler: handleChannelCommand, description: 'Add or manage channel connections' },
   tools: { handler: handleToolsCommand, description: 'List tools and set tool execution policy' },
   playbook: { handler: handlePlaybookCommand, description: 'Show full talk configuration' },
 };
@@ -730,6 +749,7 @@ const COMMANDS: Record<string, { handler: CommandHandler; description: string }>
  */
 const HIDDEN_COMMANDS: Record<string, CommandHandler> = {
   objective: handleObjectiveCommand,
+  model: handleModelCommand,
   directive: handleDirectiveCommand,
   directives: handleDirectivesCommand,
   platform: handlePlatformCommand,
@@ -737,6 +757,7 @@ const HIDDEN_COMMANDS: Record<string, CommandHandler> = {
   job: handleJobCommand,
   jobs: handleJobsCommand,
   automations: handleAutomationsCommand,
+  channel: handleChannelCommand,
   channels: handleChannelsCommand,
   response: handleResponseCommand,
   responses: handleResponsesCommand,
@@ -841,6 +862,8 @@ export function getCommandCompletions(prefix: string): CommandInfo[] {
           { name: 'tools mode off|confirm|auto', description: 'Set tool execution mode for this talk' },
           { name: 'tools allow add <tool>', description: 'Allow-list a tool for this talk' },
           { name: 'tools deny add <tool>', description: 'Deny-list a tool for this talk' },
+          { name: 'tools auth status', description: 'Check Google Docs auth readiness' },
+          { name: 'tools auth set-refresh <token>', description: 'Update Google refresh token for Docs tools' },
         );
       } else if (name === 'objectives') {
         results.push(

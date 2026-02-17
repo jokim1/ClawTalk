@@ -1645,6 +1645,7 @@ function App({ options }: AppProps) {
         return;
       }
       syncToolPolicyLocal(policy.toolMode, policy.toolsAllow, policy.toolsDeny);
+      const availableNames = policy.availableTools.map((t) => t.name).join(', ') || '(none)';
       const enabledNames = policy.enabledTools.map((t) => t.name).join(', ') || '(none)';
       const allow = policy.toolsAllow.join(', ') || '(all)';
       const deny = policy.toolsDeny.join(', ') || '(none)';
@@ -1654,6 +1655,7 @@ function App({ options }: AppProps) {
         `  mode: ${policy.toolMode}\n` +
         `  allow: ${allow}\n` +
         `  deny: ${deny}\n` +
+        `  available: ${availableNames}\n` +
         `  enabled: ${enabledNames}`,
       );
       chat.setMessages(prev => [...prev, sysMsg]);
@@ -1749,6 +1751,44 @@ function App({ options }: AppProps) {
       chat.setMessages(prev => [...prev, createMessage('system', 'Tool deny-list cleared.')]);
     });
   }, [syncToolPolicyLocal]);
+
+  const handleShowGoogleDocsAuthStatus = useCallback(() => {
+    if (!chatServiceRef.current) return;
+    chatServiceRef.current.getGoogleDocsAuthStatus().then((status) => {
+      if (!status) {
+        setError('Failed to fetch Google Docs auth status');
+        return;
+      }
+      const sysMsg = createMessage(
+        'system',
+        `Google Docs auth:\n` +
+        `  tokenPath: ${status.tokenPath}\n` +
+        `  hasClientId: ${status.hasClientId}\n` +
+        `  hasClientSecret: ${status.hasClientSecret}\n` +
+        `  hasRefreshToken: ${status.hasRefreshToken}\n` +
+        `  accessTokenReady: ${status.accessTokenReady}\n` +
+        `  error: ${status.error ?? '(none)'}`,
+      );
+      chat.setMessages(prev => [...prev, sysMsg]);
+    });
+  }, []);
+
+  const handleSetGoogleDocsRefreshToken = useCallback((token: string) => {
+    if (!chatServiceRef.current) return;
+    chatServiceRef.current.updateGoogleDocsAuthConfig({ refreshToken: token }).then((status) => {
+      if (!status) {
+        setError('Failed to update Google Docs refresh token');
+        return;
+      }
+      const sysMsg = createMessage(
+        'system',
+        `Google Docs refresh token updated.\n` +
+        `  accessTokenReady: ${status.accessTokenReady}\n` +
+        `  error: ${status.error ?? '(none)'}`,
+      );
+      chat.setMessages(prev => [...prev, sysMsg]);
+    });
+  }, []);
 
   const loadSlackHints = useCallback(async () => {
     if (!chatServiceRef.current) return;
@@ -2551,6 +2591,8 @@ function App({ options }: AppProps) {
     addDeniedTool: handleAddDeniedTool,
     removeDeniedTool: handleRemoveDeniedTool,
     clearDeniedTools: handleClearDeniedTools,
+    showGoogleDocsAuthStatus: handleShowGoogleDocsAuthStatus,
+    setGoogleDocsRefreshToken: handleSetGoogleDocsRefreshToken,
     showPlaybook: handleShowPlaybook,
   });
   commandCtx.current = {
@@ -2602,6 +2644,8 @@ function App({ options }: AppProps) {
     addDeniedTool: handleAddDeniedTool,
     removeDeniedTool: handleRemoveDeniedTool,
     clearDeniedTools: handleClearDeniedTools,
+    showGoogleDocsAuthStatus: handleShowGoogleDocsAuthStatus,
+    setGoogleDocsRefreshToken: handleSetGoogleDocsRefreshToken,
     showPlaybook: handleShowPlaybook,
   };
 
