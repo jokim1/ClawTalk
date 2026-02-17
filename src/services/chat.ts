@@ -18,6 +18,7 @@ import type {
   TalkToolPolicy,
   ToolCatalogResponse,
   ToolMode,
+  ToolExecutionMode,
   GoogleAuthProfileSummary,
 } from '../types.js';
 import type { IChatService } from './interfaces.js';
@@ -128,6 +129,7 @@ type TalkUpdatePayload = {
   platformBehaviors?: PlatformBehavior[];
   channelResponseSettings?: PlatformBehavior[];
   toolMode?: ToolMode;
+  executionMode?: ToolExecutionMode;
   toolsAllow?: string[];
   toolsDeny?: string[];
   googleAuthProfile?: string;
@@ -143,6 +145,7 @@ function toTalkUpdatePayload(updates: {
   platformBindings?: PlatformBinding[];
   platformBehaviors?: PlatformBehavior[];
   toolMode?: ToolMode;
+  executionMode?: ToolExecutionMode;
   toolsAllow?: string[];
   toolsDeny?: string[];
   googleAuthProfile?: string;
@@ -166,6 +169,9 @@ function toTalkUpdatePayload(updates: {
   }
   if (updates.toolMode !== undefined) {
     payload.toolMode = updates.toolMode;
+  }
+  if (updates.executionMode !== undefined) {
+    payload.executionMode = updates.executionMode;
   }
   if (updates.toolsAllow !== undefined) {
     payload.toolsAllow = updates.toolsAllow;
@@ -516,6 +522,7 @@ export class ChatService implements IChatService {
     platformBindings?: PlatformBinding[];
     platformBehaviors?: PlatformBehavior[];
     toolMode?: ToolMode;
+    executionMode?: ToolExecutionMode;
     toolsAllow?: string[];
     toolsDeny?: string[];
     googleAuthProfile?: string;
@@ -572,6 +579,7 @@ export class ChatService implements IChatService {
     platformBehaviors?: PlatformBehavior[];
     channelResponseSettings?: PlatformBehavior[];
     toolMode?: ToolMode;
+    executionMode?: ToolExecutionMode;
     toolsAllow?: string[];
     toolsDeny?: string[];
     googleAuthProfile?: string;
@@ -608,6 +616,7 @@ export class ChatService implements IChatService {
     platformBehaviors?: PlatformBehavior[];
     channelResponseSettings?: PlatformBehavior[];
     toolMode?: ToolMode;
+    executionMode?: ToolExecutionMode;
     toolsAllow?: string[];
     toolsDeny?: string[];
     googleAuthProfile?: string;
@@ -679,7 +688,7 @@ export class ChatService implements IChatService {
   /** Update tool policy for a gateway talk. */
   async updateGatewayTalkTools(
     talkId: string,
-    updates: Partial<Pick<TalkToolPolicy, 'toolMode' | 'toolsAllow' | 'toolsDeny' | 'googleAuthProfile'>>,
+    updates: Partial<Pick<TalkToolPolicy, 'toolMode' | 'executionMode' | 'toolsAllow' | 'toolsDeny' | 'googleAuthProfile'>>,
   ): Promise<TalkToolPolicy | null> {
     try {
       const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}/tools`, {

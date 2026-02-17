@@ -240,16 +240,25 @@ export interface PlatformBehavior {
 }
 
 export type ToolMode = 'off' | 'confirm' | 'auto';
+export type ToolExecutionMode = 'inherit' | 'sandboxed' | 'unsandboxed';
 
 export interface ToolDescriptor {
   name: string;
   description: string;
   builtin: boolean;
+  runtime?: 'sandbox' | 'unsandboxed' | 'either' | 'unknown';
+  capability?: {
+    runnable: boolean;
+    reason?: string;
+    requiresUnsandboxed?: boolean;
+  };
 }
 
 export interface TalkToolPolicy {
   talkId: string;
   toolMode: ToolMode;
+  executionMode?: ToolExecutionMode;
+  executionModeOptions?: ToolExecutionMode[];
   toolsAllow: string[];
   toolsDeny: string[];
   googleAuthProfile?: string;
@@ -308,6 +317,7 @@ export interface Talk {
   platformBindings?: PlatformBinding[];
   platformBehaviors?: PlatformBehavior[];
   toolMode?: ToolMode;
+  executionMode?: ToolExecutionMode;
   toolsAllow?: string[];
   toolsDeny?: string[];
   googleAuthProfile?: string;

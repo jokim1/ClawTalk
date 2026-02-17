@@ -4,7 +4,7 @@
  * Modal for configuring voice settings: microphone, STT provider, etc.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { execSync } from 'child_process';
 import type {
@@ -13,6 +13,7 @@ import type {
   RealtimeVoiceProvider,
   ToolCatalogEntry,
   ToolDescriptor,
+  ToolExecutionMode,
   ToolMode,
 } from '../../types.js';
 
@@ -70,6 +71,8 @@ interface SettingsPickerProps {
   initialTab?: SettingsTab;
   toolPolicy?: {
     mode: ToolMode;
+    executionMode: ToolExecutionMode;
+    executionModeOptions: ToolExecutionMode[];
     availableTools: ToolDescriptor[];
     enabledToolNames: string[];
     catalogEntries?: ToolCatalogEntry[];
@@ -79,6 +82,7 @@ interface SettingsPickerProps {
   toolPolicyError?: string | null;
   onRefreshToolPolicy?: () => void;
   onSetToolMode?: (mode: ToolMode) => void;
+  onSetExecutionMode?: (mode: ToolExecutionMode) => void;
   onSetToolEnabled?: (toolName: string, enabled: boolean) => void;
   talkGoogleAuthProfile?: string;
   googleAuthActiveProfile?: string;
@@ -183,6 +187,7 @@ export function SettingsPicker({
   toolPolicyError,
   onRefreshToolPolicy,
   onSetToolMode,
+  onSetExecutionMode,
   onSetToolEnabled,
   talkGoogleAuthProfile,
   googleAuthActiveProfile,
@@ -208,6 +213,14 @@ export function SettingsPicker({
   const catalogRows = toolPolicy?.catalogEntries ?? [];
   const authProfiles = googleAuthProfiles ?? [];
   const profileRowCount = 1 + authProfiles.length; // inherit + explicit profiles
+  const executionModes: ToolExecutionMode[] = toolPolicy?.executionModeOptions?.length
+    ? toolPolicy.executionModeOptions
+    : ['inherit', 'sandboxed', 'unsandboxed'];
+  const executionModeDescriptions: Record<ToolExecutionMode, string> = {
+    inherit: 'use gateway default',
+    sandboxed: 'always sandbox tools',
+    unsandboxed: 'allow host runtime',
+  };
   const toolModes: ToolMode[] = ['off', 'confirm', 'auto'];
   const toolModeDescriptions: Record<ToolMode, string> = {
     off: 'model cannot use tools',
@@ -215,6 +228,43 @@ export function SettingsPicker({
     auto: 'no approval',
   };
   const toolEnabledSet = new Set(toolPolicy?.enabledToolNames ?? []);
+  const effectiveGoogleProfile = talkGoogleAuthProfile || googleAuthActiveProfile;
+  const selectedGoogleProfile = authProfiles.find((profile) => profile.name === effectiveGoogleProfile);
+  const toolBlockReasonByName = useMemo(() => {
+    const reasons = new Map<string, string>();
+    const executionMode = toolPolicy?.executionMode ?? 'inherit';
+    for (const tool of toolRows) {
+      let reason: string | undefined;
+      if (tool.capability && tool.capability.runnable === false) {
+        reason = tool.capability.reason || 'not runnable in this environment';
+      }
+      if (!reason) {
+        const requiresUnsandboxed = tool.capability?.requiresUnsandboxed || tool.runtime === 'unsandboxed';
+        if ((executionMode === 'inherit' || executionMode === 'sandboxed') && requiresUnsandboxed) {
+          reason = 'requires unsandboxed execution mode';
+        }
+      }
+      if (!reason && executionMode === 'unsandboxed' && tool.runtime === 'sandbox') {
+        reason = 'requires sandboxed execution mode';
+      }
+      if (!reason && tool.name.toLowerCase().startsWith('google_')) {
+        if (!effectiveGoogleProfile) {
+          reason = 'no Google profile selected';
+        } else if (!selectedGoogleProfile) {
+          reason = `Google profile "${effectiveGoogleProfile}" not found`;
+        } else if (!selectedGoogleProfile.hasClientId || !selectedGoogleProfile.hasClientSecret || !selectedGoogleProfile.hasRefreshToken) {
+          reason = `Google profile "${effectiveGoogleProfile}" is incomplete`;
+        } else if (
+          googleAuthStatus?.accessTokenReady === false
+          && (googleAuthStatus.profile ?? googleAuthStatus.activeProfile) === effectiveGoogleProfile
+        ) {
+          reason = `Google profile "${effectiveGoogleProfile}" needs re-auth`;
+        }
+      }
+      if (reason) reasons.set(tool.name, reason);
+    }
+    return reasons;
+  }, [effectiveGoogleProfile, googleAuthStatus?.accessTokenReady, googleAuthStatus?.activeProfile, googleAuthStatus?.profile, selectedGoogleProfile, toolPolicy?.executionMode, toolRows]);
 
   useEffect(() => {
     const devs = getInputDevices();
@@ -308,7 +358,7 @@ export function SettingsPicker({
         : tab === 'stt' ? sttProviders.length - 1
         : tab === 'tts' ? ttsProviders.length - 1
         : tab === 'realtime' ? realtimeProviders.length - 1
-        : tab === 'tools' ? Math.max(0, toolModes.length + profileRowCount + toolRows.length + catalogRows.length - 1)
+        : tab === 'tools' ? Math.max(0, executionModes.length + toolModes.length + profileRowCount + toolRows.length + catalogRows.length - 1)
         : tab === 'talk' ? 0
         : 0;
       setSelectedIndex(prev => Math.min(maxIndex, prev + 1));
@@ -358,14 +408,21 @@ export function SettingsPicker({
         setMessage(`Realtime provider: ${PROVIDER_LABELS[provider]}`);
         setTimeout(() => setMessage(null), 2000);
       } else if (tab === 'tools') {
-        if (selectedIndex < toolModes.length) {
-          const mode = toolModes[selectedIndex];
+        if (selectedIndex < executionModes.length) {
+          const mode = executionModes[selectedIndex];
+          onSetExecutionMode?.(mode);
+          setMessage(`Execution mode: ${mode}`);
+          setTimeout(() => setMessage(null), 2000);
+          return;
+        }
+        if (selectedIndex < executionModes.length + toolModes.length) {
+          const mode = toolModes[selectedIndex - executionModes.length];
           onSetToolMode?.(mode);
           setMessage(`Tool mode: ${mode}`);
           setTimeout(() => setMessage(null), 2000);
           return;
         }
-        const profileIndex = selectedIndex - toolModes.length;
+        const profileIndex = selectedIndex - executionModes.length - toolModes.length;
         if (profileIndex >= 0 && profileIndex < profileRowCount) {
           if (profileIndex === 0) {
             onSetTalkGoogleAuthProfile?.(undefined);
@@ -381,9 +438,15 @@ export function SettingsPicker({
           return;
         }
 
-        const toolIndex = selectedIndex - toolModes.length - profileRowCount;
+        const toolIndex = selectedIndex - executionModes.length - toolModes.length - profileRowCount;
         const tool = toolRows[toolIndex] ?? null;
         if (tool) {
+          const blockedReason = toolBlockReasonByName.get(tool.name);
+          if (blockedReason) {
+            setMessage(`Cannot enable ${tool.name}: ${blockedReason}`);
+            setTimeout(() => setMessage(null), 2200);
+            return;
+          }
           const currentlyEnabled = toolEnabledSet.has(tool.name);
           onSetToolEnabled?.(tool.name, !currentlyEnabled);
           setMessage(`${!currentlyEnabled ? 'Enabled' : 'Disabled'} ${tool.name}`);
@@ -410,10 +473,16 @@ export function SettingsPicker({
     }
 
     if (tab === 'tools' && input === ' ') {
-      if (selectedIndex >= toolModes.length + profileRowCount) {
-        const toolIndex = selectedIndex - toolModes.length - profileRowCount;
+      if (selectedIndex >= executionModes.length + toolModes.length + profileRowCount) {
+        const toolIndex = selectedIndex - executionModes.length - toolModes.length - profileRowCount;
         const tool = toolRows[toolIndex];
         if (tool) {
+          const blockedReason = toolBlockReasonByName.get(tool.name);
+          if (blockedReason) {
+            setMessage(`Cannot enable ${tool.name}: ${blockedReason}`);
+            setTimeout(() => setMessage(null), 2200);
+            return;
+          }
           const currentlyEnabled = toolEnabledSet.has(tool.name);
           onSetToolEnabled?.(tool.name, !currentlyEnabled);
           setMessage(`${!currentlyEnabled ? 'Enabled' : 'Disabled'} ${tool.name}`);
@@ -467,7 +536,7 @@ export function SettingsPicker({
         setMessage(`Realtime provider: ${PROVIDER_LABELS[provider]}`);
         setTimeout(() => setMessage(null), 2000);
       } else if (tab === 'tools') {
-        const max = toolModes.length + profileRowCount + toolRows.length + catalogRows.length;
+        const max = executionModes.length + toolModes.length + profileRowCount + toolRows.length + catalogRows.length;
         if (idx < max) setSelectedIndex(idx);
       }
     }
@@ -625,15 +694,37 @@ export function SettingsPicker({
           ) : (
             <>
               <Text dimColor>Tool mode controls whether the model can call tools automatically.</Text>
+              <Text dimColor>Execution mode controls whether tools can run in sandboxed vs host runtime.</Text>
               <Text dimColor>Press c to connect another Google account in browser OAuth flow.</Text>
               <Box marginTop={1} flexDirection="column">
-                <Text bold>Mode</Text>
-                {toolModes.map((mode, idx) => {
-                  const active = toolPolicy?.mode === mode;
+                <Text bold>Execution Mode</Text>
+                {executionModes.map((mode, idx) => {
+                  const active = (toolPolicy?.executionMode ?? 'inherit') === mode;
                   return (
                     <Box key={mode}>
                       <Text color={idx === selectedIndex ? 'cyan' : undefined}>
                         {idx === selectedIndex ? '▸ ' : '  '}
+                      </Text>
+                      <Text dimColor>{idx + 1}. </Text>
+                      <Text color={active ? 'green' : undefined} bold={active}>
+                        {mode}
+                      </Text>
+                      <Text dimColor> ({executionModeDescriptions[mode]})</Text>
+                      {active && <Text color="green"> (active)</Text>}
+                    </Box>
+                  );
+                })}
+              </Box>
+
+              <Box marginTop={1} flexDirection="column">
+                <Text bold>Mode</Text>
+                {toolModes.map((mode, idx) => {
+                  const rowIndex = executionModes.length + idx;
+                  const active = toolPolicy?.mode === mode;
+                  return (
+                    <Box key={mode}>
+                      <Text color={rowIndex === selectedIndex ? 'cyan' : undefined}>
+                        {rowIndex === selectedIndex ? '▸ ' : '  '}
                       </Text>
                       <Text dimColor>{idx + 1}. </Text>
                       <Text color={active ? 'green' : undefined} bold={active}>
@@ -649,7 +740,7 @@ export function SettingsPicker({
               <Box marginTop={1} flexDirection="column">
                 <Text bold>Google Profile For This Talk</Text>
                 {[{ name: '__inherit__', hasClientId: false, hasClientSecret: false, hasRefreshToken: false }, ...authProfiles].map((profile, idx) => {
-                  const rowIndex = toolModes.length + idx;
+                  const rowIndex = executionModes.length + toolModes.length + idx;
                   const selected = rowIndex === selectedIndex;
                   const isInherit = idx === 0;
                   const isActive = isInherit
@@ -685,14 +776,17 @@ export function SettingsPicker({
 
               <Box marginTop={1} flexDirection="column">
                 <Text bold>Installed Tools</Text>
-                <Text dimColor>  Tool                               Enabled  Source</Text>
+                <Text dimColor>  Tool                               Status   Source</Text>
                 <Text dimColor>  ----------------------------------------------------</Text>
                 {toolRows.length === 0 ? (
                   <Text dimColor>  (none installed)</Text>
                 ) : (
                   toolRows.map((tool, idx) => {
-                    const rowIndex = idx + toolModes.length + profileRowCount;
+                    const rowIndex = idx + executionModes.length + toolModes.length + profileRowCount;
                     const enabled = toolEnabledSet.has(tool.name);
+                    const blockedReason = toolBlockReasonByName.get(tool.name);
+                    const status = blockedReason ? 'blocked' : (enabled ? 'on' : 'off');
+                    const statusColor: 'green' | 'yellow' = blockedReason ? 'yellow' : (enabled ? 'green' : 'yellow');
                     const selected = rowIndex === selectedIndex;
                     const paddedName = tool.name.padEnd(34, ' ').slice(0, 34);
                     return (
@@ -700,9 +794,10 @@ export function SettingsPicker({
                         <Text color={selected ? 'cyan' : undefined}>{selected ? '▸ ' : '  '}</Text>
                         <Text>{paddedName}</Text>
                         <Text>  </Text>
-                        <Text color={enabled ? 'green' : 'yellow'}>{enabled ? 'on ' : 'off'}</Text>
+                        <Text color={statusColor}>{status.padEnd(7, ' ')}</Text>
                         <Text>      </Text>
                         <Text dimColor>{tool.builtin ? 'builtin' : 'gateway'}</Text>
+                        {blockedReason && <Text dimColor> ({blockedReason})</Text>}
                       </Box>
                     );
                   })
@@ -717,7 +812,7 @@ export function SettingsPicker({
                   <Text dimColor>  (catalog unavailable)</Text>
                 ) : (
                   catalogRows.map((entry, idx) => {
-                    const rowIndex = idx + toolModes.length + profileRowCount + toolRows.length;
+                    const rowIndex = idx + executionModes.length + toolModes.length + profileRowCount + toolRows.length;
                     const selected = rowIndex === selectedIndex;
                     const state = entry.installed
                       ? 'installed'

@@ -788,6 +788,7 @@ export class TalkManager {
     platformBehaviors?: PlatformBehavior[];
     channelResponseSettings?: PlatformBehavior[];
     toolMode?: 'off' | 'confirm' | 'auto';
+    executionMode?: 'inherit' | 'sandboxed' | 'unsandboxed';
     toolsAllow?: string[];
     toolsDeny?: string[];
     googleAuthProfile?: string;
@@ -838,6 +839,7 @@ export class TalkManager {
       existing.platformBindings = resolvedBindings ?? existing.platformBindings;
       existing.platformBehaviors = resolvedBehaviors ?? existing.platformBehaviors;
       existing.toolMode = gwTalk.toolMode ?? existing.toolMode;
+      existing.executionMode = gwTalk.executionMode ?? existing.executionMode;
       existing.toolsAllow = gwTalk.toolsAllow ?? existing.toolsAllow;
       existing.toolsDeny = gwTalk.toolsDeny ?? existing.toolsDeny;
       if (Object.prototype.hasOwnProperty.call(gwTalk, 'googleAuthProfile')) {
@@ -864,6 +866,7 @@ export class TalkManager {
       platformBindings: resolvedBindings,
       platformBehaviors: resolvedBehaviors,
       toolMode: gwTalk.toolMode,
+      executionMode: gwTalk.executionMode,
       toolsAllow: gwTalk.toolsAllow,
       toolsDeny: gwTalk.toolsDeny,
       googleAuthProfile: resolvedGoogleAuthProfile,
