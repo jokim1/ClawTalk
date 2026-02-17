@@ -18,6 +18,7 @@ import type {
   TalkToolPolicy,
   ToolCatalogResponse,
   ToolMode,
+  GoogleAuthProfileSummary,
 } from '../types.js';
 import type { IChatService } from './interfaces.js';
 
@@ -62,12 +63,20 @@ export interface ChatResponse {
 }
 
 export interface GoogleDocsAuthStatus {
+  profile?: string;
+  activeProfile?: string;
   tokenPath: string;
   hasClientId: boolean;
   hasClientSecret: boolean;
   hasRefreshToken: boolean;
   accessTokenReady: boolean;
   error?: string;
+}
+
+export interface GoogleDocsAuthProfilesPayload {
+  tokenPath: string;
+  activeProfile: string;
+  profiles: GoogleAuthProfileSummary[];
 }
 
 export interface CatalogInstallResult {
@@ -101,6 +110,7 @@ type TalkUpdatePayload = {
   toolMode?: ToolMode;
   toolsAllow?: string[];
   toolsDeny?: string[];
+  googleAuthProfile?: string;
   agents?: TalkAgent[];
 };
 
@@ -115,6 +125,7 @@ function toTalkUpdatePayload(updates: {
   toolMode?: ToolMode;
   toolsAllow?: string[];
   toolsDeny?: string[];
+  googleAuthProfile?: string;
 }): TalkUpdatePayload {
   const payload: TalkUpdatePayload = {
     topicTitle: updates.topicTitle,
@@ -141,6 +152,9 @@ function toTalkUpdatePayload(updates: {
   }
   if (updates.toolsDeny !== undefined) {
     payload.toolsDeny = updates.toolsDeny;
+  }
+  if (updates.googleAuthProfile !== undefined) {
+    payload.googleAuthProfile = updates.googleAuthProfile;
   }
   return payload;
 }
@@ -484,6 +498,7 @@ export class ChatService implements IChatService {
     toolMode?: ToolMode;
     toolsAllow?: string[];
     toolsDeny?: string[];
+    googleAuthProfile?: string;
   }): Promise<GatewayResult> {
     try {
       const payload = toTalkUpdatePayload(updates);
@@ -539,6 +554,7 @@ export class ChatService implements IChatService {
     toolMode?: ToolMode;
     toolsAllow?: string[];
     toolsDeny?: string[];
+    googleAuthProfile?: string;
     processing?: boolean;
     contextMd?: string;
   } | null> {
@@ -574,6 +590,7 @@ export class ChatService implements IChatService {
     toolMode?: ToolMode;
     toolsAllow?: string[];
     toolsDeny?: string[];
+    googleAuthProfile?: string;
     processing?: boolean;
     createdAt: number;
     updatedAt: number;
@@ -642,7 +659,7 @@ export class ChatService implements IChatService {
   /** Update tool policy for a gateway talk. */
   async updateGatewayTalkTools(
     talkId: string,
-    updates: Partial<Pick<TalkToolPolicy, 'toolMode' | 'toolsAllow' | 'toolsDeny'>>,
+    updates: Partial<Pick<TalkToolPolicy, 'toolMode' | 'toolsAllow' | 'toolsDeny' | 'googleAuthProfile'>>,
   ): Promise<TalkToolPolicy | null> {
     try {
       const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}/tools`, {
@@ -706,12 +723,12 @@ export class ChatService implements IChatService {
   }
 
   /** Get Google Docs auth readiness from gateway. */
-  async getGoogleDocsAuthStatus(): Promise<GoogleDocsAuthStatus | null> {
+  async getGoogleDocsAuthStatus(profile?: string): Promise<GoogleDocsAuthStatus | null> {
     try {
       const response = await fetch(`${this.config.gatewayUrl}/api/tools`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
-        body: JSON.stringify({ action: 'google_auth_status' }),
+        body: JSON.stringify({ action: 'google_auth_status', ...(profile ? { profile } : {}) }),
         signal: AbortSignal.timeout(10_000),
       });
       if (!response.ok) return null;
@@ -724,6 +741,8 @@ export class ChatService implements IChatService {
 
   /** Update Google Docs OAuth config on gateway (typically refresh token). */
   async updateGoogleDocsAuthConfig(updates: {
+    profile?: string;
+    setActive?: boolean;
     refreshToken?: string;
     clientId?: string;
     clientSecret?: string;
@@ -737,6 +756,40 @@ export class ChatService implements IChatService {
           action: 'google_auth_config',
           ...updates,
         }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) return null;
+      const data = await response.json() as { status?: GoogleDocsAuthStatus };
+      return data.status ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** List configured Google auth profiles from gateway. */
+  async getGoogleDocsAuthProfiles(): Promise<GoogleDocsAuthProfilesPayload | null> {
+    try {
+      const response = await fetch(`${this.config.gatewayUrl}/api/tools`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+        body: JSON.stringify({ action: 'google_auth_profiles' }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) return null;
+      const data = await response.json() as { profiles?: GoogleDocsAuthProfilesPayload };
+      return data.profiles ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Set active Google auth profile on gateway. */
+  async setGoogleDocsActiveProfile(profile: string): Promise<GoogleDocsAuthStatus | null> {
+    try {
+      const response = await fetch(`${this.config.gatewayUrl}/api/tools`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+        body: JSON.stringify({ action: 'google_auth_use_profile', profile }),
         signal: AbortSignal.timeout(10_000),
       });
       if (!response.ok) return null;

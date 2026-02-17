@@ -8,6 +8,7 @@ import React, { useState, useEffect } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { execSync } from 'child_process';
 import type {
+  GoogleAuthProfileSummary,
   RealtimeVoiceCapabilities,
   RealtimeVoiceProvider,
   ToolCatalogEntry,
@@ -79,6 +80,10 @@ interface SettingsPickerProps {
   onRefreshToolPolicy?: () => void;
   onSetToolMode?: (mode: ToolMode) => void;
   onSetToolEnabled?: (toolName: string, enabled: boolean) => void;
+  talkGoogleAuthProfile?: string;
+  googleAuthActiveProfile?: string;
+  googleAuthProfiles?: GoogleAuthProfileSummary[];
+  onSetTalkGoogleAuthProfile?: (profile: string | undefined) => void;
   onInstallCatalogTool?: (catalogId: string) => void;
   onUninstallCatalogTool?: (catalogId: string) => void;
 }
@@ -169,6 +174,10 @@ export function SettingsPicker({
   onRefreshToolPolicy,
   onSetToolMode,
   onSetToolEnabled,
+  talkGoogleAuthProfile,
+  googleAuthActiveProfile,
+  googleAuthProfiles,
+  onSetTalkGoogleAuthProfile,
   onInstallCatalogTool,
   onUninstallCatalogTool,
 }: SettingsPickerProps) {
@@ -185,6 +194,8 @@ export function SettingsPicker({
   const realtimeProviders = realtimeVoiceCaps?.providers ?? [];
   const toolRows = toolPolicy?.availableTools ?? [];
   const catalogRows = toolPolicy?.catalogEntries ?? [];
+  const authProfiles = googleAuthProfiles ?? [];
+  const profileRowCount = 1 + authProfiles.length; // inherit + explicit profiles
   const toolModes: ToolMode[] = ['off', 'confirm', 'auto'];
   const toolModeDescriptions: Record<ToolMode, string> = {
     off: 'model cannot use tools',
@@ -278,7 +289,7 @@ export function SettingsPicker({
         : tab === 'stt' ? sttProviders.length - 1
         : tab === 'tts' ? ttsProviders.length - 1
         : tab === 'realtime' ? realtimeProviders.length - 1
-        : tab === 'tools' ? Math.max(0, toolModes.length + toolRows.length + catalogRows.length - 1)
+        : tab === 'tools' ? Math.max(0, toolModes.length + profileRowCount + toolRows.length + catalogRows.length - 1)
         : tab === 'talk' ? 0
         : 0;
       setSelectedIndex(prev => Math.min(maxIndex, prev + 1));
@@ -335,7 +346,23 @@ export function SettingsPicker({
           setTimeout(() => setMessage(null), 2000);
           return;
         }
-        const toolIndex = selectedIndex - toolModes.length;
+        const profileIndex = selectedIndex - toolModes.length;
+        if (profileIndex >= 0 && profileIndex < profileRowCount) {
+          if (profileIndex === 0) {
+            onSetTalkGoogleAuthProfile?.(undefined);
+            setMessage('Talk profile: inherit active');
+          } else {
+            const profile = authProfiles[profileIndex - 1];
+            if (profile) {
+              onSetTalkGoogleAuthProfile?.(profile.name);
+              setMessage(`Talk profile: ${profile.name}`);
+            }
+          }
+          setTimeout(() => setMessage(null), 2000);
+          return;
+        }
+
+        const toolIndex = selectedIndex - toolModes.length - profileRowCount;
         const tool = toolRows[toolIndex] ?? null;
         if (tool) {
           const currentlyEnabled = toolEnabledSet.has(tool.name);
@@ -364,8 +391,8 @@ export function SettingsPicker({
     }
 
     if (tab === 'tools' && input === ' ') {
-      if (selectedIndex >= toolModes.length) {
-        const toolIndex = selectedIndex - toolModes.length;
+      if (selectedIndex >= toolModes.length + profileRowCount) {
+        const toolIndex = selectedIndex - toolModes.length - profileRowCount;
         const tool = toolRows[toolIndex];
         if (tool) {
           const currentlyEnabled = toolEnabledSet.has(tool.name);
@@ -421,7 +448,7 @@ export function SettingsPicker({
         setMessage(`Realtime provider: ${PROVIDER_LABELS[provider]}`);
         setTimeout(() => setMessage(null), 2000);
       } else if (tab === 'tools') {
-        const max = toolModes.length + toolRows.length + catalogRows.length;
+        const max = toolModes.length + profileRowCount + toolRows.length + catalogRows.length;
         if (idx < max) setSelectedIndex(idx);
       }
     }
@@ -600,6 +627,31 @@ export function SettingsPicker({
               </Box>
 
               <Box marginTop={1} flexDirection="column">
+                <Text bold>Google Profile For This Talk</Text>
+                {[{ name: '__inherit__', hasClientId: false, hasClientSecret: false, hasRefreshToken: false }, ...authProfiles].map((profile, idx) => {
+                  const rowIndex = toolModes.length + idx;
+                  const selected = rowIndex === selectedIndex;
+                  const isInherit = idx === 0;
+                  const isActive = isInherit
+                    ? !talkGoogleAuthProfile
+                    : talkGoogleAuthProfile === profile.name;
+                  const readiness = isInherit
+                    ? `active: ${googleAuthActiveProfile ?? '(none)'}`
+                    : (profile.hasClientId && profile.hasClientSecret && profile.hasRefreshToken ? 'ready' : 'incomplete');
+                  const label = isInherit ? 'inherit active profile' : profile.name;
+                  return (
+                    <Box key={label}>
+                      <Text color={selected ? 'cyan' : undefined}>{selected ? '▸ ' : '  '}</Text>
+                      <Text dimColor>{idx + 1}. </Text>
+                      <Text color={isActive ? 'green' : undefined} bold={isActive}>{label}</Text>
+                      <Text dimColor> ({readiness})</Text>
+                      {isActive && <Text color="green"> (selected)</Text>}
+                    </Box>
+                  );
+                })}
+              </Box>
+
+              <Box marginTop={1} flexDirection="column">
                 <Text bold>Installed Tools</Text>
                 <Text dimColor>  Tool                               Enabled  Source</Text>
                 <Text dimColor>  ----------------------------------------------------</Text>
@@ -607,7 +659,7 @@ export function SettingsPicker({
                   <Text dimColor>  (none installed)</Text>
                 ) : (
                   toolRows.map((tool, idx) => {
-                    const rowIndex = idx + toolModes.length;
+                    const rowIndex = idx + toolModes.length + profileRowCount;
                     const enabled = toolEnabledSet.has(tool.name);
                     const selected = rowIndex === selectedIndex;
                     const paddedName = tool.name.padEnd(34, ' ').slice(0, 34);
@@ -633,7 +685,7 @@ export function SettingsPicker({
                   <Text dimColor>  (catalog unavailable)</Text>
                 ) : (
                   catalogRows.map((entry, idx) => {
-                    const rowIndex = idx + toolModes.length + toolRows.length;
+                    const rowIndex = idx + toolModes.length + profileRowCount + toolRows.length;
                     const selected = rowIndex === selectedIndex;
                     const state = entry.installed
                       ? 'installed'
@@ -670,6 +722,9 @@ export function SettingsPicker({
                   <Text color="yellow">{toolPolicyError}</Text>
                 </Box>
               )}
+              <Box marginTop={1}>
+                <Text dimColor>Tip: choose a profile above to route Google Docs/Drive tool calls for this talk.</Text>
+              </Box>
             </>
           )}
         </Box>

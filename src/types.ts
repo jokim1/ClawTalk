@@ -252,8 +252,16 @@ export interface TalkToolPolicy {
   toolMode: ToolMode;
   toolsAllow: string[];
   toolsDeny: string[];
+  googleAuthProfile?: string;
   availableTools: ToolDescriptor[];
   enabledTools: ToolDescriptor[];
+}
+
+export interface GoogleAuthProfileSummary {
+  name: string;
+  hasClientId: boolean;
+  hasClientSecret: boolean;
+  hasRefreshToken: boolean;
 }
 
 export interface ToolCatalogEntry {
@@ -300,6 +308,7 @@ export interface Talk {
   toolMode?: ToolMode;
   toolsAllow?: string[];
   toolsDeny?: string[];
+  googleAuthProfile?: string;
   gatewayTalkId?: string;  // Corresponding gateway-side talk ID
   processing?: boolean;    // Gateway is actively generating a response
   lastReadAt?: number;     // When the user last opened this talk

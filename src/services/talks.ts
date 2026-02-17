@@ -790,6 +790,7 @@ export class TalkManager {
     toolMode?: 'off' | 'confirm' | 'auto';
     toolsAllow?: string[];
     toolsDeny?: string[];
+    googleAuthProfile?: string;
     processing?: boolean;
     createdAt: number;
     updatedAt: number;
@@ -834,6 +835,7 @@ export class TalkManager {
       existing.toolMode = gwTalk.toolMode ?? existing.toolMode;
       existing.toolsAllow = gwTalk.toolsAllow ?? existing.toolsAllow;
       existing.toolsDeny = gwTalk.toolsDeny ?? existing.toolsDeny;
+      existing.googleAuthProfile = gwTalk.googleAuthProfile ?? existing.googleAuthProfile;
       existing.processing = gwTalk.processing;
       existing.updatedAt = gwTalk.updatedAt;
       existing.gatewayTalkId = gwTalk.id;
@@ -857,6 +859,7 @@ export class TalkManager {
       toolMode: gwTalk.toolMode,
       toolsAllow: gwTalk.toolsAllow,
       toolsDeny: gwTalk.toolsDeny,
+      googleAuthProfile: gwTalk.googleAuthProfile,
       gatewayTalkId: gwTalk.id,
       processing: gwTalk.processing,
       isSaved: true,
