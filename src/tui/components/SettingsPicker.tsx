@@ -7,7 +7,12 @@
 import React, { useState, useEffect } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { execSync } from 'child_process';
-import type { RealtimeVoiceCapabilities, RealtimeVoiceProvider } from '../../types.js';
+import type {
+  RealtimeVoiceCapabilities,
+  RealtimeVoiceProvider,
+  ToolDescriptor,
+  ToolMode,
+} from '../../types.js';
 
 interface AudioDevice {
   name: string;
@@ -60,9 +65,20 @@ interface SettingsPickerProps {
   // Talk config
   talkConfig?: TalkConfigInfo | null;
   hideTalkConfig?: boolean;
+  initialTab?: SettingsTab;
+  toolPolicy?: {
+    mode: ToolMode;
+    availableTools: ToolDescriptor[];
+    enabledToolNames: string[];
+  } | null;
+  toolPolicyLoading?: boolean;
+  toolPolicyError?: string | null;
+  onRefreshToolPolicy?: () => void;
+  onSetToolMode?: (mode: ToolMode) => void;
+  onSetToolEnabled?: (toolName: string, enabled: boolean) => void;
 }
 
-type SettingsTab = 'mic' | 'stt' | 'tts' | 'realtime' | 'talk';
+type SettingsTab = 'mic' | 'stt' | 'tts' | 'realtime' | 'talk' | 'tools';
 
 const PROVIDER_LABELS: Record<RealtimeVoiceProvider, string> = {
   openai: 'OpenAI Realtime',
@@ -141,8 +157,15 @@ export function SettingsPicker({
   onRealtimeProviderChange,
   talkConfig,
   hideTalkConfig,
+  initialTab,
+  toolPolicy,
+  toolPolicyLoading,
+  toolPolicyError,
+  onRefreshToolPolicy,
+  onSetToolMode,
+  onSetToolEnabled,
 }: SettingsPickerProps) {
-  const [tab, setTab] = useState<SettingsTab>(hideTalkConfig ? 'mic' : 'talk');
+  const [tab, setTab] = useState<SettingsTab>(initialTab ?? (hideTalkConfig ? 'mic' : 'talk'));
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [message, setMessage] = useState<string | null>(null);
@@ -153,6 +176,9 @@ export function SettingsPicker({
   const sttProviders = voiceCaps?.sttProviders ?? [];
   const ttsProviders = voiceCaps?.ttsProviders ?? [];
   const realtimeProviders = realtimeVoiceCaps?.providers ?? [];
+  const toolRows = toolPolicy?.availableTools ?? [];
+  const toolModes: ToolMode[] = ['off', 'confirm', 'auto'];
+  const toolEnabledSet = new Set(toolPolicy?.enabledToolNames ?? []);
 
   useEffect(() => {
     const devs = getInputDevices();
@@ -195,10 +221,17 @@ export function SettingsPicker({
       return;
     }
 
+    if (tab === 'tools' && input.toLowerCase() === 'r') {
+      onRefreshToolPolicy?.();
+      setMessage('Refreshing tools...');
+      setTimeout(() => setMessage(null), 1200);
+      return;
+    }
+
     // Tab navigation with left/right
     const allTabs: SettingsTab[] = hideTalkConfig
-      ? ['mic', 'stt', 'tts', 'realtime']
-      : ['talk', 'mic', 'stt', 'tts', 'realtime'];
+      ? ['tools', 'mic', 'stt', 'tts', 'realtime']
+      : ['talk', 'tools', 'mic', 'stt', 'tts', 'realtime'];
     if (key.leftArrow) {
       setTab(prev => {
         const idx = allTabs.indexOf(prev);
@@ -226,6 +259,7 @@ export function SettingsPicker({
         : tab === 'stt' ? sttProviders.length - 1
         : tab === 'tts' ? ttsProviders.length - 1
         : tab === 'realtime' ? realtimeProviders.length - 1
+        : tab === 'tools' ? Math.max(0, toolModes.length + toolRows.length - 1)
         : tab === 'talk' ? 0
         : 0;
       setSelectedIndex(prev => Math.min(maxIndex, prev + 1));
@@ -274,6 +308,36 @@ export function SettingsPicker({
         onRealtimeProviderChange?.(provider);
         setMessage(`Realtime provider: ${PROVIDER_LABELS[provider]}`);
         setTimeout(() => setMessage(null), 2000);
+      } else if (tab === 'tools') {
+        if (selectedIndex < toolModes.length) {
+          const mode = toolModes[selectedIndex];
+          onSetToolMode?.(mode);
+          setMessage(`Tool mode: ${mode}`);
+          setTimeout(() => setMessage(null), 2000);
+          return;
+        }
+        const toolIndex = selectedIndex - toolModes.length;
+        const tool = toolRows[toolIndex];
+        if (tool) {
+          const currentlyEnabled = toolEnabledSet.has(tool.name);
+          onSetToolEnabled?.(tool.name, !currentlyEnabled);
+          setMessage(`${!currentlyEnabled ? 'Enabled' : 'Disabled'} ${tool.name}`);
+          setTimeout(() => setMessage(null), 2000);
+        }
+      }
+      return;
+    }
+
+    if (tab === 'tools' && input === ' ') {
+      if (selectedIndex >= toolModes.length) {
+        const toolIndex = selectedIndex - toolModes.length;
+        const tool = toolRows[toolIndex];
+        if (tool) {
+          const currentlyEnabled = toolEnabledSet.has(tool.name);
+          onSetToolEnabled?.(tool.name, !currentlyEnabled);
+          setMessage(`${!currentlyEnabled ? 'Enabled' : 'Disabled'} ${tool.name}`);
+          setTimeout(() => setMessage(null), 2000);
+        }
       }
       return;
     }
@@ -321,19 +385,23 @@ export function SettingsPicker({
         onRealtimeProviderChange?.(provider);
         setMessage(`Realtime provider: ${PROVIDER_LABELS[provider]}`);
         setTimeout(() => setMessage(null), 2000);
+      } else if (tab === 'tools') {
+        const max = toolModes.length + toolRows.length;
+        if (idx < max) setSelectedIndex(idx);
       }
     }
   });
 
   const tabs: SettingsTab[] = hideTalkConfig
-    ? ['mic', 'stt', 'tts', 'realtime']
-    : ['talk', 'mic', 'stt', 'tts', 'realtime'];
+    ? ['tools', 'mic', 'stt', 'tts', 'realtime']
+    : ['talk', 'tools', 'mic', 'stt', 'tts', 'realtime'];
   const tabLabels: Record<SettingsTab, string> = {
     mic: 'Microphone',
     stt: 'Speech-to-Text',
     tts: 'Text-to-Speech',
     realtime: 'Live Chat',
     talk: 'Talk Config',
+    tools: 'Tools',
   };
 
   return (
@@ -469,6 +537,66 @@ export function SettingsPicker({
         </Box>
       )}
 
+      {tab === 'tools' && (
+        <Box flexDirection="column">
+          {toolPolicyLoading ? (
+            <Text dimColor>Loading tool settings...</Text>
+          ) : (
+            <>
+              <Text dimColor>Tool mode controls whether the model can call tools automatically.</Text>
+              <Box marginTop={1} flexDirection="column">
+                <Text bold>Mode</Text>
+                {toolModes.map((mode, idx) => {
+                  const active = toolPolicy?.mode === mode;
+                  return (
+                    <Box key={mode}>
+                      <Text color={idx === selectedIndex ? 'cyan' : undefined}>
+                        {idx === selectedIndex ? '▸ ' : '  '}
+                      </Text>
+                      <Text dimColor>{idx + 1}. </Text>
+                      <Text color={active ? 'green' : undefined} bold={active}>{mode}</Text>
+                      {active && <Text color="green"> (active)</Text>}
+                    </Box>
+                  );
+                })}
+              </Box>
+
+              <Box marginTop={1} flexDirection="column">
+                <Text bold>Available Tools</Text>
+                <Text dimColor>  Tool                               Enabled  Source</Text>
+                <Text dimColor>  ----------------------------------------------------</Text>
+                {toolRows.length === 0 ? (
+                  <Text dimColor>  (none reported by gateway)</Text>
+                ) : (
+                  toolRows.map((tool, idx) => {
+                    const rowIndex = idx + toolModes.length;
+                    const enabled = toolEnabledSet.has(tool.name);
+                    const selected = rowIndex === selectedIndex;
+                    const paddedName = tool.name.padEnd(34, ' ').slice(0, 34);
+                    return (
+                      <Box key={tool.name}>
+                        <Text color={selected ? 'cyan' : undefined}>{selected ? '▸ ' : '  '}</Text>
+                        <Text>{paddedName}</Text>
+                        <Text>  </Text>
+                        <Text color={enabled ? 'green' : 'yellow'}>{enabled ? 'on ' : 'off'}</Text>
+                        <Text>      </Text>
+                        <Text dimColor>{tool.builtin ? 'builtin' : 'gateway'}</Text>
+                      </Box>
+                    );
+                  })
+                )}
+              </Box>
+
+              {toolPolicyError && (
+                <Box marginTop={1}>
+                  <Text color="yellow">{toolPolicyError}</Text>
+                </Box>
+              )}
+            </>
+          )}
+        </Box>
+      )}
+
       {tab === 'talk' && (
         <Box flexDirection="column">
           {!talkConfig ? (
@@ -594,7 +722,11 @@ export function SettingsPicker({
       {/* Help */}
       {tab !== 'talk' && (
         <Box marginTop={1}>
-          <Text dimColor>↑/↓ navigate  Enter/1-9 select  Esc close</Text>
+          {tab === 'tools' ? (
+            <Text dimColor>↑/↓ navigate  Enter select  Space toggle tool  r refresh  Esc close</Text>
+          ) : (
+            <Text dimColor>↑/↓ navigate  Enter/1-9 select  Esc close</Text>
+          )}
         </Box>
       )}
     </Box>

@@ -58,6 +58,7 @@ export interface CommandContext {
   clearDeniedTools: () => void;
   showGoogleDocsAuthStatus: () => void;
   setGoogleDocsRefreshToken: (token: string) => void;
+  openToolsSettings: () => void;
   showPlaybook: () => void;
 }
 
@@ -634,47 +635,11 @@ function handleResponsesCommand(args: string, ctx: CommandContext): CommandResul
   return handleResponseCommand(args, ctx);
 }
 
-/** Handle /tools <subcommand> — list and manage talk tool policy. */
+/** Handle /tools — open Settings > Tools (plus auth helpers). */
 function handleToolsCommand(args: string, ctx: CommandContext): CommandResult {
   const trimmed = args.trim();
   if (!trimmed || trimmed === 'list') {
-    ctx.listTools();
-    return { handled: true };
-  }
-
-  const modeMatch = trimmed.match(/^mode\s+(off|confirm|auto)$/i);
-  if (modeMatch) {
-    ctx.setToolsMode(modeMatch[1].toLowerCase() as 'off' | 'confirm' | 'auto');
-    return { handled: true };
-  }
-
-  const addAllow = trimmed.match(/^allow\s+add\s+([a-zA-Z0-9_.-]+)$/);
-  if (addAllow) {
-    ctx.addAllowedTool(addAllow[1]);
-    return { handled: true };
-  }
-  const removeAllow = trimmed.match(/^allow\s+remove\s+([a-zA-Z0-9_.-]+)$/);
-  if (removeAllow) {
-    ctx.removeAllowedTool(removeAllow[1]);
-    return { handled: true };
-  }
-  if (/^allow\s+clear$/i.test(trimmed)) {
-    ctx.clearAllowedTools();
-    return { handled: true };
-  }
-
-  const addDeny = trimmed.match(/^deny\s+add\s+([a-zA-Z0-9_.-]+)$/);
-  if (addDeny) {
-    ctx.addDeniedTool(addDeny[1]);
-    return { handled: true };
-  }
-  const removeDeny = trimmed.match(/^deny\s+remove\s+([a-zA-Z0-9_.-]+)$/);
-  if (removeDeny) {
-    ctx.removeDeniedTool(removeDeny[1]);
-    return { handled: true };
-  }
-  if (/^deny\s+clear$/i.test(trimmed)) {
-    ctx.clearDeniedTools();
+    ctx.openToolsSettings();
     return { handled: true };
   }
 
@@ -696,16 +661,11 @@ function handleToolsCommand(args: string, ctx: CommandContext): CommandResult {
 
   ctx.addSystemMessage(
     'Usage:\n' +
-    '- /tools\n' +
-    '- /tools mode off|confirm|auto\n' +
-    '- /tools allow add <tool> | /tools allow remove <tool> | /tools allow clear\n' +
-    '- /tools deny add <tool> | /tools deny remove <tool> | /tools deny clear\n' +
+    '- /tools (opens Settings > Tools)\n' +
     '- /tools auth status\n' +
     '- /tools auth set-refresh <google-refresh-token>\n' +
     'Examples:\n' +
-    '- /tools mode confirm\n' +
-    '- /tools allow add google_docs_write\n' +
-    '- /tools deny add shell_exec\n' +
+    '- /tools\n' +
     '- /tools auth status',
   );
   return { handled: true };
@@ -739,7 +699,7 @@ const COMMANDS: Record<string, { handler: CommandHandler; description: string }>
   edit: { handler: handleEditCommand, description: 'Edit messages (mark and delete)' },
   rule: { handler: handleRuleCommand, description: 'Add or manage a rule' },
   rules: { handler: handleRulesCommand, description: 'List rules for this talk' },
-  tools: { handler: handleToolsCommand, description: 'List tools and set tool execution policy' },
+  tools: { handler: handleToolsCommand, description: 'Open Settings > Tools and tool auth helpers' },
   playbook: { handler: handlePlaybookCommand, description: 'Show full talk configuration' },
 };
 
@@ -858,10 +818,7 @@ export function getCommandCompletions(prefix: string): CommandInfo[] {
         );
       } else if (name === 'tools') {
         results.push(
-          { name: 'tools', description: 'List available/enabled tools and current mode' },
-          { name: 'tools mode off|confirm|auto', description: 'Set tool execution mode for this talk' },
-          { name: 'tools allow add <tool>', description: 'Allow-list a tool for this talk' },
-          { name: 'tools deny add <tool>', description: 'Deny-list a tool for this talk' },
+          { name: 'tools', description: 'Open Settings > Tools manager' },
           { name: 'tools auth status', description: 'Check Google Docs auth readiness' },
           { name: 'tools auth set-refresh <token>', description: 'Update Google refresh token for Docs tools' },
         );

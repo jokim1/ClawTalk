@@ -8,7 +8,7 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { render, Box, Text, useInput, useApp, useStdout } from 'ink';
-import type { ClawTalkOptions, ModelStatus, Message, TalkAgent, AgentRole, PendingAttachment, Directive, PlatformBinding, PlatformBehavior, PlatformPermission, Job, ToolMode } from '../types.js';
+import type { ClawTalkOptions, ModelStatus, Message, TalkAgent, AgentRole, PendingAttachment, Directive, PlatformBinding, PlatformBehavior, PlatformPermission, Job, ToolMode, ToolDescriptor } from '../types.js';
 import type { Talk } from '../types.js';
 import { AGENT_ROLES, ROLE_BY_ID, AGENT_PREAMBLE, generateAgentName } from '../agent-roles.js';
 import type { RoleTemplate } from '../agent-roles.js';
@@ -202,6 +202,7 @@ function App({ options }: AppProps) {
   const [showEditMessages, setShowEditMessages] = useState(false);
   const [showTalks, setShowTalks] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<'talk' | 'tools' | 'mic' | 'stt' | 'tts' | 'realtime'>('talk');
   const [showChannelConfig, setShowChannelConfig] = useState(false);
   const [showJobsConfig, setShowJobsConfig] = useState(false);
   const [settingsFromTalks, setSettingsFromTalks] = useState(false);
@@ -209,12 +210,21 @@ function App({ options }: AppProps) {
   const [slackChannelsByAccount, setSlackChannelsByAccount] = useState<Record<string, SlackChannelOption[]>>({});
   const [slackHintsLoading, setSlackHintsLoading] = useState(false);
   const [slackHintsError, setSlackHintsError] = useState<string | null>(null);
+  const [settingsToolPolicy, setSettingsToolPolicy] = useState<{
+    mode: ToolMode;
+    availableTools: ToolDescriptor[];
+    enabledToolNames: string[];
+  } | null>(null);
+  const [settingsToolPolicyLoading, setSettingsToolPolicyLoading] = useState(false);
+  const [settingsToolPolicyError, setSettingsToolPolicyError] = useState<string | null>(null);
   const [sessionName, setSessionName] = useState('Session 1');
   const [activeTalkId, setActiveTalkId] = useState<string | null>(null);
   const activeTalkIdRef = useRef<string | null>(null);
   useEffect(() => {
     activeTalkIdRef.current = activeTalkId;
     setError(null); // Clear error when switching talks
+    setSettingsToolPolicy(null);
+    setSettingsToolPolicyError(null);
     // Keep primary agent ref in sync
     const agents = activeTalkId ? talkManagerRef.current?.getAgents(activeTalkId) : [];
     primaryAgentRef.current = agents?.find(a => a.isPrimary) ?? null;
@@ -1790,6 +1800,92 @@ function App({ options }: AppProps) {
     });
   }, []);
 
+  const refreshSettingsToolPolicy = useCallback(() => {
+    const talk = activeTalkIdRef.current ? talkManagerRef.current?.getTalk(activeTalkIdRef.current) : null;
+    const gwId = gatewayTalkIdRef.current ?? talk?.gatewayTalkId ?? null;
+
+    if (!gwId || !chatServiceRef.current) {
+      const mode: ToolMode = talk?.toolMode ?? 'auto';
+      setSettingsToolPolicy({
+        mode,
+        availableTools: [],
+        enabledToolNames: talk?.toolsAllow ?? [],
+      });
+      setSettingsToolPolicyError('No active gateway talk yet. Send one message first, then refresh.');
+      return;
+    }
+
+    setSettingsToolPolicyLoading(true);
+    setSettingsToolPolicyError(null);
+    chatServiceRef.current.getGatewayTalkTools(gwId).then((policy) => {
+      if (!policy) {
+        setSettingsToolPolicyError('Failed to load tools from gateway.');
+        return;
+      }
+      syncToolPolicyLocal(policy.toolMode, policy.toolsAllow, policy.toolsDeny);
+      setSettingsToolPolicy({
+        mode: policy.toolMode,
+        availableTools: policy.availableTools,
+        enabledToolNames: policy.enabledTools.map((tool) => tool.name),
+      });
+    }).finally(() => {
+      setSettingsToolPolicyLoading(false);
+    });
+  }, [syncToolPolicyLocal]);
+
+  const handleSettingsSetToolMode = useCallback((mode: ToolMode) => {
+    const gwId = gatewayTalkIdRef.current;
+    if (!gwId || !chatServiceRef.current) {
+      setSettingsToolPolicy((prev) => prev ? { ...prev, mode } : prev);
+      syncToolPolicyLocal(mode, undefined, undefined);
+      return;
+    }
+    chatServiceRef.current.updateGatewayTalkTools(gwId, { toolMode: mode }).then((policy) => {
+      if (!policy) {
+        setError('Failed to update tool mode on gateway');
+        return;
+      }
+      syncToolPolicyLocal(policy.toolMode, policy.toolsAllow, policy.toolsDeny);
+      setSettingsToolPolicy({
+        mode: policy.toolMode,
+        availableTools: policy.availableTools,
+        enabledToolNames: policy.enabledTools.map((tool) => tool.name),
+      });
+    });
+  }, [syncToolPolicyLocal]);
+
+  const handleSettingsSetToolEnabled = useCallback((toolName: string, enabled: boolean) => {
+    const gwId = gatewayTalkIdRef.current;
+    const current = settingsToolPolicy;
+    if (!current) return;
+    const currentSet = new Set(current.enabledToolNames);
+    if (enabled) currentSet.add(toolName);
+    else currentSet.delete(toolName);
+    const nextEnabled = Array.from(currentSet);
+
+    if (!gwId || !chatServiceRef.current) {
+      setSettingsToolPolicy({ ...current, enabledToolNames: nextEnabled });
+      syncToolPolicyLocal(undefined, nextEnabled, []);
+      return;
+    }
+
+    chatServiceRef.current.updateGatewayTalkTools(gwId, {
+      toolsAllow: nextEnabled,
+      toolsDeny: [],
+    }).then((policy) => {
+      if (!policy) {
+        setError('Failed to update enabled tools on gateway');
+        return;
+      }
+      syncToolPolicyLocal(policy.toolMode, policy.toolsAllow, policy.toolsDeny);
+      setSettingsToolPolicy({
+        mode: policy.toolMode,
+        availableTools: policy.availableTools,
+        enabledToolNames: policy.enabledTools.map((tool) => tool.name),
+      });
+    });
+  }, [settingsToolPolicy, syncToolPolicyLocal]);
+
   const loadSlackHints = useCallback(async () => {
     if (!chatServiceRef.current) return;
 
@@ -2567,6 +2663,20 @@ function App({ options }: AppProps) {
     chat.setMessages(prev => [...prev, sysMsg]);
   }, []);
 
+  const openToolsSettings = useCallback(() => {
+    setSettingsFromTalks(false);
+    setSettingsTab('tools');
+    setShowSettings(true);
+    refreshSettingsToolPolicy();
+  }, [refreshSettingsToolPolicy]);
+
+  useEffect(() => {
+    if (!showSettings || settingsFromTalks) return;
+    if (settingsTab === 'tools') {
+      refreshSettingsToolPolicy();
+    }
+  }, [showSettings, settingsFromTalks, settingsTab, refreshSettingsToolPolicy]);
+
   const commandCtx = useRef({
     switchModel,
     openModelPicker: () => { setModelPickerMode('switch'); setShowModelPicker(true); },
@@ -2618,6 +2728,7 @@ function App({ options }: AppProps) {
     clearDeniedTools: handleClearDeniedTools,
     showGoogleDocsAuthStatus: handleShowGoogleDocsAuthStatus,
     setGoogleDocsRefreshToken: handleSetGoogleDocsRefreshToken,
+    openToolsSettings,
     showPlaybook: handleShowPlaybook,
   });
   commandCtx.current = {
@@ -2671,6 +2782,7 @@ function App({ options }: AppProps) {
     clearDeniedTools: handleClearDeniedTools,
     showGoogleDocsAuthStatus: handleShowGoogleDocsAuthStatus,
     setGoogleDocsRefreshToken: handleSetGoogleDocsRefreshToken,
+    openToolsSettings,
     showPlaybook: handleShowPlaybook,
   };
 
@@ -3014,6 +3126,7 @@ function App({ options }: AppProps) {
     // ^S Settings
     if (input === 's' && key.ctrl) {
       setSettingsFromTalks(false);
+      setSettingsTab('talk');
       setShowSettings(true);
       cleanInputChar(setInputText, 's');
       return;
@@ -3142,7 +3255,7 @@ function App({ options }: AppProps) {
             onNewChat={() => { setShowEditMessages(false); handleNewChat(); }}
             onToggleTts={() => { voice.handleTtsToggle?.(); }}
             onOpenTalks={() => { setShowEditMessages(false); setShowTalks(true); }}
-            onOpenSettings={() => { setShowEditMessages(false); setSettingsFromTalks(false); setShowSettings(true); }}
+            onOpenSettings={() => { setShowEditMessages(false); setSettingsFromTalks(false); setSettingsTab('talk'); setShowSettings(true); }}
             onExit={() => { voiceServiceRef.current?.cleanup(); exit(); }}
             setError={setError}
           />
@@ -3158,7 +3271,7 @@ function App({ options }: AppProps) {
             onSelectTalk={handleSelectTalk}
             onNewChat={() => { setShowTalks(false); handleNewChat(); }}
             onToggleTts={() => { voice.handleTtsToggle?.(); }}
-            onOpenSettings={() => { setShowTalks(false); setSettingsFromTalks(true); setShowSettings(true); }}
+            onOpenSettings={() => { setShowTalks(false); setSettingsFromTalks(true); setSettingsTab('mic'); setShowSettings(true); }}
             onOpenModelPicker={() => { setModelPickerMode('default'); setShowModelPicker(true); }}
             exportDir={savedConfig.exportDir}
             onNewTerminal={() => { spawnNewTerminalWindow(options); }}
@@ -3213,6 +3326,7 @@ function App({ options }: AppProps) {
         <Box flexGrow={1} paddingX={1}>
           <SettingsPicker
             onClose={() => { setShowSettings(false); if (settingsFromTalks) { setSettingsFromTalks(false); setShowTalks(true); } }}
+            initialTab={settingsFromTalks ? 'mic' : settingsTab}
             hideTalkConfig={settingsFromTalks}
             onNewChat={() => { setShowSettings(false); handleNewChat(); }}
             onToggleTts={() => { voice.handleTtsToggle?.(); }}
@@ -3242,6 +3356,12 @@ function App({ options }: AppProps) {
             realtimeVoiceCaps={gateway.realtimeVoiceCaps}
             realtimeProvider={realtimeVoice.provider}
             onRealtimeProviderChange={realtimeVoice.setProvider}
+            toolPolicy={settingsToolPolicy}
+            toolPolicyLoading={settingsToolPolicyLoading}
+            toolPolicyError={settingsToolPolicyError}
+            onRefreshToolPolicy={refreshSettingsToolPolicy}
+            onSetToolMode={handleSettingsSetToolMode}
+            onSetToolEnabled={handleSettingsSetToolEnabled}
             talkConfig={activeTalk ? {
               objective: activeTalk.objective,
               directives: (activeTalk.directives ?? []).map(d => ({ text: d.text, active: d.active })),
