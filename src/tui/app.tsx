@@ -1925,18 +1925,43 @@ function App({ options }: AppProps) {
     chat.setMessages(prev => [...prev, sysMsg]);
   }, [activeTalkId]);
 
-  const handleConfirmDeleteMessages = useCallback((messageIds: string[]) => {
+  const handleConfirmDeleteMessages = useCallback(async (messageIds: string[]) => {
     const sessionId = sessionManagerRef.current?.getActiveSessionId();
-    if (!sessionId) return;
+    const gwTalkId = gatewayTalkIdRef.current;
 
+    // Gateway-backed talks: delete remotely, then refresh from gateway source-of-truth.
+    if (gwTalkId && chatServiceRef.current) {
+      const result = await chatServiceRef.current.deleteGatewayMessages(gwTalkId, messageIds);
+      if (!result) {
+        setError('Failed to delete messages on gateway.');
+        return;
+      }
+      const latest = await chatServiceRef.current.fetchGatewayMessages(gwTalkId);
+      chat.setMessages(latest);
+      // Keep local session in sync when one exists.
+      if (sessionId) {
+        sessionManagerRef.current?.deleteMessages(sessionId, messageIds);
+      }
+      chat.setMessages((prev) => [
+        ...prev,
+        createMessage('system', `Deleted ${result.deleted} message${result.deleted !== 1 ? 's' : ''}.`),
+      ]);
+      setShowEditMessages(false);
+      return;
+    }
+
+    if (!sessionId) return;
     sessionManagerRef.current?.deleteMessages(sessionId, messageIds);
     const session = sessionManagerRef.current?.getSession(sessionId);
     if (session) {
       chat.setMessages([...session.messages]);
     }
-    addSystemMessage(`Deleted ${messageIds.length} message${messageIds.length !== 1 ? 's' : ''}.`);
+    chat.setMessages((prev) => [
+      ...prev,
+      createMessage('system', `Deleted ${messageIds.length} message${messageIds.length !== 1 ? 's' : ''}.`),
+    ]);
     setShowEditMessages(false);
-  }, []);
+  }, [chat.setMessages, setError]);
 
   // Sync gateway talks into local TalkManager when TalksHub opens
   useEffect(() => {

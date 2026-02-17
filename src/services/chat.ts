@@ -594,6 +594,22 @@ export class ChatService implements IChatService {
     }
   }
 
+  /** Delete messages from a gateway talk by message IDs. */
+  async deleteGatewayMessages(talkId: string, messageIds: string[]): Promise<{ deleted: number; remaining: number } | null> {
+    try {
+      const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}/messages`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+        body: JSON.stringify({ messageIds }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!response.ok) return null;
+      return await response.json() as { deleted: number; remaining: number };
+    } catch {
+      return null;
+    }
+  }
+
   /** Fetch tool policy + available tools for a gateway talk. */
   async getGatewayTalkTools(talkId: string): Promise<TalkToolPolicy | null> {
     try {
