@@ -201,6 +201,12 @@ export function SettingsPicker({
     if (defaultIdx >= 0) setSelectedIndex(defaultIdx);
   }, []);
 
+  useEffect(() => {
+    if (tab === 'tools') {
+      onRefreshToolPolicy?.();
+    }
+  }, [tab, onRefreshToolPolicy]);
+
   useInput((input, key) => {
     // Global shortcuts
     if (input === 't' && key.ctrl) {
