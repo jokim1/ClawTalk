@@ -59,8 +59,8 @@ interface AppProps {
   options: ClawTalkOptions;
 }
 
-const DEFAULT_EXECUTION_MODE: ToolExecutionMode = 'inherit';
-const DEFAULT_EXECUTION_MODE_OPTIONS: ToolExecutionMode[] = ['inherit', 'sandboxed', 'unsandboxed'];
+const DEFAULT_EXECUTION_MODE: ToolExecutionMode = 'openclaw';
+const DEFAULT_EXECUTION_MODE_OPTIONS: ToolExecutionMode[] = ['openclaw', 'full_control'];
 
 function formatBindingScopeLabel(binding: {
   scope: string;

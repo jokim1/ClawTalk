@@ -215,11 +215,10 @@ export function SettingsPicker({
   const profileRowCount = 1 + authProfiles.length; // inherit + explicit profiles
   const executionModes: ToolExecutionMode[] = toolPolicy?.executionModeOptions?.length
     ? toolPolicy.executionModeOptions
-    : ['inherit', 'sandboxed', 'unsandboxed'];
+    : ['openclaw', 'full_control'];
   const executionModeDescriptions: Record<ToolExecutionMode, string> = {
-    inherit: 'use gateway default',
-    sandboxed: 'always sandbox tools',
-    unsandboxed: 'allow host runtime',
+    openclaw: 'OpenClaw agent & tools',
+    full_control: 'ClawTalk agent & tools',
   };
   const toolModes: ToolMode[] = ['off', 'confirm', 'auto'];
   const toolModeDescriptions: Record<ToolMode, string> = {
@@ -232,20 +231,16 @@ export function SettingsPicker({
   const selectedGoogleProfile = authProfiles.find((profile) => profile.name === effectiveGoogleProfile);
   const toolBlockReasonByName = useMemo(() => {
     const reasons = new Map<string, string>();
-    const executionMode = toolPolicy?.executionMode ?? 'inherit';
+    const executionMode = toolPolicy?.executionMode ?? 'openclaw';
     for (const tool of toolRows) {
       let reason: string | undefined;
       if (tool.capability && tool.capability.runnable === false) {
         reason = tool.capability.reason || 'not runnable in this environment';
       }
-      if (!reason) {
-        const requiresUnsandboxed = tool.capability?.requiresUnsandboxed || tool.runtime === 'unsandboxed';
-        if ((executionMode === 'inherit' || executionMode === 'sandboxed') && requiresUnsandboxed) {
-          reason = 'requires unsandboxed execution mode';
-        }
-      }
-      if (!reason && executionMode === 'unsandboxed' && tool.runtime === 'sandbox') {
-        reason = 'requires sandboxed execution mode';
+      // In openclaw mode, OpenClaw replaces the entire tools array with its own
+      // agent tools (Read/Write/exec), so no gateway tools are callable.
+      if (!reason && executionMode === 'openclaw') {
+        reason = 'requires Full Control mode';
       }
       if (!reason && tool.name.toLowerCase().startsWith('google_')) {
         if (!effectiveGoogleProfile) {
@@ -694,12 +689,12 @@ export function SettingsPicker({
           ) : (
             <>
               <Text dimColor>Tool mode controls whether the model can call tools automatically.</Text>
-              <Text dimColor>Execution mode controls whether tools can run in sandboxed vs host runtime.</Text>
+              <Text dimColor>OpenClaw mode uses OpenClaw's agent & tools. Full Control uses ClawTalk's gateway tools.</Text>
               <Text dimColor>Press c to connect another Google account in browser OAuth flow.</Text>
               <Box marginTop={1} flexDirection="column">
                 <Text bold>Execution Mode</Text>
                 {executionModes.map((mode, idx) => {
-                  const active = (toolPolicy?.executionMode ?? 'inherit') === mode;
+                  const active = (toolPolicy?.executionMode ?? 'openclaw') === mode;
                   return (
                     <Box key={mode}>
                       <Text color={idx === selectedIndex ? 'cyan' : undefined}>

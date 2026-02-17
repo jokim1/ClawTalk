@@ -10,7 +10,17 @@ import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
-import type { Talk, Job, TalkAgent, AgentRole, Directive, PlatformBinding, PlatformBehavior, PlatformPermission } from '../types';
+import type { Talk, Job, TalkAgent, AgentRole, Directive, PlatformBinding, PlatformBehavior, PlatformPermission, ToolExecutionMode } from '../types';
+
+/** Normalize executionMode from gateway, migrating old values from stale gateways. */
+function normalizeExecutionMode(raw: string | undefined): ToolExecutionMode | undefined {
+  if (!raw) return undefined;
+  const value = raw.trim().toLowerCase();
+  if (value === 'openclaw' || value === 'full_control') return value;
+  if (value === 'unsandboxed') return 'full_control';
+  if (value === 'inherit' || value === 'sandboxed') return 'openclaw';
+  return undefined;
+}
 
 /** Validate that a talk ID is safe for use as a directory name. */
 function isValidTalkId(id: string): boolean {
@@ -788,7 +798,7 @@ export class TalkManager {
     platformBehaviors?: PlatformBehavior[];
     channelResponseSettings?: PlatformBehavior[];
     toolMode?: 'off' | 'confirm' | 'auto';
-    executionMode?: 'inherit' | 'sandboxed' | 'unsandboxed';
+    executionMode?: 'openclaw' | 'full_control' | 'inherit' | 'sandboxed' | 'unsandboxed';
     toolsAllow?: string[];
     toolsDeny?: string[];
     googleAuthProfile?: string;
@@ -839,7 +849,7 @@ export class TalkManager {
       existing.platformBindings = resolvedBindings ?? existing.platformBindings;
       existing.platformBehaviors = resolvedBehaviors ?? existing.platformBehaviors;
       existing.toolMode = gwTalk.toolMode ?? existing.toolMode;
-      existing.executionMode = gwTalk.executionMode ?? existing.executionMode;
+      existing.executionMode = normalizeExecutionMode(gwTalk.executionMode) ?? existing.executionMode;
       existing.toolsAllow = gwTalk.toolsAllow ?? existing.toolsAllow;
       existing.toolsDeny = gwTalk.toolsDeny ?? existing.toolsDeny;
       if (Object.prototype.hasOwnProperty.call(gwTalk, 'googleAuthProfile')) {
@@ -866,7 +876,7 @@ export class TalkManager {
       platformBindings: resolvedBindings,
       platformBehaviors: resolvedBehaviors,
       toolMode: gwTalk.toolMode,
-      executionMode: gwTalk.executionMode,
+      executionMode: normalizeExecutionMode(gwTalk.executionMode),
       toolsAllow: gwTalk.toolsAllow,
       toolsDeny: gwTalk.toolsDeny,
       googleAuthProfile: resolvedGoogleAuthProfile,

@@ -240,7 +240,7 @@ export interface PlatformBehavior {
 }
 
 export type ToolMode = 'off' | 'confirm' | 'auto';
-export type ToolExecutionMode = 'inherit' | 'sandboxed' | 'unsandboxed';
+export type ToolExecutionMode = 'openclaw' | 'full_control';
 
 export interface ToolDescriptor {
   name: string;
