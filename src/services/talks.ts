@@ -787,6 +787,9 @@ export class TalkManager {
     channelConnections?: PlatformBinding[];
     platformBehaviors?: PlatformBehavior[];
     channelResponseSettings?: PlatformBehavior[];
+    toolMode?: 'off' | 'confirm' | 'auto';
+    toolsAllow?: string[];
+    toolsDeny?: string[];
     processing?: boolean;
     createdAt: number;
     updatedAt: number;
@@ -828,6 +831,9 @@ export class TalkManager {
       existing.directives = resolvedDirectives ?? existing.directives;
       existing.platformBindings = resolvedBindings ?? existing.platformBindings;
       existing.platformBehaviors = resolvedBehaviors ?? existing.platformBehaviors;
+      existing.toolMode = gwTalk.toolMode ?? existing.toolMode;
+      existing.toolsAllow = gwTalk.toolsAllow ?? existing.toolsAllow;
+      existing.toolsDeny = gwTalk.toolsDeny ?? existing.toolsDeny;
       existing.processing = gwTalk.processing;
       existing.updatedAt = gwTalk.updatedAt;
       existing.gatewayTalkId = gwTalk.id;
@@ -848,6 +854,9 @@ export class TalkManager {
       directives: resolvedDirectives,
       platformBindings: resolvedBindings,
       platformBehaviors: resolvedBehaviors,
+      toolMode: gwTalk.toolMode,
+      toolsAllow: gwTalk.toolsAllow,
+      toolsDeny: gwTalk.toolsDeny,
       gatewayTalkId: gwTalk.id,
       processing: gwTalk.processing,
       isSaved: true,

@@ -48,6 +48,14 @@ export interface CommandContext {
   setChannelResponsePrompt: (index: number, prompt: string) => void;
   setChannelResponseAgent: (index: number, agentName: string) => void;
   clearChannelResponse: (index: number) => void;
+  listTools: () => void;
+  setToolsMode: (mode: 'off' | 'confirm' | 'auto') => void;
+  addAllowedTool: (toolName: string) => void;
+  removeAllowedTool: (toolName: string) => void;
+  clearAllowedTools: () => void;
+  addDeniedTool: (toolName: string) => void;
+  removeDeniedTool: (toolName: string) => void;
+  clearDeniedTools: () => void;
   showPlaybook: () => void;
 }
 
@@ -624,6 +632,64 @@ function handleResponsesCommand(args: string, ctx: CommandContext): CommandResul
   return handleResponseCommand(args, ctx);
 }
 
+/** Handle /tools <subcommand> — list and manage talk tool policy. */
+function handleToolsCommand(args: string, ctx: CommandContext): CommandResult {
+  const trimmed = args.trim();
+  if (!trimmed || trimmed === 'list') {
+    ctx.listTools();
+    return { handled: true };
+  }
+
+  const modeMatch = trimmed.match(/^mode\s+(off|confirm|auto)$/i);
+  if (modeMatch) {
+    ctx.setToolsMode(modeMatch[1].toLowerCase() as 'off' | 'confirm' | 'auto');
+    return { handled: true };
+  }
+
+  const addAllow = trimmed.match(/^allow\s+add\s+([a-zA-Z0-9_.-]+)$/);
+  if (addAllow) {
+    ctx.addAllowedTool(addAllow[1]);
+    return { handled: true };
+  }
+  const removeAllow = trimmed.match(/^allow\s+remove\s+([a-zA-Z0-9_.-]+)$/);
+  if (removeAllow) {
+    ctx.removeAllowedTool(removeAllow[1]);
+    return { handled: true };
+  }
+  if (/^allow\s+clear$/i.test(trimmed)) {
+    ctx.clearAllowedTools();
+    return { handled: true };
+  }
+
+  const addDeny = trimmed.match(/^deny\s+add\s+([a-zA-Z0-9_.-]+)$/);
+  if (addDeny) {
+    ctx.addDeniedTool(addDeny[1]);
+    return { handled: true };
+  }
+  const removeDeny = trimmed.match(/^deny\s+remove\s+([a-zA-Z0-9_.-]+)$/);
+  if (removeDeny) {
+    ctx.removeDeniedTool(removeDeny[1]);
+    return { handled: true };
+  }
+  if (/^deny\s+clear$/i.test(trimmed)) {
+    ctx.clearDeniedTools();
+    return { handled: true };
+  }
+
+  ctx.addSystemMessage(
+    'Usage:\n' +
+    '- /tools\n' +
+    '- /tools mode off|confirm|auto\n' +
+    '- /tools allow add <tool> | /tools allow remove <tool> | /tools allow clear\n' +
+    '- /tools deny add <tool> | /tools deny remove <tool> | /tools deny clear\n' +
+    'Examples:\n' +
+    '- /tools mode confirm\n' +
+    '- /tools allow add google_docs_write\n' +
+    '- /tools deny add shell_exec',
+  );
+  return { handled: true };
+}
+
 /** Handle /playbook — show full talk configuration overview. */
 function handlePlaybookCommand(_args: string, ctx: CommandContext): CommandResult {
   ctx.showPlaybook();
@@ -642,9 +708,6 @@ const COMMANDS: Record<string, { handler: CommandHandler; description: string }>
   pin: { handler: handlePinCommand, description: 'Pin an assistant message' },
   unpin: { handler: handleUnpinCommand, description: 'Unpin a message' },
   pins: { handler: handlePinsCommand, description: 'List pinned messages' },
-  job: { handler: handleJobCommand, description: 'Add or manage an automation' },
-  jobs: { handler: handleJobsCommand, description: 'List automations for this talk' },
-  automations: { handler: handleAutomationsCommand, description: 'List automations for this talk' },
   objectives: { handler: handleObjectivesCommand, description: 'Set talk objectives (desired outcome)' },
   reports: { handler: handleReportsCommand, description: 'View automation reports' },
   agent: { handler: handleAgentCommand, description: 'Add or remove an agent' },
@@ -657,9 +720,7 @@ const COMMANDS: Record<string, { handler: CommandHandler; description: string }>
   rule: { handler: handleRuleCommand, description: 'Add or manage a rule' },
   rules: { handler: handleRulesCommand, description: 'List rules for this talk' },
   channel: { handler: handleChannelCommand, description: 'Add or manage channel connections' },
-  channels: { handler: handleChannelsCommand, description: 'List channel connections' },
-  response: { handler: handleResponseCommand, description: 'Manage channel response settings' },
-  responses: { handler: handleResponsesCommand, description: 'List channel response settings' },
+  tools: { handler: handleToolsCommand, description: 'List tools and set tool execution policy' },
   playbook: { handler: handlePlaybookCommand, description: 'Show full talk configuration' },
 };
 
@@ -673,6 +734,12 @@ const HIDDEN_COMMANDS: Record<string, CommandHandler> = {
   directives: handleDirectivesCommand,
   platform: handlePlatformCommand,
   platforms: handlePlatformsCommand,
+  job: handleJobCommand,
+  jobs: handleJobsCommand,
+  automations: handleAutomationsCommand,
+  channels: handleChannelsCommand,
+  response: handleResponseCommand,
+  responses: handleResponsesCommand,
   review: handleReviewCommand,
 };
 
@@ -768,13 +835,12 @@ export function getCommandCompletions(prefix: string): CommandInfo[] {
           },
           { name: `${name} delete N`, description: 'Remove channel connection #N' },
         );
-      } else if (name === 'response' || name === 'responses') {
+      } else if (name === 'tools') {
         results.push(
-          { name: `${name} list`, description: 'List channel response settings' },
-          { name: `${name} set N on|off`, description: 'Enable/disable auto-response for channel #N' },
-          { name: `${name} prompt N <text>`, description: 'Set response instruction for channel #N' },
-          { name: `${name} agent N <name>`, description: 'Set responder agent for channel #N' },
-          { name: `${name} clear N`, description: 'Clear response settings for channel #N' },
+          { name: 'tools', description: 'List available/enabled tools and current mode' },
+          { name: 'tools mode off|confirm|auto', description: 'Set tool execution mode for this talk' },
+          { name: 'tools allow add <tool>', description: 'Allow-list a tool for this talk' },
+          { name: 'tools deny add <tool>', description: 'Deny-list a tool for this talk' },
         );
       } else if (name === 'objectives') {
         results.push(
@@ -785,13 +851,6 @@ export function getCommandCompletions(prefix: string): CommandInfo[] {
         results.push(
           { name: 'reports', description: 'Show recent automation reports for this talk' },
           { name: 'reports N', description: 'Show reports for automation #N' },
-        );
-      } else if (name === 'jobs' || name === 'automations') {
-        results.push(
-          { name: name, description: 'List automations for this talk' },
-          { name: `${name} pause N`, description: 'Pause automation #N' },
-          { name: `${name} resume N`, description: 'Resume automation #N' },
-          { name: `${name} delete N`, description: 'Delete automation #N' },
         );
       } else {
         results.push({ name, description: entry.description });

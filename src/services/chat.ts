@@ -5,7 +5,19 @@
  */
 
 import { randomUUID } from 'crypto';
-import type { Message, RateLimitInfo, Job, JobReport, TalkAgent, StreamChunk, Directive, PlatformBinding, PlatformBehavior } from '../types.js';
+import type {
+  Message,
+  RateLimitInfo,
+  Job,
+  JobReport,
+  TalkAgent,
+  StreamChunk,
+  Directive,
+  PlatformBinding,
+  PlatformBehavior,
+  TalkToolPolicy,
+  ToolMode,
+} from '../types.js';
 import type { IChatService } from './interfaces.js';
 
 import {
@@ -63,6 +75,9 @@ type TalkUpdatePayload = {
   channelConnections?: PlatformBinding[];
   platformBehaviors?: PlatformBehavior[];
   channelResponseSettings?: PlatformBehavior[];
+  toolMode?: ToolMode;
+  toolsAllow?: string[];
+  toolsDeny?: string[];
   agents?: TalkAgent[];
 };
 
@@ -74,6 +89,9 @@ function toTalkUpdatePayload(updates: {
   directives?: Directive[];
   platformBindings?: PlatformBinding[];
   platformBehaviors?: PlatformBehavior[];
+  toolMode?: ToolMode;
+  toolsAllow?: string[];
+  toolsDeny?: string[];
 }): TalkUpdatePayload {
   const payload: TalkUpdatePayload = {
     topicTitle: updates.topicTitle,
@@ -91,6 +109,15 @@ function toTalkUpdatePayload(updates: {
   }
   if (updates.platformBehaviors !== undefined) {
     payload.channelResponseSettings = updates.platformBehaviors;
+  }
+  if (updates.toolMode !== undefined) {
+    payload.toolMode = updates.toolMode;
+  }
+  if (updates.toolsAllow !== undefined) {
+    payload.toolsAllow = updates.toolsAllow;
+  }
+  if (updates.toolsDeny !== undefined) {
+    payload.toolsDeny = updates.toolsDeny;
   }
   return payload;
 }
@@ -431,6 +458,9 @@ export class ChatService implements IChatService {
     directives?: Directive[];
     platformBindings?: PlatformBinding[];
     platformBehaviors?: PlatformBehavior[];
+    toolMode?: ToolMode;
+    toolsAllow?: string[];
+    toolsDeny?: string[];
   }): Promise<GatewayResult> {
     try {
       const payload = toTalkUpdatePayload(updates);
@@ -483,6 +513,9 @@ export class ChatService implements IChatService {
     channelConnections?: PlatformBinding[];
     platformBehaviors?: PlatformBehavior[];
     channelResponseSettings?: PlatformBehavior[];
+    toolMode?: ToolMode;
+    toolsAllow?: string[];
+    toolsDeny?: string[];
     processing?: boolean;
     contextMd?: string;
   } | null> {
@@ -515,6 +548,9 @@ export class ChatService implements IChatService {
     channelConnections?: PlatformBinding[];
     platformBehaviors?: PlatformBehavior[];
     channelResponseSettings?: PlatformBehavior[];
+    toolMode?: ToolMode;
+    toolsAllow?: string[];
+    toolsDeny?: string[];
     processing?: boolean;
     createdAt: number;
     updatedAt: number;
@@ -546,6 +582,40 @@ export class ChatService implements IChatService {
       return data.messages ?? [];
     } catch {
       return [];
+    }
+  }
+
+  /** Fetch tool policy + available tools for a gateway talk. */
+  async getGatewayTalkTools(talkId: string): Promise<TalkToolPolicy | null> {
+    try {
+      const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}/tools`, {
+        method: 'GET',
+        headers: this.authHeaders(),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) return null;
+      return await response.json() as TalkToolPolicy;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Update tool policy for a gateway talk. */
+  async updateGatewayTalkTools(
+    talkId: string,
+    updates: Partial<Pick<TalkToolPolicy, 'toolMode' | 'toolsAllow' | 'toolsDeny'>>,
+  ): Promise<TalkToolPolicy | null> {
+    try {
+      const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}/tools`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+        body: JSON.stringify(updates),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) return null;
+      return await response.json() as TalkToolPolicy;
+    } catch {
+      return null;
     }
   }
 

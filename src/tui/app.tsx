@@ -8,7 +8,7 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { render, Box, Text, useInput, useApp, useStdout } from 'ink';
-import type { ClawTalkOptions, ModelStatus, Message, TalkAgent, AgentRole, PendingAttachment, Directive, PlatformBinding, PlatformBehavior, PlatformPermission, Job } from '../types.js';
+import type { ClawTalkOptions, ModelStatus, Message, TalkAgent, AgentRole, PendingAttachment, Directive, PlatformBinding, PlatformBehavior, PlatformPermission, Job, ToolMode } from '../types.js';
 import type { Talk } from '../types.js';
 import { AGENT_ROLES, ROLE_BY_ID, AGENT_PREAMBLE, generateAgentName } from '../agent-roles.js';
 import type { RoleTemplate } from '../agent-roles.js';
@@ -1312,6 +1312,9 @@ function App({ options }: AppProps) {
         channelConnections: gwTalk.channelConnections,
         platformBehaviors: gwTalk.platformBehaviors,
         channelResponseSettings: gwTalk.channelResponseSettings,
+        toolMode: gwTalk.toolMode,
+        toolsAllow: gwTalk.toolsAllow,
+        toolsDeny: gwTalk.toolsDeny,
         processing: gwTalk.processing,
         createdAt: Date.now(),
         updatedAt: Date.now(),
@@ -1407,7 +1410,7 @@ function App({ options }: AppProps) {
     if (bindings.length === 0) {
       const sysMsg = createMessage(
         'system',
-        'No channel connections for this talk. Use /channel <platform> <scope> <permission> (Slack full support; Telegram/WhatsApp for event jobs).',
+        'No channel connections for this talk. Press ^B to open Channel Config (Slack full support; Telegram/WhatsApp for event jobs).',
       );
       chat.setMessages(prev => [...prev, sysMsg]);
       return;
@@ -1425,7 +1428,7 @@ function App({ options }: AppProps) {
     if (!activeTalkId || !talkManagerRef.current) return;
     const bindings = talkManagerRef.current.getPlatformBindings(activeTalkId);
     if (bindings.length === 0) {
-      const sysMsg = createMessage('system', 'No channel connections yet. Add one with /channel first.');
+      const sysMsg = createMessage('system', 'No channel connections yet. Press ^B to add one.');
       chat.setMessages(prev => [...prev, sysMsg]);
       return;
     }
@@ -1615,6 +1618,138 @@ function App({ options }: AppProps) {
     })();
   }, [activeTalkId, restoreTalkRoutingState, syncTalkBindingsToGateway]);
 
+  // --- Tool policy handlers ---
+
+  const syncToolPolicyLocal = useCallback((mode?: ToolMode, allow?: string[], deny?: string[]) => {
+    if (!activeTalkId || !talkManagerRef.current) return;
+    const talk = talkManagerRef.current.getTalk(activeTalkId);
+    if (!talk) return;
+    talk.toolMode = mode ?? talk.toolMode;
+    talk.toolsAllow = allow ?? talk.toolsAllow;
+    talk.toolsDeny = deny ?? talk.toolsDeny;
+    talk.updatedAt = Date.now();
+    talkManagerRef.current.saveTalk(activeTalkId);
+  }, [activeTalkId]);
+
+  const handleListTools = useCallback(() => {
+    const gwId = gatewayTalkIdRef.current;
+    if (!gwId || !chatServiceRef.current) {
+      const sysMsg = createMessage('system', 'No active gateway talk. Open a saved talk first.');
+      chat.setMessages(prev => [...prev, sysMsg]);
+      return;
+    }
+    chatServiceRef.current.getGatewayTalkTools(gwId).then((policy) => {
+      if (!policy) {
+        const sysMsg = createMessage('system', 'Failed to load tool policy from gateway.');
+        chat.setMessages(prev => [...prev, sysMsg]);
+        return;
+      }
+      syncToolPolicyLocal(policy.toolMode, policy.toolsAllow, policy.toolsDeny);
+      const enabledNames = policy.enabledTools.map((t) => t.name).join(', ') || '(none)';
+      const allow = policy.toolsAllow.join(', ') || '(all)';
+      const deny = policy.toolsDeny.join(', ') || '(none)';
+      const sysMsg = createMessage(
+        'system',
+        `Tool policy:\n` +
+        `  mode: ${policy.toolMode}\n` +
+        `  allow: ${allow}\n` +
+        `  deny: ${deny}\n` +
+        `  enabled: ${enabledNames}`,
+      );
+      chat.setMessages(prev => [...prev, sysMsg]);
+    });
+  }, [syncToolPolicyLocal]);
+
+  const handleSetToolsMode = useCallback((mode: ToolMode) => {
+    const gwId = gatewayTalkIdRef.current;
+    if (!gwId || !chatServiceRef.current) return;
+    chatServiceRef.current.updateGatewayTalkTools(gwId, { toolMode: mode }).then((policy) => {
+      if (!policy) {
+        setError('Failed to update tool mode on gateway');
+        return;
+      }
+      syncToolPolicyLocal(policy.toolMode, policy.toolsAllow, policy.toolsDeny);
+      const sysMsg = createMessage('system', `Tool mode set to ${policy.toolMode}.`);
+      chat.setMessages(prev => [...prev, sysMsg]);
+    });
+  }, [syncToolPolicyLocal]);
+
+  const handleAddAllowedTool = useCallback((toolName: string) => {
+    const gwId = gatewayTalkIdRef.current;
+    if (!gwId || !chatServiceRef.current) return;
+    chatServiceRef.current.getGatewayTalkTools(gwId).then((policy) => {
+      if (!policy) return;
+      const next = Array.from(new Set([...(policy.toolsAllow ?? []), toolName]));
+      chatServiceRef.current?.updateGatewayTalkTools(gwId, { toolsAllow: next }).then((updated) => {
+        if (!updated) { setError('Failed to update tool allow-list'); return; }
+        syncToolPolicyLocal(updated.toolMode, updated.toolsAllow, updated.toolsDeny);
+        chat.setMessages(prev => [...prev, createMessage('system', `Allowed tool added: ${toolName}`)]);
+      });
+    });
+  }, [syncToolPolicyLocal]);
+
+  const handleRemoveAllowedTool = useCallback((toolName: string) => {
+    const gwId = gatewayTalkIdRef.current;
+    if (!gwId || !chatServiceRef.current) return;
+    chatServiceRef.current.getGatewayTalkTools(gwId).then((policy) => {
+      if (!policy) return;
+      const next = (policy.toolsAllow ?? []).filter((name) => name.toLowerCase() !== toolName.toLowerCase());
+      chatServiceRef.current?.updateGatewayTalkTools(gwId, { toolsAllow: next }).then((updated) => {
+        if (!updated) { setError('Failed to update tool allow-list'); return; }
+        syncToolPolicyLocal(updated.toolMode, updated.toolsAllow, updated.toolsDeny);
+        chat.setMessages(prev => [...prev, createMessage('system', `Allowed tool removed: ${toolName}`)]);
+      });
+    });
+  }, [syncToolPolicyLocal]);
+
+  const handleClearAllowedTools = useCallback(() => {
+    const gwId = gatewayTalkIdRef.current;
+    if (!gwId || !chatServiceRef.current) return;
+    chatServiceRef.current.updateGatewayTalkTools(gwId, { toolsAllow: [] }).then((updated) => {
+      if (!updated) { setError('Failed to clear tool allow-list'); return; }
+      syncToolPolicyLocal(updated.toolMode, updated.toolsAllow, updated.toolsDeny);
+      chat.setMessages(prev => [...prev, createMessage('system', 'Tool allow-list cleared (all tools allowed unless denied).')]);
+    });
+  }, [syncToolPolicyLocal]);
+
+  const handleAddDeniedTool = useCallback((toolName: string) => {
+    const gwId = gatewayTalkIdRef.current;
+    if (!gwId || !chatServiceRef.current) return;
+    chatServiceRef.current.getGatewayTalkTools(gwId).then((policy) => {
+      if (!policy) return;
+      const next = Array.from(new Set([...(policy.toolsDeny ?? []), toolName]));
+      chatServiceRef.current?.updateGatewayTalkTools(gwId, { toolsDeny: next }).then((updated) => {
+        if (!updated) { setError('Failed to update tool deny-list'); return; }
+        syncToolPolicyLocal(updated.toolMode, updated.toolsAllow, updated.toolsDeny);
+        chat.setMessages(prev => [...prev, createMessage('system', `Denied tool added: ${toolName}`)]);
+      });
+    });
+  }, [syncToolPolicyLocal]);
+
+  const handleRemoveDeniedTool = useCallback((toolName: string) => {
+    const gwId = gatewayTalkIdRef.current;
+    if (!gwId || !chatServiceRef.current) return;
+    chatServiceRef.current.getGatewayTalkTools(gwId).then((policy) => {
+      if (!policy) return;
+      const next = (policy.toolsDeny ?? []).filter((name) => name.toLowerCase() !== toolName.toLowerCase());
+      chatServiceRef.current?.updateGatewayTalkTools(gwId, { toolsDeny: next }).then((updated) => {
+        if (!updated) { setError('Failed to update tool deny-list'); return; }
+        syncToolPolicyLocal(updated.toolMode, updated.toolsAllow, updated.toolsDeny);
+        chat.setMessages(prev => [...prev, createMessage('system', `Denied tool removed: ${toolName}`)]);
+      });
+    });
+  }, [syncToolPolicyLocal]);
+
+  const handleClearDeniedTools = useCallback(() => {
+    const gwId = gatewayTalkIdRef.current;
+    if (!gwId || !chatServiceRef.current) return;
+    chatServiceRef.current.updateGatewayTalkTools(gwId, { toolsDeny: [] }).then((updated) => {
+      if (!updated) { setError('Failed to clear tool deny-list'); return; }
+      syncToolPolicyLocal(updated.toolMode, updated.toolsAllow, updated.toolsDeny);
+      chat.setMessages(prev => [...prev, createMessage('system', 'Tool deny-list cleared.')]);
+    });
+  }, [syncToolPolicyLocal]);
+
   const loadSlackHints = useCallback(async () => {
     if (!chatServiceRef.current) return;
 
@@ -1784,6 +1919,9 @@ function App({ options }: AppProps) {
           channelConnections: gwTalk.channelConnections,
           platformBehaviors: gwTalk.platformBehaviors,
           channelResponseSettings: gwTalk.channelResponseSettings,
+          toolMode: gwTalk.toolMode,
+          toolsAllow: gwTalk.toolsAllow,
+          toolsDeny: gwTalk.toolsDeny,
           processing: gwTalk.processing,
           createdAt: gwTalk.createdAt,
           updatedAt: gwTalk.updatedAt,
@@ -2405,6 +2543,14 @@ function App({ options }: AppProps) {
     setChannelResponsePrompt: handleSetChannelResponsePrompt,
     setChannelResponseAgent: handleSetChannelResponseAgent,
     clearChannelResponse: handleClearChannelResponse,
+    listTools: handleListTools,
+    setToolsMode: handleSetToolsMode,
+    addAllowedTool: handleAddAllowedTool,
+    removeAllowedTool: handleRemoveAllowedTool,
+    clearAllowedTools: handleClearAllowedTools,
+    addDeniedTool: handleAddDeniedTool,
+    removeDeniedTool: handleRemoveDeniedTool,
+    clearDeniedTools: handleClearDeniedTools,
     showPlaybook: handleShowPlaybook,
   });
   commandCtx.current = {
@@ -2448,6 +2594,14 @@ function App({ options }: AppProps) {
     setChannelResponsePrompt: handleSetChannelResponsePrompt,
     setChannelResponseAgent: handleSetChannelResponseAgent,
     clearChannelResponse: handleClearChannelResponse,
+    listTools: handleListTools,
+    setToolsMode: handleSetToolsMode,
+    addAllowedTool: handleAddAllowedTool,
+    removeAllowedTool: handleRemoveAllowedTool,
+    clearAllowedTools: handleClearAllowedTools,
+    addDeniedTool: handleAddDeniedTool,
+    removeDeniedTool: handleRemoveDeniedTool,
+    clearDeniedTools: handleClearDeniedTools,
     showPlaybook: handleShowPlaybook,
   };
 

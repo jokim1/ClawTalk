@@ -239,6 +239,23 @@ export interface PlatformBehavior {
   updatedAt: number;
 }
 
+export type ToolMode = 'off' | 'confirm' | 'auto';
+
+export interface ToolDescriptor {
+  name: string;
+  description: string;
+  builtin: boolean;
+}
+
+export interface TalkToolPolicy {
+  talkId: string;
+  toolMode: ToolMode;
+  toolsAllow: string[];
+  toolsDeny: string[];
+  availableTools: ToolDescriptor[];
+  enabledTools: ToolDescriptor[];
+}
+
 export interface Talk {
   id: string;              // Same as session ID
   sessionId: string;       // Reference to underlying session
@@ -252,6 +269,9 @@ export interface Talk {
   directives?: Directive[];
   platformBindings?: PlatformBinding[];
   platformBehaviors?: PlatformBehavior[];
+  toolMode?: ToolMode;
+  toolsAllow?: string[];
+  toolsDeny?: string[];
   gatewayTalkId?: string;  // Corresponding gateway-side talk ID
   processing?: boolean;    // Gateway is actively generating a response
   lastReadAt?: number;     // When the user last opened this talk

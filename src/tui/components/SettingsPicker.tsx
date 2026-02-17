@@ -531,18 +531,13 @@ export function SettingsPicker({
                   ))
                 ) : (
                   <>
-                    <Text dimColor>  (none) — /channel {'<name> <scope> <perm>'} to add</Text>
+                    <Text dimColor>  (none) — press ^B to add a channel connection</Text>
                     <Text dimColor italic>  Slack full support (auto-response + connection)</Text>
                     <Text dimColor italic>  Telegram/WhatsApp: connection + event jobs</Text>
-                    <Text dimColor italic>  e.g. /channel slack channel:C0AF9BZ3V3L read+write</Text>
-                    <Text dimColor italic>  e.g. /channel slack kimfamily:#general read+write</Text>
+                    <Text dimColor italic>  Example: choose workspace "kimfamily", channel "#general", permission read+write</Text>
                   </>
                 )}
-                <Text dimColor>  Commands:</Text>
-                <Text dimColor italic>  /channel slack channel:C0AF9BZ3V3L read+write</Text>
-                <Text dimColor italic>  /channel slack kimfamily:#general read</Text>
-                <Text dimColor italic>  /channel telegram group:-1001234567890 read</Text>
-                <Text dimColor italic>  /channels   /channel delete 1</Text>
+                <Text dimColor>  Manage via ^B Channel Config.</Text>
               </Box>
 
               {/* Channel Response Settings */}
@@ -562,12 +557,7 @@ export function SettingsPicker({
                 ) : (
                   <Text dimColor>  (none) — add channel connections first</Text>
                 )}
-                <Text dimColor>  Commands:</Text>
-                <Text dimColor italic>  /response list</Text>
-                <Text dimColor italic>  /response set 1 on</Text>
-                <Text dimColor italic>  /response prompt 1 Reply with concise action items and owners</Text>
-                <Text dimColor italic>  /response agent 1 Opus Strategist</Text>
-                <Text dimColor italic>  /response clear 1</Text>
+                <Text dimColor>  Manage via ^B Channel Config.</Text>
               </Box>
 
               {/* Automations */}
@@ -583,15 +573,11 @@ export function SettingsPicker({
                   ))
                 ) : (
                   <>
-                    <Text dimColor>  (none) — /job add "schedule" prompt</Text>
-                    <Text dimColor italic>  e.g. /job add "10am IST weekdays" Check PostHog analytics focusing on FTUE funnel and report findings in #team-product</Text>
+                    <Text dimColor>  (none) — press ^J to add an automation</Text>
+                    <Text dimColor italic>  Example: schedule "daily 9am", prompt "Summarize unresolved issues and owners"</Text>
                   </>
                 )}
-                <Text dimColor>  Commands:</Text>
-                <Text dimColor italic>  /job add "every 2h" Summarize unresolved issues and owners</Text>
-                <Text dimColor italic>  /job add "daily 9am" Prepare standup notes from yesterday</Text>
-                <Text dimColor italic>  /job add "on platform1" Respond with concise action items</Text>
-                <Text dimColor italic>  /jobs   /job pause 1   /job resume 1   /reports 1</Text>
+                <Text dimColor>  Manage via ^J Jobs.</Text>
               </Box>
             </>
           )}
