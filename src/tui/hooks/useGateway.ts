@@ -5,7 +5,7 @@
  * checks voice capabilities, and fetches usage/rate-limit data.
  */
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import type { MutableRefObject } from 'react';
 import type { UsageStats, VoiceReadiness, RealtimeVoiceCapabilities, JobReport } from '../../types.js';
 import type { ChatService } from '../../services/chat.js';
@@ -45,6 +45,9 @@ interface GatewayState {
   gatewayStatus: 'online' | 'offline' | 'connecting';
   tailscaleStatus: TailscaleStatus | 'checking';
   availableModels: ModelInfo[];
+  modelValidity: Record<string, 'valid' | 'invalid' | 'unknown'>;
+  modelsRefreshing: boolean;
+  modelsLastRefreshedAt: number | null;
   usage: UsageStats;
   voiceCaps: VoiceCaps;
   realtimeVoiceCaps: RealtimeVoiceCapabilities | null;
@@ -55,6 +58,9 @@ const initialState: GatewayState = {
   gatewayStatus: 'connecting',
   tailscaleStatus: 'checking',
   availableModels: MODEL_REGISTRY,
+  modelValidity: Object.fromEntries(MODEL_REGISTRY.map((m) => [m.id, 'unknown'])) as Record<string, 'valid' | 'invalid' | 'unknown'>,
+  modelsRefreshing: false,
+  modelsLastRefreshedAt: null,
   usage: {
     todaySpend: 0,
     averageDailySpend: 0,
@@ -94,6 +100,43 @@ export function useGateway(
   const prevUsageRef = useRef({ todaySpend: 0, weeklySpend: 0, rateLimitsJson: '' });
   const isFirstPollRef = useRef(true);
   const lastReportTimestampRef = useRef(Date.now());
+
+  const refreshModelCatalog = useCallback(async () => {
+    const chatService = chatServiceRef.current;
+    if (!chatService) return false;
+
+    setState(prev => ({ ...prev, modelsRefreshing: true }));
+    try {
+      const ids = await chatService.listModels();
+      if (!ids || ids.length === 0) {
+        setState(prev => ({ ...prev, modelsRefreshing: false }));
+        return false;
+      }
+
+      setState(prev => {
+        const known = prev.availableModels;
+        const knownIds = new Set(known.map(m => m.id));
+        const unknown = ids.filter(id => !knownIds.has(id)).map(buildUnknownModelInfo);
+        const availableModels = unknown.length > 0 ? [...known, ...unknown] : known;
+        const liveSet = new Set(ids);
+        const modelValidity: Record<string, 'valid' | 'invalid' | 'unknown'> = {};
+        for (const model of availableModels) {
+          modelValidity[model.id] = liveSet.has(model.id) ? 'valid' : 'invalid';
+        }
+        return {
+          ...prev,
+          availableModels,
+          modelValidity,
+          modelsRefreshing: false,
+          modelsLastRefreshedAt: Date.now(),
+        };
+      });
+      return true;
+    } catch {
+      setState(prev => ({ ...prev, modelsRefreshing: false }));
+      return false;
+    }
+  }, []);
 
   // Wrapper for backward compatibility with app.tsx setUsage calls
   const setUsage = (updater: UsageStats | ((prev: UsageStats) => UsageStats)) => {
@@ -156,9 +199,15 @@ export function useGateway(
           const ids = await chatService.listModels();
           if (ids && ids.length > 0) {
             const unknown = ids.filter(id => !MODEL_BY_ID[id]).map(buildUnknownModelInfo);
-            if (unknown.length > 0) {
-              updates.availableModels = [...MODEL_REGISTRY, ...unknown];
+            const availableModels = unknown.length > 0 ? [...MODEL_REGISTRY, ...unknown] : MODEL_REGISTRY;
+            const liveSet = new Set(ids);
+            const modelValidity: Record<string, 'valid' | 'invalid' | 'unknown'> = {};
+            for (const model of availableModels) {
+              modelValidity[model.id] = liveSet.has(model.id) ? 'valid' : 'invalid';
             }
+            updates.availableModels = availableModels;
+            updates.modelValidity = modelValidity;
+            updates.modelsLastRefreshedAt = Date.now();
           }
         }
 
@@ -312,6 +361,10 @@ export function useGateway(
     usage: state.usage,
     setUsage,
     availableModels: state.availableModels,
+    modelValidity: state.modelValidity,
+    modelsRefreshing: state.modelsRefreshing,
+    modelsLastRefreshedAt: state.modelsLastRefreshedAt,
+    refreshModelCatalog,
     voiceCaps: state.voiceCaps,
     realtimeVoiceCaps: state.realtimeVoiceCaps,
     isInitialized: state.isInitialized,

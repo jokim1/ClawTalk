@@ -642,6 +642,11 @@ function App({ options }: AppProps) {
     };
   });
 
+  useEffect(() => {
+    if (!showModelPicker) return;
+    void gateway.refreshModelCatalog();
+  }, [showModelPicker, gateway.refreshModelCatalog]);
+
   // --- Agent management ---
 
   /** Sync agents to gateway after any mutation. */
@@ -3493,6 +3498,9 @@ function App({ options }: AppProps) {
             maxHeight={overlayMaxHeight}
             onAddAgent={modelPickerMode === 'default' ? undefined : handleAddAgentRequest}
             title={modelPickerMode === 'default' ? 'Set Default Talks Model' : undefined}
+            modelValidity={gateway.modelValidity}
+            isRefreshing={gateway.modelsRefreshing}
+            lastRefreshedAt={gateway.modelsLastRefreshedAt}
           />
         </Box>
       ) : showRolePicker ? (

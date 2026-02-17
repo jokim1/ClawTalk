@@ -23,13 +23,27 @@ interface ModelPickerProps {
   maxHeight?: number;
   onAddAgent?: (modelId: string) => void;
   title?: string;
+  modelValidity?: Record<string, 'valid' | 'invalid' | 'unknown'>;
+  isRefreshing?: boolean;
+  lastRefreshedAt?: number | null;
 }
 
 type RenderItem =
   | { type: 'header'; provider: string }
   | { type: 'model'; model: Model; flatIndex: number };
 
-export function ModelPicker({ models, currentModel, onSelect, onClose, maxHeight = 20, onAddAgent, title }: ModelPickerProps) {
+export function ModelPicker({
+  models,
+  currentModel,
+  onSelect,
+  onClose,
+  maxHeight = 20,
+  onAddAgent,
+  title,
+  modelValidity,
+  isRefreshing = false,
+  lastRefreshedAt = null,
+}: ModelPickerProps) {
   // Two-phase flow: 'model' = selecting model, 'action' = choose switch vs add agent
   const [phase, setPhase] = useState<'model' | 'action'>('model');
   const [pendingModelId, setPendingModelId] = useState<string | null>(null);
@@ -169,9 +183,20 @@ export function ModelPicker({ models, currentModel, onSelect, onClose, maxHeight
     );
   }
 
+  const refreshLabel = lastRefreshedAt
+    ? new Date(lastRefreshedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : null;
+
   return (
     <Box flexDirection="column" paddingX={1}>
       <Text bold color="cyan">{title ?? 'Select Model'} (↑↓ Enter, 1-9 quick, Esc cancel)</Text>
+      <Text dimColor>
+        {isRefreshing
+          ? 'Checking model availability with gateway...'
+          : (refreshLabel
+            ? 'Model availability refreshed at ' + refreshLabel
+            : 'Model availability not checked yet in this session')}
+      </Text>
       <Box height={1} />
 
       {hasLess ? (
@@ -207,6 +232,8 @@ export function ModelPicker({ models, currentModel, onSelect, onClose, maxHeight
             {model.pricingLabel ? (
               <Text dimColor>  {model.pricingLabel}</Text>
             ) : null}
+            {modelValidity?.[model.id] === 'valid' ? <Text color="green">  [live]</Text> : null}
+            {modelValidity?.[model.id] === 'invalid' ? <Text color="yellow">  [unavailable]</Text> : null}
             {isCurrent ? <Text color="green"> (current)</Text> : null}
           </Box>
         );
