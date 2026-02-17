@@ -267,6 +267,14 @@ export interface ToolCatalogEntry {
   installed: boolean;
   canInstall: boolean;
   missingTools: string[];
+  auth?: {
+    ready: boolean;
+    requirements: Array<{
+      id: string;
+      ready: boolean;
+      message?: string;
+    }>;
+  };
 }
 
 export interface ToolCatalogResponse {

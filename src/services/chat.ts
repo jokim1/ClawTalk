@@ -70,6 +70,19 @@ export interface GoogleDocsAuthStatus {
   error?: string;
 }
 
+export interface CatalogInstallResult {
+  ok: boolean;
+  authSetupRecommended?: boolean;
+  auth?: {
+    ready: boolean;
+    requirements: Array<{
+      id: string;
+      ready: boolean;
+      message?: string;
+    }>;
+  };
+}
+
 export type ModelProbeResult =
   | { ok: true; actualModel?: string }
   | { ok: false; code: number; reason: string; actualModel?: string };
@@ -661,7 +674,7 @@ export class ChatService implements IChatService {
   }
 
   /** Install a curated catalog tool on the gateway by catalog ID. */
-  async installGatewayCatalogTool(id: string): Promise<boolean> {
+  async installGatewayCatalogTool(id: string): Promise<CatalogInstallResult | null> {
     try {
       const response = await fetch(`${this.config.gatewayUrl}/api/tools/catalog/install`, {
         method: 'POST',
@@ -669,9 +682,11 @@ export class ChatService implements IChatService {
         body: JSON.stringify({ id }),
         signal: AbortSignal.timeout(10_000),
       });
-      return response.ok;
+      if (!response.ok) return null;
+      const data = await response.json() as CatalogInstallResult;
+      return data;
     } catch {
-      return false;
+      return null;
     }
   }
 

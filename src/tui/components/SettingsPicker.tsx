@@ -434,7 +434,7 @@ export function SettingsPicker({
   };
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1}>
+    <Box flexDirection="column" width="100%" borderStyle="round" borderColor="cyan" paddingX={1}>
       <Box justifyContent="center" marginBottom={1}>
         <Text bold color="cyan">Settings</Text>
         <Text dimColor>  ({'\u2190'}/{'\u2192'} to switch tabs)</Text>

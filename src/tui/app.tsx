@@ -1925,14 +1925,28 @@ function App({ options }: AppProps) {
 
   const handleSettingsCatalogInstall = useCallback((catalogId: string) => {
     if (!chatServiceRef.current) return;
-    chatServiceRef.current.installGatewayCatalogTool(catalogId).then((ok) => {
-      if (!ok) {
+    chatServiceRef.current.installGatewayCatalogTool(catalogId).then((result) => {
+      if (!result?.ok) {
         setError(`Failed to install catalog tool "${catalogId}"`);
         return;
       }
+      if (result.authSetupRecommended) {
+        const authMessages = result.auth?.requirements
+          ?.filter((req) => !req.ready)
+          .map((req) => `- ${req.id}: ${req.message ?? 'auth setup required'}`)
+          .join('\n');
+        const msg = createMessage(
+          'system',
+          `Installed "${catalogId}", but auth setup is required before use.\n`
+          + `${authMessages || '- Missing auth configuration'}\n`
+          + `Use: /tools auth status\n`
+          + `Then configure with: /tools auth set-refresh <google-refresh-token>`,
+        );
+        chat.setMessages((prev) => [...prev, msg]);
+      }
       refreshSettingsToolPolicy();
     });
-  }, [refreshSettingsToolPolicy]);
+  }, [chat, refreshSettingsToolPolicy]);
 
   const handleSettingsCatalogUninstall = useCallback((catalogId: string) => {
     if (!chatServiceRef.current) return;
