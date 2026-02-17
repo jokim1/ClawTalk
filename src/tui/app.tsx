@@ -3166,10 +3166,11 @@ function App({ options }: AppProps) {
             const uploadData = await readFileForUpload(file.path);
             const uploadResult = await chatServiceRef.current.uploadFile(uploadData.filename, uploadData.base64);
             const sizeKB = Math.round(uploadResult.sizeBytes / 1024);
-            uploadNotes.push(`[File "${file.filename}" uploaded to server: ${uploadResult.serverPath}]`);
+            const preferredPath = uploadResult.agentPath || uploadResult.workspacePath || uploadResult.serverPath;
+            uploadNotes.push(`[File "${file.filename}" uploaded to server: ${preferredPath}]`);
             chat.setMessages(prev => {
               const filtered = prev.filter(m => m.id !== uploadMsg.id);
-              return [...filtered, createMessage('system', `[uploaded] ${uploadResult.filename} (${sizeKB}KB) → ${uploadResult.serverPath}`)];
+              return [...filtered, createMessage('system', `[uploaded] ${uploadResult.filename} (${sizeKB}KB) → ${preferredPath}`)];
             });
           } catch (uploadErr) {
             chat.setMessages(prev => prev.filter(m => m.id !== uploadMsg.id));

@@ -1310,7 +1310,7 @@ export class ChatService implements IChatService {
   async uploadFile(
     filename: string,
     base64Data: string,
-  ): Promise<{ serverPath: string; filename: string; sizeBytes: number }> {
+  ): Promise<{ serverPath: string; workspacePath?: string; agentPath?: string; filename: string; sizeBytes: number }> {
     const response = await fetch(`${this.config.gatewayUrl}/api/files/upload`, {
       method: 'POST',
       headers: {
@@ -1336,6 +1336,8 @@ export class ChatService implements IChatService {
     const data = JSON.parse(await readLimitedBody(response, MAX_RESPONSE_BODY_BYTES)) as {
       ok?: boolean;
       serverPath?: string;
+      workspacePath?: string;
+      agentPath?: string;
       filename?: string;
       sizeBytes?: number;
     };
@@ -1346,6 +1348,8 @@ export class ChatService implements IChatService {
 
     return {
       serverPath: data.serverPath,
+      workspacePath: data.workspacePath,
+      agentPath: data.agentPath,
       filename: data.filename,
       sizeBytes: data.sizeBytes ?? 0,
     };
