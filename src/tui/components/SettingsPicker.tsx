@@ -92,6 +92,7 @@ interface SettingsPickerProps {
     identityError?: string;
     error?: string;
   };
+  onStartGoogleOAuthConnect?: () => void;
   onSetTalkGoogleAuthProfile?: (profile: string | undefined) => void;
   onInstallCatalogTool?: (catalogId: string) => void;
   onUninstallCatalogTool?: (catalogId: string) => void;
@@ -187,6 +188,7 @@ export function SettingsPicker({
   googleAuthActiveProfile,
   googleAuthProfiles,
   googleAuthStatus,
+  onStartGoogleOAuthConnect,
   onSetTalkGoogleAuthProfile,
   onInstallCatalogTool,
   onUninstallCatalogTool,
@@ -265,6 +267,13 @@ export function SettingsPicker({
       onRefreshToolPolicy?.();
       setMessage('Refreshing tools...');
       setTimeout(() => setMessage(null), 1200);
+      return;
+    }
+
+    if (tab === 'tools' && input.toLowerCase() === 'c') {
+      onStartGoogleOAuthConnect?.();
+      setMessage('Starting Google OAuth in browser...');
+      setTimeout(() => setMessage(null), 1500);
       return;
     }
 
@@ -616,6 +625,7 @@ export function SettingsPicker({
           ) : (
             <>
               <Text dimColor>Tool mode controls whether the model can call tools automatically.</Text>
+              <Text dimColor>Press c to connect another Google account in browser OAuth flow.</Text>
               <Box marginTop={1} flexDirection="column">
                 <Text bold>Mode</Text>
                 {toolModes.map((mode, idx) => {

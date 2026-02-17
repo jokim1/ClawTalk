@@ -82,6 +82,23 @@ export interface GoogleDocsAuthProfilesPayload {
   profiles: GoogleAuthProfileSummary[];
 }
 
+export interface GoogleOAuthConnectStart {
+  sessionId: string;
+  authUrl: string;
+  profile?: string;
+  expiresAt: number;
+}
+
+export interface GoogleOAuthConnectStatus {
+  found: boolean;
+  status?: 'pending' | 'success' | 'error';
+  profile?: string;
+  accountEmail?: string;
+  accountDisplayName?: string;
+  error?: string;
+  expiresAt?: number;
+}
+
 export interface CatalogInstallResult {
   ok: boolean;
   authSetupRecommended?: boolean;
@@ -798,6 +815,40 @@ export class ChatService implements IChatService {
       if (!response.ok) return null;
       const data = await response.json() as { status?: GoogleDocsAuthStatus };
       return data.status ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Start browser OAuth flow for Google and return authorization URL. */
+  async startGoogleOAuthConnect(profile?: string): Promise<GoogleOAuthConnectStart | null> {
+    try {
+      const response = await fetch(`${this.config.gatewayUrl}/api/tools/google/oauth/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+        body: JSON.stringify({ ...(profile ? { profile } : {}) }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) return null;
+      return await response.json() as GoogleOAuthConnectStart;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Poll OAuth connect session status. */
+  async getGoogleOAuthConnectStatus(sessionId: string): Promise<GoogleOAuthConnectStatus | null> {
+    try {
+      const response = await fetch(
+        `${this.config.gatewayUrl}/api/tools/google/oauth/status?sessionId=${encodeURIComponent(sessionId)}`,
+        {
+          method: 'GET',
+          headers: this.authHeaders(),
+          signal: AbortSignal.timeout(10_000),
+        },
+      );
+      if (!response.ok) return null;
+      return await response.json() as GoogleOAuthConnectStatus;
     } catch {
       return null;
     }

@@ -263,10 +263,21 @@ function App({ options }: AppProps) {
 
   const gatewayTalkIdRef = useRef<string | null>(null);
   const creatingGatewayTalkRef = useRef<Promise<string | null> | null>(null);
+  const googleOAuthPollRef = useRef<NodeJS.Timeout | null>(null);
+  const googleOAuthSessionRef = useRef<string | null>(null);
 
   // --- Primary agent ref (used by useChat for speaker labels) ---
 
   const primaryAgentRef = useRef<TalkAgent | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (googleOAuthPollRef.current) {
+        clearInterval(googleOAuthPollRef.current);
+        googleOAuthPollRef.current = null;
+      }
+    };
+  }, []);
 
   // --- Hooks ---
 
@@ -2053,6 +2064,54 @@ function App({ options }: AppProps) {
     });
   }, [settingsToolPolicy, syncToolPolicyLocal]);
 
+  const handleSettingsStartGoogleOAuthConnect = useCallback(() => {
+    if (!chatServiceRef.current) {
+      setError('Gateway unavailable.');
+      return;
+    }
+    const requestedProfile = settingsToolPolicy?.talkGoogleAuthProfile;
+    chatServiceRef.current.startGoogleOAuthConnect(requestedProfile).then((started) => {
+      if (!started) {
+        setError('Failed to start Google OAuth flow.');
+        return;
+      }
+      const sysMsg = createMessage(
+        'system',
+        `Google OAuth started.\nOpen this URL in your browser:\n${started.authUrl}\n\nAfter approval, ClawTalk will auto-refresh tools.`,
+      );
+      chat.setMessages((prev) => [...prev, sysMsg]);
+
+      googleOAuthSessionRef.current = started.sessionId;
+      if (googleOAuthPollRef.current) {
+        clearInterval(googleOAuthPollRef.current);
+        googleOAuthPollRef.current = null;
+      }
+      googleOAuthPollRef.current = setInterval(() => {
+        const sessionId = googleOAuthSessionRef.current;
+        if (!sessionId || !chatServiceRef.current) return;
+        chatServiceRef.current.getGoogleOAuthConnectStatus(sessionId).then((status) => {
+          if (!status?.found || status.status === 'pending') return;
+          if (googleOAuthPollRef.current) {
+            clearInterval(googleOAuthPollRef.current);
+            googleOAuthPollRef.current = null;
+          }
+          googleOAuthSessionRef.current = null;
+          if (status.status === 'success') {
+            const okMsg = createMessage(
+              'system',
+              `Google OAuth connected.\nProfile: ${status.profile ?? '(unknown)'}\nAccount: ${status.accountEmail ?? '(unknown)'}`,
+            );
+            chat.setMessages((prev) => [...prev, okMsg]);
+            refreshSettingsToolPolicy();
+            return;
+          }
+          const failMsg = createMessage('system', `Google OAuth failed: ${status.error ?? 'Unknown error'}`);
+          chat.setMessages((prev) => [...prev, failMsg]);
+        });
+      }, 2000);
+    });
+  }, [chat, refreshSettingsToolPolicy, settingsToolPolicy?.talkGoogleAuthProfile]);
+
   const handleSettingsCatalogInstall = useCallback((catalogId: string) => {
     if (!chatServiceRef.current) return;
     chatServiceRef.current.installGatewayCatalogTool(catalogId).then((result) => {
@@ -3570,6 +3629,7 @@ function App({ options }: AppProps) {
             googleAuthActiveProfile={settingsToolPolicy?.googleAuthActiveProfile}
             googleAuthProfiles={settingsToolPolicy?.googleAuthProfiles ?? []}
             googleAuthStatus={settingsToolPolicy?.googleAuthStatus}
+            onStartGoogleOAuthConnect={handleSettingsStartGoogleOAuthConnect}
             onSetTalkGoogleAuthProfile={handleSettingsSetTalkGoogleAuthProfile}
             onInstallCatalogTool={handleSettingsCatalogInstall}
             onUninstallCatalogTool={handleSettingsCatalogUninstall}
