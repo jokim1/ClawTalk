@@ -638,12 +638,20 @@ export function SettingsPicker({
                   const readiness = isInherit
                     ? `active: ${googleAuthActiveProfile ?? '(none)'}`
                     : (profile.hasClientId && profile.hasClientSecret && profile.hasRefreshToken ? 'ready' : 'incomplete');
-                  const label = isInherit ? 'inherit active profile' : profile.name;
+                  const identity = !isInherit
+                    ? (profile.accountEmail
+                      ? `${profile.accountEmail}${profile.accountDisplayName ? ` (${profile.accountDisplayName})` : ''}`
+                      : profile.name)
+                    : '';
+                  const label = isInherit ? 'inherit active profile' : identity;
                   return (
                     <Box key={label}>
                       <Text color={selected ? 'cyan' : undefined}>{selected ? '▸ ' : '  '}</Text>
                       <Text dimColor>{idx + 1}. </Text>
                       <Text color={isActive ? 'green' : undefined} bold={isActive}>{label}</Text>
+                      {!isInherit && profile.accountEmail && profile.name !== profile.accountEmail && (
+                        <Text dimColor> [{profile.name}]</Text>
+                      )}
                       <Text dimColor> ({readiness})</Text>
                       {isActive && <Text color="green"> (selected)</Text>}
                     </Box>

@@ -262,6 +262,8 @@ export interface GoogleAuthProfileSummary {
   hasClientId: boolean;
   hasClientSecret: boolean;
   hasRefreshToken: boolean;
+  accountEmail?: string;
+  accountDisplayName?: string;
 }
 
 export interface ToolCatalogEntry {
