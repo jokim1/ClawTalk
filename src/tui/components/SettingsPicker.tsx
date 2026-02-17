@@ -220,12 +220,14 @@ export function SettingsPicker({
     openclaw: 'OpenClaw agent & tools',
     full_control: 'ClawTalk agent & tools',
   };
+  const isFullControl = (toolPolicy?.executionMode ?? 'openclaw') === 'full_control';
   const toolModes: ToolMode[] = ['off', 'confirm', 'auto'];
   const toolModeDescriptions: Record<ToolMode, string> = {
     off: 'model cannot use tools',
     confirm: 'approval required',
     auto: 'no approval',
   };
+  const toolApprovalRowCount = isFullControl ? toolModes.length : 0;
   const toolEnabledSet = new Set(toolPolicy?.enabledToolNames ?? []);
   const effectiveGoogleProfile = talkGoogleAuthProfile || googleAuthActiveProfile;
   const selectedGoogleProfile = authProfiles.find((profile) => profile.name === effectiveGoogleProfile);
@@ -353,7 +355,7 @@ export function SettingsPicker({
         : tab === 'stt' ? sttProviders.length - 1
         : tab === 'tts' ? ttsProviders.length - 1
         : tab === 'realtime' ? realtimeProviders.length - 1
-        : tab === 'tools' ? Math.max(0, executionModes.length + toolModes.length + profileRowCount + toolRows.length + catalogRows.length - 1)
+        : tab === 'tools' ? Math.max(0, executionModes.length + toolApprovalRowCount + profileRowCount + toolRows.length + catalogRows.length - 1)
         : tab === 'talk' ? 0
         : 0;
       setSelectedIndex(prev => Math.min(maxIndex, prev + 1));
@@ -410,14 +412,14 @@ export function SettingsPicker({
           setTimeout(() => setMessage(null), 2000);
           return;
         }
-        if (selectedIndex < executionModes.length + toolModes.length) {
+        if (isFullControl && selectedIndex < executionModes.length + toolApprovalRowCount) {
           const mode = toolModes[selectedIndex - executionModes.length];
           onSetToolMode?.(mode);
-          setMessage(`Tool mode: ${mode}`);
+          setMessage(`Tool approval: ${mode}`);
           setTimeout(() => setMessage(null), 2000);
           return;
         }
-        const profileIndex = selectedIndex - executionModes.length - toolModes.length;
+        const profileIndex = selectedIndex - executionModes.length - toolApprovalRowCount;
         if (profileIndex >= 0 && profileIndex < profileRowCount) {
           if (profileIndex === 0) {
             onSetTalkGoogleAuthProfile?.(undefined);
@@ -433,7 +435,7 @@ export function SettingsPicker({
           return;
         }
 
-        const toolIndex = selectedIndex - executionModes.length - toolModes.length - profileRowCount;
+        const toolIndex = selectedIndex - executionModes.length - toolApprovalRowCount - profileRowCount;
         const tool = toolRows[toolIndex] ?? null;
         if (tool) {
           const blockedReason = toolBlockReasonByName.get(tool.name);
@@ -468,8 +470,8 @@ export function SettingsPicker({
     }
 
     if (tab === 'tools' && input === ' ') {
-      if (selectedIndex >= executionModes.length + toolModes.length + profileRowCount) {
-        const toolIndex = selectedIndex - executionModes.length - toolModes.length - profileRowCount;
+      if (selectedIndex >= executionModes.length + toolApprovalRowCount + profileRowCount) {
+        const toolIndex = selectedIndex - executionModes.length - toolApprovalRowCount - profileRowCount;
         const tool = toolRows[toolIndex];
         if (tool) {
           const blockedReason = toolBlockReasonByName.get(tool.name);
@@ -531,7 +533,7 @@ export function SettingsPicker({
         setMessage(`Realtime provider: ${PROVIDER_LABELS[provider]}`);
         setTimeout(() => setMessage(null), 2000);
       } else if (tab === 'tools') {
-        const max = executionModes.length + toolModes.length + profileRowCount + toolRows.length + catalogRows.length;
+        const max = executionModes.length + toolApprovalRowCount + profileRowCount + toolRows.length + catalogRows.length;
         if (idx < max) setSelectedIndex(idx);
       }
     }
@@ -711,8 +713,9 @@ export function SettingsPicker({
                 })}
               </Box>
 
+              {isFullControl && (
               <Box marginTop={1} flexDirection="column">
-                <Text bold>Mode</Text>
+                <Text bold>Tool Approval</Text>
                 {toolModes.map((mode, idx) => {
                   const rowIndex = executionModes.length + idx;
                   const active = toolPolicy?.mode === mode;
@@ -731,11 +734,12 @@ export function SettingsPicker({
                   );
                 })}
               </Box>
+              )}
 
               <Box marginTop={1} flexDirection="column">
                 <Text bold>Google Profile For This Talk</Text>
                 {[{ name: '__inherit__', hasClientId: false, hasClientSecret: false, hasRefreshToken: false }, ...authProfiles].map((profile, idx) => {
-                  const rowIndex = executionModes.length + toolModes.length + idx;
+                  const rowIndex = executionModes.length + toolApprovalRowCount + idx;
                   const selected = rowIndex === selectedIndex;
                   const isInherit = idx === 0;
                   const isActive = isInherit
@@ -777,7 +781,7 @@ export function SettingsPicker({
                   <Text dimColor>  (none installed)</Text>
                 ) : (
                   toolRows.map((tool, idx) => {
-                    const rowIndex = idx + executionModes.length + toolModes.length + profileRowCount;
+                    const rowIndex = idx + executionModes.length + toolApprovalRowCount + profileRowCount;
                     const enabled = toolEnabledSet.has(tool.name);
                     const blockedReason = toolBlockReasonByName.get(tool.name);
                     const status = blockedReason ? 'blocked' : (enabled ? 'on' : 'off');
@@ -807,7 +811,7 @@ export function SettingsPicker({
                   <Text dimColor>  (catalog unavailable)</Text>
                 ) : (
                   catalogRows.map((entry, idx) => {
-                    const rowIndex = idx + executionModes.length + toolModes.length + profileRowCount + toolRows.length;
+                    const rowIndex = idx + executionModes.length + toolApprovalRowCount + profileRowCount + toolRows.length;
                     const selected = rowIndex === selectedIndex;
                     const state = entry.installed
                       ? 'installed'
