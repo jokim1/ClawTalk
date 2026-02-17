@@ -2747,24 +2747,36 @@ function App({ options }: AppProps) {
 
     // Track which agents have responded (to avoid duplicates and enable follow-up)
     const respondedAgents = new Set<string>();
-    const allResponses: string[] = [];
+    const allResponses: Array<{ agentName: string; content: string }> = [];
 
     for (const agent of targetAgents) {
       if (!isStillOnSameTalk()) break; // user navigated away
       const content = await streamAgentResponse(gwTalkId, text, agent, allAgents);
       respondedAgents.add(agent.name);
-      if (content.trim()) allResponses.push(content);
+      if (content.trim()) allResponses.push({ agentName: agent.name, content });
     }
 
     if (!isStillOnSameTalk()) return;
 
     // Follow-up round: if any response mentions agents that haven't responded,
     // give them a chance to reply (capped at 1 extra round to prevent loops)
-    const combinedResponses = allResponses.join('\n');
-    const followUpAgents = findMentionedAgents(combinedResponses, respondedAgents, allAgents);
+    const mentionersByTarget = new Map<string, Set<string>>();
+    for (const response of allResponses) {
+      const mentionedInResponse = findMentionedAgents(response.content, respondedAgents, allAgents);
+      for (const target of mentionedInResponse) {
+        if (!mentionersByTarget.has(target.name)) {
+          mentionersByTarget.set(target.name, new Set<string>());
+        }
+        mentionersByTarget.get(target.name)!.add(response.agentName);
+      }
+    }
+    const followUpAgents = allAgents.filter(
+      (agent) => !respondedAgents.has(agent.name) && mentionersByTarget.has(agent.name),
+    );
     for (const agent of followUpAgents) {
       if (!isStillOnSameTalk()) break;
-      const respondedNames = [...respondedAgents].join(', ');
+      const mentioners = [...(mentionersByTarget.get(agent.name) ?? new Set<string>())];
+      const respondedNames = mentioners.join(', ');
       const followUpMsg = `[${respondedNames} mentioned you in their response above. Please respond to their questions or comments directed at you.]`;
       await streamAgentResponse(gwTalkId, followUpMsg, agent, allAgents);
       respondedAgents.add(agent.name);
