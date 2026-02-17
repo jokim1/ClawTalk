@@ -177,7 +177,7 @@ export function ChannelConfigPicker({
     ? (slackChannelsByAccount[pendingSlackAccountId] ?? [])
     : [];
   const suggestedSlackChannels = useMemo(
-    () => channelsForSelectedWorkspace.slice(0, 8),
+    () => channelsForSelectedWorkspace,
     [channelsForSelectedWorkspace],
   );
   const slackScopeSuggestions = useMemo(() => {

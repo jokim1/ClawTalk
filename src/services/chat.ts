@@ -1521,12 +1521,13 @@ export class ChatService implements IChatService {
     }
   }
 
-  async getSlackOptions(accountId?: string): Promise<SlackOptionsResult | null> {
+  async getSlackOptions(accountId?: string, limit = 1000): Promise<SlackOptionsResult | null> {
     try {
-      const query = accountId
-        ? `?accountId=${encodeURIComponent(accountId)}`
-        : '';
-      const response = await fetch(`${this.config.gatewayUrl}/api/events/slack/options${query}`, {
+      const params = new URLSearchParams();
+      if (accountId) params.set('accountId', accountId);
+      if (Number.isFinite(limit) && limit > 0) params.set('limit', String(Math.floor(limit)));
+      const query = params.toString();
+      const response = await fetch(`${this.config.gatewayUrl}/api/events/slack/options${query ? `?${query}` : ''}`, {
         method: 'GET',
         headers: this.authHeaders(),
         signal: AbortSignal.timeout(PROVIDER_LIST_TIMEOUT_MS),

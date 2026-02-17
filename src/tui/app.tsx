@@ -2160,7 +2160,7 @@ function App({ options }: AppProps) {
     setSlackHintsError(null);
 
     try {
-      const base = await chatServiceRef.current.getSlackOptions();
+      const base = await chatServiceRef.current.getSlackOptions(undefined, 1000);
       if (!base) {
         setSlackAccountHints([]);
         setSlackChannelsByAccount({});
@@ -2184,7 +2184,7 @@ function App({ options }: AppProps) {
         normalizedAccounts
           .filter((account) => account.hasBotToken && account.id !== base.selectedAccountId)
           .map(async (account) => {
-            const result = await chatServiceRef.current?.getSlackOptions(account.id);
+            const result = await chatServiceRef.current?.getSlackOptions(account.id, 1000);
             channelsByAccount[account.id] = result?.channels ?? [];
           }),
       );
