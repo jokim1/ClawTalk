@@ -416,7 +416,7 @@ export function JobsConfigPicker({
               <Text>  prompt:</Text>
               <Text dimColor>
                 {'    '}
-                {truncate(selectedJob.prompt, Math.max(40, terminalWidth - 10))}
+                {selectedJob.prompt}
               </Text>
               <Text>  last run: {selectedJob.lastRunAt ? new Date(selectedJob.lastRunAt).toLocaleString() : '(never)'}</Text>
             </>
