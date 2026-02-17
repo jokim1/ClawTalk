@@ -181,4 +181,31 @@ describe('TalkManager.importGatewayTalk', () => {
     expect(result.gatewayTalkId).toBe('minimal');
     expect(result.isSaved).toBe(true);
   });
+
+  it('clears existing talk google auth profile when gateway provides none', () => {
+    const local = mgr.createTalk('session-1');
+    local.googleAuthProfile = 'lila';
+
+    mgr.importGatewayTalk({
+      id: local.id,
+      googleAuthProfile: '',
+      createdAt: local.createdAt,
+      updatedAt: local.updatedAt + 1,
+    });
+
+    expect(mgr.getTalk(local.id)!.googleAuthProfile).toBeUndefined();
+  });
+
+  it('preserves existing talk google auth profile when gateway omits field', () => {
+    const local = mgr.createTalk('session-1');
+    local.googleAuthProfile = 'lila';
+
+    mgr.importGatewayTalk({
+      id: local.id,
+      createdAt: local.createdAt,
+      updatedAt: local.updatedAt + 1,
+    });
+
+    expect(mgr.getTalk(local.id)!.googleAuthProfile).toBe('lila');
+  });
 });

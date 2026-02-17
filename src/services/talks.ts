@@ -803,6 +803,11 @@ export class TalkManager {
     const resolvedDirectives = gwTalk.directives ?? gwTalk.rules;
     const resolvedBindings = gwTalk.platformBindings ?? gwTalk.channelConnections;
     const resolvedBehaviors = gwTalk.platformBehaviors ?? gwTalk.channelResponseSettings;
+    const resolvedGoogleAuthProfile = (
+      typeof gwTalk.googleAuthProfile === 'string' && gwTalk.googleAuthProfile.trim().length > 0
+    )
+      ? gwTalk.googleAuthProfile
+      : undefined;
 
     // Check by gateway talk ID first, then check if any local talk maps to it
     let existing = this.talks.get(gwTalk.id);
@@ -835,7 +840,9 @@ export class TalkManager {
       existing.toolMode = gwTalk.toolMode ?? existing.toolMode;
       existing.toolsAllow = gwTalk.toolsAllow ?? existing.toolsAllow;
       existing.toolsDeny = gwTalk.toolsDeny ?? existing.toolsDeny;
-      existing.googleAuthProfile = gwTalk.googleAuthProfile ?? existing.googleAuthProfile;
+      if (Object.prototype.hasOwnProperty.call(gwTalk, 'googleAuthProfile')) {
+        existing.googleAuthProfile = resolvedGoogleAuthProfile;
+      }
       existing.processing = gwTalk.processing;
       existing.updatedAt = gwTalk.updatedAt;
       existing.gatewayTalkId = gwTalk.id;
@@ -859,7 +866,7 @@ export class TalkManager {
       toolMode: gwTalk.toolMode,
       toolsAllow: gwTalk.toolsAllow,
       toolsDeny: gwTalk.toolsDeny,
-      googleAuthProfile: gwTalk.googleAuthProfile,
+      googleAuthProfile: resolvedGoogleAuthProfile,
       gatewayTalkId: gwTalk.id,
       processing: gwTalk.processing,
       isSaved: true,
