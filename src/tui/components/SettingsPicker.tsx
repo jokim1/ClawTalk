@@ -10,6 +10,7 @@ import { execSync } from 'child_process';
 import type {
   RealtimeVoiceCapabilities,
   RealtimeVoiceProvider,
+  ToolCatalogEntry,
   ToolDescriptor,
   ToolMode,
 } from '../../types.js';
@@ -70,12 +71,16 @@ interface SettingsPickerProps {
     mode: ToolMode;
     availableTools: ToolDescriptor[];
     enabledToolNames: string[];
+    catalogEntries?: ToolCatalogEntry[];
+    installedToolNames?: string[];
   } | null;
   toolPolicyLoading?: boolean;
   toolPolicyError?: string | null;
   onRefreshToolPolicy?: () => void;
   onSetToolMode?: (mode: ToolMode) => void;
   onSetToolEnabled?: (toolName: string, enabled: boolean) => void;
+  onInstallCatalogTool?: (catalogId: string) => void;
+  onUninstallCatalogTool?: (catalogId: string) => void;
 }
 
 type SettingsTab = 'mic' | 'stt' | 'tts' | 'realtime' | 'talk' | 'tools';
@@ -164,6 +169,8 @@ export function SettingsPicker({
   onRefreshToolPolicy,
   onSetToolMode,
   onSetToolEnabled,
+  onInstallCatalogTool,
+  onUninstallCatalogTool,
 }: SettingsPickerProps) {
   const [tab, setTab] = useState<SettingsTab>(initialTab ?? (hideTalkConfig ? 'mic' : 'talk'));
   const [devices, setDevices] = useState<AudioDevice[]>([]);
@@ -177,7 +184,13 @@ export function SettingsPicker({
   const ttsProviders = voiceCaps?.ttsProviders ?? [];
   const realtimeProviders = realtimeVoiceCaps?.providers ?? [];
   const toolRows = toolPolicy?.availableTools ?? [];
+  const catalogRows = toolPolicy?.catalogEntries ?? [];
   const toolModes: ToolMode[] = ['off', 'confirm', 'auto'];
+  const toolModeDescriptions: Record<ToolMode, string> = {
+    off: 'model cannot use tools',
+    confirm: 'approval required',
+    auto: 'no approval',
+  };
   const toolEnabledSet = new Set(toolPolicy?.enabledToolNames ?? []);
 
   useEffect(() => {
@@ -259,7 +272,7 @@ export function SettingsPicker({
         : tab === 'stt' ? sttProviders.length - 1
         : tab === 'tts' ? ttsProviders.length - 1
         : tab === 'realtime' ? realtimeProviders.length - 1
-        : tab === 'tools' ? Math.max(0, toolModes.length + toolRows.length - 1)
+        : tab === 'tools' ? Math.max(0, toolModes.length + toolRows.length + catalogRows.length - 1)
         : tab === 'talk' ? 0
         : 0;
       setSelectedIndex(prev => Math.min(maxIndex, prev + 1));
@@ -317,11 +330,27 @@ export function SettingsPicker({
           return;
         }
         const toolIndex = selectedIndex - toolModes.length;
-        const tool = toolRows[toolIndex];
+        const tool = toolRows[toolIndex] ?? null;
         if (tool) {
           const currentlyEnabled = toolEnabledSet.has(tool.name);
           onSetToolEnabled?.(tool.name, !currentlyEnabled);
           setMessage(`${!currentlyEnabled ? 'Enabled' : 'Disabled'} ${tool.name}`);
+          setTimeout(() => setMessage(null), 2000);
+          return;
+        }
+
+        const catalogIndex = toolIndex - toolRows.length;
+        const catalog = catalogRows[catalogIndex];
+        if (catalog) {
+          if (catalog.installed) {
+            onUninstallCatalogTool?.(catalog.id);
+            setMessage(`Uninstalling ${catalog.name}...`);
+          } else if (catalog.canInstall) {
+            onInstallCatalogTool?.(catalog.id);
+            setMessage(`Installing ${catalog.name}...`);
+          } else {
+            setMessage(`${catalog.name} is not installable in this build.`);
+          }
           setTimeout(() => setMessage(null), 2000);
         }
       }
@@ -386,7 +415,7 @@ export function SettingsPicker({
         setMessage(`Realtime provider: ${PROVIDER_LABELS[provider]}`);
         setTimeout(() => setMessage(null), 2000);
       } else if (tab === 'tools') {
-        const max = toolModes.length + toolRows.length;
+        const max = toolModes.length + toolRows.length + catalogRows.length;
         if (idx < max) setSelectedIndex(idx);
       }
     }
@@ -554,7 +583,10 @@ export function SettingsPicker({
                         {idx === selectedIndex ? '▸ ' : '  '}
                       </Text>
                       <Text dimColor>{idx + 1}. </Text>
-                      <Text color={active ? 'green' : undefined} bold={active}>{mode}</Text>
+                      <Text color={active ? 'green' : undefined} bold={active}>
+                        {mode}
+                      </Text>
+                      <Text dimColor> ({toolModeDescriptions[mode]})</Text>
                       {active && <Text color="green"> (active)</Text>}
                     </Box>
                   );
@@ -562,11 +594,11 @@ export function SettingsPicker({
               </Box>
 
               <Box marginTop={1} flexDirection="column">
-                <Text bold>Available Tools</Text>
+                <Text bold>Installed Tools</Text>
                 <Text dimColor>  Tool                               Enabled  Source</Text>
                 <Text dimColor>  ----------------------------------------------------</Text>
                 {toolRows.length === 0 ? (
-                  <Text dimColor>  (none reported by gateway)</Text>
+                  <Text dimColor>  (none installed)</Text>
                 ) : (
                   toolRows.map((tool, idx) => {
                     const rowIndex = idx + toolModes.length;
@@ -584,6 +616,46 @@ export function SettingsPicker({
                       </Box>
                     );
                   })
+                )}
+              </Box>
+
+              <Box marginTop={1} flexDirection="column">
+                <Text bold>Tool Catalog</Text>
+                <Text dimColor>  Package                             State          Version</Text>
+                <Text dimColor>  -------------------------------------------------------------</Text>
+                {catalogRows.length === 0 ? (
+                  <Text dimColor>  (catalog unavailable)</Text>
+                ) : (
+                  catalogRows.map((entry, idx) => {
+                    const rowIndex = idx + toolModes.length + toolRows.length;
+                    const selected = rowIndex === selectedIndex;
+                    const state = entry.installed
+                      ? 'installed'
+                      : entry.canInstall
+                        ? 'installable'
+                        : entry.status === 'planned'
+                          ? 'planned'
+                          : 'unavailable';
+                    const stateColor = state === 'installed'
+                      ? 'green'
+                      : state === 'installable'
+                        ? 'cyan'
+                        : 'yellow';
+                    const paddedName = entry.name.padEnd(34, ' ').slice(0, 34);
+                    return (
+                      <Box key={entry.id}>
+                        <Text color={selected ? 'cyan' : undefined}>{selected ? '▸ ' : '  '}</Text>
+                        <Text>{paddedName}</Text>
+                        <Text>  </Text>
+                        <Text color={stateColor}>{state.padEnd(11, ' ')}</Text>
+                        <Text>  </Text>
+                        <Text dimColor>{entry.version}</Text>
+                      </Box>
+                    );
+                  })
+                )}
+                {catalogRows.length > 0 && (
+                  <Text dimColor>  Enter on a catalog row to install/uninstall.</Text>
                 )}
               </Box>
 
@@ -723,7 +795,7 @@ export function SettingsPicker({
       {tab !== 'talk' && (
         <Box marginTop={1}>
           {tab === 'tools' ? (
-            <Text dimColor>↑/↓ navigate  Enter select  Space toggle tool  r refresh  Esc close</Text>
+            <Text dimColor>↑/↓ navigate  Enter select/install  Space toggle tool  r refresh  Esc close</Text>
           ) : (
             <Text dimColor>↑/↓ navigate  Enter/1-9 select  Esc close</Text>
           )}

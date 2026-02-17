@@ -16,6 +16,7 @@ import type {
   PlatformBinding,
   PlatformBehavior,
   TalkToolPolicy,
+  ToolCatalogResponse,
   ToolMode,
 } from '../types.js';
 import type { IChatService } from './interfaces.js';
@@ -641,6 +642,51 @@ export class ChatService implements IChatService {
       return await response.json() as TalkToolPolicy;
     } catch {
       return null;
+    }
+  }
+
+  /** Fetch global installed tools + curated catalog entries from gateway. */
+  async getGatewayToolCatalog(): Promise<ToolCatalogResponse | null> {
+    try {
+      const response = await fetch(`${this.config.gatewayUrl}/api/tools/catalog`, {
+        method: 'GET',
+        headers: this.authHeaders(),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) return null;
+      return await response.json() as ToolCatalogResponse;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Install a curated catalog tool on the gateway by catalog ID. */
+  async installGatewayCatalogTool(id: string): Promise<boolean> {
+    try {
+      const response = await fetch(`${this.config.gatewayUrl}/api/tools/catalog/install`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+        body: JSON.stringify({ id }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      return response.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Uninstall a curated catalog tool on the gateway by catalog ID. */
+  async uninstallGatewayCatalogTool(id: string): Promise<boolean> {
+    try {
+      const response = await fetch(`${this.config.gatewayUrl}/api/tools/catalog/uninstall`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+        body: JSON.stringify({ id }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      return response.ok;
+    } catch {
+      return false;
     }
   }
 

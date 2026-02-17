@@ -256,6 +256,26 @@ export interface TalkToolPolicy {
   enabledTools: ToolDescriptor[];
 }
 
+export interface ToolCatalogEntry {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  status: 'installable' | 'planned';
+  toolNames: string[];
+  requiredAuth?: string[];
+  installed: boolean;
+  canInstall: boolean;
+  missingTools: string[];
+}
+
+export interface ToolCatalogResponse {
+  catalog: ToolCatalogEntry[];
+  installedCatalogIds: string[];
+  installedTools: ToolDescriptor[];
+  registeredTools: ToolDescriptor[];
+}
+
 export interface Talk {
   id: string;              // Same as session ID
   sessionId: string;       // Reference to underlying session

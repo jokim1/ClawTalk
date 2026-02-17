@@ -8,7 +8,7 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { render, Box, Text, useInput, useApp, useStdout } from 'ink';
-import type { ClawTalkOptions, ModelStatus, Message, TalkAgent, AgentRole, PendingAttachment, Directive, PlatformBinding, PlatformBehavior, PlatformPermission, Job, ToolMode, ToolDescriptor } from '../types.js';
+import type { ClawTalkOptions, ModelStatus, Message, TalkAgent, AgentRole, PendingAttachment, Directive, PlatformBinding, PlatformBehavior, PlatformPermission, Job, ToolMode, ToolDescriptor, ToolCatalogEntry } from '../types.js';
 import type { Talk } from '../types.js';
 import { AGENT_ROLES, ROLE_BY_ID, AGENT_PREAMBLE, generateAgentName } from '../agent-roles.js';
 import type { RoleTemplate } from '../agent-roles.js';
@@ -214,6 +214,8 @@ function App({ options }: AppProps) {
     mode: ToolMode;
     availableTools: ToolDescriptor[];
     enabledToolNames: string[];
+    catalogEntries: ToolCatalogEntry[];
+    installedToolNames: string[];
   } | null>(null);
   const [settingsToolPolicyLoading, setSettingsToolPolicyLoading] = useState(false);
   const [settingsToolPolicyError, setSettingsToolPolicyError] = useState<string | null>(null);
@@ -1804,22 +1806,48 @@ function App({ options }: AppProps) {
     const talk = activeTalkIdRef.current ? talkManagerRef.current?.getTalk(activeTalkIdRef.current) : null;
     const gwId = gatewayTalkIdRef.current ?? talk?.gatewayTalkId ?? null;
 
-    if (!gwId || !chatServiceRef.current) {
+    if (!chatServiceRef.current) {
       const mode: ToolMode = talk?.toolMode ?? 'auto';
       setSettingsToolPolicy({
         mode,
         availableTools: [],
         enabledToolNames: talk?.toolsAllow ?? [],
+        catalogEntries: [],
+        installedToolNames: [],
       });
-      setSettingsToolPolicyError('No active gateway talk yet. Send one message first, then refresh.');
+      setSettingsToolPolicyError('Gateway unavailable.');
       return;
     }
 
     setSettingsToolPolicyLoading(true);
     setSettingsToolPolicyError(null);
-    chatServiceRef.current.getGatewayTalkTools(gwId).then((policy) => {
+    if (!gwId) {
+      chatServiceRef.current.getGatewayToolCatalog().then((catalog) => {
+        const mode: ToolMode = talk?.toolMode ?? 'auto';
+        setSettingsToolPolicy({
+          mode,
+          availableTools: [],
+          enabledToolNames: talk?.toolsAllow ?? [],
+          catalogEntries: catalog?.catalog ?? [],
+          installedToolNames: catalog?.installedTools.map((tool) => tool.name) ?? [],
+        });
+        setSettingsToolPolicyError(
+          catalog
+            ? 'No active gateway talk yet. Send one message first to configure talk-level tool policy.'
+            : 'Failed to load tool catalog from gateway.',
+        );
+      }).finally(() => {
+        setSettingsToolPolicyLoading(false);
+      });
+      return;
+    }
+
+    Promise.all([
+      chatServiceRef.current.getGatewayTalkTools(gwId),
+      chatServiceRef.current.getGatewayToolCatalog(),
+    ]).then(([policy, catalog]) => {
       if (!policy) {
-        setSettingsToolPolicyError('Failed to load tools from gateway.');
+        setSettingsToolPolicyError('Failed to load talk tool policy from gateway.');
         return;
       }
       syncToolPolicyLocal(policy.toolMode, policy.toolsAllow, policy.toolsDeny);
@@ -1827,7 +1855,12 @@ function App({ options }: AppProps) {
         mode: policy.toolMode,
         availableTools: policy.availableTools,
         enabledToolNames: policy.enabledTools.map((tool) => tool.name),
+        catalogEntries: catalog?.catalog ?? [],
+        installedToolNames: catalog?.installedTools.map((tool) => tool.name) ?? [],
       });
+      if (!catalog) {
+        setSettingsToolPolicyError('Talk policy loaded, but tool catalog could not be loaded.');
+      }
     }).finally(() => {
       setSettingsToolPolicyLoading(false);
     });
@@ -1846,11 +1879,13 @@ function App({ options }: AppProps) {
         return;
       }
       syncToolPolicyLocal(policy.toolMode, policy.toolsAllow, policy.toolsDeny);
-      setSettingsToolPolicy({
+      setSettingsToolPolicy((prev) => ({
         mode: policy.toolMode,
         availableTools: policy.availableTools,
         enabledToolNames: policy.enabledTools.map((tool) => tool.name),
-      });
+        catalogEntries: prev?.catalogEntries ?? [],
+        installedToolNames: prev?.installedToolNames ?? [],
+      }));
     });
   }, [syncToolPolicyLocal]);
 
@@ -1878,13 +1913,37 @@ function App({ options }: AppProps) {
         return;
       }
       syncToolPolicyLocal(policy.toolMode, policy.toolsAllow, policy.toolsDeny);
-      setSettingsToolPolicy({
+      setSettingsToolPolicy((prev) => ({
         mode: policy.toolMode,
         availableTools: policy.availableTools,
         enabledToolNames: policy.enabledTools.map((tool) => tool.name),
-      });
+        catalogEntries: prev?.catalogEntries ?? [],
+        installedToolNames: prev?.installedToolNames ?? [],
+      }));
     });
   }, [settingsToolPolicy, syncToolPolicyLocal]);
+
+  const handleSettingsCatalogInstall = useCallback((catalogId: string) => {
+    if (!chatServiceRef.current) return;
+    chatServiceRef.current.installGatewayCatalogTool(catalogId).then((ok) => {
+      if (!ok) {
+        setError(`Failed to install catalog tool "${catalogId}"`);
+        return;
+      }
+      refreshSettingsToolPolicy();
+    });
+  }, [refreshSettingsToolPolicy]);
+
+  const handleSettingsCatalogUninstall = useCallback((catalogId: string) => {
+    if (!chatServiceRef.current) return;
+    chatServiceRef.current.uninstallGatewayCatalogTool(catalogId).then((ok) => {
+      if (!ok) {
+        setError(`Failed to uninstall catalog tool "${catalogId}"`);
+        return;
+      }
+      refreshSettingsToolPolicy();
+    });
+  }, [refreshSettingsToolPolicy]);
 
   const loadSlackHints = useCallback(async () => {
     if (!chatServiceRef.current) return;
@@ -3362,6 +3421,8 @@ function App({ options }: AppProps) {
             onRefreshToolPolicy={refreshSettingsToolPolicy}
             onSetToolMode={handleSettingsSetToolMode}
             onSetToolEnabled={handleSettingsSetToolEnabled}
+            onInstallCatalogTool={handleSettingsCatalogInstall}
+            onUninstallCatalogTool={handleSettingsCatalogUninstall}
             talkConfig={activeTalk ? {
               objective: activeTalk.objective,
               directives: (activeTalk.directives ?? []).map(d => ({ text: d.text, active: d.active })),
