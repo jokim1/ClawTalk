@@ -70,6 +70,9 @@ export interface GoogleDocsAuthStatus {
   hasClientSecret: boolean;
   hasRefreshToken: boolean;
   accessTokenReady: boolean;
+  accountEmail?: string;
+  accountDisplayName?: string;
+  identityError?: string;
   error?: string;
 }
 

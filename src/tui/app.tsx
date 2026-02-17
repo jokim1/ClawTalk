@@ -219,6 +219,12 @@ function App({ options }: AppProps) {
     talkGoogleAuthProfile?: string;
     googleAuthActiveProfile?: string;
     googleAuthProfiles: GoogleAuthProfileSummary[];
+    googleAuthStatus?: {
+      profile?: string;
+      activeProfile?: string;
+      accessTokenReady: boolean;
+      error?: string;
+    };
   } | null>(null);
   const [settingsToolPolicyLoading, setSettingsToolPolicyLoading] = useState(false);
   const [settingsToolPolicyError, setSettingsToolPolicyError] = useState<string | null>(null);
@@ -1789,6 +1795,9 @@ function App({ options }: AppProps) {
         `  hasClientSecret: ${status.hasClientSecret}\n` +
         `  hasRefreshToken: ${status.hasRefreshToken}\n` +
         `  accessTokenReady: ${status.accessTokenReady}\n` +
+        `  accountEmail: ${status.accountEmail ?? '(unknown)'}\n` +
+        `  accountDisplayName: ${status.accountDisplayName ?? '(unknown)'}\n` +
+        `  identityError: ${status.identityError ?? '(none)'}\n` +
         `  error: ${status.error ?? '(none)'}`,
       );
       chat.setMessages(prev => [...prev, sysMsg]);
@@ -1827,6 +1836,7 @@ function App({ options }: AppProps) {
         talkGoogleAuthProfile: talk?.googleAuthProfile,
         googleAuthActiveProfile: undefined,
         googleAuthProfiles: [],
+        googleAuthStatus: undefined,
       });
       setSettingsToolPolicyError('Gateway unavailable.');
       return;
@@ -1838,7 +1848,34 @@ function App({ options }: AppProps) {
       Promise.all([
         chatServiceRef.current.getGatewayToolCatalog(),
         chatServiceRef.current.getGoogleDocsAuthProfiles(),
-      ]).then(([catalog, profiles]) => {
+        chatServiceRef.current.getGoogleDocsAuthStatus(),
+      ]).then(([catalog, profiles, authStatus]) => {
+        const enrichedProfiles = (() => {
+          const base = profiles?.profiles ?? [];
+          if (!authStatus?.profile || !authStatus.accountEmail) return base;
+          let patched = false;
+          const next = base.map((entry) => {
+            if (entry.name !== authStatus.profile) return entry;
+            patched = true;
+            return {
+              ...entry,
+              accountEmail: authStatus.accountEmail,
+              accountDisplayName: authStatus.accountDisplayName ?? entry.accountDisplayName,
+            };
+          });
+          if (patched) return next;
+          return [
+            ...next,
+            {
+              name: authStatus.profile,
+              hasClientId: authStatus.hasClientId,
+              hasClientSecret: authStatus.hasClientSecret,
+              hasRefreshToken: authStatus.hasRefreshToken,
+              accountEmail: authStatus.accountEmail,
+              accountDisplayName: authStatus.accountDisplayName,
+            },
+          ];
+        })();
         const mode: ToolMode = talk?.toolMode ?? 'auto';
         setSettingsToolPolicy({
           mode,
@@ -1848,7 +1885,8 @@ function App({ options }: AppProps) {
           installedToolNames: catalog?.installedTools.map((tool) => tool.name) ?? [],
           talkGoogleAuthProfile: talk?.googleAuthProfile,
           googleAuthActiveProfile: profiles?.activeProfile,
-          googleAuthProfiles: profiles?.profiles ?? [],
+          googleAuthProfiles: enrichedProfiles,
+          googleAuthStatus: authStatus ?? undefined,
         });
         setSettingsToolPolicyError(
           catalog
@@ -1865,11 +1903,38 @@ function App({ options }: AppProps) {
       chatServiceRef.current.getGatewayTalkTools(gwId),
       chatServiceRef.current.getGatewayToolCatalog(),
       chatServiceRef.current.getGoogleDocsAuthProfiles(),
-    ]).then(([policy, catalog, profiles]) => {
+      chatServiceRef.current.getGoogleDocsAuthStatus(),
+    ]).then(([policy, catalog, profiles, authStatus]) => {
       if (!policy) {
         setSettingsToolPolicyError('Failed to load talk tool policy from gateway.');
         return;
       }
+      const enrichedProfiles = (() => {
+        const base = profiles?.profiles ?? [];
+        if (!authStatus?.profile || !authStatus.accountEmail) return base;
+        let patched = false;
+        const next = base.map((entry) => {
+          if (entry.name !== authStatus.profile) return entry;
+          patched = true;
+          return {
+            ...entry,
+            accountEmail: authStatus.accountEmail,
+            accountDisplayName: authStatus.accountDisplayName ?? entry.accountDisplayName,
+          };
+        });
+        if (patched) return next;
+        return [
+          ...next,
+          {
+            name: authStatus.profile,
+            hasClientId: authStatus.hasClientId,
+            hasClientSecret: authStatus.hasClientSecret,
+            hasRefreshToken: authStatus.hasRefreshToken,
+            accountEmail: authStatus.accountEmail,
+            accountDisplayName: authStatus.accountDisplayName,
+          },
+        ];
+      })();
       syncToolPolicyLocal(policy.toolMode, policy.toolsAllow, policy.toolsDeny, policy.googleAuthProfile);
       setSettingsToolPolicy({
         mode: policy.toolMode,
@@ -1879,7 +1944,8 @@ function App({ options }: AppProps) {
         installedToolNames: catalog?.installedTools.map((tool) => tool.name) ?? [],
         talkGoogleAuthProfile: policy.googleAuthProfile,
         googleAuthActiveProfile: profiles?.activeProfile,
-        googleAuthProfiles: profiles?.profiles ?? [],
+        googleAuthProfiles: enrichedProfiles,
+        googleAuthStatus: authStatus ?? undefined,
       });
       if (!catalog) {
         setSettingsToolPolicyError('Talk policy loaded, but tool catalog could not be loaded.');
@@ -1911,6 +1977,7 @@ function App({ options }: AppProps) {
         talkGoogleAuthProfile: policy.googleAuthProfile,
         googleAuthActiveProfile: prev?.googleAuthActiveProfile,
         googleAuthProfiles: prev?.googleAuthProfiles ?? [],
+        googleAuthStatus: prev?.googleAuthStatus,
       }));
     });
   }, [syncToolPolicyLocal]);
@@ -1948,6 +2015,7 @@ function App({ options }: AppProps) {
         talkGoogleAuthProfile: policy.googleAuthProfile,
         googleAuthActiveProfile: prev?.googleAuthActiveProfile,
         googleAuthProfiles: prev?.googleAuthProfiles ?? [],
+        googleAuthStatus: prev?.googleAuthStatus,
       }));
     });
   }, [settingsToolPolicy, syncToolPolicyLocal]);
@@ -1980,6 +2048,7 @@ function App({ options }: AppProps) {
         talkGoogleAuthProfile: policy.googleAuthProfile,
         googleAuthActiveProfile: prev?.googleAuthActiveProfile,
         googleAuthProfiles: prev?.googleAuthProfiles ?? [],
+        googleAuthStatus: prev?.googleAuthStatus,
       }));
     });
   }, [settingsToolPolicy, syncToolPolicyLocal]);
@@ -3500,6 +3569,7 @@ function App({ options }: AppProps) {
             talkGoogleAuthProfile={settingsToolPolicy?.talkGoogleAuthProfile}
             googleAuthActiveProfile={settingsToolPolicy?.googleAuthActiveProfile}
             googleAuthProfiles={settingsToolPolicy?.googleAuthProfiles ?? []}
+            googleAuthStatus={settingsToolPolicy?.googleAuthStatus}
             onSetTalkGoogleAuthProfile={handleSettingsSetTalkGoogleAuthProfile}
             onInstallCatalogTool={handleSettingsCatalogInstall}
             onUninstallCatalogTool={handleSettingsCatalogUninstall}

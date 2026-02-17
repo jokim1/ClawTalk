@@ -83,6 +83,15 @@ interface SettingsPickerProps {
   talkGoogleAuthProfile?: string;
   googleAuthActiveProfile?: string;
   googleAuthProfiles?: GoogleAuthProfileSummary[];
+  googleAuthStatus?: {
+    profile?: string;
+    activeProfile?: string;
+    accessTokenReady: boolean;
+    accountEmail?: string;
+    accountDisplayName?: string;
+    identityError?: string;
+    error?: string;
+  };
   onSetTalkGoogleAuthProfile?: (profile: string | undefined) => void;
   onInstallCatalogTool?: (catalogId: string) => void;
   onUninstallCatalogTool?: (catalogId: string) => void;
@@ -177,6 +186,7 @@ export function SettingsPicker({
   talkGoogleAuthProfile,
   googleAuthActiveProfile,
   googleAuthProfiles,
+  googleAuthStatus,
   onSetTalkGoogleAuthProfile,
   onInstallCatalogTool,
   onUninstallCatalogTool,
@@ -638,6 +648,10 @@ export function SettingsPicker({
                   const readiness = isInherit
                     ? `active: ${googleAuthActiveProfile ?? '(none)'}`
                     : (profile.hasClientId && profile.hasClientSecret && profile.hasRefreshToken ? 'ready' : 'incomplete');
+                  const needsReauth = !isInherit
+                    && profile.name === (googleAuthStatus?.profile ?? googleAuthStatus?.activeProfile)
+                    && googleAuthStatus?.accessTokenReady === false;
+                  const readinessLabel = needsReauth ? 'reauth required' : readiness;
                   const identity = !isInherit
                     ? (profile.accountEmail
                       ? `${profile.accountEmail}${profile.accountDisplayName ? ` (${profile.accountDisplayName})` : ''}`
@@ -652,7 +666,7 @@ export function SettingsPicker({
                       {!isInherit && profile.accountEmail && profile.name !== profile.accountEmail && (
                         <Text dimColor> [{profile.name}]</Text>
                       )}
-                      <Text dimColor> ({readiness})</Text>
+                      <Text dimColor> ({readinessLabel})</Text>
                       {isActive && <Text color="green"> (selected)</Text>}
                     </Box>
                   );
@@ -728,6 +742,16 @@ export function SettingsPicker({
               {toolPolicyError && (
                 <Box marginTop={1}>
                   <Text color="yellow">{toolPolicyError}</Text>
+                </Box>
+              )}
+              {googleAuthStatus?.accessTokenReady === false && (
+                <Box marginTop={1} flexDirection="column">
+                  <Text color="yellow">
+                    Google auth requires re-auth for profile {googleAuthStatus.profile ?? googleAuthStatus.activeProfile ?? '(unknown)'}.
+                  </Text>
+                  <Text dimColor>
+                    {googleAuthStatus.error?.split('\n')[0] ?? 'Refresh token invalid or expired.'}
+                  </Text>
                 </Box>
               )}
               <Box marginTop={1}>
