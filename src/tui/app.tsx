@@ -2730,11 +2730,11 @@ function App({ options }: AppProps) {
   }, [refreshSettingsToolPolicy]);
 
   useEffect(() => {
-    if (!showSettings || settingsFromTalks) return;
+    if (!showSettings) return;
     if (settingsTab === 'tools') {
       refreshSettingsToolPolicy();
     }
-  }, [showSettings, settingsFromTalks, settingsTab, refreshSettingsToolPolicy]);
+  }, [showSettings, settingsTab, refreshSettingsToolPolicy]);
 
   const commandCtx = useRef({
     switchModel,
