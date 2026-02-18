@@ -605,6 +605,8 @@ export class ChatService implements IChatService {
     channelResponseSettings?: PlatformBehavior[];
     toolMode?: ToolMode;
     executionMode?: ToolExecutionMode;
+    filesystemAccess?: ToolFilesystemAccess;
+    networkAccess?: ToolNetworkAccess;
     toolsAllow?: string[];
     toolsDeny?: string[];
     googleAuthProfile?: string;
@@ -642,6 +644,8 @@ export class ChatService implements IChatService {
     channelResponseSettings?: PlatformBehavior[];
     toolMode?: ToolMode;
     executionMode?: ToolExecutionMode;
+    filesystemAccess?: ToolFilesystemAccess;
+    networkAccess?: ToolNetworkAccess;
     toolsAllow?: string[];
     toolsDeny?: string[];
     googleAuthProfile?: string;
