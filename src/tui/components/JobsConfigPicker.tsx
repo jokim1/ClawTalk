@@ -42,6 +42,26 @@ function truncate(text: string, maxLen: number): string {
   return `${text.slice(0, Math.max(0, maxLen - 3))}...`;
 }
 
+function getLineStarts(text: string): number[] {
+  const starts = [0];
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === '\n') starts.push(i + 1);
+  }
+  return starts;
+}
+
+function getLineIndexForCursor(lineStarts: number[], cursor: number): number {
+  for (let i = lineStarts.length - 1; i >= 0; i -= 1) {
+    if (cursor >= lineStarts[i]) return i;
+  }
+  return 0;
+}
+
+function getLineEnd(text: string, lineStarts: number[], lineIndex: number): number {
+  if (lineIndex >= lineStarts.length - 1) return text.length;
+  return lineStarts[lineIndex + 1] - 1;
+}
+
 function formatBindingScopeLabel(binding: {
   scope: string;
   displayScope?: string;
@@ -85,6 +105,8 @@ export function JobsConfigPicker({
   const [channelSelection, setChannelSelection] = useState(0);
   const [scheduleInput, setScheduleInput] = useState('');
   const [promptInput, setPromptInput] = useState('');
+  const [promptCursor, setPromptCursor] = useState(0);
+  const [promptPreferredCol, setPromptPreferredCol] = useState<number | null>(null);
   const [pendingSchedule, setPendingSchedule] = useState('');
   const [pendingScheduleLabel, setPendingScheduleLabel] = useState('');
 
@@ -168,6 +190,8 @@ export function JobsConfigPicker({
   const openAddType = () => {
     setAddTypeSelection(0);
     setPromptInput('');
+    setPromptCursor(0);
+    setPromptPreferredCol(null);
     setScheduleInput('');
     setPendingSchedule('');
     setPendingScheduleLabel('');
@@ -200,7 +224,7 @@ export function JobsConfigPicker({
       return;
     }
 
-    if (mode === 'add-time-schedule' || mode === 'add-prompt' || mode === 'edit-schedule' || mode === 'edit-prompt') {
+    if (mode === 'add-time-schedule' || mode === 'edit-schedule') {
       return;
     }
 
@@ -259,6 +283,8 @@ export function JobsConfigPicker({
           return;
         }
         setPromptInput(selectedJob.prompt);
+        setPromptCursor(selectedJob.prompt.length);
+        setPromptPreferredCol(null);
         setMode('edit-prompt');
         return;
       }
@@ -320,6 +346,107 @@ export function JobsConfigPicker({
       return;
     }
 
+    if (mode === 'add-prompt' || mode === 'edit-prompt') {
+      const savePrompt = async (raw: string) => {
+        const trimmed = raw.trim();
+        if (!trimmed) {
+          setStatusMessage('Prompt cannot be empty.');
+          return;
+        }
+
+        if (mode === 'add-prompt') {
+          const ok = await onAddJob(pendingSchedule, trimmed);
+          if (!ok) {
+            setStatusMessage('Failed to add automation.');
+            setMode('list');
+            return;
+          }
+          await refreshJobs('Automation added.');
+          setMode('list');
+          setSelectedIndex(Math.max(localJobs.length, 0));
+          return;
+        }
+
+        if (!selectedJob) {
+          setStatusMessage('No selected automation.');
+          return;
+        }
+        const jobIndex = selectedIndex + 1;
+        const ok = await onSetJobPrompt(jobIndex, trimmed);
+        if (!ok) {
+          setStatusMessage(`Failed to update prompt for automation #${jobIndex}.`);
+          setMode('list');
+          return;
+        }
+        await refreshJobs(`Updated prompt for automation #${jobIndex}.`);
+        setMode('list');
+      };
+
+      if (key.escape) {
+        setMode('list');
+        setPromptPreferredCol(null);
+        return;
+      }
+      if (key.ctrl && input.toLowerCase() === 's') {
+        void savePrompt(promptInput);
+        setPromptPreferredCol(null);
+        return;
+      }
+      if (key.return) {
+        const next = `${promptInput.slice(0, promptCursor)}\n${promptInput.slice(promptCursor)}`;
+        setPromptInput(next);
+        setPromptCursor(promptCursor + 1);
+        setPromptPreferredCol(null);
+        return;
+      }
+      if (key.backspace) {
+        if (promptCursor <= 0) return;
+        const next = `${promptInput.slice(0, promptCursor - 1)}${promptInput.slice(promptCursor)}`;
+        setPromptInput(next);
+        setPromptCursor(promptCursor - 1);
+        setPromptPreferredCol(null);
+        return;
+      }
+      if (key.delete) {
+        if (promptCursor >= promptInput.length) return;
+        const next = `${promptInput.slice(0, promptCursor)}${promptInput.slice(promptCursor + 1)}`;
+        setPromptInput(next);
+        setPromptPreferredCol(null);
+        return;
+      }
+      if (key.leftArrow) {
+        setPromptCursor((prev) => Math.max(0, prev - 1));
+        setPromptPreferredCol(null);
+        return;
+      }
+      if (key.rightArrow) {
+        setPromptCursor((prev) => Math.min(promptInput.length, prev + 1));
+        setPromptPreferredCol(null);
+        return;
+      }
+      if (key.upArrow || key.downArrow) {
+        const starts = getLineStarts(promptInput);
+        const lineIdx = getLineIndexForCursor(starts, promptCursor);
+        const lineStart = starts[lineIdx] ?? 0;
+        const currentCol = promptCursor - lineStart;
+        const preferred = promptPreferredCol ?? currentCol;
+        const targetLineIdx = key.upArrow ? lineIdx - 1 : lineIdx + 1;
+        if (targetLineIdx < 0 || targetLineIdx >= starts.length) return;
+        const targetStart = starts[targetLineIdx] ?? 0;
+        const targetEnd = getLineEnd(promptInput, starts, targetLineIdx);
+        setPromptCursor(Math.min(targetStart + preferred, targetEnd));
+        setPromptPreferredCol(preferred);
+        return;
+      }
+      if (input) {
+        const next = `${promptInput.slice(0, promptCursor)}${input}${promptInput.slice(promptCursor)}`;
+        setPromptInput(next);
+        setPromptCursor(promptCursor + input.length);
+        setPromptPreferredCol(null);
+      }
+      return;
+    }
+
     if (mode === 'add-channel-target') {
       if (channelTargets.length === 0) {
         setStatusMessage('No channel targets available.');
@@ -340,6 +467,8 @@ export function JobsConfigPicker({
         setPendingSchedule(`on ${target.scope}`);
         setPendingScheduleLabel(`on ${target.label}`);
         setPromptInput('');
+        setPromptCursor(0);
+        setPromptPreferredCol(null);
         setMode('add-prompt');
       }
       return;
@@ -414,10 +543,12 @@ export function JobsConfigPicker({
               <Text>  status: {selectedJob.active ? 'active' : 'paused'}</Text>
               <Text>  schedule: {formatScheduleLabel(selectedJob.schedule)}</Text>
               <Text>  prompt:</Text>
-              <Text dimColor>
-                {'    '}
-                {selectedJob.prompt}
-              </Text>
+              {(selectedJob.prompt ? selectedJob.prompt.split('\n') : ['(none)']).map((line, idx) => (
+                <Text key={`job-prompt-line-${idx}`} dimColor>
+                  {'    '}
+                  {line || ' '}
+                </Text>
+              ))}
               <Text>  last run: {selectedJob.lastRunAt ? new Date(selectedJob.lastRunAt).toLocaleString() : '(never)'}</Text>
             </>
           ) : (
@@ -469,6 +600,8 @@ export function JobsConfigPicker({
                 setPendingSchedule(trimmed);
                 setPendingScheduleLabel(trimmed);
                 setPromptInput('');
+                setPromptCursor(0);
+                setPromptPreferredCol(null);
                 setMode('add-prompt');
               }}
             />
@@ -501,32 +634,12 @@ export function JobsConfigPicker({
           <Box height={1} />
           <Text bold>Step 3: Enter Prompt</Text>
           <Text dimColor>Trigger: {pendingScheduleLabel || pendingSchedule}</Text>
-          <Box>
-            <Text>prompt: </Text>
-            <TextInput
-              value={promptInput}
-              onChange={setPromptInput}
-              onSubmit={(value) => {
-                const trimmed = value.trim();
-                if (!trimmed) {
-                  setStatusMessage('Prompt cannot be empty.');
-                  return;
-                }
-                void (async () => {
-                  const ok = await onAddJob(pendingSchedule, trimmed);
-                  if (!ok) {
-                    setStatusMessage('Failed to add automation.');
-                    setMode('list');
-                    return;
-                  }
-                  await refreshJobs('Automation added.');
-                  setMode('list');
-                  setSelectedIndex(Math.max(localJobs.length, 0));
-                })();
-              }}
-            />
+          <Text dimColor>Multi-line editor. Ctrl+S save  Enter newline  Esc cancel</Text>
+          <Box borderStyle="round" borderColor="gray" paddingX={1} flexDirection="column">
+            {(promptInput.slice(0, promptCursor) + '█' + promptInput.slice(promptCursor)).split('\n').map((line, idx) => (
+              <Text key={`add-prompt-editor-${idx}`}>{line || ' '}</Text>
+            ))}
           </Box>
-          <Text dimColor>Enter save  Esc cancel</Text>
         </>
       )}
 
@@ -578,32 +691,12 @@ export function JobsConfigPicker({
           ) : (
             <Text dimColor>No selected automation.</Text>
           )}
-          <Box>
-            <Text>prompt: </Text>
-            <TextInput
-              value={promptInput}
-              onChange={setPromptInput}
-              onSubmit={(value) => {
-                const trimmed = value.trim();
-                if (!trimmed || !selectedJob) {
-                  setStatusMessage('Prompt cannot be empty.');
-                  return;
-                }
-                const jobIndex = selectedIndex + 1;
-                void (async () => {
-                  const ok = await onSetJobPrompt(jobIndex, trimmed);
-                  if (!ok) {
-                    setStatusMessage(`Failed to update prompt for automation #${jobIndex}.`);
-                    setMode('list');
-                    return;
-                  }
-                  await refreshJobs(`Updated prompt for automation #${jobIndex}.`);
-                  setMode('list');
-                })();
-              }}
-            />
+          <Text dimColor>Multi-line editor. Ctrl+S save  Enter newline  Esc cancel</Text>
+          <Box borderStyle="round" borderColor="gray" paddingX={1} flexDirection="column">
+            {(promptInput.slice(0, promptCursor) + '█' + promptInput.slice(promptCursor)).split('\n').map((line, idx) => (
+              <Text key={`edit-prompt-editor-${idx}`}>{line || ' '}</Text>
+            ))}
           </Box>
-          <Text dimColor>Enter save  Esc cancel</Text>
         </>
       )}
 
