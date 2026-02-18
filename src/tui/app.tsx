@@ -85,7 +85,7 @@ const DEFAULT_EXECUTION_MODE_OPTIONS: ToolExecutionModeOption[] = [
     value: 'openclaw',
     label: 'openclaw_agent',
     title: 'OpenClaw Agent',
-    description: 'Uses OpenClaw agent runtime capabilities and integrated tool/session behavior.',
+    description: 'OpenClaw agent runtime, tools, and session behavior.',
   },
   {
     value: 'full_control',

@@ -182,7 +182,7 @@ function normalizeExecutionMode(raw: unknown): ToolExecutionMode {
 function normalizeExecutionModeOptions(raw: unknown): ToolExecutionModeOption[] {
   if (!Array.isArray(raw)) {
     return [
-      { value: 'openclaw', label: 'openclaw_agent', title: 'OpenClaw Agent', description: 'Uses OpenClaw runtime capabilities.' },
+      { value: 'openclaw', label: 'openclaw_agent', title: 'OpenClaw Agent', description: 'OpenClaw agent runtime, tools, and session behavior.' },
       { value: 'full_control', label: 'clawtalk_proxy', title: 'ClawTalk Proxy', description: 'Sends prompts directly via proxy.' },
     ];
   }
@@ -196,7 +196,7 @@ function normalizeExecutionModeOptions(raw: unknown): ToolExecutionModeOption[] 
       const title = typeof rec.title === 'string' ? rec.title : (value === 'full_control' ? 'ClawTalk Proxy' : 'OpenClaw Agent');
       const description = typeof rec.description === 'string'
         ? rec.description
-        : (value === 'full_control' ? 'Sends prompts directly via proxy.' : 'Uses OpenClaw runtime capabilities.');
+        : (value === 'full_control' ? 'Sends prompts directly via proxy.' : 'OpenClaw agent runtime, tools, and session behavior.');
       return { value, label, title, description } as ToolExecutionModeOption;
     })
     .filter((entry): entry is ToolExecutionModeOption => Boolean(entry));
@@ -204,7 +204,7 @@ function normalizeExecutionModeOptions(raw: unknown): ToolExecutionModeOption[] 
   return parsed.length > 0
     ? parsed
     : [
-      { value: 'openclaw', label: 'openclaw_agent', title: 'OpenClaw Agent', description: 'Uses OpenClaw runtime capabilities.' },
+      { value: 'openclaw', label: 'openclaw_agent', title: 'OpenClaw Agent', description: 'OpenClaw agent runtime, tools, and session behavior.' },
       { value: 'full_control', label: 'clawtalk_proxy', title: 'ClawTalk Proxy', description: 'Sends prompts directly via proxy.' },
     ];
 }
@@ -903,6 +903,14 @@ export function SettingsPicker({
                     const statusColor: 'green' | 'yellow' = blockedReason ? 'yellow' : (enabled ? 'green' : 'yellow');
                     const selected = rowIndex === selectedIndex;
                     const paddedName = tool.name.padEnd(34, ' ').slice(0, 34);
+                    const sourceLabel = (() => {
+                      if (tool.reasonCode === 'blocked_filesystem') return 'Workspace Sandbox';
+                      if (tool.reasonCode === 'blocked_network') return 'Network Restricted';
+                      if (tool.reasonCode === 'blocked_execution_mode') return 'Execution Mode';
+                      if (tool.reasonCode === 'blocked_allowlist') return 'Talk Allow-list';
+                      if (tool.reasonCode === 'blocked_denylist') return 'Talk Deny-list';
+                      return tool.builtin ? 'builtin' : 'gateway';
+                    })();
                     return (
                       <Box key={tool.name}>
                         <Text color={selected ? 'cyan' : undefined}>{selected ? '▸ ' : '  '}</Text>
@@ -910,8 +918,7 @@ export function SettingsPicker({
                         <Text>  </Text>
                         <Text color={statusColor}>{status.padEnd(7, ' ')}</Text>
                         <Text>      </Text>
-                        <Text dimColor>{tool.builtin ? 'builtin' : 'gateway'}</Text>
-                        {blockedReason && <Text dimColor> ({blockedReason})</Text>}
+                        <Text dimColor>{sourceLabel}</Text>
                       </Box>
                     );
                   })
