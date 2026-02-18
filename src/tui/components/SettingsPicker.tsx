@@ -904,6 +904,8 @@ export function SettingsPicker({
                     const selected = rowIndex === selectedIndex;
                     const paddedName = tool.name.padEnd(34, ' ').slice(0, 34);
                     const sourceLabel = (() => {
+                      if (tool.reasonCode === 'blocked_not_installed') return 'Not Installed';
+                      if (tool.reasonCode === 'blocked_tool_mode') return 'Tool Approval Off';
                       if (tool.reasonCode === 'blocked_filesystem') return 'Workspace Sandbox';
                       if (tool.reasonCode === 'blocked_network') return 'Network Restricted';
                       if (tool.reasonCode === 'blocked_execution_mode') return 'Execution Mode';
