@@ -62,8 +62,13 @@ function formatBindingScopeLabel(binding: {
   accountId?: string;
 }): string {
   const scopeLabel = binding.displayScope?.trim() || binding.scope;
-  if (binding.accountId?.trim()) {
-    return `${binding.accountId}:${scopeLabel}`;
+  const accountId = binding.accountId?.trim();
+  if (accountId) {
+    const prefixed = `${accountId}:`;
+    if (scopeLabel.toLowerCase().startsWith(prefixed.toLowerCase())) {
+      return scopeLabel;
+    }
+    return `${accountId}:${scopeLabel}`;
   }
   return scopeLabel;
 }

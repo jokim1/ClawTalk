@@ -101,7 +101,12 @@ function formatBindingScopeLabel(binding: {
   accountId?: string;
 }): string {
   const scopeLabel = binding.displayScope?.trim() || binding.scope;
-  if (binding.accountId?.trim()) {
+  const accountId = binding.accountId?.trim();
+  if (accountId) {
+    const prefixed = `${accountId}:`;
+    if (scopeLabel.toLowerCase().startsWith(prefixed.toLowerCase())) {
+      return scopeLabel;
+    }
     return `${binding.accountId}:${scopeLabel}`;
   }
   return scopeLabel;
@@ -1404,22 +1409,51 @@ function App({ options }: AppProps) {
   // --- Platform binding handlers ---
 
   const syncTalkBindingsToGateway = useCallback(async (talkId: string): Promise<boolean> => {
-    if (!gatewayTalkIdRef.current || !chatServiceRef.current || !talkManagerRef.current) {
+    if (!chatServiceRef.current || !talkManagerRef.current) {
       return true;
     }
 
+    const ensureGatewayTalkForSync = async (): Promise<string | null> => {
+      if (gatewayTalkIdRef.current) return gatewayTalkIdRef.current;
+      const created = await chatServiceRef.current!.createGatewayTalk(currentModelRef.current);
+      if (!created.ok || !created.data) {
+        setError(`Failed to create gateway talk: ${created.error ?? 'Unknown error'}`);
+        return null;
+      }
+      gatewayTalkIdRef.current = created.data;
+      talkManagerRef.current?.setGatewayTalkId(talkId, created.data);
+      return created.data;
+    };
+
+    let gatewayTalkId = await ensureGatewayTalkForSync();
+    if (!gatewayTalkId) return false;
+
     const bindings = talkManagerRef.current.getPlatformBindings(talkId);
     const behaviors = talkManagerRef.current.getPlatformBehaviors(talkId);
-    const result = await chatServiceRef.current.updateGatewayTalk(gatewayTalkIdRef.current, {
+    let result = await chatServiceRef.current.updateGatewayTalk(gatewayTalkId, {
       platformBindings: bindings,
       platformBehaviors: behaviors,
     });
+
+    // Recover from stale gateway talk IDs (e.g. gateway restart + local mapping still cached).
+    if (!result.ok && /Gateway error \(404\):/i.test(result.error ?? '')) {
+      gatewayTalkIdRef.current = null;
+      const recovered = await ensureGatewayTalkForSync();
+      if (recovered) {
+        gatewayTalkId = recovered;
+        result = await chatServiceRef.current.updateGatewayTalk(gatewayTalkId, {
+          platformBindings: bindings,
+          platformBehaviors: behaviors,
+        });
+      }
+    }
+
     if (!result.ok) {
       setError(result.error ?? 'Failed to sync channel settings to gateway');
       return false;
     }
 
-    const gwTalk = await chatServiceRef.current.getGatewayTalk(gatewayTalkIdRef.current);
+    const gwTalk = await chatServiceRef.current.getGatewayTalk(gatewayTalkId);
     if (gwTalk) {
       talkManagerRef.current.importGatewayTalk({
         id: gwTalk.id,
