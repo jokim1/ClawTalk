@@ -14,6 +14,9 @@ import type {
   ToolCatalogEntry,
   ToolDescriptor,
   ToolExecutionMode,
+  ToolExecutionModeOption,
+  ToolFilesystemAccess,
+  ToolNetworkAccess,
   ToolMode,
 } from '../../types.js';
 
@@ -72,8 +75,13 @@ interface SettingsPickerProps {
   toolPolicy?: {
     mode: ToolMode;
     executionMode: ToolExecutionMode;
-    executionModeOptions: ToolExecutionMode[];
+    executionModeOptions: ToolExecutionModeOption[];
+    filesystemAccess: ToolFilesystemAccess;
+    filesystemAccessOptions?: ToolFilesystemAccess[];
+    networkAccess: ToolNetworkAccess;
+    networkAccessOptions?: ToolNetworkAccess[];
     availableTools: ToolDescriptor[];
+    effectiveTools?: ToolDescriptor[];
     enabledToolNames: string[];
     catalogEntries?: ToolCatalogEntry[];
     installedToolNames?: string[];
@@ -83,6 +91,8 @@ interface SettingsPickerProps {
   onRefreshToolPolicy?: () => void;
   onSetToolMode?: (mode: ToolMode) => void;
   onSetExecutionMode?: (mode: ToolExecutionMode) => void;
+  onSetFilesystemAccess?: (mode: ToolFilesystemAccess) => void;
+  onSetNetworkAccess?: (mode: ToolNetworkAccess) => void;
   onSetToolEnabled?: (toolName: string, enabled: boolean) => void;
   talkGoogleAuthProfile?: string;
   googleAuthActiveProfile?: string;
@@ -188,6 +198,8 @@ export function SettingsPicker({
   onRefreshToolPolicy,
   onSetToolMode,
   onSetExecutionMode,
+  onSetFilesystemAccess,
+  onSetNetworkAccess,
   onSetToolEnabled,
   talkGoogleAuthProfile,
   googleAuthActiveProfile,
@@ -209,40 +221,55 @@ export function SettingsPicker({
   const sttProviders = voiceCaps?.sttProviders ?? [];
   const ttsProviders = voiceCaps?.ttsProviders ?? [];
   const realtimeProviders = realtimeVoiceCaps?.providers ?? [];
-  const toolRows = toolPolicy?.availableTools ?? [];
+  const toolRows = toolPolicy?.effectiveTools ?? toolPolicy?.availableTools ?? [];
   const catalogRows = toolPolicy?.catalogEntries ?? [];
   const authProfiles = googleAuthProfiles ?? [];
   const profileRowCount = 1 + authProfiles.length; // inherit + explicit profiles
-  const executionModes: ToolExecutionMode[] = toolPolicy?.executionModeOptions?.length
+  const executionModeOptions: ToolExecutionModeOption[] = toolPolicy?.executionModeOptions?.length
     ? toolPolicy.executionModeOptions
-    : ['openclaw', 'full_control'];
-  const executionModeDescriptions: Record<ToolExecutionMode, string> = {
-    openclaw: 'OpenClaw agent & tools',
-    full_control: 'ClawTalk agent & tools',
+    : [
+      { value: 'openclaw', label: 'openclaw_agent', title: 'OpenClaw Agent', description: 'Uses OpenClaw runtime capabilities.' },
+      { value: 'full_control', label: 'clawtalk_proxy', title: 'ClawTalk Proxy', description: 'Sends prompts directly via proxy.' },
+    ];
+  const filesystemOptions: ToolFilesystemAccess[] = toolPolicy?.filesystemAccessOptions?.length
+    ? toolPolicy.filesystemAccessOptions
+    : ['workspace_sandbox', 'full_host_access'];
+  const filesystemDescriptions: Record<ToolFilesystemAccess, string> = {
+    workspace_sandbox: 'Workspace Sandbox',
+    full_host_access: 'Full Host Access',
   };
-  const isFullControl = (toolPolicy?.executionMode ?? 'openclaw') === 'full_control';
+  const networkOptions: ToolNetworkAccess[] = toolPolicy?.networkAccessOptions?.length
+    ? toolPolicy.networkAccessOptions
+    : ['restricted', 'full_outbound'];
+  const networkDescriptions: Record<ToolNetworkAccess, string> = {
+    restricted: 'Restricted',
+    full_outbound: 'Full Outbound',
+  };
   const toolModes: ToolMode[] = ['off', 'confirm', 'auto'];
   const toolModeDescriptions: Record<ToolMode, string> = {
     off: 'model cannot use tools',
     confirm: 'approval required',
     auto: 'no approval',
   };
-  const toolApprovalRowCount = isFullControl ? toolModes.length : 0;
+  const executionRowCount = executionModeOptions.length;
+  const toolApprovalRowCount = toolModes.length;
+  const filesystemRowCount = filesystemOptions.length;
+  const networkRowCount = networkOptions.length;
+  const profileStartIndex = executionRowCount + toolApprovalRowCount + filesystemRowCount + networkRowCount;
+  const toolsStartIndex = profileStartIndex + profileRowCount;
+  const catalogStartIndex = toolsStartIndex + toolRows.length;
   const toolEnabledSet = new Set(toolPolicy?.enabledToolNames ?? []);
   const effectiveGoogleProfile = talkGoogleAuthProfile || googleAuthActiveProfile;
   const selectedGoogleProfile = authProfiles.find((profile) => profile.name === effectiveGoogleProfile);
   const toolBlockReasonByName = useMemo(() => {
     const reasons = new Map<string, string>();
-    const executionMode = toolPolicy?.executionMode ?? 'openclaw';
     for (const tool of toolRows) {
       let reason: string | undefined;
       if (tool.capability && tool.capability.runnable === false) {
         reason = tool.capability.reason || 'not runnable in this environment';
       }
-      // In openclaw mode, OpenClaw replaces the entire tools array with its own
-      // agent tools (Read/Write/exec), so no gateway tools are callable.
-      if (!reason && executionMode === 'openclaw') {
-        reason = 'requires Full Control mode';
+      if (!reason && typeof tool.reason === 'string' && tool.reason.trim()) {
+        reason = tool.reason.trim();
       }
       if (!reason && tool.name.toLowerCase().startsWith('google_')) {
         if (!effectiveGoogleProfile) {
@@ -261,7 +288,7 @@ export function SettingsPicker({
       if (reason) reasons.set(tool.name, reason);
     }
     return reasons;
-  }, [effectiveGoogleProfile, googleAuthStatus?.accessTokenReady, googleAuthStatus?.activeProfile, googleAuthStatus?.profile, selectedGoogleProfile, toolPolicy?.executionMode, toolRows]);
+  }, [effectiveGoogleProfile, googleAuthStatus?.accessTokenReady, googleAuthStatus?.activeProfile, googleAuthStatus?.profile, selectedGoogleProfile, toolRows]);
 
   useEffect(() => {
     const devs = getInputDevices();
@@ -355,7 +382,7 @@ export function SettingsPicker({
         : tab === 'stt' ? sttProviders.length - 1
         : tab === 'tts' ? ttsProviders.length - 1
         : tab === 'realtime' ? realtimeProviders.length - 1
-        : tab === 'tools' ? Math.max(0, executionModes.length + toolApprovalRowCount + profileRowCount + toolRows.length + catalogRows.length - 1)
+        : tab === 'tools' ? Math.max(0, executionRowCount + toolApprovalRowCount + filesystemRowCount + networkRowCount + profileRowCount + toolRows.length + catalogRows.length - 1)
         : tab === 'talk' ? 0
         : 0;
       setSelectedIndex(prev => Math.min(maxIndex, prev + 1));
@@ -405,21 +432,40 @@ export function SettingsPicker({
         setMessage(`Realtime provider: ${PROVIDER_LABELS[provider]}`);
         setTimeout(() => setMessage(null), 2000);
       } else if (tab === 'tools') {
-        if (selectedIndex < executionModes.length) {
-          const mode = executionModes[selectedIndex];
+        if (selectedIndex < executionRowCount) {
+          const mode = executionModeOptions[selectedIndex]?.value;
+          if (!mode) return;
           onSetExecutionMode?.(mode);
           setMessage(`Execution mode: ${mode}`);
           setTimeout(() => setMessage(null), 2000);
           return;
         }
-        if (isFullControl && selectedIndex < executionModes.length + toolApprovalRowCount) {
-          const mode = toolModes[selectedIndex - executionModes.length];
+        if (selectedIndex < executionRowCount + toolApprovalRowCount) {
+          const mode = toolModes[selectedIndex - executionRowCount];
           onSetToolMode?.(mode);
           setMessage(`Tool approval: ${mode}`);
           setTimeout(() => setMessage(null), 2000);
           return;
         }
-        const profileIndex = selectedIndex - executionModes.length - toolApprovalRowCount;
+        if (selectedIndex < executionRowCount + toolApprovalRowCount + filesystemRowCount) {
+          const mode = filesystemOptions[selectedIndex - executionRowCount - toolApprovalRowCount];
+          if (mode) {
+            onSetFilesystemAccess?.(mode);
+            setMessage(`Filesystem access: ${filesystemDescriptions[mode]}`);
+            setTimeout(() => setMessage(null), 2000);
+          }
+          return;
+        }
+        if (selectedIndex < executionRowCount + toolApprovalRowCount + filesystemRowCount + networkRowCount) {
+          const mode = networkOptions[selectedIndex - executionRowCount - toolApprovalRowCount - filesystemRowCount];
+          if (mode) {
+            onSetNetworkAccess?.(mode);
+            setMessage(`Network access: ${networkDescriptions[mode]}`);
+            setTimeout(() => setMessage(null), 2000);
+          }
+          return;
+        }
+        const profileIndex = selectedIndex - profileStartIndex;
         if (profileIndex >= 0 && profileIndex < profileRowCount) {
           if (profileIndex === 0) {
             onSetTalkGoogleAuthProfile?.(undefined);
@@ -435,7 +481,7 @@ export function SettingsPicker({
           return;
         }
 
-        const toolIndex = selectedIndex - executionModes.length - toolApprovalRowCount - profileRowCount;
+        const toolIndex = selectedIndex - toolsStartIndex;
         const tool = toolRows[toolIndex] ?? null;
         if (tool) {
           const blockedReason = toolBlockReasonByName.get(tool.name);
@@ -470,8 +516,8 @@ export function SettingsPicker({
     }
 
     if (tab === 'tools' && input === ' ') {
-      if (selectedIndex >= executionModes.length + toolApprovalRowCount + profileRowCount) {
-        const toolIndex = selectedIndex - executionModes.length - toolApprovalRowCount - profileRowCount;
+      if (selectedIndex >= toolsStartIndex && selectedIndex < catalogStartIndex) {
+        const toolIndex = selectedIndex - toolsStartIndex;
         const tool = toolRows[toolIndex];
         if (tool) {
           const blockedReason = toolBlockReasonByName.get(tool.name);
@@ -533,7 +579,7 @@ export function SettingsPicker({
         setMessage(`Realtime provider: ${PROVIDER_LABELS[provider]}`);
         setTimeout(() => setMessage(null), 2000);
       } else if (tab === 'tools') {
-        const max = executionModes.length + toolApprovalRowCount + profileRowCount + toolRows.length + catalogRows.length;
+        const max = executionRowCount + toolApprovalRowCount + filesystemRowCount + networkRowCount + profileRowCount + toolRows.length + catalogRows.length;
         if (idx < max) setSelectedIndex(idx);
       }
     }
@@ -690,34 +736,33 @@ export function SettingsPicker({
             <Text dimColor>Loading tool settings...</Text>
           ) : (
             <>
-              <Text dimColor>Tool mode controls whether the model can call tools automatically.</Text>
-              <Text dimColor>OpenClaw mode uses OpenClaw's agent & tools. Full Control uses ClawTalk's gateway tools.</Text>
+              <Text dimColor>Tool Approval controls whether the model can call tools automatically.</Text>
+              <Text dimColor>Execution Mode controls routing path. Filesystem/Network Access apply policy restrictions.</Text>
               <Text dimColor>Press c to connect another Google account in browser OAuth flow.</Text>
               <Box marginTop={1} flexDirection="column">
                 <Text bold>Execution Mode</Text>
-                {executionModes.map((mode, idx) => {
-                  const active = (toolPolicy?.executionMode ?? 'openclaw') === mode;
+                {executionModeOptions.map((mode, idx) => {
+                  const active = (toolPolicy?.executionMode ?? 'openclaw') === mode.value;
                   return (
-                    <Box key={mode}>
+                    <Box key={mode.value}>
                       <Text color={idx === selectedIndex ? 'cyan' : undefined}>
                         {idx === selectedIndex ? '▸ ' : '  '}
                       </Text>
                       <Text dimColor>{idx + 1}. </Text>
                       <Text color={active ? 'green' : undefined} bold={active}>
-                        {mode}
+                        {mode.title}
                       </Text>
-                      <Text dimColor> ({executionModeDescriptions[mode]})</Text>
+                      <Text dimColor> ({mode.description})</Text>
                       {active && <Text color="green"> (active)</Text>}
                     </Box>
                   );
                 })}
               </Box>
 
-              {isFullControl && (
               <Box marginTop={1} flexDirection="column">
                 <Text bold>Tool Approval</Text>
                 {toolModes.map((mode, idx) => {
-                  const rowIndex = executionModes.length + idx;
+                  const rowIndex = executionRowCount + idx;
                   const active = toolPolicy?.mode === mode;
                   return (
                     <Box key={mode}>
@@ -734,12 +779,51 @@ export function SettingsPicker({
                   );
                 })}
               </Box>
-              )}
+
+              <Box marginTop={1} flexDirection="column">
+                <Text bold>Filesystem Access</Text>
+                {filesystemOptions.map((mode, idx) => {
+                  const rowIndex = executionRowCount + toolApprovalRowCount + idx;
+                  const active = (toolPolicy?.filesystemAccess ?? 'full_host_access') === mode;
+                  return (
+                    <Box key={mode}>
+                      <Text color={rowIndex === selectedIndex ? 'cyan' : undefined}>
+                        {rowIndex === selectedIndex ? '▸ ' : '  '}
+                      </Text>
+                      <Text dimColor>{idx + 1}. </Text>
+                      <Text color={active ? 'green' : undefined} bold={active}>
+                        {filesystemDescriptions[mode]}
+                      </Text>
+                      {active && <Text color="green"> (active)</Text>}
+                    </Box>
+                  );
+                })}
+              </Box>
+
+              <Box marginTop={1} flexDirection="column">
+                <Text bold>Network Access</Text>
+                {networkOptions.map((mode, idx) => {
+                  const rowIndex = executionRowCount + toolApprovalRowCount + filesystemRowCount + idx;
+                  const active = (toolPolicy?.networkAccess ?? 'full_outbound') === mode;
+                  return (
+                    <Box key={mode}>
+                      <Text color={rowIndex === selectedIndex ? 'cyan' : undefined}>
+                        {rowIndex === selectedIndex ? '▸ ' : '  '}
+                      </Text>
+                      <Text dimColor>{idx + 1}. </Text>
+                      <Text color={active ? 'green' : undefined} bold={active}>
+                        {networkDescriptions[mode]}
+                      </Text>
+                      {active && <Text color="green"> (active)</Text>}
+                    </Box>
+                  );
+                })}
+              </Box>
 
               <Box marginTop={1} flexDirection="column">
                 <Text bold>Google Profile For This Talk</Text>
                 {[{ name: '__inherit__', hasClientId: false, hasClientSecret: false, hasRefreshToken: false }, ...authProfiles].map((profile, idx) => {
-                  const rowIndex = executionModes.length + toolApprovalRowCount + idx;
+                  const rowIndex = profileStartIndex + idx;
                   const selected = rowIndex === selectedIndex;
                   const isInherit = idx === 0;
                   const isActive = isInherit
@@ -781,8 +865,8 @@ export function SettingsPicker({
                   <Text dimColor>  (none installed)</Text>
                 ) : (
                   toolRows.map((tool, idx) => {
-                    const rowIndex = idx + executionModes.length + toolApprovalRowCount + profileRowCount;
-                    const enabled = toolEnabledSet.has(tool.name);
+                    const rowIndex = toolsStartIndex + idx;
+                    const enabled = tool.enabled ?? toolEnabledSet.has(tool.name);
                     const blockedReason = toolBlockReasonByName.get(tool.name);
                     const status = blockedReason ? 'blocked' : (enabled ? 'on' : 'off');
                     const statusColor: 'green' | 'yellow' = blockedReason ? 'yellow' : (enabled ? 'green' : 'yellow');
@@ -811,7 +895,7 @@ export function SettingsPicker({
                   <Text dimColor>  (catalog unavailable)</Text>
                 ) : (
                   catalogRows.map((entry, idx) => {
-                    const rowIndex = idx + executionModes.length + toolApprovalRowCount + profileRowCount + toolRows.length;
+                    const rowIndex = catalogStartIndex + idx;
                     const selected = rowIndex === selectedIndex;
                     const state = entry.installed
                       ? 'installed'

@@ -10,15 +10,45 @@ import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
-import type { Talk, Job, TalkAgent, AgentRole, Directive, PlatformBinding, PlatformBehavior, PlatformPermission, ToolExecutionMode } from '../types';
+import type {
+  Talk,
+  Job,
+  TalkAgent,
+  AgentRole,
+  Directive,
+  PlatformBinding,
+  PlatformBehavior,
+  PlatformPermission,
+  ToolExecutionMode,
+  ToolFilesystemAccess,
+  ToolNetworkAccess,
+} from '../types';
 
 /** Normalize executionMode from gateway, migrating old values from stale gateways. */
 function normalizeExecutionMode(raw: string | undefined): ToolExecutionMode | undefined {
   if (!raw) return undefined;
   const value = raw.trim().toLowerCase();
   if (value === 'openclaw' || value === 'full_control') return value;
+  if (value === 'openclaw_agent') return 'openclaw';
+  if (value === 'clawtalk_proxy' || value === 'raw_proxy') return 'full_control';
   if (value === 'unsandboxed') return 'full_control';
   if (value === 'inherit' || value === 'sandboxed') return 'openclaw';
+  return undefined;
+}
+
+function normalizeFilesystemAccess(raw: string | undefined): ToolFilesystemAccess | undefined {
+  if (!raw) return undefined;
+  const value = raw.trim().toLowerCase();
+  if (value === 'workspace_sandbox' || value === 'workspace' || value === 'sandbox') return 'workspace_sandbox';
+  if (value === 'full_host_access' || value === 'full_host' || value === 'full') return 'full_host_access';
+  return undefined;
+}
+
+function normalizeNetworkAccess(raw: string | undefined): ToolNetworkAccess | undefined {
+  if (!raw) return undefined;
+  const value = raw.trim().toLowerCase();
+  if (value === 'restricted') return 'restricted';
+  if (value === 'full_outbound' || value === 'full') return 'full_outbound';
   return undefined;
 }
 
@@ -799,6 +829,9 @@ export class TalkManager {
     channelResponseSettings?: PlatformBehavior[];
     toolMode?: 'off' | 'confirm' | 'auto';
     executionMode?: 'openclaw' | 'full_control' | 'inherit' | 'sandboxed' | 'unsandboxed';
+    executionModeLabel?: 'openclaw_agent' | 'clawtalk_proxy';
+    filesystemAccess?: ToolFilesystemAccess | 'workspace' | 'sandbox' | 'full';
+    networkAccess?: ToolNetworkAccess | 'full';
     toolsAllow?: string[];
     toolsDeny?: string[];
     googleAuthProfile?: string;
@@ -850,6 +883,8 @@ export class TalkManager {
       existing.platformBehaviors = resolvedBehaviors ?? existing.platformBehaviors;
       existing.toolMode = gwTalk.toolMode ?? existing.toolMode;
       existing.executionMode = normalizeExecutionMode(gwTalk.executionMode) ?? existing.executionMode;
+      existing.filesystemAccess = normalizeFilesystemAccess(gwTalk.filesystemAccess) ?? existing.filesystemAccess;
+      existing.networkAccess = normalizeNetworkAccess(gwTalk.networkAccess) ?? existing.networkAccess;
       existing.toolsAllow = gwTalk.toolsAllow ?? existing.toolsAllow;
       existing.toolsDeny = gwTalk.toolsDeny ?? existing.toolsDeny;
       if (Object.prototype.hasOwnProperty.call(gwTalk, 'googleAuthProfile')) {
@@ -877,6 +912,8 @@ export class TalkManager {
       platformBehaviors: resolvedBehaviors,
       toolMode: gwTalk.toolMode,
       executionMode: normalizeExecutionMode(gwTalk.executionMode),
+      filesystemAccess: normalizeFilesystemAccess(gwTalk.filesystemAccess),
+      networkAccess: normalizeNetworkAccess(gwTalk.networkAccess),
       toolsAllow: gwTalk.toolsAllow,
       toolsDeny: gwTalk.toolsDeny,
       googleAuthProfile: resolvedGoogleAuthProfile,

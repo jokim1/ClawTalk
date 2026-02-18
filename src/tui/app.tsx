@@ -8,7 +8,27 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { render, Box, Text, useInput, useApp, useStdout } from 'ink';
-import type { ClawTalkOptions, ModelStatus, Message, TalkAgent, AgentRole, PendingAttachment, Directive, PlatformBinding, PlatformBehavior, PlatformPermission, Job, ToolMode, ToolExecutionMode, ToolDescriptor, ToolCatalogEntry, GoogleAuthProfileSummary } from '../types.js';
+import type {
+  ClawTalkOptions,
+  ModelStatus,
+  Message,
+  TalkAgent,
+  AgentRole,
+  PendingAttachment,
+  Directive,
+  PlatformBinding,
+  PlatformBehavior,
+  PlatformPermission,
+  Job,
+  ToolMode,
+  ToolExecutionMode,
+  ToolExecutionModeOption,
+  ToolFilesystemAccess,
+  ToolNetworkAccess,
+  ToolDescriptor,
+  ToolCatalogEntry,
+  GoogleAuthProfileSummary,
+} from '../types.js';
 import type { Talk } from '../types.js';
 import { AGENT_ROLES, ROLE_BY_ID, AGENT_PREAMBLE, generateAgentName } from '../agent-roles.js';
 import type { RoleTemplate } from '../agent-roles.js';
@@ -60,7 +80,20 @@ interface AppProps {
 }
 
 const DEFAULT_EXECUTION_MODE: ToolExecutionMode = 'openclaw';
-const DEFAULT_EXECUTION_MODE_OPTIONS: ToolExecutionMode[] = ['openclaw', 'full_control'];
+const DEFAULT_EXECUTION_MODE_OPTIONS: ToolExecutionModeOption[] = [
+  {
+    value: 'openclaw',
+    label: 'openclaw_agent',
+    title: 'OpenClaw Agent',
+    description: 'Uses OpenClaw agent runtime capabilities and integrated tool/session behavior.',
+  },
+  {
+    value: 'full_control',
+    label: 'clawtalk_proxy',
+    title: 'ClawTalk Proxy',
+    description: 'Sends prompts directly with minimal OpenClaw runtime mediation.',
+  },
+];
 
 function formatBindingScopeLabel(binding: {
   scope: string;
@@ -216,7 +249,10 @@ function App({ options }: AppProps) {
   const [settingsToolPolicy, setSettingsToolPolicy] = useState<{
     mode: ToolMode;
     executionMode: ToolExecutionMode;
-    executionModeOptions: ToolExecutionMode[];
+    executionModeOptions: ToolExecutionModeOption[];
+    filesystemAccess: ToolFilesystemAccess;
+    networkAccess: ToolNetworkAccess;
+    effectiveTools: ToolDescriptor[];
     availableTools: ToolDescriptor[];
     enabledToolNames: string[];
     catalogEntries: ToolCatalogEntry[];
@@ -1667,6 +1703,8 @@ function App({ options }: AppProps) {
   const syncToolPolicyLocal = useCallback((
     mode?: ToolMode,
     executionMode?: ToolExecutionMode,
+    filesystemAccess?: ToolFilesystemAccess,
+    networkAccess?: ToolNetworkAccess,
     allow?: string[],
     deny?: string[],
     googleAuthProfile?: string,
@@ -1676,6 +1714,8 @@ function App({ options }: AppProps) {
     if (!talk) return;
     talk.toolMode = mode ?? talk.toolMode;
     talk.executionMode = executionMode ?? talk.executionMode;
+    talk.filesystemAccess = filesystemAccess ?? talk.filesystemAccess;
+    talk.networkAccess = networkAccess ?? talk.networkAccess;
     talk.toolsAllow = allow ?? talk.toolsAllow;
     talk.toolsDeny = deny ?? talk.toolsDeny;
     if (googleAuthProfile !== undefined) {
@@ -1698,7 +1738,7 @@ function App({ options }: AppProps) {
         chat.setMessages(prev => [...prev, sysMsg]);
         return;
       }
-      syncToolPolicyLocal(policy.toolMode, policy.executionMode, policy.toolsAllow, policy.toolsDeny, policy.googleAuthProfile);
+      syncToolPolicyLocal(policy.toolMode, policy.executionMode, policy.filesystemAccess, policy.networkAccess, policy.toolsAllow, policy.toolsDeny, policy.googleAuthProfile);
       const availableNames = policy.availableTools.map((t) => t.name).join(', ') || '(none)';
       const enabledNames = policy.enabledTools.map((t) => t.name).join(', ') || '(none)';
       const allow = policy.toolsAllow.join(', ') || '(all)';
@@ -1708,6 +1748,8 @@ function App({ options }: AppProps) {
         `Tool policy:\n` +
         `  mode: ${policy.toolMode}\n` +
         `  executionMode: ${policy.executionMode ?? DEFAULT_EXECUTION_MODE}\n` +
+        `  filesystemAccess: ${policy.filesystemAccess ?? 'full_host_access'}\n` +
+        `  networkAccess: ${policy.networkAccess ?? 'full_outbound'}\n` +
         `  allow: ${allow}\n` +
         `  deny: ${deny}\n` +
         `  googleAuthProfile: ${policy.googleAuthProfile ?? '(inherit active profile)'}\n` +
@@ -1726,7 +1768,7 @@ function App({ options }: AppProps) {
         setError('Failed to update tool mode on gateway');
         return;
       }
-      syncToolPolicyLocal(policy.toolMode, policy.executionMode, policy.toolsAllow, policy.toolsDeny, policy.googleAuthProfile);
+      syncToolPolicyLocal(policy.toolMode, policy.executionMode, policy.filesystemAccess, policy.networkAccess, policy.toolsAllow, policy.toolsDeny, policy.googleAuthProfile);
       const sysMsg = createMessage('system', `Tool mode set to ${policy.toolMode}.`);
       chat.setMessages(prev => [...prev, sysMsg]);
     });
@@ -1740,7 +1782,7 @@ function App({ options }: AppProps) {
       const next = Array.from(new Set([...(policy.toolsAllow ?? []), toolName]));
       chatServiceRef.current?.updateGatewayTalkTools(gwId, { toolsAllow: next }).then((updated) => {
         if (!updated) { setError('Failed to update tool allow-list'); return; }
-        syncToolPolicyLocal(updated.toolMode, updated.executionMode, updated.toolsAllow, updated.toolsDeny, updated.googleAuthProfile);
+        syncToolPolicyLocal(updated.toolMode, updated.executionMode, updated.filesystemAccess, updated.networkAccess, updated.toolsAllow, updated.toolsDeny, updated.googleAuthProfile);
         chat.setMessages(prev => [...prev, createMessage('system', `Allowed tool added: ${toolName}`)]);
       });
     });
@@ -1754,7 +1796,7 @@ function App({ options }: AppProps) {
       const next = (policy.toolsAllow ?? []).filter((name) => name.toLowerCase() !== toolName.toLowerCase());
       chatServiceRef.current?.updateGatewayTalkTools(gwId, { toolsAllow: next }).then((updated) => {
         if (!updated) { setError('Failed to update tool allow-list'); return; }
-        syncToolPolicyLocal(updated.toolMode, updated.executionMode, updated.toolsAllow, updated.toolsDeny, updated.googleAuthProfile);
+        syncToolPolicyLocal(updated.toolMode, updated.executionMode, updated.filesystemAccess, updated.networkAccess, updated.toolsAllow, updated.toolsDeny, updated.googleAuthProfile);
         chat.setMessages(prev => [...prev, createMessage('system', `Allowed tool removed: ${toolName}`)]);
       });
     });
@@ -1765,7 +1807,7 @@ function App({ options }: AppProps) {
     if (!gwId || !chatServiceRef.current) return;
     chatServiceRef.current.updateGatewayTalkTools(gwId, { toolsAllow: [] }).then((updated) => {
       if (!updated) { setError('Failed to clear tool allow-list'); return; }
-      syncToolPolicyLocal(updated.toolMode, updated.executionMode, updated.toolsAllow, updated.toolsDeny, updated.googleAuthProfile);
+      syncToolPolicyLocal(updated.toolMode, updated.executionMode, updated.filesystemAccess, updated.networkAccess, updated.toolsAllow, updated.toolsDeny, updated.googleAuthProfile);
       chat.setMessages(prev => [...prev, createMessage('system', 'Tool allow-list cleared (all tools allowed unless denied).')]);
     });
   }, [syncToolPolicyLocal]);
@@ -1778,7 +1820,7 @@ function App({ options }: AppProps) {
       const next = Array.from(new Set([...(policy.toolsDeny ?? []), toolName]));
       chatServiceRef.current?.updateGatewayTalkTools(gwId, { toolsDeny: next }).then((updated) => {
         if (!updated) { setError('Failed to update tool deny-list'); return; }
-        syncToolPolicyLocal(updated.toolMode, updated.executionMode, updated.toolsAllow, updated.toolsDeny, updated.googleAuthProfile);
+        syncToolPolicyLocal(updated.toolMode, updated.executionMode, updated.filesystemAccess, updated.networkAccess, updated.toolsAllow, updated.toolsDeny, updated.googleAuthProfile);
         chat.setMessages(prev => [...prev, createMessage('system', `Denied tool added: ${toolName}`)]);
       });
     });
@@ -1792,7 +1834,7 @@ function App({ options }: AppProps) {
       const next = (policy.toolsDeny ?? []).filter((name) => name.toLowerCase() !== toolName.toLowerCase());
       chatServiceRef.current?.updateGatewayTalkTools(gwId, { toolsDeny: next }).then((updated) => {
         if (!updated) { setError('Failed to update tool deny-list'); return; }
-        syncToolPolicyLocal(updated.toolMode, updated.executionMode, updated.toolsAllow, updated.toolsDeny, updated.googleAuthProfile);
+        syncToolPolicyLocal(updated.toolMode, updated.executionMode, updated.filesystemAccess, updated.networkAccess, updated.toolsAllow, updated.toolsDeny, updated.googleAuthProfile);
         chat.setMessages(prev => [...prev, createMessage('system', `Denied tool removed: ${toolName}`)]);
       });
     });
@@ -1803,7 +1845,7 @@ function App({ options }: AppProps) {
     if (!gwId || !chatServiceRef.current) return;
     chatServiceRef.current.updateGatewayTalkTools(gwId, { toolsDeny: [] }).then((updated) => {
       if (!updated) { setError('Failed to clear tool deny-list'); return; }
-      syncToolPolicyLocal(updated.toolMode, updated.executionMode, updated.toolsAllow, updated.toolsDeny, updated.googleAuthProfile);
+      syncToolPolicyLocal(updated.toolMode, updated.executionMode, updated.filesystemAccess, updated.networkAccess, updated.toolsAllow, updated.toolsDeny, updated.googleAuthProfile);
       chat.setMessages(prev => [...prev, createMessage('system', 'Tool deny-list cleared.')]);
     });
   }, [syncToolPolicyLocal]);
@@ -1862,6 +1904,9 @@ function App({ options }: AppProps) {
         mode,
         executionMode,
         executionModeOptions: DEFAULT_EXECUTION_MODE_OPTIONS,
+        filesystemAccess: talk?.filesystemAccess ?? 'full_host_access',
+        networkAccess: talk?.networkAccess ?? 'full_outbound',
+        effectiveTools: [],
         availableTools: [],
         enabledToolNames: talk?.toolsAllow ?? [],
         catalogEntries: [],
@@ -1915,6 +1960,9 @@ function App({ options }: AppProps) {
           mode,
           executionMode,
           executionModeOptions: DEFAULT_EXECUTION_MODE_OPTIONS,
+          filesystemAccess: talk?.filesystemAccess ?? 'full_host_access',
+          networkAccess: talk?.networkAccess ?? 'full_outbound',
+          effectiveTools: [],
           availableTools: [],
           enabledToolNames: talk?.toolsAllow ?? [],
           catalogEntries: catalog?.catalog ?? [],
@@ -1971,11 +2019,14 @@ function App({ options }: AppProps) {
           },
         ];
       })();
-      syncToolPolicyLocal(policy.toolMode, policy.executionMode, policy.toolsAllow, policy.toolsDeny, policy.googleAuthProfile);
+      syncToolPolicyLocal(policy.toolMode, policy.executionMode, policy.filesystemAccess, policy.networkAccess, policy.toolsAllow, policy.toolsDeny, policy.googleAuthProfile);
       setSettingsToolPolicy({
         mode: policy.toolMode,
         executionMode: policy.executionMode ?? talk?.executionMode ?? DEFAULT_EXECUTION_MODE,
         executionModeOptions: policy.executionModeOptions ?? DEFAULT_EXECUTION_MODE_OPTIONS,
+        filesystemAccess: policy.filesystemAccess ?? talk?.filesystemAccess ?? 'full_host_access',
+        networkAccess: policy.networkAccess ?? talk?.networkAccess ?? 'full_outbound',
+        effectiveTools: policy.effectiveTools ?? policy.availableTools,
         availableTools: policy.availableTools,
         enabledToolNames: policy.enabledTools.map((tool) => tool.name),
         catalogEntries: catalog?.catalog ?? [],
@@ -1997,7 +2048,7 @@ function App({ options }: AppProps) {
     const gwId = gatewayTalkIdRef.current;
     if (!gwId || !chatServiceRef.current) {
       setSettingsToolPolicy((prev) => prev ? { ...prev, mode } : prev);
-      syncToolPolicyLocal(mode, undefined, undefined, undefined);
+      syncToolPolicyLocal(mode, undefined, undefined, undefined, undefined, undefined);
       return;
     }
     chatServiceRef.current.updateGatewayTalkTools(gwId, { toolMode: mode }).then((policy) => {
@@ -2005,11 +2056,14 @@ function App({ options }: AppProps) {
         setError('Failed to update tool mode on gateway');
         return;
       }
-      syncToolPolicyLocal(policy.toolMode, policy.executionMode, policy.toolsAllow, policy.toolsDeny, policy.googleAuthProfile);
+      syncToolPolicyLocal(policy.toolMode, policy.executionMode, policy.filesystemAccess, policy.networkAccess, policy.toolsAllow, policy.toolsDeny, policy.googleAuthProfile);
       setSettingsToolPolicy((prev) => ({
         mode: policy.toolMode,
         executionMode: policy.executionMode ?? prev?.executionMode ?? DEFAULT_EXECUTION_MODE,
         executionModeOptions: policy.executionModeOptions ?? prev?.executionModeOptions ?? DEFAULT_EXECUTION_MODE_OPTIONS,
+        filesystemAccess: policy.filesystemAccess ?? prev?.filesystemAccess ?? 'full_host_access',
+        networkAccess: policy.networkAccess ?? prev?.networkAccess ?? 'full_outbound',
+        effectiveTools: policy.effectiveTools ?? policy.availableTools,
         availableTools: policy.availableTools,
         enabledToolNames: policy.enabledTools.map((tool) => tool.name),
         catalogEntries: prev?.catalogEntries ?? [],
@@ -2026,7 +2080,7 @@ function App({ options }: AppProps) {
     const gwId = gatewayTalkIdRef.current;
     if (!gwId || !chatServiceRef.current) {
       setSettingsToolPolicy((prev) => prev ? { ...prev, executionMode } : prev);
-      syncToolPolicyLocal(undefined, executionMode, undefined, undefined);
+      syncToolPolicyLocal(undefined, executionMode, undefined, undefined, undefined, undefined);
       return;
     }
     chatServiceRef.current.updateGatewayTalkTools(gwId, { executionMode }).then((policy) => {
@@ -2034,11 +2088,78 @@ function App({ options }: AppProps) {
         setError('Failed to update execution mode on gateway');
         return;
       }
-      syncToolPolicyLocal(policy.toolMode, policy.executionMode, policy.toolsAllow, policy.toolsDeny, policy.googleAuthProfile);
+      syncToolPolicyLocal(policy.toolMode, policy.executionMode, policy.filesystemAccess, policy.networkAccess, policy.toolsAllow, policy.toolsDeny, policy.googleAuthProfile);
       setSettingsToolPolicy((prev) => ({
         mode: policy.toolMode,
         executionMode: policy.executionMode ?? prev?.executionMode ?? DEFAULT_EXECUTION_MODE,
         executionModeOptions: policy.executionModeOptions ?? prev?.executionModeOptions ?? DEFAULT_EXECUTION_MODE_OPTIONS,
+        filesystemAccess: policy.filesystemAccess ?? prev?.filesystemAccess ?? 'full_host_access',
+        networkAccess: policy.networkAccess ?? prev?.networkAccess ?? 'full_outbound',
+        effectiveTools: policy.effectiveTools ?? policy.availableTools,
+        availableTools: policy.availableTools,
+        enabledToolNames: policy.enabledTools.map((tool) => tool.name),
+        catalogEntries: prev?.catalogEntries ?? [],
+        installedToolNames: prev?.installedToolNames ?? [],
+        talkGoogleAuthProfile: policy.googleAuthProfile,
+        googleAuthActiveProfile: prev?.googleAuthActiveProfile,
+        googleAuthProfiles: prev?.googleAuthProfiles ?? [],
+        googleAuthStatus: prev?.googleAuthStatus,
+      }));
+    });
+  }, [syncToolPolicyLocal]);
+
+  const handleSettingsSetFilesystemAccess = useCallback((filesystemAccess: ToolFilesystemAccess) => {
+    const gwId = gatewayTalkIdRef.current;
+    if (!gwId || !chatServiceRef.current) {
+      setSettingsToolPolicy((prev) => prev ? { ...prev, filesystemAccess } : prev);
+      syncToolPolicyLocal(undefined, undefined, filesystemAccess, undefined, undefined, undefined);
+      return;
+    }
+    chatServiceRef.current.updateGatewayTalkTools(gwId, { filesystemAccess }).then((policy) => {
+      if (!policy) {
+        setError('Failed to update filesystem access on gateway');
+        return;
+      }
+      syncToolPolicyLocal(policy.toolMode, policy.executionMode, policy.filesystemAccess, policy.networkAccess, policy.toolsAllow, policy.toolsDeny, policy.googleAuthProfile);
+      setSettingsToolPolicy((prev) => ({
+        mode: policy.toolMode,
+        executionMode: policy.executionMode ?? prev?.executionMode ?? DEFAULT_EXECUTION_MODE,
+        executionModeOptions: policy.executionModeOptions ?? prev?.executionModeOptions ?? DEFAULT_EXECUTION_MODE_OPTIONS,
+        filesystemAccess: policy.filesystemAccess ?? prev?.filesystemAccess ?? 'full_host_access',
+        networkAccess: policy.networkAccess ?? prev?.networkAccess ?? 'full_outbound',
+        effectiveTools: policy.effectiveTools ?? policy.availableTools,
+        availableTools: policy.availableTools,
+        enabledToolNames: policy.enabledTools.map((tool) => tool.name),
+        catalogEntries: prev?.catalogEntries ?? [],
+        installedToolNames: prev?.installedToolNames ?? [],
+        talkGoogleAuthProfile: policy.googleAuthProfile,
+        googleAuthActiveProfile: prev?.googleAuthActiveProfile,
+        googleAuthProfiles: prev?.googleAuthProfiles ?? [],
+        googleAuthStatus: prev?.googleAuthStatus,
+      }));
+    });
+  }, [syncToolPolicyLocal]);
+
+  const handleSettingsSetNetworkAccess = useCallback((networkAccess: ToolNetworkAccess) => {
+    const gwId = gatewayTalkIdRef.current;
+    if (!gwId || !chatServiceRef.current) {
+      setSettingsToolPolicy((prev) => prev ? { ...prev, networkAccess } : prev);
+      syncToolPolicyLocal(undefined, undefined, undefined, networkAccess, undefined, undefined);
+      return;
+    }
+    chatServiceRef.current.updateGatewayTalkTools(gwId, { networkAccess }).then((policy) => {
+      if (!policy) {
+        setError('Failed to update network access on gateway');
+        return;
+      }
+      syncToolPolicyLocal(policy.toolMode, policy.executionMode, policy.filesystemAccess, policy.networkAccess, policy.toolsAllow, policy.toolsDeny, policy.googleAuthProfile);
+      setSettingsToolPolicy((prev) => ({
+        mode: policy.toolMode,
+        executionMode: policy.executionMode ?? prev?.executionMode ?? DEFAULT_EXECUTION_MODE,
+        executionModeOptions: policy.executionModeOptions ?? prev?.executionModeOptions ?? DEFAULT_EXECUTION_MODE_OPTIONS,
+        filesystemAccess: policy.filesystemAccess ?? prev?.filesystemAccess ?? 'full_host_access',
+        networkAccess: policy.networkAccess ?? prev?.networkAccess ?? 'full_outbound',
+        effectiveTools: policy.effectiveTools ?? policy.availableTools,
         availableTools: policy.availableTools,
         enabledToolNames: policy.enabledTools.map((tool) => tool.name),
         catalogEntries: prev?.catalogEntries ?? [],
@@ -2062,7 +2183,7 @@ function App({ options }: AppProps) {
 
     if (!gwId || !chatServiceRef.current) {
       setSettingsToolPolicy({ ...current, enabledToolNames: nextEnabled });
-      syncToolPolicyLocal(undefined, undefined, nextEnabled, []);
+      syncToolPolicyLocal(undefined, undefined, undefined, undefined, nextEnabled, []);
       return;
     }
 
@@ -2074,11 +2195,14 @@ function App({ options }: AppProps) {
         setError('Failed to update enabled tools on gateway');
         return;
       }
-      syncToolPolicyLocal(policy.toolMode, policy.executionMode, policy.toolsAllow, policy.toolsDeny, policy.googleAuthProfile);
+      syncToolPolicyLocal(policy.toolMode, policy.executionMode, policy.filesystemAccess, policy.networkAccess, policy.toolsAllow, policy.toolsDeny, policy.googleAuthProfile);
       setSettingsToolPolicy((prev) => ({
         mode: policy.toolMode,
         executionMode: policy.executionMode ?? prev?.executionMode ?? DEFAULT_EXECUTION_MODE,
         executionModeOptions: policy.executionModeOptions ?? prev?.executionModeOptions ?? DEFAULT_EXECUTION_MODE_OPTIONS,
+        filesystemAccess: policy.filesystemAccess ?? prev?.filesystemAccess ?? 'full_host_access',
+        networkAccess: policy.networkAccess ?? prev?.networkAccess ?? 'full_outbound',
+        effectiveTools: policy.effectiveTools ?? policy.availableTools,
         availableTools: policy.availableTools,
         enabledToolNames: policy.enabledTools.map((tool) => tool.name),
         catalogEntries: prev?.catalogEntries ?? [],
@@ -2098,7 +2222,7 @@ function App({ options }: AppProps) {
 
     if (!gwId || !chatServiceRef.current) {
       setSettingsToolPolicy({ ...current, talkGoogleAuthProfile: profile });
-      syncToolPolicyLocal(undefined, undefined, undefined, undefined, profile ?? '');
+      syncToolPolicyLocal(undefined, undefined, undefined, undefined, undefined, undefined, profile ?? '');
       return;
     }
 
@@ -2109,11 +2233,14 @@ function App({ options }: AppProps) {
         setError('Failed to update Google auth profile for this talk');
         return;
       }
-      syncToolPolicyLocal(policy.toolMode, policy.executionMode, policy.toolsAllow, policy.toolsDeny, policy.googleAuthProfile);
+      syncToolPolicyLocal(policy.toolMode, policy.executionMode, policy.filesystemAccess, policy.networkAccess, policy.toolsAllow, policy.toolsDeny, policy.googleAuthProfile);
       setSettingsToolPolicy((prev) => ({
         mode: policy.toolMode,
         executionMode: policy.executionMode ?? prev?.executionMode ?? DEFAULT_EXECUTION_MODE,
         executionModeOptions: policy.executionModeOptions ?? prev?.executionModeOptions ?? DEFAULT_EXECUTION_MODE_OPTIONS,
+        filesystemAccess: policy.filesystemAccess ?? prev?.filesystemAccess ?? 'full_host_access',
+        networkAccess: policy.networkAccess ?? prev?.networkAccess ?? 'full_outbound',
+        effectiveTools: policy.effectiveTools ?? policy.availableTools,
         availableTools: policy.availableTools,
         enabledToolNames: policy.enabledTools.map((tool) => tool.name),
         catalogEntries: prev?.catalogEntries ?? [],
@@ -2628,6 +2755,10 @@ function App({ options }: AppProps) {
           const preview = chunk.content.slice(0, 150) + (chunk.content.length > 150 ? '...' : '');
           const toolMsg = createMessage('system', `[${agent.name} → Tool ${status}] ${chunk.name} (${chunk.durationMs}ms): ${preview}`);
           chat.setMessages(prev => [...prev, toolMsg]);
+        } else if (chunk.type === 'status') {
+          const prefix = chunk.level === 'warn' || chunk.level === 'error' ? 'Status' : 'Info';
+          const statusMsg = createMessage('system', `[${agent.name} → ${prefix}] ${chunk.message}`);
+          chat.setMessages(prev => [...prev, statusMsg]);
         }
       }
 
@@ -2690,6 +2821,18 @@ function App({ options }: AppProps) {
       const rawMessage = err instanceof Error ? err.message : 'Unknown error';
       // Map low-level errors to user-friendly messages
       let errorMessage = rawMessage;
+      let errorHint: string | undefined;
+      if (err instanceof GatewayStreamError) {
+        if (err.code === 'MODE_BLOCKED_BROWSER') {
+          errorMessage = 'Browser control blocked by current execution mode';
+          errorHint = err.hint;
+        } else if (err.code === 'FIRST_TOKEN_TIMEOUT') {
+          errorMessage = 'Request timed out waiting for first model token';
+          errorHint = err.hint;
+        } else if (err.hint) {
+          errorHint = err.hint;
+        }
+      }
       if (/\bterminated\b|aborted|abort/i.test(rawMessage)) {
         errorMessage = 'Request was interrupted';
       } else if (/fetch failed|network error|connection refused|econnrefused/i.test(rawMessage)) {
@@ -2697,7 +2840,7 @@ function App({ options }: AppProps) {
       } else if (/timeout/i.test(rawMessage)) {
         errorMessage = 'Request timed out';
       }
-      const errMsg = createMessage('system', `${agent.name} error: ${errorMessage}`);
+      const errMsg = createMessage('system', `${agent.name} error: ${errorMessage}${errorHint ? `\nHint: ${errorHint}` : ''}`);
       chat.setMessages(prev => {
         const filtered = prev.filter(m => m.id !== indicatorMsg.id);
         return [...filtered, errMsg];
@@ -3704,6 +3847,8 @@ function App({ options }: AppProps) {
             onRefreshToolPolicy={refreshSettingsToolPolicy}
             onSetToolMode={handleSettingsSetToolMode}
             onSetExecutionMode={handleSettingsSetExecutionMode}
+            onSetFilesystemAccess={handleSettingsSetFilesystemAccess}
+            onSetNetworkAccess={handleSettingsSetNetworkAccess}
             onSetToolEnabled={handleSettingsSetToolEnabled}
             talkGoogleAuthProfile={settingsToolPolicy?.talkGoogleAuthProfile}
             googleAuthActiveProfile={settingsToolPolicy?.googleAuthActiveProfile}

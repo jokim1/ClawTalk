@@ -19,6 +19,8 @@ import type {
   ToolCatalogResponse,
   ToolMode,
   ToolExecutionMode,
+  ToolFilesystemAccess,
+  ToolNetworkAccess,
   GoogleAuthProfileSummary,
 } from '../types.js';
 import type { IChatService } from './interfaces.js';
@@ -130,6 +132,8 @@ type TalkUpdatePayload = {
   channelResponseSettings?: PlatformBehavior[];
   toolMode?: ToolMode;
   executionMode?: ToolExecutionMode;
+  filesystemAccess?: ToolFilesystemAccess;
+  networkAccess?: ToolNetworkAccess;
   toolsAllow?: string[];
   toolsDeny?: string[];
   googleAuthProfile?: string;
@@ -146,6 +150,8 @@ function toTalkUpdatePayload(updates: {
   platformBehaviors?: PlatformBehavior[];
   toolMode?: ToolMode;
   executionMode?: ToolExecutionMode;
+  filesystemAccess?: ToolFilesystemAccess;
+  networkAccess?: ToolNetworkAccess;
   toolsAllow?: string[];
   toolsDeny?: string[];
   googleAuthProfile?: string;
@@ -172,6 +178,12 @@ function toTalkUpdatePayload(updates: {
   }
   if (updates.executionMode !== undefined) {
     payload.executionMode = updates.executionMode;
+  }
+  if (updates.filesystemAccess !== undefined) {
+    payload.filesystemAccess = updates.filesystemAccess;
+  }
+  if (updates.networkAccess !== undefined) {
+    payload.networkAccess = updates.networkAccess;
   }
   if (updates.toolsAllow !== undefined) {
     payload.toolsAllow = updates.toolsAllow;
@@ -292,12 +304,23 @@ const TRANSIENT_CODES = new Set([429, 500, 502, 503, 529]);
 export class GatewayStreamError extends Error {
   transient: boolean;
   partialContent: string;
+  code?: string;
+  hint?: string;
+  retryable?: boolean;
 
-  constructor(message: string, transient: boolean, partialContent: string) {
+  constructor(
+    message: string,
+    transient: boolean,
+    partialContent: string,
+    extras?: { code?: string; hint?: string; retryable?: boolean },
+  ) {
     super(message);
     this.name = 'GatewayStreamError';
     this.transient = transient;
     this.partialContent = partialContent;
+    this.code = extras?.code;
+    this.hint = extras?.hint;
+    this.retryable = extras?.retryable;
   }
 }
 
@@ -523,6 +546,8 @@ export class ChatService implements IChatService {
     platformBehaviors?: PlatformBehavior[];
     toolMode?: ToolMode;
     executionMode?: ToolExecutionMode;
+    filesystemAccess?: ToolFilesystemAccess;
+    networkAccess?: ToolNetworkAccess;
     toolsAllow?: string[];
     toolsDeny?: string[];
     googleAuthProfile?: string;
@@ -688,7 +713,7 @@ export class ChatService implements IChatService {
   /** Update tool policy for a gateway talk. */
   async updateGatewayTalkTools(
     talkId: string,
-    updates: Partial<Pick<TalkToolPolicy, 'toolMode' | 'executionMode' | 'toolsAllow' | 'toolsDeny' | 'googleAuthProfile'>>,
+    updates: Partial<Pick<TalkToolPolicy, 'toolMode' | 'executionMode' | 'filesystemAccess' | 'networkAccess' | 'toolsAllow' | 'toolsDeny' | 'googleAuthProfile'>>,
   ): Promise<TalkToolPolicy | null> {
     try {
       const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}/tools`, {
@@ -1041,10 +1066,10 @@ export class ChatService implements IChatService {
       buffer = lines.pop() ?? '';
 
       for (const line of lines) {
-        // Track event type for tool_start / tool_end / error
+        // Track custom event type for tool/status/error payload parsing.
         if (line.startsWith('event: ')) {
           const eventType = line.slice(7).trim();
-          if (eventType === 'tool_start' || eventType === 'tool_end' || eventType === 'error' || eventType === 'content_reset') {
+          if (eventType === 'tool_start' || eventType === 'tool_end' || eventType === 'status' || eventType === 'error' || eventType === 'content_reset') {
             pendingEvent = eventType;
           } else {
             pendingEvent = null; // Skip other custom events (meta, etc.)
@@ -1064,11 +1089,31 @@ export class ChatService implements IChatService {
                 parsed.message ?? 'Unknown gateway error',
                 parsed.transient ?? false,
                 accumulatedContent,
+                {
+                  code: typeof parsed.code === 'string' ? parsed.code : undefined,
+                  hint: typeof parsed.hint === 'string' ? parsed.hint : undefined,
+                  retryable: typeof parsed.retryable === 'boolean' ? parsed.retryable : undefined,
+                },
               );
             } catch (e) {
               if (e instanceof GatewayStreamError) throw e;
               // Parse error — ignore
             }
+            pendingEvent = null;
+            continue;
+          }
+
+          if (pendingEvent === 'status') {
+            try {
+              const parsed = JSON.parse(data);
+              yield {
+                type: 'status',
+                code: typeof parsed.code === 'string' ? parsed.code : 'STATUS',
+                message: typeof parsed.message === 'string' ? parsed.message : 'Status update',
+                level: parsed.level === 'warn' || parsed.level === 'error' ? parsed.level : 'info',
+                meta: typeof parsed.meta === 'object' && parsed.meta ? parsed.meta : undefined,
+              };
+            } catch { /* ignore parse error */ }
             pendingEvent = null;
             continue;
           }
@@ -1205,10 +1250,10 @@ export class ChatService implements IChatService {
       buffer = lines.pop() ?? '';
 
       for (const line of lines) {
-        // Track event type for tool_start / tool_end / error
+        // Track custom event type for tool/status/error payload parsing.
         if (line.startsWith('event: ')) {
           const eventType = line.slice(7).trim();
-          if (eventType === 'tool_start' || eventType === 'tool_end' || eventType === 'error' || eventType === 'content_reset') {
+          if (eventType === 'tool_start' || eventType === 'tool_end' || eventType === 'status' || eventType === 'error' || eventType === 'content_reset') {
             pendingEvent = eventType;
           } else {
             pendingEvent = null;
@@ -1228,11 +1273,31 @@ export class ChatService implements IChatService {
                 parsed.message ?? 'Unknown gateway error',
                 parsed.transient ?? false,
                 accumulatedContent,
+                {
+                  code: typeof parsed.code === 'string' ? parsed.code : undefined,
+                  hint: typeof parsed.hint === 'string' ? parsed.hint : undefined,
+                  retryable: typeof parsed.retryable === 'boolean' ? parsed.retryable : undefined,
+                },
               );
             } catch (e) {
               if (e instanceof GatewayStreamError) throw e;
               // Parse error — ignore
             }
+            pendingEvent = null;
+            continue;
+          }
+
+          if (pendingEvent === 'status') {
+            try {
+              const parsed = JSON.parse(data);
+              yield {
+                type: 'status',
+                code: typeof parsed.code === 'string' ? parsed.code : 'STATUS',
+                message: typeof parsed.message === 'string' ? parsed.message : 'Status update',
+                level: parsed.level === 'warn' || parsed.level === 'error' ? parsed.level : 'info',
+                meta: typeof parsed.meta === 'object' && parsed.meta ? parsed.meta : undefined,
+              };
+            } catch { /* ignore parse error */ }
             pendingEvent = null;
             continue;
           }

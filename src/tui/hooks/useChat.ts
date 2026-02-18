@@ -126,6 +126,12 @@ export function useChat(
               const toolMsg = createMessage('system', `[Tool ${status}] ${chunk.name} (${chunk.durationMs}ms): ${preview}`);
               setMessages(prev => [...prev, toolMsg]);
             }
+          } else if (chunk.type === 'status') {
+            if (isStillOnSameTalk()) {
+              const prefix = chunk.level === 'warn' || chunk.level === 'error' ? 'Status' : 'Info';
+              const statusMsg = createMessage('system', `[${prefix}] ${chunk.message}`);
+              setMessages(prev => [...prev, statusMsg]);
+            }
           }
         }
       } else {
@@ -251,6 +257,12 @@ export function useChat(
               if (isStillOnSameTalk()) {
                 setStreamingContent('');
               }
+            } else if (chunk.type === 'status') {
+              if (isStillOnSameTalk()) {
+                const prefix = chunk.level === 'warn' || chunk.level === 'error' ? 'Status' : 'Info';
+                const statusMsg = createMessage('system', `[${prefix}] ${chunk.message}`);
+                setMessages(prev => [...prev, statusMsg]);
+              }
             }
           }
 
@@ -327,6 +339,18 @@ export function useChat(
 
       // Map low-level errors to user-friendly messages
       let errorMessage = rawMessage;
+      let errorHint: string | undefined;
+      if (err instanceof GatewayStreamError) {
+        if (err.code === 'MODE_BLOCKED_BROWSER') {
+          errorMessage = 'Browser control blocked by current execution mode.';
+          errorHint = err.hint;
+        } else if (err.code === 'FIRST_TOKEN_TIMEOUT') {
+          errorMessage = 'Request timed out waiting for first model token.';
+          errorHint = err.hint;
+        } else if (err.hint) {
+          errorHint = err.hint;
+        }
+      }
       if (/\bterminated\b|aborted|abort/i.test(rawMessage)) {
         errorMessage = 'Request was interrupted. Please try again.';
       } else if (/fetch failed|network error|connection refused|econnrefused/i.test(rawMessage)) {
@@ -336,8 +360,8 @@ export function useChat(
       }
 
       if (isStillOnSameTalk()) {
-        setErrorRef.current(errorMessage);
-        const sysMsg = createMessage('system', `Error: ${errorMessage}`);
+        setErrorRef.current(errorHint ? `${errorMessage} ${errorHint}` : errorMessage);
+        const sysMsg = createMessage('system', `Error: ${errorMessage}${errorHint ? `\nHint: ${errorHint}` : ''}`);
         setMessages(prev => [...prev, sysMsg]);
       }
 

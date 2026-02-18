@@ -208,7 +208,15 @@ export interface ContentResetEvent {
   type: 'content_reset';
 }
 
-export type StreamChunk = ContentChunk | ContentResetEvent | ToolStartEvent | ToolEndEvent;
+export interface StatusEvent {
+  type: 'status';
+  code: string;
+  message: string;
+  level?: 'info' | 'warn' | 'error';
+  meta?: Record<string, unknown>;
+}
+
+export type StreamChunk = ContentChunk | ContentResetEvent | ToolStartEvent | ToolEndEvent | StatusEvent;
 
 export interface Directive {
   id: string;
@@ -241,11 +249,24 @@ export interface PlatformBehavior {
 
 export type ToolMode = 'off' | 'confirm' | 'auto';
 export type ToolExecutionMode = 'openclaw' | 'full_control';
+export type ToolExecutionModeLabel = 'openclaw_agent' | 'clawtalk_proxy';
+export type ToolFilesystemAccess = 'workspace_sandbox' | 'full_host_access';
+export type ToolNetworkAccess = 'restricted' | 'full_outbound';
+
+export interface ToolExecutionModeOption {
+  value: ToolExecutionMode;
+  label: ToolExecutionModeLabel;
+  title: string;
+  description: string;
+}
 
 export interface ToolDescriptor {
   name: string;
   description: string;
   builtin: boolean;
+  enabled?: boolean;
+  reasonCode?: string;
+  reason?: string;
   runtime?: 'sandbox' | 'unsandboxed' | 'either' | 'unknown';
   capability?: {
     runnable: boolean;
@@ -258,12 +279,18 @@ export interface TalkToolPolicy {
   talkId: string;
   toolMode: ToolMode;
   executionMode?: ToolExecutionMode;
-  executionModeOptions?: ToolExecutionMode[];
+  executionModeLabel?: ToolExecutionModeLabel;
+  executionModeOptions?: ToolExecutionModeOption[];
+  filesystemAccess?: ToolFilesystemAccess;
+  filesystemAccessOptions?: ToolFilesystemAccess[];
+  networkAccess?: ToolNetworkAccess;
+  networkAccessOptions?: ToolNetworkAccess[];
   toolsAllow: string[];
   toolsDeny: string[];
   googleAuthProfile?: string;
   availableTools: ToolDescriptor[];
   enabledTools: ToolDescriptor[];
+  effectiveTools?: ToolDescriptor[];
 }
 
 export interface GoogleAuthProfileSummary {
@@ -318,6 +345,8 @@ export interface Talk {
   platformBehaviors?: PlatformBehavior[];
   toolMode?: ToolMode;
   executionMode?: ToolExecutionMode;
+  filesystemAccess?: ToolFilesystemAccess;
+  networkAccess?: ToolNetworkAccess;
   toolsAllow?: string[];
   toolsDeny?: string[];
   googleAuthProfile?: string;
