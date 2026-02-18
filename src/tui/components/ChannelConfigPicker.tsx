@@ -98,6 +98,30 @@ function getLineEnd(text: string, lineStarts: number[], lineIndex: number): numb
   return lineStarts[lineIndex + 1] - 1;
 }
 
+function sanitizeEditorInput(raw: string): string {
+  return raw
+    .replace(/\u001b\[200~/g, '')
+    .replace(/\u001b\[201~/g, '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/\t/g, '  ');
+}
+
+function wrapLineByWidth(line: string, width: number): string[] {
+  if (width <= 0) return [line];
+  if (line.length <= width) return [line];
+  const out: string[] = [];
+  for (let i = 0; i < line.length; i += width) {
+    out.push(line.slice(i, i + width));
+  }
+  return out;
+}
+
+function wrapTextForDisplay(text: string, width: number): string[] {
+  const normalized = sanitizeEditorInput(text);
+  return normalized.split('\n').flatMap((line) => wrapLineByWidth(line, width));
+}
+
 function platformCapability(platform: string): string {
   if (platform === 'slack') return 'Inbound auto-response + event jobs';
   if (platform === 'telegram') return 'Connection + event jobs';
@@ -314,8 +338,9 @@ export function ChannelConfigPicker({
       return;
     }
     setEditValueMode(false);
-    setPromptInput(selectedRow.prompt ?? '');
-    setPromptCursor((selectedRow.prompt ?? '').length);
+    const normalized = sanitizeEditorInput(selectedRow.prompt ?? '');
+    setPromptInput(normalized);
+    setPromptCursor(normalized.length);
     setPromptPreferredCol(null);
     setMode('edit-prompt');
   };
@@ -410,7 +435,7 @@ export function ChannelConfigPicker({
         return;
       }
       if (key.ctrl && input.toLowerCase() === 's') {
-        const trimmed = promptInput.trim();
+        const trimmed = sanitizeEditorInput(promptInput).trim();
         if (!selectedRow) {
           setMode('list');
           return;
@@ -472,9 +497,11 @@ export function ChannelConfigPicker({
         return;
       }
       if (input) {
-        const next = `${promptInput.slice(0, promptCursor)}${input}${promptInput.slice(promptCursor)}`;
+        const safeInput = sanitizeEditorInput(input);
+        if (!safeInput) return;
+        const next = `${promptInput.slice(0, promptCursor)}${safeInput}${promptInput.slice(promptCursor)}`;
         setPromptInput(next);
-        setPromptCursor(promptCursor + input.length);
+        setPromptCursor(promptCursor + safeInput.length);
         setPromptPreferredCol(null);
       }
       return;
@@ -794,7 +821,7 @@ export function ChannelConfigPicker({
               <Text>  auto-response: {selectedRow.autoRespond ? 'on' : 'off'}</Text>
               <Text>  responder agent: {selectedRow.agentName ?? '(default primary)'}</Text>
               <Text>  prompt:</Text>
-              {(selectedRow.prompt ? selectedRow.prompt.split('\n') : ['(none)']).map((line, idx) => (
+              {wrapTextForDisplay(selectedRow.prompt || '(none)', Math.max(10, terminalWidth - 8)).map((line, idx) => (
                 <Text key={`prompt-line-${idx}`} dimColor>
                   {'    '}
                   {line || ' '}
@@ -981,7 +1008,7 @@ export function ChannelConfigPicker({
           )}
           <Text dimColor>Multi-line editor (paste supported). Ctrl+S save  Enter newline  Esc cancel</Text>
           <Box borderStyle="round" borderColor="gray" paddingX={1} flexDirection="column">
-            {(promptInput.slice(0, promptCursor) + '█' + promptInput.slice(promptCursor)).split('\n').map((line, idx) => (
+            {wrapTextForDisplay(promptInput.slice(0, promptCursor) + '█' + promptInput.slice(promptCursor), Math.max(10, terminalWidth - 8)).map((line, idx) => (
               <Text key={`editor-line-${idx}`}>{line || ' '}</Text>
             ))}
           </Box>

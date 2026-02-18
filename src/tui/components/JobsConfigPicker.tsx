@@ -62,6 +62,30 @@ function getLineEnd(text: string, lineStarts: number[], lineIndex: number): numb
   return lineStarts[lineIndex + 1] - 1;
 }
 
+function sanitizeEditorInput(raw: string): string {
+  return raw
+    .replace(/\u001b\[200~/g, '')
+    .replace(/\u001b\[201~/g, '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/\t/g, '  ');
+}
+
+function wrapLineByWidth(line: string, width: number): string[] {
+  if (width <= 0) return [line];
+  if (line.length <= width) return [line];
+  const out: string[] = [];
+  for (let i = 0; i < line.length; i += width) {
+    out.push(line.slice(i, i + width));
+  }
+  return out;
+}
+
+function wrapTextForDisplay(text: string, width: number): string[] {
+  const normalized = sanitizeEditorInput(text);
+  return normalized.split('\n').flatMap((line) => wrapLineByWidth(line, width));
+}
+
 function formatBindingScopeLabel(binding: {
   scope: string;
   displayScope?: string;
@@ -282,8 +306,9 @@ export function JobsConfigPicker({
           setStatusMessage('No automation selected.');
           return;
         }
-        setPromptInput(selectedJob.prompt);
-        setPromptCursor(selectedJob.prompt.length);
+        const normalized = sanitizeEditorInput(selectedJob.prompt);
+        setPromptInput(normalized);
+        setPromptCursor(normalized.length);
         setPromptPreferredCol(null);
         setMode('edit-prompt');
         return;
@@ -348,7 +373,7 @@ export function JobsConfigPicker({
 
     if (mode === 'add-prompt' || mode === 'edit-prompt') {
       const savePrompt = async (raw: string) => {
-        const trimmed = raw.trim();
+        const trimmed = sanitizeEditorInput(raw).trim();
         if (!trimmed) {
           setStatusMessage('Prompt cannot be empty.');
           return;
@@ -439,9 +464,11 @@ export function JobsConfigPicker({
         return;
       }
       if (input) {
-        const next = `${promptInput.slice(0, promptCursor)}${input}${promptInput.slice(promptCursor)}`;
+        const safeInput = sanitizeEditorInput(input);
+        if (!safeInput) return;
+        const next = `${promptInput.slice(0, promptCursor)}${safeInput}${promptInput.slice(promptCursor)}`;
         setPromptInput(next);
-        setPromptCursor(promptCursor + input.length);
+        setPromptCursor(promptCursor + safeInput.length);
         setPromptPreferredCol(null);
       }
       return;
@@ -543,7 +570,7 @@ export function JobsConfigPicker({
               <Text>  status: {selectedJob.active ? 'active' : 'paused'}</Text>
               <Text>  schedule: {formatScheduleLabel(selectedJob.schedule)}</Text>
               <Text>  prompt:</Text>
-              {(selectedJob.prompt ? selectedJob.prompt.split('\n') : ['(none)']).map((line, idx) => (
+              {wrapTextForDisplay(selectedJob.prompt || '(none)', Math.max(10, terminalWidth - 8)).map((line, idx) => (
                 <Text key={`job-prompt-line-${idx}`} dimColor>
                   {'    '}
                   {line || ' '}
@@ -636,7 +663,7 @@ export function JobsConfigPicker({
           <Text dimColor>Trigger: {pendingScheduleLabel || pendingSchedule}</Text>
           <Text dimColor>Multi-line editor. Ctrl+S save  Enter newline  Esc cancel</Text>
           <Box borderStyle="round" borderColor="gray" paddingX={1} flexDirection="column">
-            {(promptInput.slice(0, promptCursor) + '█' + promptInput.slice(promptCursor)).split('\n').map((line, idx) => (
+            {wrapTextForDisplay(promptInput.slice(0, promptCursor) + '█' + promptInput.slice(promptCursor), Math.max(10, terminalWidth - 8)).map((line, idx) => (
               <Text key={`add-prompt-editor-${idx}`}>{line || ' '}</Text>
             ))}
           </Box>
@@ -693,7 +720,7 @@ export function JobsConfigPicker({
           )}
           <Text dimColor>Multi-line editor. Ctrl+S save  Enter newline  Esc cancel</Text>
           <Box borderStyle="round" borderColor="gray" paddingX={1} flexDirection="column">
-            {(promptInput.slice(0, promptCursor) + '█' + promptInput.slice(promptCursor)).split('\n').map((line, idx) => (
+            {wrapTextForDisplay(promptInput.slice(0, promptCursor) + '█' + promptInput.slice(promptCursor), Math.max(10, terminalWidth - 8)).map((line, idx) => (
               <Text key={`edit-prompt-editor-${idx}`}>{line || ' '}</Text>
             ))}
           </Box>
