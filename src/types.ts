@@ -298,6 +298,8 @@ export interface GoogleAuthProfileSummary {
   hasClientId: boolean;
   hasClientSecret: boolean;
   hasRefreshToken: boolean;
+  accessTokenReady?: boolean;
+  error?: string;
   accountEmail?: string;
   accountDisplayName?: string;
 }

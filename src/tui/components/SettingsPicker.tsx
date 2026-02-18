@@ -875,12 +875,22 @@ export function SettingsPicker({
                   const isActive = isInherit
                     ? !talkGoogleAuthProfile
                     : talkGoogleAuthProfile === profile.name;
+                  const hasOAuthConfig = profile.hasClientId && profile.hasClientSecret && profile.hasRefreshToken;
+                  const profileReadinessKnown = typeof profile.accessTokenReady === 'boolean';
+                  const needsReauth = !isInherit
+                    && (
+                      profile.accessTokenReady === false
+                      || (
+                        !profileReadinessKnown
+                        && profile.name === (googleAuthStatus?.profile ?? googleAuthStatus?.activeProfile)
+                        && googleAuthStatus?.accessTokenReady === false
+                      )
+                    );
                   const readiness = isInherit
                     ? `active: ${googleAuthActiveProfile ?? '(none)'}`
-                    : (profile.hasClientId && profile.hasClientSecret && profile.hasRefreshToken ? 'ready' : 'incomplete');
-                  const needsReauth = !isInherit
-                    && profile.name === (googleAuthStatus?.profile ?? googleAuthStatus?.activeProfile)
-                    && googleAuthStatus?.accessTokenReady === false;
+                    : (!hasOAuthConfig
+                        ? 'incomplete'
+                        : (needsReauth ? 'reauth required' : 'ready'));
                   const readinessLabel = needsReauth ? 'reauth required' : readiness;
                   const identity = !isInherit
                     ? (profile.accountEmail
@@ -924,6 +934,7 @@ export function SettingsPicker({
                       if (tool.reasonCode === 'blocked_filesystem') return 'Workspace Sandbox';
                       if (tool.reasonCode === 'blocked_network') return 'Network Restricted';
                       if (tool.reasonCode === 'blocked_execution_mode') return 'OpenClaw Agent';
+                      if (tool.reasonCode === 'blocked_auth') return 'Google OAuth';
                       if (tool.reasonCode === 'blocked_allowlist') return 'Talk Allow-list';
                       if (tool.reasonCode === 'blocked_denylist') return 'Talk Deny-list';
                       return tool.builtin ? 'builtin' : 'gateway';

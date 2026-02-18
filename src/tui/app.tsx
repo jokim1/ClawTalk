@@ -107,6 +107,52 @@ function formatBindingScopeLabel(binding: {
   return scopeLabel;
 }
 
+function mergeGoogleAuthProfiles(
+  profiles: GoogleAuthProfileSummary[] | undefined,
+  authStatus: {
+    profile?: string;
+    hasClientId: boolean;
+    hasClientSecret: boolean;
+    hasRefreshToken: boolean;
+    accessTokenReady: boolean;
+    error?: string;
+    accountEmail?: string;
+    accountDisplayName?: string;
+  } | null | undefined,
+): GoogleAuthProfileSummary[] {
+  const base = profiles ?? [];
+  if (!authStatus?.profile) return base;
+  let patched = false;
+  const next = base.map((entry) => {
+    if (entry.name !== authStatus.profile) return entry;
+    patched = true;
+    return {
+      ...entry,
+      hasClientId: authStatus.hasClientId,
+      hasClientSecret: authStatus.hasClientSecret,
+      hasRefreshToken: authStatus.hasRefreshToken,
+      accessTokenReady: authStatus.accessTokenReady,
+      error: authStatus.error,
+      accountEmail: authStatus.accountEmail ?? entry.accountEmail,
+      accountDisplayName: authStatus.accountDisplayName ?? entry.accountDisplayName,
+    };
+  });
+  if (patched) return next;
+  return [
+    ...next,
+    {
+      name: authStatus.profile,
+      hasClientId: authStatus.hasClientId,
+      hasClientSecret: authStatus.hasClientSecret,
+      hasRefreshToken: authStatus.hasRefreshToken,
+      accessTokenReady: authStatus.accessTokenReady,
+      error: authStatus.error,
+      accountEmail: authStatus.accountEmail,
+      accountDisplayName: authStatus.accountDisplayName,
+    },
+  ];
+}
+
 function normalizeJobScheduleForBindings(
   schedule: string,
   bindings: PlatformBinding[],
@@ -1930,32 +1976,7 @@ function App({ options }: AppProps) {
         chatServiceRef.current.getGoogleDocsAuthProfiles(),
         chatServiceRef.current.getGoogleDocsAuthStatus(),
       ]).then(([catalog, profiles, authStatus]) => {
-        const enrichedProfiles = (() => {
-          const base = profiles?.profiles ?? [];
-          if (!authStatus?.profile || !authStatus.accountEmail) return base;
-          let patched = false;
-          const next = base.map((entry) => {
-            if (entry.name !== authStatus.profile) return entry;
-            patched = true;
-            return {
-              ...entry,
-              accountEmail: authStatus.accountEmail,
-              accountDisplayName: authStatus.accountDisplayName ?? entry.accountDisplayName,
-            };
-          });
-          if (patched) return next;
-          return [
-            ...next,
-            {
-              name: authStatus.profile,
-              hasClientId: authStatus.hasClientId,
-              hasClientSecret: authStatus.hasClientSecret,
-              hasRefreshToken: authStatus.hasRefreshToken,
-              accountEmail: authStatus.accountEmail,
-              accountDisplayName: authStatus.accountDisplayName,
-            },
-          ];
-        })();
+        const enrichedProfiles = mergeGoogleAuthProfiles(profiles?.profiles, authStatus);
         const mode: ToolMode = talk?.toolMode ?? 'auto';
         const executionMode: ToolExecutionMode = talk?.executionMode ?? DEFAULT_EXECUTION_MODE;
         setSettingsToolPolicy({
@@ -1995,32 +2016,7 @@ function App({ options }: AppProps) {
         setSettingsToolPolicyError('Failed to load talk tool policy from gateway.');
         return;
       }
-      const enrichedProfiles = (() => {
-        const base = profiles?.profiles ?? [];
-        if (!authStatus?.profile || !authStatus.accountEmail) return base;
-        let patched = false;
-        const next = base.map((entry) => {
-          if (entry.name !== authStatus.profile) return entry;
-          patched = true;
-          return {
-            ...entry,
-            accountEmail: authStatus.accountEmail,
-            accountDisplayName: authStatus.accountDisplayName ?? entry.accountDisplayName,
-          };
-        });
-        if (patched) return next;
-        return [
-          ...next,
-          {
-            name: authStatus.profile,
-            hasClientId: authStatus.hasClientId,
-            hasClientSecret: authStatus.hasClientSecret,
-            hasRefreshToken: authStatus.hasRefreshToken,
-            accountEmail: authStatus.accountEmail,
-            accountDisplayName: authStatus.accountDisplayName,
-          },
-        ];
-      })();
+      const enrichedProfiles = mergeGoogleAuthProfiles(profiles?.profiles, authStatus);
       syncToolPolicyLocal(policy.toolMode, policy.executionMode, policy.filesystemAccess, policy.networkAccess, policy.toolsAllow, policy.toolsDeny, policy.googleAuthProfile);
       setSettingsToolPolicy({
         mode: policy.toolMode,
