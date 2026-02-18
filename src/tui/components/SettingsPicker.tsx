@@ -175,6 +175,40 @@ const TTS_PROVIDER_LABELS: Record<string, string> = {
   azure: 'Azure Speech',
 };
 
+function normalizeExecutionMode(raw: unknown): ToolExecutionMode {
+  return raw === 'full_control' ? 'full_control' : 'openclaw';
+}
+
+function normalizeExecutionModeOptions(raw: unknown): ToolExecutionModeOption[] {
+  if (!Array.isArray(raw)) {
+    return [
+      { value: 'openclaw', label: 'openclaw_agent', title: 'OpenClaw Agent', description: 'Uses OpenClaw runtime capabilities.' },
+      { value: 'full_control', label: 'clawtalk_proxy', title: 'ClawTalk Proxy', description: 'Sends prompts directly via proxy.' },
+    ];
+  }
+
+  const parsed = raw
+    .map((entry) => {
+      if (typeof entry !== 'object' || !entry) return null;
+      const rec = entry as Record<string, unknown>;
+      const value = normalizeExecutionMode(rec.value);
+      const label = rec.label === 'clawtalk_proxy' ? 'clawtalk_proxy' : 'openclaw_agent';
+      const title = typeof rec.title === 'string' ? rec.title : (value === 'full_control' ? 'ClawTalk Proxy' : 'OpenClaw Agent');
+      const description = typeof rec.description === 'string'
+        ? rec.description
+        : (value === 'full_control' ? 'Sends prompts directly via proxy.' : 'Uses OpenClaw runtime capabilities.');
+      return { value, label, title, description } as ToolExecutionModeOption;
+    })
+    .filter((entry): entry is ToolExecutionModeOption => Boolean(entry));
+
+  return parsed.length > 0
+    ? parsed
+    : [
+      { value: 'openclaw', label: 'openclaw_agent', title: 'OpenClaw Agent', description: 'Uses OpenClaw runtime capabilities.' },
+      { value: 'full_control', label: 'clawtalk_proxy', title: 'ClawTalk Proxy', description: 'Sends prompts directly via proxy.' },
+    ];
+}
+
 export function SettingsPicker({
   onClose,
   onMicChange,
@@ -225,12 +259,7 @@ export function SettingsPicker({
   const catalogRows = toolPolicy?.catalogEntries ?? [];
   const authProfiles = googleAuthProfiles ?? [];
   const profileRowCount = 1 + authProfiles.length; // inherit + explicit profiles
-  const executionModeOptions: ToolExecutionModeOption[] = toolPolicy?.executionModeOptions?.length
-    ? toolPolicy.executionModeOptions
-    : [
-      { value: 'openclaw', label: 'openclaw_agent', title: 'OpenClaw Agent', description: 'Uses OpenClaw runtime capabilities.' },
-      { value: 'full_control', label: 'clawtalk_proxy', title: 'ClawTalk Proxy', description: 'Sends prompts directly via proxy.' },
-    ];
+  const executionModeOptions: ToolExecutionModeOption[] = normalizeExecutionModeOptions(toolPolicy?.executionModeOptions);
   const filesystemOptions: ToolFilesystemAccess[] = toolPolicy?.filesystemAccessOptions?.length
     ? toolPolicy.filesystemAccessOptions
     : ['workspace_sandbox', 'full_host_access'];
@@ -742,7 +771,9 @@ export function SettingsPicker({
               <Box marginTop={1} flexDirection="column">
                 <Text bold>Execution Mode</Text>
                 {executionModeOptions.map((mode, idx) => {
-                  const active = (toolPolicy?.executionMode ?? 'openclaw') === mode.value;
+                  const active = normalizeExecutionMode(toolPolicy?.executionMode) === mode.value;
+                  const modeTitle = typeof mode.title === 'string' ? mode.title : String(mode.value);
+                  const modeDescription = typeof mode.description === 'string' ? mode.description : '';
                   return (
                     <Box key={mode.value}>
                       <Text color={idx === selectedIndex ? 'cyan' : undefined}>
@@ -750,9 +781,9 @@ export function SettingsPicker({
                       </Text>
                       <Text dimColor>{idx + 1}. </Text>
                       <Text color={active ? 'green' : undefined} bold={active}>
-                        {mode.title}
+                        {modeTitle}
                       </Text>
-                      <Text dimColor> ({mode.description})</Text>
+                      {modeDescription.length > 0 && <Text dimColor> ({modeDescription})</Text>}
                       {active && <Text color="green"> (active)</Text>}
                     </Box>
                   );
