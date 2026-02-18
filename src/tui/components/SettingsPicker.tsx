@@ -318,6 +318,21 @@ export function SettingsPicker({
     }
     return reasons;
   }, [effectiveGoogleProfile, googleAuthStatus?.accessTokenReady, googleAuthStatus?.activeProfile, googleAuthStatus?.profile, selectedGoogleProfile, toolRows]);
+  const padCell = (value: string, width: number): string => {
+    if (value.length >= width) return value.slice(0, width);
+    return value.padEnd(width, ' ');
+  };
+  const buildDivider = (widths: number[]): string => `  ${'-'.repeat(widths.reduce((sum, width) => sum + width, 0) + ((widths.length - 1) * 2))}`;
+  const toolNameColWidth = 34;
+  const toolStatusColWidth = 8;
+  const toolSourceColWidth = 20;
+  const toolHeader = `  ${padCell('Tool', toolNameColWidth)}  ${padCell('Status', toolStatusColWidth)}  ${padCell('Source', toolSourceColWidth)}`;
+  const toolDivider = buildDivider([toolNameColWidth, toolStatusColWidth, toolSourceColWidth]);
+  const catalogNameColWidth = 34;
+  const catalogStateColWidth = 12;
+  const catalogVersionColWidth = 10;
+  const catalogHeader = `  ${padCell('Package', catalogNameColWidth)}  ${padCell('State', catalogStateColWidth)}  ${padCell('Version', catalogVersionColWidth)}`;
+  const catalogDivider = buildDivider([catalogNameColWidth, catalogStateColWidth, catalogVersionColWidth]);
 
   useEffect(() => {
     const devs = getInputDevices();
@@ -890,8 +905,8 @@ export function SettingsPicker({
 
               <Box marginTop={1} flexDirection="column">
                 <Text bold>Installed Tools</Text>
-                <Text dimColor>  Tool                               Status   Source</Text>
-                <Text dimColor>  ----------------------------------------------------</Text>
+                <Text dimColor>{toolHeader}</Text>
+                <Text dimColor>{toolDivider}</Text>
                 {toolRows.length === 0 ? (
                   <Text dimColor>  (none installed)</Text>
                 ) : (
@@ -902,13 +917,13 @@ export function SettingsPicker({
                     const status = blockedReason ? 'blocked' : (enabled ? 'on' : 'off');
                     const statusColor: 'green' | 'yellow' = blockedReason ? 'yellow' : (enabled ? 'green' : 'yellow');
                     const selected = rowIndex === selectedIndex;
-                    const paddedName = tool.name.padEnd(34, ' ').slice(0, 34);
+                    const paddedName = padCell(tool.name, toolNameColWidth);
                     const sourceLabel = (() => {
                       if (tool.reasonCode === 'blocked_not_installed') return 'Not Installed';
                       if (tool.reasonCode === 'blocked_tool_mode') return 'Tool Approval Off';
                       if (tool.reasonCode === 'blocked_filesystem') return 'Workspace Sandbox';
                       if (tool.reasonCode === 'blocked_network') return 'Network Restricted';
-                      if (tool.reasonCode === 'blocked_execution_mode') return 'Execution Mode';
+                      if (tool.reasonCode === 'blocked_execution_mode') return 'OpenClaw Agent';
                       if (tool.reasonCode === 'blocked_allowlist') return 'Talk Allow-list';
                       if (tool.reasonCode === 'blocked_denylist') return 'Talk Deny-list';
                       return tool.builtin ? 'builtin' : 'gateway';
@@ -918,19 +933,19 @@ export function SettingsPicker({
                         <Text color={selected ? 'cyan' : undefined}>{selected ? '▸ ' : '  '}</Text>
                         <Text>{paddedName}</Text>
                         <Text>  </Text>
-                        <Text color={statusColor}>{status.padEnd(7, ' ')}</Text>
-                        <Text>      </Text>
-                        <Text dimColor>{sourceLabel}</Text>
+                        <Text color={statusColor}>{padCell(status, toolStatusColWidth)}</Text>
+                        <Text>  </Text>
+                        <Text dimColor>{padCell(sourceLabel, toolSourceColWidth)}</Text>
                       </Box>
                     );
                   })
                 )}
               </Box>
 
-              <Box marginTop={1} flexDirection="column">
+              <Box marginTop={2} flexDirection="column">
                 <Text bold>Tool Catalog</Text>
-                <Text dimColor>  Package                             State          Version</Text>
-                <Text dimColor>  -------------------------------------------------------------</Text>
+                <Text dimColor>{catalogHeader}</Text>
+                <Text dimColor>{catalogDivider}</Text>
                 {catalogRows.length === 0 ? (
                   <Text dimColor>  (catalog unavailable)</Text>
                 ) : (
@@ -949,15 +964,15 @@ export function SettingsPicker({
                       : state === 'installable'
                         ? 'cyan'
                         : 'yellow';
-                    const paddedName = entry.name.padEnd(34, ' ').slice(0, 34);
+                    const paddedName = padCell(entry.name, catalogNameColWidth);
                     return (
                       <Box key={entry.id}>
                         <Text color={selected ? 'cyan' : undefined}>{selected ? '▸ ' : '  '}</Text>
                         <Text>{paddedName}</Text>
                         <Text>  </Text>
-                        <Text color={stateColor}>{state.padEnd(11, ' ')}</Text>
+                        <Text color={stateColor}>{padCell(state, catalogStateColWidth)}</Text>
                         <Text>  </Text>
-                        <Text dimColor>{entry.version}</Text>
+                        <Text dimColor>{padCell(entry.version, catalogVersionColWidth)}</Text>
                       </Box>
                     );
                   })
