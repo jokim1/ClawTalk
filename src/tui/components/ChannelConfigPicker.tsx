@@ -951,6 +951,10 @@ export function ChannelConfigPicker({
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} width={terminalWidth}>
       <Text bold color="cyan">Channel Config</Text>
+      <Text dimColor>
+        Channels are specific external messaging platforms like Slack, Telegram, Discord, etc. that you can configure ClawTalk agents to interact with.
+      </Text>
+      <Box height={1} />
       <Text dimColor>Workflow: configure all fields, review, then save.</Text>
 
       {mode === 'list' && (
