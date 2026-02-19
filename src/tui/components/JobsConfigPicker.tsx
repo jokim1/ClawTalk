@@ -8,6 +8,13 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import TextInput from 'ink-text-input';
 import type { Job, PlatformBinding } from '../../types';
+import {
+  buildVisualLayout,
+  computeVisibleWindow,
+  moveCursorByVisualRow,
+  sanitizePromptInput,
+  wrapForTerminal,
+} from './promptEditorUtils.js';
 
 interface JobsConfigPickerProps {
   maxHeight: number;
@@ -40,50 +47,6 @@ type AddType = 'time' | 'channel';
 function truncate(text: string, maxLen: number): string {
   if (text.length <= maxLen) return text;
   return `${text.slice(0, Math.max(0, maxLen - 3))}...`;
-}
-
-function getLineStarts(text: string): number[] {
-  const starts = [0];
-  for (let i = 0; i < text.length; i += 1) {
-    if (text[i] === '\n') starts.push(i + 1);
-  }
-  return starts;
-}
-
-function getLineIndexForCursor(lineStarts: number[], cursor: number): number {
-  for (let i = lineStarts.length - 1; i >= 0; i -= 1) {
-    if (cursor >= lineStarts[i]) return i;
-  }
-  return 0;
-}
-
-function getLineEnd(text: string, lineStarts: number[], lineIndex: number): number {
-  if (lineIndex >= lineStarts.length - 1) return text.length;
-  return lineStarts[lineIndex + 1] - 1;
-}
-
-function sanitizeEditorInput(raw: string): string {
-  return raw
-    .replace(/\u001b\[200~/g, '')
-    .replace(/\u001b\[201~/g, '')
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n')
-    .replace(/\t/g, '  ');
-}
-
-function wrapLineByWidth(line: string, width: number): string[] {
-  if (width <= 0) return [line];
-  if (line.length <= width) return [line];
-  const out: string[] = [];
-  for (let i = 0; i < line.length; i += width) {
-    out.push(line.slice(i, i + width));
-  }
-  return out;
-}
-
-function wrapTextForDisplay(text: string, width: number): string[] {
-  const normalized = sanitizeEditorInput(text);
-  return normalized.split('\n').flatMap((line) => wrapLineByWidth(line, width));
 }
 
 function formatBindingScopeLabel(binding: {
@@ -306,7 +269,7 @@ export function JobsConfigPicker({
           setStatusMessage('No automation selected.');
           return;
         }
-        const normalized = sanitizeEditorInput(selectedJob.prompt);
+        const normalized = sanitizePromptInput(selectedJob.prompt);
         setPromptInput(normalized);
         setPromptCursor(normalized.length);
         setPromptPreferredCol(null);
@@ -373,7 +336,7 @@ export function JobsConfigPicker({
 
     if (mode === 'add-prompt' || mode === 'edit-prompt') {
       const savePrompt = async (raw: string) => {
-        const trimmed = sanitizeEditorInput(raw).trim();
+        const trimmed = sanitizePromptInput(raw).trim();
         if (!trimmed) {
           setStatusMessage('Prompt cannot be empty.');
           return;
@@ -450,21 +413,19 @@ export function JobsConfigPicker({
         return;
       }
       if (key.upArrow || key.downArrow) {
-        const starts = getLineStarts(promptInput);
-        const lineIdx = getLineIndexForCursor(starts, promptCursor);
-        const lineStart = starts[lineIdx] ?? 0;
-        const currentCol = promptCursor - lineStart;
-        const preferred = promptPreferredCol ?? currentCol;
-        const targetLineIdx = key.upArrow ? lineIdx - 1 : lineIdx + 1;
-        if (targetLineIdx < 0 || targetLineIdx >= starts.length) return;
-        const targetStart = starts[targetLineIdx] ?? 0;
-        const targetEnd = getLineEnd(promptInput, starts, targetLineIdx);
-        setPromptCursor(Math.min(targetStart + preferred, targetEnd));
-        setPromptPreferredCol(preferred);
+        const moved = moveCursorByVisualRow(
+          promptInput,
+          promptCursor,
+          Math.max(10, terminalWidth - 12),
+          key.upArrow ? -1 : 1,
+          promptPreferredCol,
+        );
+        setPromptCursor(moved.cursor);
+        setPromptPreferredCol(moved.preferredCol);
         return;
       }
       if (input) {
-        const safeInput = sanitizeEditorInput(input);
+        const safeInput = sanitizePromptInput(input);
         if (!safeInput) return;
         const next = `${promptInput.slice(0, promptCursor)}${safeInput}${promptInput.slice(promptCursor)}`;
         setPromptInput(next);
@@ -529,6 +490,14 @@ export function JobsConfigPicker({
 
   const visibleStart = scrollOffset;
   const visibleEnd = Math.min(localJobs.length, scrollOffset + visibleRows);
+  const promptEditorWidth = Math.max(10, terminalWidth - 12);
+  const promptEditorMaxLines = Math.max(4, Math.min(14, maxHeight - 24));
+  const promptLayout = buildVisualLayout(promptInput, promptCursor, promptEditorWidth);
+  const promptWindow = computeVisibleWindow(
+    promptLayout.lines.length,
+    promptLayout.cursorRow,
+    promptEditorMaxLines,
+  );
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} width={terminalWidth}>
@@ -570,7 +539,7 @@ export function JobsConfigPicker({
               <Text>  status: {selectedJob.active ? 'active' : 'paused'}</Text>
               <Text>  schedule: {formatScheduleLabel(selectedJob.schedule)}</Text>
               <Text>  prompt:</Text>
-              {wrapTextForDisplay(selectedJob.prompt || '(none)', Math.max(10, terminalWidth - 8)).map((line, idx) => (
+              {wrapForTerminal(selectedJob.prompt || '(none)', Math.max(10, terminalWidth - 10)).map((line, idx) => (
                 <Text key={`job-prompt-line-${idx}`} dimColor>
                   {'    '}
                   {line || ' '}
@@ -663,9 +632,26 @@ export function JobsConfigPicker({
           <Text dimColor>Trigger: {pendingScheduleLabel || pendingSchedule}</Text>
           <Text dimColor>Multi-line editor. Ctrl+S save  Enter newline  Esc cancel</Text>
           <Box borderStyle="round" borderColor="gray" paddingX={1} flexDirection="column">
-            {wrapTextForDisplay(promptInput.slice(0, promptCursor) + '█' + promptInput.slice(promptCursor), Math.max(10, terminalWidth - 8)).map((line, idx) => (
-              <Text key={`add-prompt-editor-${idx}`}>{line || ' '}</Text>
-            ))}
+            {promptWindow.start > 0 && <Text dimColor>▲ more</Text>}
+            {promptLayout.lines.slice(promptWindow.start, promptWindow.end).map((line, idx) => {
+              const row = promptWindow.start + idx;
+              if (row !== promptLayout.cursorRow) {
+                return <Text key={`add-prompt-editor-${row}`}>{line.text || ' '}</Text>;
+              }
+              const col = Math.max(0, Math.min(promptLayout.cursorCol, line.text.length));
+              const before = line.text.slice(0, col);
+              const hasChar = col < line.text.length;
+              const at = hasChar ? line.text[col] : ' ';
+              const after = hasChar ? line.text.slice(col + 1) : '';
+              return (
+                <Text key={`add-prompt-editor-${row}`}>
+                  {before}
+                  <Text inverse>{at}</Text>
+                  {after}
+                </Text>
+              );
+            })}
+            {promptWindow.end < promptLayout.lines.length && <Text dimColor>▼ more</Text>}
           </Box>
         </>
       )}
@@ -720,9 +706,26 @@ export function JobsConfigPicker({
           )}
           <Text dimColor>Multi-line editor. Ctrl+S save  Enter newline  Esc cancel</Text>
           <Box borderStyle="round" borderColor="gray" paddingX={1} flexDirection="column">
-            {wrapTextForDisplay(promptInput.slice(0, promptCursor) + '█' + promptInput.slice(promptCursor), Math.max(10, terminalWidth - 8)).map((line, idx) => (
-              <Text key={`edit-prompt-editor-${idx}`}>{line || ' '}</Text>
-            ))}
+            {promptWindow.start > 0 && <Text dimColor>▲ more</Text>}
+            {promptLayout.lines.slice(promptWindow.start, promptWindow.end).map((line, idx) => {
+              const row = promptWindow.start + idx;
+              if (row !== promptLayout.cursorRow) {
+                return <Text key={`edit-prompt-editor-${row}`}>{line.text || ' '}</Text>;
+              }
+              const col = Math.max(0, Math.min(promptLayout.cursorCol, line.text.length));
+              const before = line.text.slice(0, col);
+              const hasChar = col < line.text.length;
+              const at = hasChar ? line.text[col] : ' ';
+              const after = hasChar ? line.text.slice(col + 1) : '';
+              return (
+                <Text key={`edit-prompt-editor-${row}`}>
+                  {before}
+                  <Text inverse>{at}</Text>
+                  {after}
+                </Text>
+              );
+            })}
+            {promptWindow.end < promptLayout.lines.length && <Text dimColor>▼ more</Text>}
           </Box>
         </>
       )}

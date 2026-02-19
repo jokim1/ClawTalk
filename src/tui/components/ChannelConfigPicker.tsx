@@ -9,6 +9,13 @@ import { Box, Text, useInput } from 'ink';
 import TextInput from 'ink-text-input';
 import type { PlatformBehavior, PlatformBinding, PlatformPermission, TalkAgent } from '../../types';
 import type { SlackAccountOption, SlackChannelOption } from '../../services/chat';
+import {
+  buildVisualLayout,
+  computeVisibleWindow,
+  moveCursorByVisualRow,
+  sanitizePromptInput,
+  wrapForTerminal,
+} from './promptEditorUtils.js';
 
 interface ChannelConfigPickerProps {
   maxHeight: number;
@@ -41,6 +48,8 @@ type PickerMode =
   | 'add-workspace'
   | 'add-scope'
   | 'add-permission'
+  | 'add-response'
+  | 'add-prompt'
   | 'add-review'
   | 'edit-prompt'
   | 'confirm-delete';
@@ -78,50 +87,6 @@ function formatBindingScopeLabel(binding: {
 function truncate(text: string, maxLen: number): string {
   if (text.length <= maxLen) return text;
   return `${text.slice(0, Math.max(0, maxLen - 3))}...`;
-}
-
-function getLineStarts(text: string): number[] {
-  const starts = [0];
-  for (let i = 0; i < text.length; i += 1) {
-    if (text[i] === '\n') starts.push(i + 1);
-  }
-  return starts;
-}
-
-function getLineIndexForCursor(lineStarts: number[], cursor: number): number {
-  for (let i = lineStarts.length - 1; i >= 0; i -= 1) {
-    if (cursor >= lineStarts[i]) return i;
-  }
-  return 0;
-}
-
-function getLineEnd(text: string, lineStarts: number[], lineIndex: number): number {
-  if (lineIndex >= lineStarts.length - 1) return text.length;
-  return lineStarts[lineIndex + 1] - 1;
-}
-
-function sanitizeEditorInput(raw: string): string {
-  return raw
-    .replace(/\u001b\[200~/g, '')
-    .replace(/\u001b\[201~/g, '')
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n')
-    .replace(/\t/g, '  ');
-}
-
-function wrapLineByWidth(line: string, width: number): string[] {
-  if (width <= 0) return [line];
-  if (line.length <= width) return [line];
-  const out: string[] = [];
-  for (let i = 0; i < line.length; i += width) {
-    out.push(line.slice(i, i + width));
-  }
-  return out;
-}
-
-function wrapTextForDisplay(text: string, width: number): string[] {
-  const normalized = sanitizeEditorInput(text);
-  return normalized.split('\n').flatMap((line) => wrapLineByWidth(line, width));
 }
 
 function platformAgentResponse(platform: string): string {
@@ -197,6 +162,9 @@ export function ChannelConfigPicker({
   const [pendingScope, setPendingScope] = useState('');
   const [permissionSelection, setPermissionSelection] = useState(2);
   const [pendingPermission, setPendingPermission] = useState<PlatformPermission>('read+write');
+  const [responseSelection, setResponseSelection] = useState(2);
+  const [pendingResponseMode, setPendingResponseMode] = useState<'off' | 'mentions' | 'all'>('all');
+  const [pendingPrompt, setPendingPrompt] = useState('');
 
   const [editFieldIndex, setEditFieldIndex] = useState(0);
   const [editValueMode, setEditValueMode] = useState(false);
@@ -341,7 +309,7 @@ export function ChannelConfigPicker({
       return;
     }
     setEditValueMode(false);
-    const normalized = sanitizeEditorInput(selectedRow.prompt ?? '');
+    const normalized = sanitizePromptInput(selectedRow.prompt ?? '');
     setPromptInput(normalized);
     setPromptCursor(normalized.length);
     setPromptPreferredCol(null);
@@ -429,7 +397,7 @@ export function ChannelConfigPicker({
         return;
       }
       if (key.ctrl && input.toLowerCase() === 's') {
-        const trimmed = sanitizeEditorInput(promptInput).trim();
+        const trimmed = sanitizePromptInput(promptInput).trim();
         if (!selectedRow) {
           setMode('list');
           return;
@@ -477,21 +445,19 @@ export function ChannelConfigPicker({
         return;
       }
       if (key.upArrow || key.downArrow) {
-        const starts = getLineStarts(promptInput);
-        const lineIdx = getLineIndexForCursor(starts, promptCursor);
-        const lineStart = starts[lineIdx] ?? 0;
-        const currentCol = promptCursor - lineStart;
-        const preferred = promptPreferredCol ?? currentCol;
-        const targetLineIdx = key.upArrow ? lineIdx - 1 : lineIdx + 1;
-        if (targetLineIdx < 0 || targetLineIdx >= starts.length) return;
-        const targetStart = starts[targetLineIdx] ?? 0;
-        const targetEnd = getLineEnd(promptInput, starts, targetLineIdx);
-        setPromptCursor(Math.min(targetStart + preferred, targetEnd));
-        setPromptPreferredCol(preferred);
+        const moved = moveCursorByVisualRow(
+          promptInput,
+          promptCursor,
+          Math.max(10, terminalWidth - 12),
+          key.upArrow ? -1 : 1,
+          promptPreferredCol,
+        );
+        setPromptCursor(moved.cursor);
+        setPromptPreferredCol(moved.preferredCol);
         return;
       }
       if (input) {
-        const safeInput = sanitizeEditorInput(input);
+        const safeInput = sanitizePromptInput(input);
         if (!safeInput) return;
         const next = `${promptInput.slice(0, promptCursor)}${safeInput}${promptInput.slice(promptCursor)}`;
         setPromptInput(next);
@@ -549,6 +515,9 @@ export function ChannelConfigPicker({
         setScopeSuggestionSelection(0);
         setPermissionSelection(2);
         setPendingPermission('read+write');
+        setResponseSelection(2);
+        setPendingResponseMode('all');
+        setPendingPrompt('');
         setMode('add-platform');
         return;
       }
@@ -747,14 +716,41 @@ export function ChannelConfigPicker({
       if (key.return) {
         const permission = PERMISSION_OPTIONS[permissionSelection];
         setPendingPermission(permission);
-        setMode('add-review');
+        setResponseSelection(2);
+        setPendingResponseMode('all');
+        setMode('add-response');
       }
+      return;
+    }
+
+    if (mode === 'add-response') {
+      if (key.upArrow) {
+        setResponseSelection((prev) => Math.max(0, prev - 1));
+        return;
+      }
+      if (key.downArrow) {
+        setResponseSelection((prev) => Math.min(RESPONSE_MODE_OPTIONS.length - 1, prev + 1));
+        return;
+      }
+      if (key.return) {
+        const nextMode = RESPONSE_MODE_OPTIONS[responseSelection];
+        setPendingResponseMode(nextMode);
+        setMode('add-prompt');
+      }
+      return;
+    }
+
+    if (mode === 'add-prompt') {
       return;
     }
 
     if (mode === 'add-review') {
       if (key.return) {
+        const newIndex = rows.length + 1;
         onAddBinding(pendingPlatform, pendingScope, pendingPermission);
+        onSetResponseMode(newIndex, pendingResponseMode);
+        const trimmedPrompt = sanitizePromptInput(pendingPrompt).trim();
+        if (trimmedPrompt) onSetPrompt(newIndex, trimmedPrompt);
         setMode('list');
         setSelectedIndex(rows.length);
         setStatusMessage(`Added ${pendingPlatform} ${pendingScope} (${pendingPermission}).`);
@@ -780,6 +776,14 @@ export function ChannelConfigPicker({
   const visibleStart = scrollOffset;
   const visibleEnd = Math.min(rows.length, scrollOffset + visibleRows);
   const activeEditField = EDIT_FIELDS[editFieldIndex];
+  const promptEditorWidth = Math.max(10, terminalWidth - 12);
+  const promptEditorMaxLines = Math.max(4, Math.min(14, maxHeight - 24));
+  const promptLayout = buildVisualLayout(promptInput, promptCursor, promptEditorWidth);
+  const promptWindow = computeVisibleWindow(
+    promptLayout.lines.length,
+    promptLayout.cursorRow,
+    promptEditorMaxLines,
+  );
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} width={terminalWidth}>
@@ -823,7 +827,7 @@ export function ChannelConfigPicker({
               <Text>  response mode: {selectedRow.responseMode}</Text>
               <Text>  responder agent: {selectedRow.agentName ?? '(default primary)'}</Text>
               <Text>  prompt:</Text>
-              {wrapTextForDisplay(selectedRow.prompt || '(none)', Math.max(10, terminalWidth - 8)).map((line, idx) => (
+              {wrapForTerminal(selectedRow.prompt || '(none)', Math.max(10, terminalWidth - 10)).map((line, idx) => (
                 <Text key={`prompt-line-${idx}`} dimColor>
                   {'    '}
                   {line || ' '}
@@ -921,7 +925,7 @@ export function ChannelConfigPicker({
       {mode === 'add-scope' && (
         <>
           <Box height={1} />
-          <Text bold>Step {pendingPlatform === 'slack' ? '3' : '2'}: Enter Scope</Text>
+          <Text bold>Step {pendingPlatform === 'slack' ? '3' : '2'}: Select Channel</Text>
           <Text dimColor>Platform: {pendingPlatform}</Text>
           {pendingPlatform === 'slack' && pendingSlackAccountId && (
             <Text dimColor>Workspace: {pendingSlackAccountId}</Text>
@@ -950,7 +954,7 @@ export function ChannelConfigPicker({
           )}
 
           <Box>
-            <Text>scope: </Text>
+            <Text>channel: </Text>
             <TextInput
               value={scopeInput}
               onChange={setScopeInput}
@@ -994,14 +998,54 @@ export function ChannelConfigPicker({
         </>
       )}
 
+      {mode === 'add-response' && (
+        <>
+          <Box height={1} />
+          <Text bold>Step {pendingPlatform === 'slack' ? '5' : '4'}: Agent Response</Text>
+          <Text dimColor>{pendingPlatform} {pendingScope}</Text>
+          {RESPONSE_MODE_OPTIONS.map((mode, idx) => (
+            <Text key={mode} color={idx === responseSelection ? 'cyan' : undefined}>
+              {idx === responseSelection ? '▸ ' : '  '}
+              {mode}
+            </Text>
+          ))}
+          <Box height={1} />
+          <Text dimColor>Enter continue  Esc cancel</Text>
+        </>
+      )}
+
+      {mode === 'add-prompt' && (
+        <>
+          <Box height={1} />
+          <Text bold>Step {pendingPlatform === 'slack' ? '6' : '5'}: Prompt</Text>
+          <Text dimColor>Optional instruction for inbound responses on this channel.</Text>
+          <Box>
+            <Text>prompt: </Text>
+            <TextInput
+              value={pendingPrompt}
+              onChange={setPendingPrompt}
+              onSubmit={(value) => {
+                setPendingPrompt(sanitizePromptInput(value));
+                setMode('add-review');
+              }}
+            />
+          </Box>
+          <Text dimColor>Enter continue (blank allowed)  Esc cancel</Text>
+        </>
+      )}
+
       {mode === 'add-review' && (
         <>
           <Box height={1} />
-          <Text bold>Step {pendingPlatform === 'slack' ? '5' : '4'}: Review</Text>
+          <Text bold>Step {pendingPlatform === 'slack' ? '7' : '6'}: Review</Text>
           <Text>  platform: {pendingPlatform}</Text>
           <Text>  scope: {pendingScope}</Text>
           <Text>  permission: {pendingPermission}</Text>
-          <Text>  agent response: {platformAgentResponse(pendingPlatform)}</Text>
+          <Text>  agent response: {pendingResponseMode}</Text>
+          <Text>
+            {'  '}
+            prompt: {pendingPrompt.trim() ? truncate(pendingPrompt.trim(), Math.max(40, terminalWidth - 16)) : '(none)'}
+          </Text>
           <Box height={1} />
           <Text dimColor>Enter save  Esc cancel</Text>
         </>
@@ -1020,9 +1064,26 @@ export function ChannelConfigPicker({
           )}
           <Text dimColor>Multi-line editor (paste supported). Ctrl+S save  Enter newline  Esc cancel</Text>
           <Box borderStyle="round" borderColor="gray" paddingX={1} flexDirection="column">
-            {wrapTextForDisplay(promptInput.slice(0, promptCursor) + '█' + promptInput.slice(promptCursor), Math.max(10, terminalWidth - 8)).map((line, idx) => (
-              <Text key={`editor-line-${idx}`}>{line || ' '}</Text>
-            ))}
+            {promptWindow.start > 0 && <Text dimColor>▲ more</Text>}
+            {promptLayout.lines.slice(promptWindow.start, promptWindow.end).map((line, idx) => {
+              const row = promptWindow.start + idx;
+              if (row !== promptLayout.cursorRow) {
+                return <Text key={`editor-line-${row}`}>{line.text || ' '}</Text>;
+              }
+              const col = Math.max(0, Math.min(promptLayout.cursorCol, line.text.length));
+              const before = line.text.slice(0, col);
+              const hasChar = col < line.text.length;
+              const at = hasChar ? line.text[col] : ' ';
+              const after = hasChar ? line.text.slice(col + 1) : '';
+              return (
+                <Text key={`editor-line-${row}`}>
+                  {before}
+                  <Text inverse>{at}</Text>
+                  {after}
+                </Text>
+              );
+            })}
+            {promptWindow.end < promptLayout.lines.length && <Text dimColor>▼ more</Text>}
           </Box>
         </>
       )}
