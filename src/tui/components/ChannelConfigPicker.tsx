@@ -288,6 +288,17 @@ export function ChannelConfigPicker({
     });
   };
 
+  useEffect(() => {
+    if (mode !== 'list' || rows.length === 0) return;
+    const maxIdx = rows.length - 1;
+    const idx = Math.max(0, Math.min(selectedIndex, maxIdx));
+    setScrollOffset((prev) => {
+      if (idx < prev) return idx;
+      if (idx >= prev + visibleRows) return idx - visibleRows + 1;
+      return prev;
+    });
+  }, [mode, rows.length, selectedIndex, visibleRows]);
+
   const cycleSelectedConnection = (direction: -1 | 1) => {
     setSelectedIndex((prev) => {
       const next = direction < 0
@@ -815,13 +826,14 @@ export function ChannelConfigPicker({
 
     if (mode === 'add-review') {
       if (key.return) {
-        const newIndex = rows.length + 1;
+        const newZeroBasedIndex = rows.length;
         onAddBinding(pendingPlatform, pendingScope, pendingPermission);
-        onSetResponseMode(newIndex, pendingResponseMode);
+        onSetResponseMode(newZeroBasedIndex + 1, pendingResponseMode);
         const trimmedPrompt = sanitizePromptInput(pendingPrompt).trim();
-        if (trimmedPrompt) onSetPrompt(newIndex, trimmedPrompt);
+        if (trimmedPrompt) onSetPrompt(newZeroBasedIndex + 1, trimmedPrompt);
         setMode('list');
-        setSelectedIndex(rows.length);
+        setSelectedIndex(newZeroBasedIndex);
+        ensureVisible(newZeroBasedIndex);
         setStatusMessage(`Added ${pendingPlatform} ${pendingScope} (${pendingPermission}).`);
       }
       return;
