@@ -365,12 +365,15 @@ export interface GatewayResult<T = void> {
 export class ChatService implements IChatService {
   private config: ChatServiceConfig;
   private sessionKey: string;
+  private readonly clientId: string;
+  private readonly talkVersionById = new Map<string, number>();
   lastResponseModel: string | undefined;
   lastResponseUsage: { promptTokens: number; completionTokens: number } | undefined;
 
   constructor(config: ChatServiceConfig) {
     this.config = config;
     this.sessionKey = `clawtalk-${randomUUID()}`;
+    this.clientId = `clawtalk:${config.agentId || 'client'}`;
   }
 
   /** Build standard auth headers for gateway requests. */
@@ -392,6 +395,73 @@ export class ChatService implements IChatService {
       'x-openclaw-agent-id': this.config.agentId,
       'x-openclaw-session-key': this.sessionKey,
     };
+  }
+
+  private rememberTalkVersion(talkId: string, version: unknown): void {
+    if (typeof version !== 'number' || !Number.isFinite(version)) return;
+    const normalized = Math.floor(version);
+    if (normalized < 1) return;
+    this.talkVersionById.set(talkId, normalized);
+  }
+
+  private rememberTalkVersionFromPayload(payload: unknown, talkIdHint?: string): void {
+    if (!payload || typeof payload !== 'object') return;
+    const row = payload as Record<string, unknown>;
+    const talkId = typeof row.id === 'string' ? row.id : talkIdHint;
+    if (!talkId) return;
+    this.rememberTalkVersion(talkId, row.talkVersion);
+  }
+
+  private rememberTalkVersionFromResponse(response: Response, talkId: string): void {
+    const etag = response.headers.get('etag');
+    if (!etag) return;
+    const trimmed = etag.trim().replace(/^W\//i, '').replace(/^"|"$/g, '');
+    if (!/^\d+$/.test(trimmed)) return;
+    this.rememberTalkVersion(talkId, Number.parseInt(trimmed, 10));
+  }
+
+  private async refreshTalkVersion(talkId: string): Promise<void> {
+    await this.getGatewayTalk(talkId);
+  }
+
+  private async buildTalkMutationHeaders(
+    talkId: string,
+    opts?: { json?: boolean },
+  ): Promise<Record<string, string>> {
+    if (!this.talkVersionById.has(talkId)) {
+      await this.refreshTalkVersion(talkId);
+    }
+    const headers: Record<string, string> = {
+      ...this.authHeaders(),
+      'x-clawtalk-client-id': this.clientId,
+    };
+    if (opts?.json !== false) {
+      headers['Content-Type'] = 'application/json';
+    }
+    const version = this.talkVersionById.get(talkId);
+    if (version && Number.isFinite(version)) {
+      headers['If-Match'] = `"${version}"`;
+    }
+    return headers;
+  }
+
+  private async executeTalkMutation(
+    talkId: string,
+    execute: (headers: Record<string, string>) => Promise<Response>,
+    opts?: { json?: boolean },
+  ): Promise<Response> {
+    let headers = await this.buildTalkMutationHeaders(talkId, opts);
+    let response = await execute(headers);
+    if (response.status === 409 || response.status === 428) {
+      await this.refreshTalkVersion(talkId);
+      headers = await this.buildTalkMutationHeaders(talkId, opts);
+      response = await execute(headers);
+    }
+    if (response.ok) {
+      this.rememberTalkVersionFromResponse(response, talkId);
+      await this.refreshTalkVersion(talkId);
+    }
+    return response;
   }
 
   /** Map message history to the OpenAI-compatible format, truncating to avoid unbounded growth. */
@@ -526,9 +596,10 @@ export class ChatService implements IChatService {
         const body = await response.text().catch(() => '');
         return { ok: false, error: `Gateway error (${response.status}): ${body.slice(0, 200)}` };
       }
-      const data = await response.json() as { id?: string };
+      const data = await response.json() as { id?: string; talkVersion?: number };
       const id = data.id ?? null;
       if (!id) return { ok: false, error: 'Gateway returned no talk ID' };
+      this.rememberTalkVersion(id, data.talkVersion);
       return { ok: true, data: id };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : 'Unknown error' };
@@ -554,15 +625,24 @@ export class ChatService implements IChatService {
   }): Promise<GatewayResult> {
     try {
       const payload = toTalkUpdatePayload(updates);
-      const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(10_000),
-      });
+      const response = await this.executeTalkMutation(
+        talkId,
+        (headers) => fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}`, {
+          method: 'PATCH',
+          headers,
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(10_000),
+        }),
+      );
       if (!response.ok) {
         const body = await response.text().catch(() => '');
         return { ok: false, error: `Gateway error (${response.status}): ${body.slice(0, 200)}` };
+      }
+      try {
+        const data = await response.json() as Record<string, unknown>;
+        this.rememberTalkVersionFromPayload(data, talkId);
+      } catch {
+        // ignore parse error; refresh in executeTalkMutation already ran
       }
       return { ok: true };
     } catch (err) {
@@ -573,15 +653,20 @@ export class ChatService implements IChatService {
   /** Delete a Talk on the gateway. */
   async deleteGatewayTalk(talkId: string): Promise<GatewayResult> {
     try {
-      const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}`, {
-        method: 'DELETE',
-        headers: this.authHeaders(),
-        signal: AbortSignal.timeout(10_000),
-      });
+      const response = await this.executeTalkMutation(
+        talkId,
+        (headers) => fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}`, {
+          method: 'DELETE',
+          headers,
+          signal: AbortSignal.timeout(10_000),
+        }),
+        { json: false },
+      );
       if (!response.ok) {
         const body = await response.text().catch(() => '');
         return { ok: false, error: `Gateway error (${response.status}): ${body.slice(0, 200)}` };
       }
+      this.talkVersionById.delete(talkId);
       return { ok: true };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : 'Unknown error' };
@@ -611,6 +696,10 @@ export class ChatService implements IChatService {
     toolsDeny?: string[];
     googleAuthProfile?: string;
     processing?: boolean;
+    talkVersion?: number;
+    changeId?: string;
+    lastModifiedAt?: number;
+    lastModifiedBy?: string;
     contextMd?: string;
   } | null> {
     try {
@@ -620,7 +709,10 @@ export class ChatService implements IChatService {
         signal: AbortSignal.timeout(10_000),
       });
       if (!response.ok) return null;
-      return await response.json() as any;
+      this.rememberTalkVersionFromResponse(response, talkId);
+      const data = await response.json() as Record<string, unknown>;
+      this.rememberTalkVersionFromPayload(data, talkId);
+      return data as any;
     } catch {
       return null;
     }
@@ -650,6 +742,10 @@ export class ChatService implements IChatService {
     toolsDeny?: string[];
     googleAuthProfile?: string;
     processing?: boolean;
+    talkVersion?: number;
+    changeId?: string;
+    lastModifiedAt?: number;
+    lastModifiedBy?: string;
     createdAt: number;
     updatedAt: number;
   }>> {
@@ -661,7 +757,15 @@ export class ChatService implements IChatService {
       });
       if (!response.ok) return [];
       const data = await response.json() as { talks?: any[] };
-      return data.talks ?? [];
+      const talks = data.talks ?? [];
+      for (const talk of talks) {
+        if (talk && typeof talk === 'object') {
+          const row = talk as Record<string, unknown>;
+          const id = typeof row.id === 'string' ? row.id : undefined;
+          if (id) this.rememberTalkVersionFromPayload(row, id);
+        }
+      }
+      return talks;
     } catch {
       return [];
     }
@@ -720,12 +824,15 @@ export class ChatService implements IChatService {
     updates: Partial<Pick<TalkToolPolicy, 'toolMode' | 'executionMode' | 'filesystemAccess' | 'networkAccess' | 'toolsAllow' | 'toolsDeny' | 'googleAuthProfile'>>,
   ): Promise<TalkToolPolicy | null> {
     try {
-      const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}/tools`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
-        body: JSON.stringify(updates),
-        signal: AbortSignal.timeout(10_000),
-      });
+      const response = await this.executeTalkMutation(
+        talkId,
+        (headers) => fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}/tools`, {
+          method: 'PATCH',
+          headers,
+          body: JSON.stringify(updates),
+          signal: AbortSignal.timeout(10_000),
+        }),
+      );
       if (!response.ok) return null;
       return await response.json() as TalkToolPolicy;
     } catch {
@@ -895,11 +1002,15 @@ export class ChatService implements IChatService {
   /** Pin a message on the gateway. */
   async pinGatewayMessage(talkId: string, messageId: string): Promise<boolean> {
     try {
-      const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}/pin/${encodeURIComponent(messageId)}`, {
-        method: 'POST',
-        headers: this.authHeaders(),
-        signal: AbortSignal.timeout(10_000),
-      });
+      const response = await this.executeTalkMutation(
+        talkId,
+        (headers) => fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}/pin/${encodeURIComponent(messageId)}`, {
+          method: 'POST',
+          headers,
+          signal: AbortSignal.timeout(10_000),
+        }),
+        { json: false },
+      );
       return response.ok;
     } catch {
       return false;
@@ -909,11 +1020,15 @@ export class ChatService implements IChatService {
   /** Unpin a message on the gateway. */
   async unpinGatewayMessage(talkId: string, messageId: string): Promise<boolean> {
     try {
-      const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}/pin/${encodeURIComponent(messageId)}`, {
-        method: 'DELETE',
-        headers: this.authHeaders(),
-        signal: AbortSignal.timeout(10_000),
-      });
+      const response = await this.executeTalkMutation(
+        talkId,
+        (headers) => fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}/pin/${encodeURIComponent(messageId)}`, {
+          method: 'DELETE',
+          headers,
+          signal: AbortSignal.timeout(10_000),
+        }),
+        { json: false },
+      );
       return response.ok;
     } catch {
       return false;
@@ -923,12 +1038,15 @@ export class ChatService implements IChatService {
   /** Create a job on a gateway talk. Returns the job on success, or an error string on failure. */
   async createGatewayJob(talkId: string, schedule: string, prompt: string): Promise<Job | string> {
     try {
-      const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}/jobs`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
-        body: JSON.stringify({ schedule, prompt }),
-        signal: AbortSignal.timeout(10_000),
-      });
+      const response = await this.executeTalkMutation(
+        talkId,
+        (headers) => fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}/jobs`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ schedule, prompt }),
+          signal: AbortSignal.timeout(10_000),
+        }),
+      );
       if (!response.ok) {
         try {
           const body = await response.json() as { error?: string };
@@ -962,12 +1080,15 @@ export class ChatService implements IChatService {
   /** Update a job on a gateway talk (active, schedule, prompt). */
   async updateGatewayJob(talkId: string, jobId: string, updates: { active?: boolean; schedule?: string; prompt?: string }): Promise<boolean> {
     try {
-      const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}/jobs/${encodeURIComponent(jobId)}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
-        body: JSON.stringify(updates),
-        signal: AbortSignal.timeout(10_000),
-      });
+      const response = await this.executeTalkMutation(
+        talkId,
+        (headers) => fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}/jobs/${encodeURIComponent(jobId)}`, {
+          method: 'PATCH',
+          headers,
+          body: JSON.stringify(updates),
+          signal: AbortSignal.timeout(10_000),
+        }),
+      );
       return response.ok;
     } catch {
       return false;
@@ -977,11 +1098,15 @@ export class ChatService implements IChatService {
   /** Delete a job on a gateway talk. */
   async deleteGatewayJob(talkId: string, jobId: string): Promise<boolean> {
     try {
-      const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}/jobs/${encodeURIComponent(jobId)}`, {
-        method: 'DELETE',
-        headers: this.authHeaders(),
-        signal: AbortSignal.timeout(10_000),
-      });
+      const response = await this.executeTalkMutation(
+        talkId,
+        (headers) => fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}/jobs/${encodeURIComponent(jobId)}`, {
+          method: 'DELETE',
+          headers,
+          signal: AbortSignal.timeout(10_000),
+        }),
+        { json: false },
+      );
       return response.ok;
     } catch {
       return false;

@@ -343,6 +343,10 @@ export interface ToolCatalogResponse {
 
 export interface Talk {
   id: string;              // Same as session ID
+  talkVersion?: number;    // Gateway metadata version for optimistic concurrency
+  changeId?: string;       // Last gateway metadata change identifier
+  lastModifiedAt?: number; // Last gateway metadata mutation time
+  lastModifiedBy?: string; // Client/device ID that made last metadata change
   sessionId: string;       // Reference to underlying session
   topicTitle?: string;     // User-set via /topic
   isSaved: boolean;        // Explicitly saved via /save

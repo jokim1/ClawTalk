@@ -827,6 +827,10 @@ export class TalkManager {
   /** Import a talk from gateway data (creates local entry if not present). */
   importGatewayTalk(gwTalk: {
     id: string;
+    talkVersion?: number;
+    changeId?: string;
+    lastModifiedAt?: number;
+    lastModifiedBy?: string;
     topicTitle?: string;
     objective?: string;
     objectives?: string | string[];
@@ -905,6 +909,10 @@ export class TalkManager {
       }
       existing.processing = gwTalk.processing;
       existing.updatedAt = gwTalk.updatedAt;
+      existing.talkVersion = gwTalk.talkVersion ?? existing.talkVersion;
+      existing.changeId = gwTalk.changeId ?? existing.changeId;
+      existing.lastModifiedAt = gwTalk.lastModifiedAt ?? existing.lastModifiedAt;
+      existing.lastModifiedBy = gwTalk.lastModifiedBy ?? existing.lastModifiedBy;
       existing.gatewayTalkId = gwTalk.id;
       return existing;
     }
@@ -913,6 +921,10 @@ export class TalkManager {
     // sessionId matches the gateway talk ID since there's no local session
     const talk: Talk = {
       id: gwTalk.id,
+      talkVersion: gwTalk.talkVersion,
+      changeId: gwTalk.changeId,
+      lastModifiedAt: gwTalk.lastModifiedAt,
+      lastModifiedBy: gwTalk.lastModifiedBy,
       sessionId: gwTalk.id,
       topicTitle: gwTalk.topicTitle,
       objective: resolvedObjective,
