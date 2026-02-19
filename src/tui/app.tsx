@@ -112,6 +112,12 @@ function formatBindingScopeLabel(binding: {
   return scopeLabel;
 }
 
+function formatPostingPriority(mode: 'thread' | 'channel' | 'adaptive' | undefined): 'reply' | 'channel' | 'adaptive' {
+  if (mode === 'thread') return 'reply';
+  if (mode === 'channel') return 'channel';
+  return 'adaptive';
+}
+
 function mergeGoogleAuthProfiles(
   profiles: GoogleAuthProfileSummary[] | undefined,
   authStatus: {
@@ -1612,14 +1618,14 @@ function App({ options }: AppProps) {
       const behavior = behaviors.find((entry) => entry.platformBindingId === binding.id);
       const mode = responseModeFor(behavior);
       const mirror = behavior?.mirrorToTalk ?? 'off';
-      const posting = behavior?.deliveryMode ?? 'adaptive';
+      const posting = formatPostingPriority(behavior?.deliveryMode);
       const promptLines = (behavior?.onMessagePrompt?.trim() ? behavior.onMessagePrompt : '(none)')
         .split('\n')
         .map((line) => `      ${line || ' '}`)
         .join('\n');
       const agent = behavior?.agentName ?? '(default)';
       return `  ${i + 1}. ${binding.platform} ${formatBindingScopeLabel(binding)} -> mode:${mode}, posting:${posting}, mirror:${mirror}, agent:${agent}\n` +
-        `    prompt:\n${promptLines}`;
+        `    response_prompt:\n${promptLines}`;
     });
     const sysMsg = createMessage('system', `Channel response settings:\n${lines.join('\n')}`);
     chat.setMessages(prev => [...prev, sysMsg]);
@@ -1695,7 +1701,10 @@ function App({ options }: AppProps) {
         chat.setMessages(prev => [...prev, failMsg]);
         return;
       }
-      const sysMsg = createMessage('system', `Channel response #${index} Posting Behavior set to ${deliveryMode}.`);
+      const sysMsg = createMessage(
+        'system',
+        `Channel response #${index} Posting Priority set to ${formatPostingPriority(deliveryMode)}.`,
+      );
       chat.setMessages(prev => [...prev, sysMsg]);
     })();
   }, [activeTalkId, restoreTalkRoutingState, syncTalkBindingsToGateway]);
@@ -2540,13 +2549,15 @@ function App({ options }: AppProps) {
       const lines = bindings.map((binding, i) => {
         const behavior = behaviors.find((entry) => entry.platformBindingId === binding.id);
         const mode = behavior?.responseMode ?? (behavior?.autoRespond === false ? 'off' : 'all');
+        const posting = formatPostingPriority(behavior?.deliveryMode);
+        const mirror = behavior?.mirrorToTalk ?? 'off';
         const agent = behavior?.agentName ?? '(default)';
         const promptLines = (behavior?.onMessagePrompt?.trim() ? behavior.onMessagePrompt : '(none)')
           .split('\n')
           .map((line) => `      ${line || ' '}`)
           .join('\n');
-        return `  ${i + 1}. mode:${mode}  agent:${agent}\n` +
-          `    prompt:\n${promptLines}`;
+        return `  ${i + 1}. mode:${mode}  posting:${posting}  mirror:${mirror}  agent:${agent}\n` +
+          `    response_prompt:\n${promptLines}`;
       });
       sections.push(`\nChannel response settings:\n${lines.join('\n')}`);
     } else {

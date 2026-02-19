@@ -64,9 +64,10 @@ const PLATFORM_OPTIONS = ['slack', 'telegram', 'whatsapp'] as const;
 const PERMISSION_OPTIONS: PlatformPermission[] = ['read', 'write', 'read+write'];
 const RESPONSE_MODE_OPTIONS: Array<'off' | 'mentions' | 'all'> = ['off', 'mentions', 'all'];
 const MIRROR_TO_TALK_OPTIONS: Array<'off' | 'inbound' | 'full'> = ['off', 'inbound', 'full'];
-const DELIVERY_MODE_OPTIONS: Array<'thread' | 'channel' | 'adaptive'> = ['adaptive', 'channel', 'thread'];
+type PostingPriorityOption = 'adaptive' | 'channel' | 'reply';
+const POSTING_PRIORITY_OPTIONS: PostingPriorityOption[] = ['adaptive', 'channel', 'reply'];
 const ADAPTIVE_PROMPT_TEMPLATE = [
-  'Posting behavior: adaptive.',
+  'Posting Priority: adaptive.',
   '- For study/work updates: post top-level in channel with a compact scoreboard.',
   '- For advice/help: reply in thread unless user asks for top-level post.',
   '- If intent is unclear, ask one short clarifying question before posting.',
@@ -125,6 +126,18 @@ function cycleIndex(current: number, max: number, direction: -1 | 1): number {
   if (max <= 0) return 0;
   if (direction < 0) return current <= 0 ? max - 1 : current - 1;
   return current >= max - 1 ? 0 : current + 1;
+}
+
+function toPostingPriority(mode: 'thread' | 'channel' | 'adaptive' | undefined): PostingPriorityOption {
+  if (mode === 'channel') return 'channel';
+  if (mode === 'thread') return 'reply';
+  return 'adaptive';
+}
+
+function toDeliveryMode(priority: PostingPriorityOption): 'thread' | 'channel' | 'adaptive' {
+  if (priority === 'channel') return 'channel';
+  if (priority === 'reply') return 'thread';
+  return 'adaptive';
 }
 
 export function ChannelConfigPicker({
@@ -394,16 +407,18 @@ export function ChannelConfigPicker({
 
     if (field === 'posting') {
       if (selectedRow.binding.platform !== 'slack') {
-        setStatusMessage('Posting Behavior applies to Slack connections only.');
+        setStatusMessage('Posting Priority applies to Slack connections only.');
         return;
       }
-      const currentIdx = DELIVERY_MODE_OPTIONS.findIndex((mode) => mode === selectedRow.deliveryMode);
-      const nextIdx = cycleIndex(currentIdx >= 0 ? currentIdx : 0, DELIVERY_MODE_OPTIONS.length, direction);
-      const nextMode = DELIVERY_MODE_OPTIONS[nextIdx];
+      const currentPriority = toPostingPriority(selectedRow.deliveryMode);
+      const currentIdx = POSTING_PRIORITY_OPTIONS.findIndex((mode) => mode === currentPriority);
+      const nextIdx = cycleIndex(currentIdx >= 0 ? currentIdx : 0, POSTING_PRIORITY_OPTIONS.length, direction);
+      const nextPriority = POSTING_PRIORITY_OPTIONS[nextIdx];
+      const nextMode = toDeliveryMode(nextPriority);
       if (selectedRow.deliveryMode !== nextMode) {
         onSetDeliveryMode(selectedRow.index, nextMode);
       }
-      setStatusMessage(`Connection #${selectedRow.index} Posting Behavior: ${nextMode}.`);
+      setStatusMessage(`Connection #${selectedRow.index} Posting Priority: ${nextPriority}.`);
       return;
     }
 
@@ -420,7 +435,7 @@ export function ChannelConfigPicker({
     }
 
     if (field === 'prompt') {
-      setStatusMessage('Press Enter to edit prompt text.');
+      setStatusMessage('Press Enter to edit Response Prompt text.');
     }
   };
 
@@ -820,11 +835,12 @@ export function ChannelConfigPicker({
         return;
       }
       if (key.downArrow) {
-        setDeliverySelection((prev) => Math.min(DELIVERY_MODE_OPTIONS.length - 1, prev + 1));
+        setDeliverySelection((prev) => Math.min(POSTING_PRIORITY_OPTIONS.length - 1, prev + 1));
         return;
       }
       if (key.return) {
-        const nextMode = DELIVERY_MODE_OPTIONS[deliverySelection];
+        const nextPriority = POSTING_PRIORITY_OPTIONS[deliverySelection];
+        const nextMode = toDeliveryMode(nextPriority);
         setPendingDeliveryMode(nextMode);
         const basePrompt = pendingPrompt.trim()
           ? pendingPrompt
@@ -986,12 +1002,12 @@ export function ChannelConfigPicker({
               <Text>  permission: {selectedRow.binding.permission}</Text>
               <Text>  response mode: {selectedRow.responseMode}</Text>
               <Text>
-                {'  Posting Behavior: '}
-                {selectedRow.binding.platform === 'slack' ? selectedRow.deliveryMode : '(n/a)'}
+                {'  Posting Priority: '}
+                {selectedRow.binding.platform === 'slack' ? toPostingPriority(selectedRow.deliveryMode) : '(n/a)'}
               </Text>
               {selectedRow.binding.platform === 'slack' && (
                 <Text dimColor>
-                  {'    adaptive (recommended): top-level posts for updates, thread replies for advice'}
+                  {'    Controls where replies are posted (not response wording).'}
                 </Text>
               )}
               <Text>
@@ -1004,7 +1020,7 @@ export function ChannelConfigPicker({
                 </Text>
               )}
               <Text>  responder agent: {selectedRow.agentName ?? '(default primary)'}</Text>
-              <Text>  prompt:</Text>
+              <Text>  Response Prompt:</Text>
               {wrapForTerminal(selectedRow.prompt || '(none)', Math.max(10, terminalWidth - 10)).map((line, idx) => (
                 <Text key={`prompt-line-${idx}`} dimColor>
                   {'    '}
@@ -1043,7 +1059,7 @@ export function ChannelConfigPicker({
               </Text>
               <Text color={activeEditField === 'posting' ? 'cyan' : undefined}>
                 {activeEditField === 'posting' ? '▸ ' : '  '}
-                Posting Behavior: {selectedRow.binding.platform === 'slack' ? selectedRow.deliveryMode : '(n/a)'}
+                Posting Priority: {selectedRow.binding.platform === 'slack' ? toPostingPriority(selectedRow.deliveryMode) : '(n/a)'}
               </Text>
               <Text color={activeEditField === 'mirror' ? 'cyan' : undefined}>
                 {activeEditField === 'mirror' ? '▸ ' : '  '}
@@ -1056,8 +1072,8 @@ export function ChannelConfigPicker({
               <Text color={activeEditField === 'prompt' ? 'cyan' : undefined}>
                 {activeEditField === 'prompt' ? '▸ ' : '  '}
                 {selectedRow.binding.platform === 'slack' && selectedRow.deliveryMode === 'adaptive'
-                  ? 'adaptive prompt:'
-                  : 'prompt:'}
+                  ? 'Response Prompt (adaptive):'
+                  : 'Response Prompt:'}
               </Text>
               {(selectedRow.prompt?.trim()
                 ? wrapForTerminal(selectedRow.prompt, Math.max(10, terminalWidth - 12))
@@ -1214,12 +1230,12 @@ export function ChannelConfigPicker({
       {mode === 'add-posting' && (
         <>
           <Box height={1} />
-          <Text bold>Step 6: Posting Behavior</Text>
+          <Text bold>Step 6: Posting Priority</Text>
           <Text dimColor>{pendingPlatform} {pendingScope}</Text>
           <Text dimColor>
-            Controls where Slack auto-responses are posted.
+            Controls where Slack auto-responses are posted (not what they say).
           </Text>
-          {DELIVERY_MODE_OPTIONS.map((mode, idx) => (
+          {POSTING_PRIORITY_OPTIONS.map((mode, idx) => (
             <Text key={mode} color={idx === deliverySelection ? 'cyan' : undefined}>
               {idx === deliverySelection ? '▸ ' : '  '}
               {mode}
@@ -1229,7 +1245,7 @@ export function ChannelConfigPicker({
           <Text dimColor>Examples:</Text>
           <Text dimColor>  adaptive: "Asher 180/300" posts in channel; advice replies in thread.</Text>
           <Text dimColor>  channel: always top-level channel post.</Text>
-          <Text dimColor>  thread: reply in the inbound message thread when thread exists.</Text>
+          <Text dimColor>  reply: reply in the inbound message thread when thread exists.</Text>
           <Text dimColor>  Next step lets you edit a prompt for this behavior (adaptive template included).</Text>
           <Box height={1} />
           <Text dimColor>Enter continue  Esc cancel</Text>
@@ -1239,10 +1255,10 @@ export function ChannelConfigPicker({
       {mode === 'add-prompt' && (
         <>
           <Box height={1} />
-          <Text bold>Step {pendingPlatform === 'slack' ? '7' : '5'}: Prompt</Text>
+          <Text bold>Step {pendingPlatform === 'slack' ? '7' : '5'}: Response Prompt</Text>
           <Text dimColor>Optional instruction for inbound responses on this channel.</Text>
           {pendingPlatform === 'slack' && (
-            <Text dimColor>For adaptive posting, tune when to post top-level vs reply in thread.</Text>
+            <Text dimColor>Shapes response content/style. Posting Priority controls routing.</Text>
           )}
           <Text dimColor>Example:</Text>
           <Text dimColor>  You are the channel assistant.</Text>
@@ -1289,7 +1305,7 @@ export function ChannelConfigPicker({
           <Text>  permission: {pendingPermission}</Text>
           <Text>  response mode: {pendingResponseMode}</Text>
           {pendingPlatform === 'slack' && (
-            <Text>  Posting Behavior: {pendingDeliveryMode}</Text>
+            <Text>  Posting Priority: {toPostingPriority(pendingDeliveryMode)}</Text>
           )}
           {pendingPlatform === 'slack' && (
             <>
@@ -1297,7 +1313,7 @@ export function ChannelConfigPicker({
               <Text dimColor>    Controls transcript syncing to Talk history; does not affect Slack replies.</Text>
             </>
           )}
-          <Text>  prompt:</Text>
+          <Text>  Response Prompt:</Text>
           {(pendingPrompt.trim()
             ? wrapForTerminal(pendingPrompt.trim(), Math.max(10, terminalWidth - 10))
             : ['(none)']
