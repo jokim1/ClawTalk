@@ -374,6 +374,11 @@ export function ChannelConfigPicker({
   };
 
   useInput((input, key) => {
+    const isBackspaceKey =
+      key.backspace ||
+      input === '\u0008' || // Ctrl+H
+      input === '\u007f';   // DEL (common Backspace on many terminals)
+
     if (input === 'b' && key.ctrl) {
       onClose();
       return;
@@ -419,7 +424,7 @@ export function ChannelConfigPicker({
         setPromptPreferredCol(null);
         return;
       }
-      if (key.backspace) {
+      if (isBackspaceKey) {
         if (promptCursor <= 0) return;
         const next = `${promptInput.slice(0, promptCursor - 1)}${promptInput.slice(promptCursor)}`;
         setPromptInput(next);
@@ -758,7 +763,7 @@ export function ChannelConfigPicker({
         setPromptPreferredCol(null);
         return;
       }
-      if (key.backspace) {
+      if (isBackspaceKey) {
         if (promptCursor <= 0) return;
         const next = `${promptInput.slice(0, promptCursor - 1)}${promptInput.slice(promptCursor)}`;
         setPromptInput(next);
@@ -1097,7 +1102,10 @@ export function ChannelConfigPicker({
           <Text dimColor>  2) If unclear, ask one short clarifying question.</Text>
           <Text dimColor>  3) If clear, reply with concise next steps and owners/dates when relevant.</Text>
           <Text dimColor>  4) Keep responses under 5 bullets unless detail is requested.</Text>
-          <Text dimColor>Multi-line editor. Ctrl+S continue  Enter newline  Esc back</Text>
+          <Box height={1} />
+          <Text>
+            Multi-line editor. <Text color="black">Ctrl+S SAVE and CONTINUE</Text>  Enter newline  Esc back
+          </Text>
           <Box borderStyle="round" borderColor="gray" paddingX={1} flexDirection="column">
             {promptWindow.start > 0 && <Text dimColor>▲ more</Text>}
             {promptLayout.lines.slice(promptWindow.start, promptWindow.end).map((line, idx) => {

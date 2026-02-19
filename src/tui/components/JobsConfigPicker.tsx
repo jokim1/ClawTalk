@@ -200,6 +200,11 @@ export function JobsConfigPicker({
   ];
 
   useInput((input, key) => {
+    const isBackspaceKey =
+      key.backspace ||
+      input === '\u0008' || // Ctrl+H
+      input === '\u007f';   // DEL (common Backspace on many terminals)
+
     if (input === 'j' && key.ctrl) {
       onClose();
       return;
@@ -387,7 +392,7 @@ export function JobsConfigPicker({
         setPromptPreferredCol(null);
         return;
       }
-      if (key.backspace) {
+      if (isBackspaceKey) {
         if (promptCursor <= 0) return;
         const next = `${promptInput.slice(0, promptCursor - 1)}${promptInput.slice(promptCursor)}`;
         setPromptInput(next);
