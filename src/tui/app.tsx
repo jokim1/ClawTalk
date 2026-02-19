@@ -3710,14 +3710,14 @@ function App({ options }: AppProps) {
       return;
     }
 
-    // ^B Channel Config
-    if (input === 'b' && key.ctrl) {
+    // ^C Channel Config
+    if (input === 'c' && key.ctrl) {
       if (!activeTalkId || !talkManagerRef.current) {
         setError('No active talk to configure.');
       } else {
         setShowChannelConfig(true);
       }
-      cleanInputChar(setInputText, 'b');
+      cleanInputChar(setInputText, 'c');
       return;
     }
 
