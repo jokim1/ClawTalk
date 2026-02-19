@@ -245,6 +245,13 @@ export interface PlatformBehavior {
   autoRespond?: boolean;
   agentName?: string;
   onMessagePrompt?: string;
+  mirrorToTalk?: 'off' | 'inbound' | 'full';
+  deliveryMode?: 'thread' | 'channel' | 'adaptive';
+  responsePolicy?: {
+    triggerPolicy?: 'judgment' | 'study_entries_only' | 'advice_or_study';
+    allowedSenders?: string[];
+    minConfidence?: number;
+  };
   createdAt: number;
   updatedAt: number;
 }

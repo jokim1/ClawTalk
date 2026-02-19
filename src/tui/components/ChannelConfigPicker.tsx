@@ -36,6 +36,7 @@ interface ChannelConfigPickerProps {
   ) => void;
   onRemoveBinding: (index: number) => void;
   onSetResponseMode: (index: number, mode: 'off' | 'mentions' | 'all') => void;
+  onSetMirrorToTalk: (index: number, mode: 'off' | 'inbound' | 'full') => void;
   onSetPrompt: (index: number, prompt: string) => void;
   onSetAgentChoice: (index: number, agentName?: string) => void;
   onClearBehavior: (index: number) => void;
@@ -54,12 +55,13 @@ type PickerMode =
   | 'edit-prompt'
   | 'confirm-delete';
 
-type EditField = 'scope' | 'permission' | 'response' | 'agent' | 'prompt';
+type EditField = 'scope' | 'permission' | 'response' | 'mirror' | 'agent' | 'prompt';
 
-const EDIT_FIELDS: EditField[] = ['scope', 'permission', 'response', 'agent', 'prompt'];
+const EDIT_FIELDS: EditField[] = ['scope', 'permission', 'response', 'mirror', 'agent', 'prompt'];
 const PLATFORM_OPTIONS = ['slack', 'telegram', 'whatsapp'] as const;
 const PERMISSION_OPTIONS: PlatformPermission[] = ['read', 'write', 'read+write'];
 const RESPONSE_MODE_OPTIONS: Array<'off' | 'mentions' | 'all'> = ['off', 'mentions', 'all'];
+const MIRROR_TO_TALK_OPTIONS: Array<'off' | 'inbound' | 'full'> = ['off', 'inbound', 'full'];
 
 const PLATFORM_LABELS: Record<(typeof PLATFORM_OPTIONS)[number], string> = {
   slack: 'Slack',
@@ -82,13 +84,6 @@ function formatBindingScopeLabel(binding: {
     return `${accountId}:${scopeLabel}`;
   }
   return scopeLabel;
-}
-
-function platformAgentResponse(platform: string): string {
-  if (platform === 'slack') return 'Inbound responses + event jobs';
-  if (platform === 'telegram') return 'Event jobs';
-  if (platform === 'whatsapp') return 'Event jobs';
-  return 'Event jobs';
 }
 
 function parseSlackAccountPrefix(scope: string): string | undefined {
@@ -139,6 +134,7 @@ export function ChannelConfigPicker({
   onUpdateBinding,
   onRemoveBinding,
   onSetResponseMode,
+  onSetMirrorToTalk,
   onSetPrompt,
   onSetAgentChoice,
   onClearBehavior,
@@ -182,6 +178,7 @@ export function ChannelConfigPicker({
         index: idx + 1,
         binding,
         responseMode: behavior?.responseMode ?? (behavior?.autoRespond === false ? 'off' : 'all'),
+        mirrorToTalk: behavior?.mirrorToTalk ?? 'off',
         agentName: behavior?.agentName,
         prompt: behavior?.onMessagePrompt,
       };
@@ -364,6 +361,21 @@ export function ChannelConfigPicker({
         onSetResponseMode(selectedRow.index, nextMode);
       }
       setStatusMessage(`Connection #${selectedRow.index} response mode: ${nextMode}.`);
+      return;
+    }
+
+    if (field === 'mirror') {
+      if (selectedRow.binding.platform !== 'slack') {
+        setStatusMessage('Slack Message Mirroring applies to Slack connections only.');
+        return;
+      }
+      const currentIdx = MIRROR_TO_TALK_OPTIONS.findIndex((mode) => mode === selectedRow.mirrorToTalk);
+      const nextIdx = cycleIndex(currentIdx >= 0 ? currentIdx : 0, MIRROR_TO_TALK_OPTIONS.length, direction);
+      const nextMode = MIRROR_TO_TALK_OPTIONS[nextIdx];
+      if (selectedRow.mirrorToTalk !== nextMode) {
+        onSetMirrorToTalk(selectedRow.index, nextMode);
+      }
+      setStatusMessage(`Connection #${selectedRow.index} Slack Message Mirroring: ${nextMode}.`);
       return;
     }
 
@@ -904,8 +916,16 @@ export function ChannelConfigPicker({
               <Text>  platform: {selectedRow.binding.platform}</Text>
               <Text>  scope: {formatBindingScopeLabel(selectedRow.binding)}</Text>
               <Text>  permission: {selectedRow.binding.permission}</Text>
-              <Text>  agent response: {platformAgentResponse(selectedRow.binding.platform)}</Text>
               <Text>  response mode: {selectedRow.responseMode}</Text>
+              <Text>
+                {'  Slack Message Mirroring: '}
+                {selectedRow.binding.platform === 'slack' ? selectedRow.mirrorToTalk : '(n/a)'}
+              </Text>
+              {selectedRow.binding.platform === 'slack' && (
+                <Text dimColor>
+                  {'    Mirrors Slack transcript to Talk history: off | inbound | full'}
+                </Text>
+              )}
               <Text>  responder agent: {selectedRow.agentName ?? '(default primary)'}</Text>
               <Text>  prompt:</Text>
               {wrapForTerminal(selectedRow.prompt || '(none)', Math.max(10, terminalWidth - 10)).map((line, idx) => (
@@ -944,6 +964,10 @@ export function ChannelConfigPicker({
                 {activeEditField === 'response' ? '▸ ' : '  '}
                 response mode: {selectedRow.responseMode}
               </Text>
+              <Text color={activeEditField === 'mirror' ? 'cyan' : undefined}>
+                {activeEditField === 'mirror' ? '▸ ' : '  '}
+                Slack Message Mirroring: {selectedRow.binding.platform === 'slack' ? selectedRow.mirrorToTalk : '(n/a)'}
+              </Text>
               <Text color={activeEditField === 'agent' ? 'cyan' : undefined}>
                 {activeEditField === 'agent' ? '▸ ' : '  '}
                 responder agent: {selectedRow.agentName ?? '(default primary)'}
@@ -978,12 +1002,12 @@ export function ChannelConfigPicker({
         <>
           <Box height={1} />
           <Text bold>Step 1: Choose Platform</Text>
-          {PLATFORM_OPTIONS.map((platform, idx) => (
-            <Text key={platform} color={idx === platformSelection ? 'cyan' : undefined}>
-              {idx === platformSelection ? '▸ ' : '  '}
-              {PLATFORM_LABELS[platform]}  <Text dimColor>({platformAgentResponse(platform)})</Text>
-            </Text>
-          ))}
+            {PLATFORM_OPTIONS.map((platform, idx) => (
+              <Text key={platform} color={idx === platformSelection ? 'cyan' : undefined}>
+                {idx === platformSelection ? '▸ ' : '  '}
+                {PLATFORM_LABELS[platform]}
+              </Text>
+            ))}
           <Box height={1} />
           <Text dimColor>Enter continue  Esc cancel  r refresh Slack data</Text>
         </>
@@ -1152,7 +1176,13 @@ export function ChannelConfigPicker({
           <Text>  platform: {pendingPlatform}</Text>
           <Text>  scope: {pendingScope}</Text>
           <Text>  permission: {pendingPermission}</Text>
-          <Text>  agent response: {pendingResponseMode}</Text>
+          <Text>  response mode: {pendingResponseMode}</Text>
+          {pendingPlatform === 'slack' && (
+            <>
+              <Text>  Slack Message Mirroring: off</Text>
+              <Text dimColor>    Controls transcript syncing to Talk history; does not affect Slack replies.</Text>
+            </>
+          )}
           <Text>  prompt:</Text>
           {(pendingPrompt.trim()
             ? wrapForTerminal(pendingPrompt.trim(), Math.max(10, terminalWidth - 10))

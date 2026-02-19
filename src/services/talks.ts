@@ -749,7 +749,10 @@ export class TalkManager {
   upsertPlatformBehaviorByBindingIndex(
     talkId: string,
     bindingIndex: number,
-    updates: Partial<Pick<PlatformBehavior, 'responseMode' | 'autoRespond' | 'agentName' | 'onMessagePrompt'>>,
+    updates: Partial<Pick<
+      PlatformBehavior,
+      'responseMode' | 'autoRespond' | 'agentName' | 'onMessagePrompt' | 'mirrorToTalk'
+    >>,
   ): boolean {
     const talk = this.talks.get(talkId);
     if (!talk?.platformBindings) return false;
@@ -788,6 +791,9 @@ export class TalkManager {
       const next = updates.onMessagePrompt.trim();
       if (next) behavior.onMessagePrompt = next;
       else delete behavior.onMessagePrompt;
+    }
+    if (updates.mirrorToTalk !== undefined) {
+      behavior.mirrorToTalk = updates.mirrorToTalk;
     }
     behavior.updatedAt = now;
 
