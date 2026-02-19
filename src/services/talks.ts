@@ -751,7 +751,7 @@ export class TalkManager {
     bindingIndex: number,
     updates: Partial<Pick<
       PlatformBehavior,
-      'responseMode' | 'autoRespond' | 'agentName' | 'onMessagePrompt' | 'mirrorToTalk'
+      'responseMode' | 'autoRespond' | 'agentName' | 'onMessagePrompt' | 'mirrorToTalk' | 'deliveryMode'
     >>,
   ): boolean {
     const talk = this.talks.get(talkId);
@@ -794,6 +794,9 @@ export class TalkManager {
     }
     if (updates.mirrorToTalk !== undefined) {
       behavior.mirrorToTalk = updates.mirrorToTalk;
+    }
+    if (updates.deliveryMode !== undefined) {
+      behavior.deliveryMode = updates.deliveryMode;
     }
     behavior.updatedAt = now;
 

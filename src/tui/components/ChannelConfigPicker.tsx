@@ -37,6 +37,7 @@ interface ChannelConfigPickerProps {
   onRemoveBinding: (index: number) => void;
   onSetResponseMode: (index: number, mode: 'off' | 'mentions' | 'all') => void;
   onSetMirrorToTalk: (index: number, mode: 'off' | 'inbound' | 'full') => void;
+  onSetDeliveryMode: (index: number, mode: 'thread' | 'channel' | 'adaptive') => void;
   onSetPrompt: (index: number, prompt: string) => void;
   onSetAgentChoice: (index: number, agentName?: string) => void;
   onClearBehavior: (index: number) => void;
@@ -50,18 +51,20 @@ type PickerMode =
   | 'add-scope'
   | 'add-permission'
   | 'add-response'
+  | 'add-posting'
   | 'add-prompt'
   | 'add-review'
   | 'edit-prompt'
   | 'confirm-delete';
 
-type EditField = 'scope' | 'permission' | 'response' | 'mirror' | 'agent' | 'prompt';
+type EditField = 'scope' | 'permission' | 'response' | 'posting' | 'mirror' | 'agent' | 'prompt';
 
-const EDIT_FIELDS: EditField[] = ['scope', 'permission', 'response', 'mirror', 'agent', 'prompt'];
+const EDIT_FIELDS: EditField[] = ['scope', 'permission', 'response', 'posting', 'mirror', 'agent', 'prompt'];
 const PLATFORM_OPTIONS = ['slack', 'telegram', 'whatsapp'] as const;
 const PERMISSION_OPTIONS: PlatformPermission[] = ['read', 'write', 'read+write'];
 const RESPONSE_MODE_OPTIONS: Array<'off' | 'mentions' | 'all'> = ['off', 'mentions', 'all'];
 const MIRROR_TO_TALK_OPTIONS: Array<'off' | 'inbound' | 'full'> = ['off', 'inbound', 'full'];
+const DELIVERY_MODE_OPTIONS: Array<'thread' | 'channel' | 'adaptive'> = ['adaptive', 'channel', 'thread'];
 
 const PLATFORM_LABELS: Record<(typeof PLATFORM_OPTIONS)[number], string> = {
   slack: 'Slack',
@@ -135,6 +138,7 @@ export function ChannelConfigPicker({
   onRemoveBinding,
   onSetResponseMode,
   onSetMirrorToTalk,
+  onSetDeliveryMode,
   onSetPrompt,
   onSetAgentChoice,
   onClearBehavior,
@@ -155,6 +159,8 @@ export function ChannelConfigPicker({
   const [pendingPermission, setPendingPermission] = useState<PlatformPermission>('read+write');
   const [responseSelection, setResponseSelection] = useState(2);
   const [pendingResponseMode, setPendingResponseMode] = useState<'off' | 'mentions' | 'all'>('all');
+  const [deliverySelection, setDeliverySelection] = useState(0);
+  const [pendingDeliveryMode, setPendingDeliveryMode] = useState<'thread' | 'channel' | 'adaptive'>('adaptive');
   const [pendingPrompt, setPendingPrompt] = useState('');
 
   const [editFieldIndex, setEditFieldIndex] = useState(0);
@@ -178,6 +184,7 @@ export function ChannelConfigPicker({
         index: idx + 1,
         binding,
         responseMode: behavior?.responseMode ?? (behavior?.autoRespond === false ? 'off' : 'all'),
+        deliveryMode: behavior?.deliveryMode ?? 'adaptive',
         mirrorToTalk: behavior?.mirrorToTalk ?? 'off',
         agentName: behavior?.agentName,
         prompt: behavior?.onMessagePrompt,
@@ -379,6 +386,21 @@ export function ChannelConfigPicker({
       return;
     }
 
+    if (field === 'posting') {
+      if (selectedRow.binding.platform !== 'slack') {
+        setStatusMessage('Posting Behavior applies to Slack connections only.');
+        return;
+      }
+      const currentIdx = DELIVERY_MODE_OPTIONS.findIndex((mode) => mode === selectedRow.deliveryMode);
+      const nextIdx = cycleIndex(currentIdx >= 0 ? currentIdx : 0, DELIVERY_MODE_OPTIONS.length, direction);
+      const nextMode = DELIVERY_MODE_OPTIONS[nextIdx];
+      if (selectedRow.deliveryMode !== nextMode) {
+        onSetDeliveryMode(selectedRow.index, nextMode);
+      }
+      setStatusMessage(`Connection #${selectedRow.index} Posting Behavior: ${nextMode}.`);
+      return;
+    }
+
     if (field === 'agent') {
       const choices: Array<string | undefined> = [undefined, ...agents.map((agent) => agent.name)];
       const currentIdx = selectedRow.agentName
@@ -414,6 +436,11 @@ export function ChannelConfigPicker({
         return;
       }
       if (mode === 'add-prompt') {
+        setMode(pendingPlatform === 'slack' ? 'add-posting' : 'add-response');
+        setPromptPreferredCol(null);
+        return;
+      }
+      if (mode === 'add-posting') {
         setMode('add-response');
         setPromptPreferredCol(null);
         return;
@@ -546,6 +573,8 @@ export function ChannelConfigPicker({
         setPendingPermission('read+write');
         setResponseSelection(2);
         setPendingResponseMode('all');
+        setDeliverySelection(0);
+        setPendingDeliveryMode('adaptive');
         setPendingPrompt('');
         setMode('add-platform');
         return;
@@ -764,6 +793,33 @@ export function ChannelConfigPicker({
       if (key.return) {
         const nextMode = RESPONSE_MODE_OPTIONS[responseSelection];
         setPendingResponseMode(nextMode);
+        if (pendingPlatform === 'slack') {
+          setDeliverySelection(0);
+          setPendingDeliveryMode('adaptive');
+          setMode('add-posting');
+        } else {
+          const normalized = sanitizePromptInput(pendingPrompt);
+          setPromptInput(normalized);
+          setPromptCursor(normalized.length);
+          setPromptPreferredCol(null);
+          setMode('add-prompt');
+        }
+      }
+      return;
+    }
+
+    if (mode === 'add-posting') {
+      if (key.upArrow) {
+        setDeliverySelection((prev) => Math.max(0, prev - 1));
+        return;
+      }
+      if (key.downArrow) {
+        setDeliverySelection((prev) => Math.min(DELIVERY_MODE_OPTIONS.length - 1, prev + 1));
+        return;
+      }
+      if (key.return) {
+        const nextMode = DELIVERY_MODE_OPTIONS[deliverySelection];
+        setPendingDeliveryMode(nextMode);
         const normalized = sanitizePromptInput(pendingPrompt);
         setPromptInput(normalized);
         setPromptCursor(normalized.length);
@@ -841,6 +897,9 @@ export function ChannelConfigPicker({
         const newZeroBasedIndex = rows.length;
         onAddBinding(pendingPlatform, pendingScope, pendingPermission);
         onSetResponseMode(newZeroBasedIndex + 1, pendingResponseMode);
+        if (pendingPlatform === 'slack') {
+          onSetDeliveryMode(newZeroBasedIndex + 1, pendingDeliveryMode);
+        }
         const trimmedPrompt = sanitizePromptInput(pendingPrompt).trim();
         if (trimmedPrompt) onSetPrompt(newZeroBasedIndex + 1, trimmedPrompt);
         setMode('list');
@@ -918,6 +977,15 @@ export function ChannelConfigPicker({
               <Text>  permission: {selectedRow.binding.permission}</Text>
               <Text>  response mode: {selectedRow.responseMode}</Text>
               <Text>
+                {'  Posting Behavior: '}
+                {selectedRow.binding.platform === 'slack' ? selectedRow.deliveryMode : '(n/a)'}
+              </Text>
+              {selectedRow.binding.platform === 'slack' && (
+                <Text dimColor>
+                  {'    adaptive (recommended): top-level posts for updates, thread replies for advice'}
+                </Text>
+              )}
+              <Text>
                 {'  Slack Message Mirroring: '}
                 {selectedRow.binding.platform === 'slack' ? selectedRow.mirrorToTalk : '(n/a)'}
               </Text>
@@ -963,6 +1031,10 @@ export function ChannelConfigPicker({
               <Text color={activeEditField === 'response' ? 'cyan' : undefined}>
                 {activeEditField === 'response' ? '▸ ' : '  '}
                 response mode: {selectedRow.responseMode}
+              </Text>
+              <Text color={activeEditField === 'posting' ? 'cyan' : undefined}>
+                {activeEditField === 'posting' ? '▸ ' : '  '}
+                Posting Behavior: {selectedRow.binding.platform === 'slack' ? selectedRow.deliveryMode : '(n/a)'}
               </Text>
               <Text color={activeEditField === 'mirror' ? 'cyan' : undefined}>
                 {activeEditField === 'mirror' ? '▸ ' : '  '}
@@ -1128,10 +1200,34 @@ export function ChannelConfigPicker({
         </>
       )}
 
+      {mode === 'add-posting' && (
+        <>
+          <Box height={1} />
+          <Text bold>Step 6: Posting Behavior</Text>
+          <Text dimColor>{pendingPlatform} {pendingScope}</Text>
+          <Text dimColor>
+            Controls where Slack auto-responses are posted.
+          </Text>
+          {DELIVERY_MODE_OPTIONS.map((mode, idx) => (
+            <Text key={mode} color={idx === deliverySelection ? 'cyan' : undefined}>
+              {idx === deliverySelection ? '▸ ' : '  '}
+              {mode}
+            </Text>
+          ))}
+          <Box height={1} />
+          <Text dimColor>Examples:</Text>
+          <Text dimColor>  adaptive: "Asher 180/300" posts in channel; advice replies in thread.</Text>
+          <Text dimColor>  channel: always top-level channel post.</Text>
+          <Text dimColor>  thread: reply in the inbound message thread when thread exists.</Text>
+          <Box height={1} />
+          <Text dimColor>Enter continue  Esc cancel</Text>
+        </>
+      )}
+
       {mode === 'add-prompt' && (
         <>
           <Box height={1} />
-          <Text bold>Step {pendingPlatform === 'slack' ? '6' : '5'}: Prompt</Text>
+          <Text bold>Step {pendingPlatform === 'slack' ? '7' : '5'}: Prompt</Text>
           <Text dimColor>Optional instruction for inbound responses on this channel.</Text>
           <Text dimColor>Example:</Text>
           <Text dimColor>  You are the channel assistant.</Text>
@@ -1172,11 +1268,14 @@ export function ChannelConfigPicker({
       {mode === 'add-review' && (
         <>
           <Box height={1} />
-          <Text bold>Step {pendingPlatform === 'slack' ? '7' : '6'}: Review</Text>
+          <Text bold>Step {pendingPlatform === 'slack' ? '8' : '6'}: Review</Text>
           <Text>  platform: {pendingPlatform}</Text>
           <Text>  scope: {pendingScope}</Text>
           <Text>  permission: {pendingPermission}</Text>
           <Text>  response mode: {pendingResponseMode}</Text>
+          {pendingPlatform === 'slack' && (
+            <Text>  Posting Behavior: {pendingDeliveryMode}</Text>
+          )}
           {pendingPlatform === 'slack' && (
             <>
               <Text>  Slack Message Mirroring: off</Text>

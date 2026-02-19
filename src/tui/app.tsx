@@ -1612,12 +1612,13 @@ function App({ options }: AppProps) {
       const behavior = behaviors.find((entry) => entry.platformBindingId === binding.id);
       const mode = responseModeFor(behavior);
       const mirror = behavior?.mirrorToTalk ?? 'off';
+      const posting = behavior?.deliveryMode ?? 'adaptive';
       const promptLines = (behavior?.onMessagePrompt?.trim() ? behavior.onMessagePrompt : '(none)')
         .split('\n')
         .map((line) => `      ${line || ' '}`)
         .join('\n');
       const agent = behavior?.agentName ?? '(default)';
-      return `  ${i + 1}. ${binding.platform} ${formatBindingScopeLabel(binding)} -> mode:${mode}, mirror:${mirror}, agent:${agent}\n` +
+      return `  ${i + 1}. ${binding.platform} ${formatBindingScopeLabel(binding)} -> mode:${mode}, posting:${posting}, mirror:${mirror}, agent:${agent}\n` +
         `    prompt:\n${promptLines}`;
     });
     const sysMsg = createMessage('system', `Channel response settings:\n${lines.join('\n')}`);
@@ -1670,6 +1671,31 @@ function App({ options }: AppProps) {
         return;
       }
       const sysMsg = createMessage('system', `Channel response #${index} Slack Message Mirroring set to ${mirrorToTalk}.`);
+      chat.setMessages(prev => [...prev, sysMsg]);
+    })();
+  }, [activeTalkId, restoreTalkRoutingState, syncTalkBindingsToGateway]);
+
+  const handleSetChannelDeliveryMode = useCallback((index: number, deliveryMode: 'thread' | 'channel' | 'adaptive') => {
+    if (!activeTalkId || !talkManagerRef.current) return;
+    talkManagerRef.current.saveTalk(activeTalkId);
+    const prevBindings = talkManagerRef.current.getPlatformBindings(activeTalkId).map((row) => ({ ...row }));
+    const prevBehaviors = talkManagerRef.current.getPlatformBehaviors(activeTalkId).map((row) => ({ ...row }));
+    const ok = talkManagerRef.current.upsertPlatformBehaviorByBindingIndex(activeTalkId, index, {
+      deliveryMode,
+    });
+    if (!ok) {
+      setError(`No channel connection at position ${index}`);
+      return;
+    }
+    void (async () => {
+      const synced = await syncTalkBindingsToGateway(activeTalkId);
+      if (!synced) {
+        restoreTalkRoutingState(activeTalkId, prevBindings, prevBehaviors);
+        const failMsg = createMessage('system', 'Failed to save channel response settings; reverted local change.');
+        chat.setMessages(prev => [...prev, failMsg]);
+        return;
+      }
+      const sysMsg = createMessage('system', `Channel response #${index} Posting Behavior set to ${deliveryMode}.`);
       chat.setMessages(prev => [...prev, sysMsg]);
     })();
   }, [activeTalkId, restoreTalkRoutingState, syncTalkBindingsToGateway]);
@@ -3874,6 +3900,7 @@ function App({ options }: AppProps) {
             onUpdateBinding={handleUpdatePlatformBinding}
             onRemoveBinding={handleRemovePlatformBinding}
             onSetResponseMode={handleSetChannelResponseMode}
+            onSetDeliveryMode={handleSetChannelDeliveryMode}
             onSetMirrorToTalk={handleSetChannelMirrorToTalk}
             onSetPrompt={handleSetChannelResponsePrompt}
             onSetAgentChoice={handleSetChannelResponseAgentChoice}
