@@ -157,7 +157,7 @@ interface ShortcutBarProps {
 export function ShortcutBar({ terminalWidth = 80, ttsEnabled = true, grabTextMode = false, inTalks = false }: ShortcutBarProps) {
   const row1 = [
     { key: '^T', label: 'Talks' },
-    { key: '^C', label: 'Live Chat' },
+    { key: '^L', label: 'Live Chat' },
     { key: '^P', label: 'Push2Talk' },
     { key: '^V', label: ttsEnabled ? 'Voice ON' : 'Voice OFF' },
     { key: '^E', label: grabTextMode ? 'End Select' : 'Select Text' },

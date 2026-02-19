@@ -3661,8 +3661,8 @@ function App({ options }: AppProps) {
       return;
     }
 
-    // ^C Chat (realtime voice)
-    if (input === 'c' && key.ctrl) {
+    // ^L Chat (realtime voice)
+    if (input === 'l' && key.ctrl) {
       if (chat.isProcessing) {
         setError('Cannot start chat while processing');
       } else if (realtimeVoice.isActive) {
@@ -3678,7 +3678,7 @@ function App({ options }: AppProps) {
       } else {
         voice.handleLiveTalk?.();
       }
-      cleanInputChar(setInputText, 'c');
+      cleanInputChar(setInputText, 'l');
       return;
     }
 
