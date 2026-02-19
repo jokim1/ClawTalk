@@ -75,9 +75,60 @@ function getSlackAccountIdFromScope(scope: string): string | undefined {
 
 export const TALKS_DIR = path.join(process.env.HOME || '~', '.clawtalk', 'talks');
 
+function extractFirstJsonObject(raw: string): string | null {
+  const start = raw.indexOf('{');
+  if (start < 0) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < raw.length; i += 1) {
+    const ch = raw[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === '{') {
+      depth += 1;
+      continue;
+    }
+    if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return raw.slice(start, i + 1);
+      }
+    }
+  }
+  return null;
+}
+
+function tryParseTalkMeta(raw: string): Talk | null {
+  try {
+    return JSON.parse(raw) as Talk;
+  } catch {
+    const recovered = extractFirstJsonObject(raw);
+    if (!recovered) return null;
+    try {
+      return JSON.parse(recovered) as Talk;
+    } catch {
+      return null;
+    }
+  }
+}
+
 export class TalkManager {
   private talks: Map<string, Talk> = new Map();
   private activeTalkId: string | null = null;
+  private persistQueue: Map<string, Promise<void>> = new Map();
 
   constructor() {
     this.ensureTalksDir();
@@ -101,7 +152,18 @@ export class TalkManager {
 
         if (fs.existsSync(metaPath)) {
           try {
-            const talk = JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as Talk;
+            const raw = fs.readFileSync(metaPath, 'utf-8');
+            const talk = tryParseTalkMeta(raw);
+            if (!talk) {
+              throw new Error('Invalid talk metadata JSON');
+            }
+            if (JSON.stringify(talk, null, 2).trim() !== raw.trim()) {
+              const backupPath = `${metaPath}.corrupt.${Date.now()}`;
+              try {
+                fs.copyFileSync(metaPath, backupPath);
+              } catch {}
+              fs.writeFileSync(metaPath, JSON.stringify(talk, null, 2));
+            }
             // Only load saved talks
             if (talk.isSaved) {
               this.talks.set(talk.id, talk);
@@ -957,10 +1019,18 @@ export class TalkManager {
   private persistTalk(talk: Talk): void {
     const talkDir = path.join(TALKS_DIR, talk.id);
     const metaPath = path.join(talkDir, 'talk.json');
-
-    fsp.mkdir(talkDir, { recursive: true })
-      .then(() => fsp.writeFile(metaPath, JSON.stringify(talk, null, 2)))
+    const tmpPath = path.join(talkDir, `talk.json.tmp.${process.pid}.${Date.now()}`);
+    const payload = JSON.stringify(talk, null, 2);
+    const previous = this.persistQueue.get(talk.id) ?? Promise.resolve();
+    const next = previous
+      .catch(() => {})
+      .then(async () => {
+        await fsp.mkdir(talkDir, { recursive: true });
+        await fsp.writeFile(tmpPath, payload);
+        await fsp.rename(tmpPath, metaPath);
+      })
       .catch(() => {});
+    this.persistQueue.set(talk.id, next);
   }
 }
 
