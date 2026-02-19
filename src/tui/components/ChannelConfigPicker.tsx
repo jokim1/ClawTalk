@@ -1019,6 +1019,13 @@ export function ChannelConfigPicker({
           <Box height={1} />
           <Text bold>Step {pendingPlatform === 'slack' ? '6' : '5'}: Prompt</Text>
           <Text dimColor>Optional instruction for inbound responses on this channel.</Text>
+          <Text dimColor>Example:</Text>
+          <Text dimColor>  You are the channel assistant.</Text>
+          <Text dimColor>  For each inbound message:</Text>
+          <Text dimColor>  1) Identify whether it asks for action, status, or clarification.</Text>
+          <Text dimColor>  2) If unclear, ask one short clarifying question.</Text>
+          <Text dimColor>  3) If clear, reply with concise next steps and owners/dates when relevant.</Text>
+          <Text dimColor>  4) Keep responses under 5 bullets unless detail is requested.</Text>
           <Box>
             <Text>prompt: </Text>
             <TextInput
@@ -1042,10 +1049,16 @@ export function ChannelConfigPicker({
           <Text>  scope: {pendingScope}</Text>
           <Text>  permission: {pendingPermission}</Text>
           <Text>  agent response: {pendingResponseMode}</Text>
-          <Text>
-            {'  '}
-            prompt: {pendingPrompt.trim() ? truncate(pendingPrompt.trim(), Math.max(40, terminalWidth - 16)) : '(none)'}
-          </Text>
+          <Text>  prompt:</Text>
+          {(pendingPrompt.trim()
+            ? wrapForTerminal(pendingPrompt.trim(), Math.max(10, terminalWidth - 10))
+            : ['(none)']
+          ).map((line, idx) => (
+            <Text key={`review-prompt-line-${idx}`} dimColor>
+              {'    '}
+              {line || ' '}
+            </Text>
+          ))}
           <Box height={1} />
           <Text dimColor>Enter save  Esc cancel</Text>
         </>
