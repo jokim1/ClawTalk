@@ -66,12 +66,6 @@ const RESPONSE_MODE_OPTIONS: Array<'off' | 'mentions' | 'all'> = ['off', 'mentio
 const MIRROR_TO_TALK_OPTIONS: Array<'off' | 'inbound' | 'full'> = ['off', 'inbound', 'full'];
 type PostingPriorityOption = 'adaptive' | 'channel' | 'reply';
 const POSTING_PRIORITY_OPTIONS: PostingPriorityOption[] = ['adaptive', 'channel', 'reply'];
-const ADAPTIVE_PROMPT_TEMPLATE = [
-  'Posting Priority: adaptive.',
-  '- For study/work updates: post top-level in channel with a compact scoreboard.',
-  '- For advice/help: reply in thread unless user asks for top-level post.',
-  '- If intent is unclear, ask one short clarifying question before posting.',
-].join('\n');
 
 const PLATFORM_LABELS: Record<(typeof PLATFORM_OPTIONS)[number], string> = {
   slack: 'Slack',
@@ -333,12 +327,7 @@ export function ChannelConfigPicker({
       return;
     }
     setEditValueMode(false);
-    const shouldPrefillAdaptive =
-      selectedRow.binding.platform === 'slack' &&
-      selectedRow.deliveryMode === 'adaptive' &&
-      !(selectedRow.prompt ?? '').trim();
-    const seedPrompt = shouldPrefillAdaptive ? ADAPTIVE_PROMPT_TEMPLATE : (selectedRow.prompt ?? '');
-    const normalized = sanitizePromptInput(seedPrompt);
+    const normalized = sanitizePromptInput(selectedRow.prompt ?? '');
     setPromptInput(normalized);
     setPromptCursor(normalized.length);
     setPromptPreferredCol(null);
@@ -842,10 +831,7 @@ export function ChannelConfigPicker({
         const nextPriority = POSTING_PRIORITY_OPTIONS[deliverySelection];
         const nextMode = toDeliveryMode(nextPriority);
         setPendingDeliveryMode(nextMode);
-        const basePrompt = pendingPrompt.trim()
-          ? pendingPrompt
-          : (nextMode === 'adaptive' ? ADAPTIVE_PROMPT_TEMPLATE : '');
-        const normalized = sanitizePromptInput(basePrompt);
+        const normalized = sanitizePromptInput(pendingPrompt);
         setPromptInput(normalized);
         setPromptCursor(normalized.length);
         setPromptPreferredCol(null);
