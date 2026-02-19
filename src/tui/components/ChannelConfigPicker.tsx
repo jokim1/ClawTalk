@@ -65,6 +65,12 @@ const PERMISSION_OPTIONS: PlatformPermission[] = ['read', 'write', 'read+write']
 const RESPONSE_MODE_OPTIONS: Array<'off' | 'mentions' | 'all'> = ['off', 'mentions', 'all'];
 const MIRROR_TO_TALK_OPTIONS: Array<'off' | 'inbound' | 'full'> = ['off', 'inbound', 'full'];
 const DELIVERY_MODE_OPTIONS: Array<'thread' | 'channel' | 'adaptive'> = ['adaptive', 'channel', 'thread'];
+const ADAPTIVE_PROMPT_TEMPLATE = [
+  'Posting behavior: adaptive.',
+  '- For study/work updates: post top-level in channel with a compact scoreboard.',
+  '- For advice/help: reply in thread unless user asks for top-level post.',
+  '- If intent is unclear, ask one short clarifying question before posting.',
+].join('\n');
 
 const PLATFORM_LABELS: Record<(typeof PLATFORM_OPTIONS)[number], string> = {
   slack: 'Slack',
@@ -169,28 +175,23 @@ export function ChannelConfigPicker({
   const [promptCursor, setPromptCursor] = useState(0);
   const [promptPreferredCol, setPromptPreferredCol] = useState<number | null>(null);
 
-  const behaviorByBindingId = useMemo(() => {
-    const map = new Map<string, PlatformBehavior>();
-    for (const behavior of behaviors) {
-      map.set(behavior.platformBindingId, behavior);
-    }
-    return map;
-  }, [behaviors]);
+  const behaviorByBindingId = new Map<string, PlatformBehavior>();
+  for (const behavior of behaviors) {
+    behaviorByBindingId.set(behavior.platformBindingId, behavior);
+  }
 
-  const rows = useMemo(() => {
-    return bindings.map((binding, idx) => {
-      const behavior = behaviorByBindingId.get(binding.id);
-      return {
-        index: idx + 1,
-        binding,
-        responseMode: behavior?.responseMode ?? (behavior?.autoRespond === false ? 'off' : 'all'),
-        deliveryMode: behavior?.deliveryMode ?? 'adaptive',
-        mirrorToTalk: behavior?.mirrorToTalk ?? 'off',
-        agentName: behavior?.agentName,
-        prompt: behavior?.onMessagePrompt,
-      };
-    });
-  }, [bindings, behaviorByBindingId]);
+  const rows = bindings.map((binding, idx) => {
+    const behavior = behaviorByBindingId.get(binding.id);
+    return {
+      index: idx + 1,
+      binding,
+      responseMode: behavior?.responseMode ?? (behavior?.autoRespond === false ? 'off' : 'all'),
+      deliveryMode: behavior?.deliveryMode ?? 'adaptive',
+      mirrorToTalk: behavior?.mirrorToTalk ?? 'off',
+      agentName: behavior?.agentName,
+      prompt: behavior?.onMessagePrompt,
+    };
+  });
 
   const selectedRow = rows[selectedIndex];
   const selectedWorkspace = slackAccounts[workspaceSelection];
@@ -319,7 +320,12 @@ export function ChannelConfigPicker({
       return;
     }
     setEditValueMode(false);
-    const normalized = sanitizePromptInput(selectedRow.prompt ?? '');
+    const shouldPrefillAdaptive =
+      selectedRow.binding.platform === 'slack' &&
+      selectedRow.deliveryMode === 'adaptive' &&
+      !(selectedRow.prompt ?? '').trim();
+    const seedPrompt = shouldPrefillAdaptive ? ADAPTIVE_PROMPT_TEMPLATE : (selectedRow.prompt ?? '');
+    const normalized = sanitizePromptInput(seedPrompt);
     setPromptInput(normalized);
     setPromptCursor(normalized.length);
     setPromptPreferredCol(null);
@@ -820,7 +826,10 @@ export function ChannelConfigPicker({
       if (key.return) {
         const nextMode = DELIVERY_MODE_OPTIONS[deliverySelection];
         setPendingDeliveryMode(nextMode);
-        const normalized = sanitizePromptInput(pendingPrompt);
+        const basePrompt = pendingPrompt.trim()
+          ? pendingPrompt
+          : (nextMode === 'adaptive' ? ADAPTIVE_PROMPT_TEMPLATE : '');
+        const normalized = sanitizePromptInput(basePrompt);
         setPromptInput(normalized);
         setPromptCursor(normalized.length);
         setPromptPreferredCol(null);
@@ -1046,7 +1055,9 @@ export function ChannelConfigPicker({
               </Text>
               <Text color={activeEditField === 'prompt' ? 'cyan' : undefined}>
                 {activeEditField === 'prompt' ? '▸ ' : '  '}
-                prompt:
+                {selectedRow.binding.platform === 'slack' && selectedRow.deliveryMode === 'adaptive'
+                  ? 'adaptive prompt:'
+                  : 'prompt:'}
               </Text>
               {(selectedRow.prompt?.trim()
                 ? wrapForTerminal(selectedRow.prompt, Math.max(10, terminalWidth - 12))
@@ -1219,6 +1230,7 @@ export function ChannelConfigPicker({
           <Text dimColor>  adaptive: "Asher 180/300" posts in channel; advice replies in thread.</Text>
           <Text dimColor>  channel: always top-level channel post.</Text>
           <Text dimColor>  thread: reply in the inbound message thread when thread exists.</Text>
+          <Text dimColor>  Next step lets you edit a prompt for this behavior (adaptive template included).</Text>
           <Box height={1} />
           <Text dimColor>Enter continue  Esc cancel</Text>
         </>
@@ -1229,6 +1241,9 @@ export function ChannelConfigPicker({
           <Box height={1} />
           <Text bold>Step {pendingPlatform === 'slack' ? '7' : '5'}: Prompt</Text>
           <Text dimColor>Optional instruction for inbound responses on this channel.</Text>
+          {pendingPlatform === 'slack' && (
+            <Text dimColor>For adaptive posting, tune when to post top-level vs reply in thread.</Text>
+          )}
           <Text dimColor>Example:</Text>
           <Text dimColor>  You are the channel assistant.</Text>
           <Text dimColor>  For each inbound message:</Text>
