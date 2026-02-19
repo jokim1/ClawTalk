@@ -1242,11 +1242,10 @@ export function ChannelConfigPicker({
             </Text>
           ))}
           <Box height={1} />
-          <Text dimColor>Examples:</Text>
-          <Text dimColor>  adaptive: "Asher 180/300" posts in channel; advice replies in thread.</Text>
-          <Text dimColor>  channel: always top-level channel post.</Text>
-          <Text dimColor>  reply: reply in the inbound message thread when thread exists.</Text>
-          <Text dimColor>  Next step lets you edit a prompt for this behavior (adaptive template included).</Text>
+          <Text dimColor>Hints:</Text>
+          <Text dimColor>  adaptive: infers whether to post in channel or reply in thread.</Text>
+          <Text dimColor>  channel: prioritizes posting top-level messages to the channel.</Text>
+          <Text dimColor>  reply: prioritizes replying in-thread when a thread is available.</Text>
           <Box height={1} />
           <Text dimColor>Enter continue  Esc cancel</Text>
         </>
