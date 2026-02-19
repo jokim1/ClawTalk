@@ -388,13 +388,24 @@ export class ChatService implements IChatService {
   }
 
   /** Build chat completion headers (auth + content type + agent/session). */
-  private chatHeaders(): Record<string, string> {
+  private directChatHeaders(): Record<string, string> {
     return {
       'Content-Type': 'application/json',
       ...this.authHeaders(),
       'x-openclaw-agent-id': this.config.agentId,
       'x-openclaw-session-key': this.sessionKey,
     };
+  }
+
+  /** Build talk endpoint headers and strip routing headers that can force OpenClaw agent runtime. */
+  private talkJsonHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...this.authHeaders(),
+    };
+    delete headers['x-openclaw-agent-id'];
+    delete headers['x-openclaw-session-key'];
+    return headers;
   }
 
   private rememberTalkVersion(talkId: string, version: unknown): void {
@@ -482,7 +493,7 @@ export class ChatService implements IChatService {
   ): Promise<ChatResponse> {
     const response = await fetch(`${this.config.gatewayUrl}/v1/chat/completions`, {
       method: 'POST',
-      headers: this.chatHeaders(),
+      headers: this.directChatHeaders(),
       body: JSON.stringify({
         model: this.config.model ?? 'openclaw',
         messages: this.buildMessages(userMessage, history),
@@ -517,7 +528,7 @@ export class ChatService implements IChatService {
   ): AsyncGenerator<string, void, unknown> {
     const response = await fetch(`${this.config.gatewayUrl}/v1/chat/completions`, {
       method: 'POST',
-      headers: this.chatHeaders(),
+      headers: this.directChatHeaders(),
       body: JSON.stringify({
         model: this.config.model ?? 'openclaw',
         messages: this.buildMessages(userMessage, history),
@@ -657,7 +668,10 @@ export class ChatService implements IChatService {
         talkId,
         (headers) => fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}`, {
           method: 'DELETE',
-          headers,
+          headers: {
+            ...headers,
+            'x-clawtalk-confirm-delete': 'true',
+          },
           signal: AbortSignal.timeout(10_000),
         }),
         { json: false },
@@ -1152,7 +1166,7 @@ export class ChatService implements IChatService {
 
     const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}/chat`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+      headers: this.talkJsonHeaders(),
       body: JSON.stringify({
         message: userMessage,
         model: model ?? this.config.model,
@@ -1333,7 +1347,7 @@ export class ChatService implements IChatService {
 
     const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}/chat`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+      headers: this.talkJsonHeaders(),
       body: JSON.stringify({
         message,
         model: agent.model,
