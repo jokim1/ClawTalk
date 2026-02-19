@@ -44,7 +44,7 @@ interface TalkConfigInfo {
   }>;
   channelResponseSettings: Array<{
     connectionIndex: number;
-    autoRespond: boolean;
+    responseMode: 'off' | 'mentions' | 'all';
     agentName?: string;
     onMessagePrompt?: string;
   }>;
@@ -1095,8 +1095,8 @@ export function SettingsPicker({
                   talkConfig.channelResponseSettings.map((s) => (
                     <Text key={s.connectionIndex}>
                       <Text dimColor>  {s.connectionIndex}. </Text>
-                      <Text>auto:</Text>
-                      <Text color={s.autoRespond ? 'green' : 'yellow'}>{s.autoRespond ? 'on' : 'off'}</Text>
+                      <Text>mode:</Text>
+                      <Text color={s.responseMode === 'off' ? 'yellow' : 'green'}>{s.responseMode}</Text>
                       <Text> agent:{s.agentName ?? '(default)'} </Text>
                       <Text>prompt:{s.onMessagePrompt ? `"${s.onMessagePrompt}"` : '(none)'}</Text>
                     </Text>

@@ -1596,24 +1596,26 @@ function App({ options }: AppProps) {
     }
 
     const behaviors = talkManagerRef.current.getPlatformBehaviors(activeTalkId);
+    const responseModeFor = (behavior?: { responseMode?: string; autoRespond?: boolean }) =>
+      behavior?.responseMode ?? (behavior?.autoRespond === false ? 'off' : 'all');
     const lines = bindings.map((binding, i) => {
       const behavior = behaviors.find((entry) => entry.platformBindingId === binding.id);
-      const enabled = behavior?.autoRespond === false ? 'off' : 'on';
+      const mode = responseModeFor(behavior);
       const prompt = behavior?.onMessagePrompt ? `"${behavior.onMessagePrompt}"` : '(none)';
       const agent = behavior?.agentName ?? '(default)';
-      return `  ${i + 1}. ${binding.platform} ${formatBindingScopeLabel(binding)} -> auto:${enabled}, agent:${agent}, prompt:${prompt}`;
+      return `  ${i + 1}. ${binding.platform} ${formatBindingScopeLabel(binding)} -> mode:${mode}, agent:${agent}, prompt:${prompt}`;
     });
     const sysMsg = createMessage('system', `Channel response settings:\n${lines.join('\n')}`);
     chat.setMessages(prev => [...prev, sysMsg]);
   }, [activeTalkId]);
 
-  const handleSetChannelResponseEnabled = useCallback((index: number, enabled: boolean) => {
+  const handleSetChannelResponseMode = useCallback((index: number, mode: 'off' | 'mentions' | 'all') => {
     if (!activeTalkId || !talkManagerRef.current) return;
     talkManagerRef.current.saveTalk(activeTalkId);
     const prevBindings = talkManagerRef.current.getPlatformBindings(activeTalkId).map((row) => ({ ...row }));
     const prevBehaviors = talkManagerRef.current.getPlatformBehaviors(activeTalkId).map((row) => ({ ...row }));
     const ok = talkManagerRef.current.upsertPlatformBehaviorByBindingIndex(activeTalkId, index, {
-      autoRespond: enabled,
+      responseMode: mode,
     });
     if (!ok) {
       setError(`No channel connection at position ${index}`);
@@ -1627,10 +1629,14 @@ function App({ options }: AppProps) {
         chat.setMessages(prev => [...prev, failMsg]);
         return;
       }
-      const sysMsg = createMessage('system', `Channel response #${index} ${enabled ? 'enabled' : 'disabled'}.`);
+      const sysMsg = createMessage('system', `Channel response #${index} mode set to ${mode}.`);
       chat.setMessages(prev => [...prev, sysMsg]);
     })();
   }, [activeTalkId, restoreTalkRoutingState, syncTalkBindingsToGateway]);
+
+  const handleSetChannelResponseEnabled = useCallback((index: number, enabled: boolean) => {
+    handleSetChannelResponseMode(index, enabled ? 'all' : 'off');
+  }, [handleSetChannelResponseMode]);
 
   const handleSetChannelResponsePrompt = useCallback((index: number, prompt: string) => {
     if (!activeTalkId || !talkManagerRef.current) return;
@@ -1638,7 +1644,7 @@ function App({ options }: AppProps) {
     const prevBindings = talkManagerRef.current.getPlatformBindings(activeTalkId).map((row) => ({ ...row }));
     const prevBehaviors = talkManagerRef.current.getPlatformBehaviors(activeTalkId).map((row) => ({ ...row }));
     const ok = talkManagerRef.current.upsertPlatformBehaviorByBindingIndex(activeTalkId, index, {
-      autoRespond: true,
+      responseMode: 'all',
       onMessagePrompt: prompt,
     });
     if (!ok) {
@@ -1711,7 +1717,8 @@ function App({ options }: AppProps) {
       }
 
       const hasPrompt = Boolean(existing.onMessagePrompt?.trim());
-      const explicitlyOff = existing.autoRespond === false;
+      const existingMode = existing.responseMode ?? (existing.autoRespond === false ? 'off' : 'all');
+      const explicitlyOff = existingMode === 'off';
       const ok = !hasPrompt && !explicitlyOff
         ? talkManagerRef.current.clearPlatformBehaviorByBindingIndex(activeTalkId, index)
         : talkManagerRef.current.upsertPlatformBehaviorByBindingIndex(activeTalkId, index, {
@@ -2466,10 +2473,10 @@ function App({ options }: AppProps) {
     if (bindings.length > 0) {
       const lines = bindings.map((binding, i) => {
         const behavior = behaviors.find((entry) => entry.platformBindingId === binding.id);
-        const enabled = behavior?.autoRespond === false ? 'off' : 'on';
+        const mode = behavior?.responseMode ?? (behavior?.autoRespond === false ? 'off' : 'all');
         const agent = behavior?.agentName ?? '(default)';
         const prompt = behavior?.onMessagePrompt ?? '(none)';
-        return `  ${i + 1}. auto:${enabled}  agent:${agent}  prompt:${prompt}`;
+        return `  ${i + 1}. mode:${mode}  agent:${agent}  prompt:${prompt}`;
       });
       sections.push(`\nChannel response settings:\n${lines.join('\n')}`);
     } else {
@@ -3817,7 +3824,7 @@ function App({ options }: AppProps) {
             onAddBinding={handleAddPlatformBinding}
             onUpdateBinding={handleUpdatePlatformBinding}
             onRemoveBinding={handleRemovePlatformBinding}
-            onSetAutoRespond={handleSetChannelResponseEnabled}
+            onSetResponseMode={handleSetChannelResponseMode}
             onSetPrompt={handleSetChannelResponsePrompt}
             onSetAgentChoice={handleSetChannelResponseAgentChoice}
             onClearBehavior={handleClearChannelResponse}
@@ -3909,7 +3916,7 @@ function App({ options }: AppProps) {
                   const behavior = behaviors.find((entry) => entry.platformBindingId === binding.id);
                   return {
                     connectionIndex: idx + 1,
-                    autoRespond: behavior?.autoRespond !== false,
+                    responseMode: (behavior?.responseMode ?? (behavior?.autoRespond === false ? 'off' : 'all')) as 'off' | 'mentions' | 'all',
                     agentName: behavior?.agentName,
                     onMessagePrompt: behavior?.onMessagePrompt,
                   };

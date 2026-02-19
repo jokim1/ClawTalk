@@ -240,6 +240,8 @@ export interface PlatformBinding {
 export interface PlatformBehavior {
   id: string;
   platformBindingId: string;
+  responseMode?: 'off' | 'mentions' | 'all';
+  // Backward compatibility for legacy gateway payloads.
   autoRespond?: boolean;
   agentName?: string;
   onMessagePrompt?: string;

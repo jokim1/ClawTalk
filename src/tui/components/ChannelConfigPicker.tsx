@@ -28,7 +28,7 @@ interface ChannelConfigPickerProps {
     updates: Partial<Pick<PlatformBinding, 'platform' | 'scope' | 'permission'>>,
   ) => void;
   onRemoveBinding: (index: number) => void;
-  onSetAutoRespond: (index: number, enabled: boolean) => void;
+  onSetResponseMode: (index: number, mode: 'off' | 'mentions' | 'all') => void;
   onSetPrompt: (index: number, prompt: string) => void;
   onSetAgentChoice: (index: number, agentName?: string) => void;
   onClearBehavior: (index: number) => void;
@@ -41,14 +41,16 @@ type PickerMode =
   | 'add-workspace'
   | 'add-scope'
   | 'add-permission'
+  | 'add-review'
   | 'edit-prompt'
   | 'confirm-delete';
 
-type EditField = 'scope' | 'permission' | 'capability' | 'auto' | 'agent' | 'prompt';
+type EditField = 'scope' | 'permission' | 'response' | 'agent' | 'prompt';
 
-const EDIT_FIELDS: EditField[] = ['scope', 'permission', 'capability', 'auto', 'agent', 'prompt'];
+const EDIT_FIELDS: EditField[] = ['scope', 'permission', 'response', 'agent', 'prompt'];
 const PLATFORM_OPTIONS = ['slack', 'telegram', 'whatsapp'] as const;
 const PERMISSION_OPTIONS: PlatformPermission[] = ['read', 'write', 'read+write'];
+const RESPONSE_MODE_OPTIONS: Array<'off' | 'mentions' | 'all'> = ['off', 'mentions', 'all'];
 
 const PLATFORM_LABELS: Record<(typeof PLATFORM_OPTIONS)[number], string> = {
   slack: 'Slack',
@@ -122,11 +124,11 @@ function wrapTextForDisplay(text: string, width: number): string[] {
   return normalized.split('\n').flatMap((line) => wrapLineByWidth(line, width));
 }
 
-function platformCapability(platform: string): string {
-  if (platform === 'slack') return 'Inbound auto-response + event jobs';
-  if (platform === 'telegram') return 'Connection + event jobs';
-  if (platform === 'whatsapp') return 'Connection + event jobs';
-  return 'Connection + event jobs';
+function platformAgentResponse(platform: string): string {
+  if (platform === 'slack') return 'Inbound responses + event jobs';
+  if (platform === 'telegram') return 'Event jobs';
+  if (platform === 'whatsapp') return 'Event jobs';
+  return 'Event jobs';
 }
 
 function parseSlackAccountPrefix(scope: string): string | undefined {
@@ -176,7 +178,7 @@ export function ChannelConfigPicker({
   onAddBinding,
   onUpdateBinding,
   onRemoveBinding,
-  onSetAutoRespond,
+  onSetResponseMode,
   onSetPrompt,
   onSetAgentChoice,
   onClearBehavior,
@@ -194,6 +196,7 @@ export function ChannelConfigPicker({
   const [scopeSuggestionSelection, setScopeSuggestionSelection] = useState(0);
   const [pendingScope, setPendingScope] = useState('');
   const [permissionSelection, setPermissionSelection] = useState(2);
+  const [pendingPermission, setPendingPermission] = useState<PlatformPermission>('read+write');
 
   const [editFieldIndex, setEditFieldIndex] = useState(0);
   const [editValueMode, setEditValueMode] = useState(false);
@@ -215,7 +218,7 @@ export function ChannelConfigPicker({
       return {
         index: idx + 1,
         binding,
-        autoRespond: behavior?.autoRespond !== false,
+        responseMode: behavior?.responseMode ?? (behavior?.autoRespond === false ? 'off' : 'all'),
         agentName: behavior?.agentName,
         prompt: behavior?.onMessagePrompt,
       };
@@ -379,23 +382,14 @@ export function ChannelConfigPicker({
       return;
     }
 
-    if (field === 'capability') {
-      const currentIdx = PLATFORM_OPTIONS.findIndex((platform) => platform === selectedRow.binding.platform);
-      const nextIdx = cycleIndex(currentIdx >= 0 ? currentIdx : 0, PLATFORM_OPTIONS.length, direction);
-      const nextPlatform = PLATFORM_OPTIONS[nextIdx];
-      onUpdateBinding(selectedRow.index, { platform: nextPlatform });
-      setStatusMessage(
-        `Connection #${selectedRow.index} capability: ${platformCapability(nextPlatform)} (${nextPlatform}).`,
-      );
-      return;
-    }
-
-    if (field === 'auto') {
-      const nextEnabled = direction < 0;
-      if (selectedRow.autoRespond !== nextEnabled) {
-        onSetAutoRespond(selectedRow.index, nextEnabled);
+    if (field === 'response') {
+      const currentIdx = RESPONSE_MODE_OPTIONS.findIndex((mode) => mode === selectedRow.responseMode);
+      const nextIdx = cycleIndex(currentIdx >= 0 ? currentIdx : 0, RESPONSE_MODE_OPTIONS.length, direction);
+      const nextMode = RESPONSE_MODE_OPTIONS[nextIdx];
+      if (selectedRow.responseMode !== nextMode) {
+        onSetResponseMode(selectedRow.index, nextMode);
       }
-      setStatusMessage(`Connection #${selectedRow.index} auto-response ${nextEnabled ? 'enabled' : 'disabled'}.`);
+      setStatusMessage(`Connection #${selectedRow.index} response mode: ${nextMode}.`);
       return;
     }
 
@@ -554,6 +548,7 @@ export function ChannelConfigPicker({
         setScopeInput('');
         setScopeSuggestionSelection(0);
         setPermissionSelection(2);
+        setPendingPermission('read+write');
         setMode('add-platform');
         return;
       }
@@ -575,10 +570,9 @@ export function ChannelConfigPicker({
           setStatusMessage('No channel connection selected.');
           return;
         }
-        onSetAutoRespond(selectedRow.index, !selectedRow.autoRespond);
-        setStatusMessage(
-          `Connection #${selectedRow.index} auto-response ${selectedRow.autoRespond ? 'disabled' : 'enabled'}.`,
-        );
+        const nextMode = selectedRow.responseMode === 'off' ? 'all' : 'off';
+        onSetResponseMode(selectedRow.index, nextMode);
+        setStatusMessage(`Connection #${selectedRow.index} response mode: ${nextMode}.`);
         return;
       }
       if (input === 'p') {
@@ -752,10 +746,18 @@ export function ChannelConfigPicker({
       }
       if (key.return) {
         const permission = PERMISSION_OPTIONS[permissionSelection];
-        onAddBinding(pendingPlatform, pendingScope, permission);
+        setPendingPermission(permission);
+        setMode('add-review');
+      }
+      return;
+    }
+
+    if (mode === 'add-review') {
+      if (key.return) {
+        onAddBinding(pendingPlatform, pendingScope, pendingPermission);
         setMode('list');
         setSelectedIndex(rows.length);
-        setStatusMessage(`Added ${pendingPlatform} ${pendingScope} (${permission}).`);
+        setStatusMessage(`Added ${pendingPlatform} ${pendingScope} (${pendingPermission}).`);
       }
       return;
     }
@@ -782,7 +784,7 @@ export function ChannelConfigPicker({
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} width={terminalWidth}>
       <Text bold color="cyan">Channel Config</Text>
-      <Text dimColor>Workflow: add connection, then tune how that channel responds.</Text>
+      <Text dimColor>Workflow: configure all fields, review, then save.</Text>
 
       {mode === 'list' && (
         <>
@@ -811,14 +813,14 @@ export function ChannelConfigPicker({
           )}
 
           <Box height={1} />
-          <Text bold>Selected Details</Text>
+          <Text bold>Configuration</Text>
           {selectedRow ? (
             <>
               <Text>  platform: {selectedRow.binding.platform}</Text>
               <Text>  scope: {formatBindingScopeLabel(selectedRow.binding)}</Text>
               <Text>  permission: {selectedRow.binding.permission}</Text>
-              <Text>  capability: {platformCapability(selectedRow.binding.platform)}</Text>
-              <Text>  auto-response: {selectedRow.autoRespond ? 'on' : 'off'}</Text>
+              <Text>  agent response: {platformAgentResponse(selectedRow.binding.platform)}</Text>
+              <Text>  response mode: {selectedRow.responseMode}</Text>
               <Text>  responder agent: {selectedRow.agentName ?? '(default primary)'}</Text>
               <Text>  prompt:</Text>
               {wrapTextForDisplay(selectedRow.prompt || '(none)', Math.max(10, terminalWidth - 8)).map((line, idx) => (
@@ -853,13 +855,9 @@ export function ChannelConfigPicker({
                 {activeEditField === 'permission' ? '▸ ' : '  '}
                 permission: {selectedRow.binding.permission}
               </Text>
-              <Text color={activeEditField === 'capability' ? 'cyan' : undefined}>
-                {activeEditField === 'capability' ? '▸ ' : '  '}
-                capability: {platformCapability(selectedRow.binding.platform)}
-              </Text>
-              <Text color={activeEditField === 'auto' ? 'cyan' : undefined}>
-                {activeEditField === 'auto' ? '▸ ' : '  '}
-                auto-response: {selectedRow.autoRespond ? 'on' : 'off'}
+              <Text color={activeEditField === 'response' ? 'cyan' : undefined}>
+                {activeEditField === 'response' ? '▸ ' : '  '}
+                response mode: {selectedRow.responseMode}
               </Text>
               <Text color={activeEditField === 'agent' ? 'cyan' : undefined}>
                 {activeEditField === 'agent' ? '▸ ' : '  '}
@@ -889,7 +887,7 @@ export function ChannelConfigPicker({
           {PLATFORM_OPTIONS.map((platform, idx) => (
             <Text key={platform} color={idx === platformSelection ? 'cyan' : undefined}>
               {idx === platformSelection ? '▸ ' : '  '}
-              {PLATFORM_LABELS[platform]}  <Text dimColor>({platformCapability(platform)})</Text>
+              {PLATFORM_LABELS[platform]}  <Text dimColor>({platformAgentResponse(platform)})</Text>
             </Text>
           ))}
           <Box height={1} />
@@ -971,6 +969,7 @@ export function ChannelConfigPicker({
                   : resolvedScope;
                 setPendingScope(finalScope);
                 setPermissionSelection(2);
+                setPendingPermission('read+write');
                 setMode('add-permission');
               }}
             />
@@ -990,6 +989,19 @@ export function ChannelConfigPicker({
               {permission}
             </Text>
           ))}
+          <Box height={1} />
+          <Text dimColor>Enter continue  Esc cancel</Text>
+        </>
+      )}
+
+      {mode === 'add-review' && (
+        <>
+          <Box height={1} />
+          <Text bold>Step {pendingPlatform === 'slack' ? '5' : '4'}: Review</Text>
+          <Text>  platform: {pendingPlatform}</Text>
+          <Text>  scope: {pendingScope}</Text>
+          <Text>  permission: {pendingPermission}</Text>
+          <Text>  agent response: {platformAgentResponse(pendingPlatform)}</Text>
           <Box height={1} />
           <Text dimColor>Enter save  Esc cancel</Text>
         </>
