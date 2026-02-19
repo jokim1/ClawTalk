@@ -1088,7 +1088,12 @@ function App({ options }: AppProps) {
 
       await refreshJobsFromSource();
       const resolvedSchedule = result.schedule ?? normalizedSchedule;
-      const sysMsg = createMessage('system', `[${label}] "${normalizedPrompt}" — ${resolvedSchedule}`);
+      const promptLines = normalizedPrompt.split('\n').map((line) => `    ${line || ' '}`).join('\n');
+      const sysMsg = createMessage(
+        'system',
+        `[${label}] schedule: ${resolvedSchedule}\n` +
+        `  prompt:\n${promptLines}`,
+      );
       chat.setMessages(prev => [...prev, sysMsg]);
       return true;
     } catch (err) {
@@ -1111,7 +1116,12 @@ function App({ options }: AppProps) {
       const lines = jobs.map((j, i) => {
         const status = j.active ? 'active' : 'paused';
         const lastRun = j.lastRunAt ? ` (last: ${new Date(j.lastRunAt).toLocaleString()})` : '';
-        return `  ${i + 1}. [${status}] "${j.schedule}" — ${j.prompt}${lastRun}`;
+        const promptLines = (j.prompt?.trim() ? j.prompt : '(none)')
+          .split('\n')
+          .map((line) => `      ${line || ' '}`)
+          .join('\n');
+        return `  ${i + 1}. [${status}] "${j.schedule}"${lastRun}\n` +
+          `    prompt:\n${promptLines}`;
       });
       const sysMsg = createMessage('system', `Automations:\n${lines.join('\n')}`);
       chat.setMessages(prev => [...prev, sysMsg]);
@@ -1601,9 +1611,13 @@ function App({ options }: AppProps) {
     const lines = bindings.map((binding, i) => {
       const behavior = behaviors.find((entry) => entry.platformBindingId === binding.id);
       const mode = responseModeFor(behavior);
-      const prompt = behavior?.onMessagePrompt ? `"${behavior.onMessagePrompt}"` : '(none)';
+      const promptLines = (behavior?.onMessagePrompt?.trim() ? behavior.onMessagePrompt : '(none)')
+        .split('\n')
+        .map((line) => `      ${line || ' '}`)
+        .join('\n');
       const agent = behavior?.agentName ?? '(default)';
-      return `  ${i + 1}. ${binding.platform} ${formatBindingScopeLabel(binding)} -> mode:${mode}, agent:${agent}, prompt:${prompt}`;
+      return `  ${i + 1}. ${binding.platform} ${formatBindingScopeLabel(binding)} -> mode:${mode}, agent:${agent}\n` +
+        `    prompt:\n${promptLines}`;
     });
     const sysMsg = createMessage('system', `Channel response settings:\n${lines.join('\n')}`);
     chat.setMessages(prev => [...prev, sysMsg]);
@@ -2475,8 +2489,12 @@ function App({ options }: AppProps) {
         const behavior = behaviors.find((entry) => entry.platformBindingId === binding.id);
         const mode = behavior?.responseMode ?? (behavior?.autoRespond === false ? 'off' : 'all');
         const agent = behavior?.agentName ?? '(default)';
-        const prompt = behavior?.onMessagePrompt ?? '(none)';
-        return `  ${i + 1}. mode:${mode}  agent:${agent}  prompt:${prompt}`;
+        const promptLines = (behavior?.onMessagePrompt?.trim() ? behavior.onMessagePrompt : '(none)')
+          .split('\n')
+          .map((line) => `      ${line || ' '}`)
+          .join('\n');
+        return `  ${i + 1}. mode:${mode}  agent:${agent}\n` +
+          `    prompt:\n${promptLines}`;
       });
       sections.push(`\nChannel response settings:\n${lines.join('\n')}`);
     } else {
@@ -2488,7 +2506,12 @@ function App({ options }: AppProps) {
     if (jobs.length > 0) {
       const lines = jobs.map((j, i) => {
         const status = j.active ? 'active' : 'paused';
-        return `  ${i + 1}. [${status}] "${j.schedule}" — ${j.prompt}`;
+        const promptLines = (j.prompt?.trim() ? j.prompt : '(none)')
+          .split('\n')
+          .map((line) => `      ${line || ' '}`)
+          .join('\n');
+        return `  ${i + 1}. [${status}] "${j.schedule}"\n` +
+          `    prompt:\n${promptLines}`;
       });
       sections.push(`\nAutomations:\n${lines.join('\n')}`);
     } else {

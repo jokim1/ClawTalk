@@ -1093,13 +1093,21 @@ export function SettingsPicker({
                 <Text dimColor>  Applies to Slack channel connections.</Text>
                 {talkConfig.channelResponseSettings.length > 0 ? (
                   talkConfig.channelResponseSettings.map((s) => (
-                    <Text key={s.connectionIndex}>
-                      <Text dimColor>  {s.connectionIndex}. </Text>
-                      <Text>mode:</Text>
-                      <Text color={s.responseMode === 'off' ? 'yellow' : 'green'}>{s.responseMode}</Text>
-                      <Text> agent:{s.agentName ?? '(default)'} </Text>
-                      <Text>prompt:{s.onMessagePrompt ? `"${s.onMessagePrompt}"` : '(none)'}</Text>
-                    </Text>
+                    <Box key={s.connectionIndex} flexDirection="column">
+                      <Text>
+                        <Text dimColor>  {s.connectionIndex}. </Text>
+                        <Text>mode:</Text>
+                        <Text color={s.responseMode === 'off' ? 'yellow' : 'green'}>{s.responseMode}</Text>
+                        <Text> agent:{s.agentName ?? '(default)'}</Text>
+                      </Text>
+                      <Text dimColor>    prompt:</Text>
+                      {(s.onMessagePrompt?.trim() ? s.onMessagePrompt.split('\n') : ['(none)']).map((line, idx) => (
+                        <Text key={`settings-channel-prompt-${s.connectionIndex}-${idx}`} dimColor>
+                          {'      '}
+                          {line || ' '}
+                        </Text>
+                      ))}
+                    </Box>
                   ))
                 ) : (
                   <Text dimColor>  (none) — add channel connections first</Text>
@@ -1112,11 +1120,20 @@ export function SettingsPicker({
                 <Text bold>Automations</Text>
                 {talkConfig.jobs.length > 0 ? (
                   talkConfig.jobs.map((j, i) => (
-                    <Text key={i}>
-                      <Text dimColor>  {i + 1}. </Text>
-                      <Text color={j.active ? undefined : 'yellow'}>[{j.active ? 'active' : 'paused'}] </Text>
-                      <Text>"{j.schedule}" — {j.prompt}</Text>
-                    </Text>
+                    <Box key={i} flexDirection="column">
+                      <Text>
+                        <Text dimColor>  {i + 1}. </Text>
+                        <Text color={j.active ? undefined : 'yellow'}>[{j.active ? 'active' : 'paused'}] </Text>
+                        <Text>"{j.schedule}"</Text>
+                      </Text>
+                      <Text dimColor>    prompt:</Text>
+                      {(j.prompt?.trim() ? j.prompt.split('\n') : ['(none)']).map((line, idx) => (
+                        <Text key={`settings-job-prompt-${i}-${idx}`} dimColor>
+                          {'      '}
+                          {line || ' '}
+                        </Text>
+                      ))}
+                    </Box>
                   ))
                 ) : (
                   <>

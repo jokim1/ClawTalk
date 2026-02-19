@@ -84,11 +84,6 @@ function formatBindingScopeLabel(binding: {
   return scopeLabel;
 }
 
-function truncate(text: string, maxLen: number): string {
-  if (text.length <= maxLen) return text;
-  return `${text.slice(0, Math.max(0, maxLen - 3))}...`;
-}
-
 function platformAgentResponse(platform: string): string {
   if (platform === 'slack') return 'Inbound responses + event jobs';
   if (platform === 'telegram') return 'Event jobs';
@@ -385,17 +380,22 @@ export function ChannelConfigPicker({
     }
 
     if (key.escape) {
+      if (mode === 'edit-prompt') {
+        setMode('edit-connection');
+        setPromptPreferredCol(null);
+        return;
+      }
+      if (mode === 'add-prompt') {
+        setMode('add-response');
+        setPromptPreferredCol(null);
+        return;
+      }
       if (mode === 'list') onClose();
       else setMode('list');
       return;
     }
 
     if (mode === 'edit-prompt') {
-      if (key.escape) {
-        setMode('edit-connection');
-        setPromptPreferredCol(null);
-        return;
-      }
       if (key.ctrl && input.toLowerCase() === 's') {
         const trimmed = sanitizePromptInput(promptInput).trim();
         if (!selectedRow) {
@@ -735,12 +735,74 @@ export function ChannelConfigPicker({
       if (key.return) {
         const nextMode = RESPONSE_MODE_OPTIONS[responseSelection];
         setPendingResponseMode(nextMode);
+        const normalized = sanitizePromptInput(pendingPrompt);
+        setPromptInput(normalized);
+        setPromptCursor(normalized.length);
+        setPromptPreferredCol(null);
         setMode('add-prompt');
       }
       return;
     }
 
     if (mode === 'add-prompt') {
+      if (key.ctrl && input.toLowerCase() === 's') {
+        setPendingPrompt(sanitizePromptInput(promptInput));
+        setMode('add-review');
+        setPromptPreferredCol(null);
+        return;
+      }
+      if (key.return) {
+        const next = `${promptInput.slice(0, promptCursor)}\n${promptInput.slice(promptCursor)}`;
+        setPromptInput(next);
+        setPromptCursor(promptCursor + 1);
+        setPromptPreferredCol(null);
+        return;
+      }
+      if (key.backspace) {
+        if (promptCursor <= 0) return;
+        const next = `${promptInput.slice(0, promptCursor - 1)}${promptInput.slice(promptCursor)}`;
+        setPromptInput(next);
+        setPromptCursor(promptCursor - 1);
+        setPromptPreferredCol(null);
+        return;
+      }
+      if (key.delete) {
+        if (promptCursor >= promptInput.length) return;
+        const next = `${promptInput.slice(0, promptCursor)}${promptInput.slice(promptCursor + 1)}`;
+        setPromptInput(next);
+        setPromptPreferredCol(null);
+        return;
+      }
+      if (key.leftArrow) {
+        setPromptCursor((prev) => Math.max(0, prev - 1));
+        setPromptPreferredCol(null);
+        return;
+      }
+      if (key.rightArrow) {
+        setPromptCursor((prev) => Math.min(promptInput.length, prev + 1));
+        setPromptPreferredCol(null);
+        return;
+      }
+      if (key.upArrow || key.downArrow) {
+        const moved = moveCursorByVisualRow(
+          promptInput,
+          promptCursor,
+          Math.max(10, terminalWidth - 12),
+          key.upArrow ? -1 : 1,
+          promptPreferredCol,
+        );
+        setPromptCursor(moved.cursor);
+        setPromptPreferredCol(moved.preferredCol);
+        return;
+      }
+      if (input) {
+        const safeInput = sanitizePromptInput(input);
+        if (!safeInput) return;
+        const next = `${promptInput.slice(0, promptCursor)}${safeInput}${promptInput.slice(promptCursor)}`;
+        setPromptInput(next);
+        setPromptCursor(promptCursor + safeInput.length);
+        setPromptPreferredCol(null);
+      }
       return;
     }
 
@@ -869,8 +931,17 @@ export function ChannelConfigPicker({
               </Text>
               <Text color={activeEditField === 'prompt' ? 'cyan' : undefined}>
                 {activeEditField === 'prompt' ? '▸ ' : '  '}
-                prompt: {selectedRow.prompt ? truncate(selectedRow.prompt, Math.max(30, terminalWidth - 20)) : '(none)'}
+                prompt:
               </Text>
+              {(selectedRow.prompt?.trim()
+                ? wrapForTerminal(selectedRow.prompt, Math.max(10, terminalWidth - 12))
+                : ['(none)']
+              ).map((line, idx) => (
+                <Text key={`edit-connection-prompt-line-${idx}`} dimColor>
+                  {'    '}
+                  {line || ' '}
+                </Text>
+              ))}
               {selectedRow.binding.platform === 'slack' && editableSlackScopes.length > 1 && (
                 <Text dimColor>Slack scopes discovered for arrows: {editableSlackScopes.length}</Text>
               )}
@@ -1026,18 +1097,29 @@ export function ChannelConfigPicker({
           <Text dimColor>  2) If unclear, ask one short clarifying question.</Text>
           <Text dimColor>  3) If clear, reply with concise next steps and owners/dates when relevant.</Text>
           <Text dimColor>  4) Keep responses under 5 bullets unless detail is requested.</Text>
-          <Box>
-            <Text>prompt: </Text>
-            <TextInput
-              value={pendingPrompt}
-              onChange={setPendingPrompt}
-              onSubmit={(value) => {
-                setPendingPrompt(sanitizePromptInput(value));
-                setMode('add-review');
-              }}
-            />
+          <Text dimColor>Multi-line editor. Ctrl+S continue  Enter newline  Esc back</Text>
+          <Box borderStyle="round" borderColor="gray" paddingX={1} flexDirection="column">
+            {promptWindow.start > 0 && <Text dimColor>▲ more</Text>}
+            {promptLayout.lines.slice(promptWindow.start, promptWindow.end).map((line, idx) => {
+              const row = promptWindow.start + idx;
+              if (row !== promptLayout.cursorRow) {
+                return <Text key={`add-prompt-editor-${row}`}>{line.text || ' '}</Text>;
+              }
+              const col = Math.max(0, Math.min(promptLayout.cursorCol, line.text.length));
+              const before = line.text.slice(0, col);
+              const hasChar = col < line.text.length;
+              const at = hasChar ? line.text[col] : ' ';
+              const after = hasChar ? line.text.slice(col + 1) : '';
+              return (
+                <Text key={`add-prompt-editor-${row}`}>
+                  {before}
+                  <Text inverse>{at}</Text>
+                  {after}
+                </Text>
+              );
+            })}
+            {promptWindow.end < promptLayout.lines.length && <Text dimColor>▼ more</Text>}
           </Box>
-          <Text dimColor>Enter continue (blank allowed)  Esc cancel</Text>
         </>
       )}
 
