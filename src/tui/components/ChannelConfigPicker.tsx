@@ -424,7 +424,8 @@ export function ChannelConfigPicker({
         setPromptPreferredCol(null);
         return;
       }
-      if (isBackspaceKey) {
+      const isDeleteAsBackspace = key.delete && promptCursor >= promptInput.length;
+      if (isBackspaceKey || isDeleteAsBackspace) {
         if (promptCursor <= 0) return;
         const next = `${promptInput.slice(0, promptCursor - 1)}${promptInput.slice(promptCursor)}`;
         setPromptInput(next);
@@ -763,7 +764,8 @@ export function ChannelConfigPicker({
         setPromptPreferredCol(null);
         return;
       }
-      if (isBackspaceKey) {
+      const isDeleteAsBackspace = key.delete && promptCursor >= promptInput.length;
+      if (isBackspaceKey || isDeleteAsBackspace) {
         if (promptCursor <= 0) return;
         const next = `${promptInput.slice(0, promptCursor - 1)}${promptInput.slice(promptCursor)}`;
         setPromptInput(next);
