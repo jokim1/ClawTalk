@@ -167,6 +167,7 @@ export function ChannelConfigPicker({
   const [pendingSlackAccountId, setPendingSlackAccountId] = useState<string | undefined>(undefined);
   const [scopeInput, setScopeInput] = useState('');
   const [scopeSuggestionSelection, setScopeSuggestionSelection] = useState(0);
+  const [scopeSuggestionPage, setScopeSuggestionPage] = useState(0);
   const [pendingScope, setPendingScope] = useState('');
   const [permissionSelection, setPermissionSelection] = useState(2);
   const [pendingPermission, setPendingPermission] = useState<PlatformPermission>('read+write');
@@ -206,7 +207,15 @@ export function ChannelConfigPicker({
     ? (slackChannelsByAccount[pendingSlackAccountId] ?? [])
     : [];
   const suggestedSlackChannels = useMemo(
-    () => channelsForSelectedWorkspace,
+    () => [...channelsForSelectedWorkspace].sort((a, b) => {
+      const aDisplay = (a.displayScope ?? '').trim();
+      const bDisplay = (b.displayScope ?? '').trim();
+      const byDisplay = aDisplay.localeCompare(bDisplay, undefined, { sensitivity: 'base' });
+      if (byDisplay !== 0) return byDisplay;
+      const byScope = (a.scope ?? '').localeCompare((b.scope ?? ''), undefined, { sensitivity: 'base' });
+      if (byScope !== 0) return byScope;
+      return (a.id ?? '').localeCompare((b.id ?? ''), undefined, { sensitivity: 'base' });
+    }),
     [channelsForSelectedWorkspace],
   );
   const slackScopeSuggestions = useMemo(() => {
@@ -280,6 +289,34 @@ export function ChannelConfigPicker({
       setScopeSuggestionSelection(0);
     }
   }, [scopeSuggestionSelection, slackScopeSuggestions.length]);
+
+  const scopeSuggestionPageSize = Math.max(4, maxHeight - 29);
+  const scopeSuggestionPageCount = Math.max(1, Math.ceil(slackScopeSuggestions.length / scopeSuggestionPageSize));
+
+  useEffect(() => {
+    if (scopeSuggestionPage > scopeSuggestionPageCount - 1) {
+      setScopeSuggestionPage(0);
+    }
+  }, [scopeSuggestionPage, scopeSuggestionPageCount]);
+
+  useEffect(() => {
+    if (mode !== 'add-scope' || pendingPlatform !== 'slack') return;
+    if (slackScopeSuggestions.length === 0) {
+      if (scopeSuggestionPage !== 0) setScopeSuggestionPage(0);
+      return;
+    }
+    const targetPage = Math.floor(scopeSuggestionSelection / scopeSuggestionPageSize);
+    if (targetPage !== scopeSuggestionPage) {
+      setScopeSuggestionPage(targetPage);
+    }
+  }, [
+    mode,
+    pendingPlatform,
+    scopeSuggestionSelection,
+    scopeSuggestionPageSize,
+    scopeSuggestionPage,
+    slackScopeSuggestions.length,
+  ]);
 
   useEffect(() => {
     if (mode !== 'add-scope' || pendingPlatform !== 'slack') return;
@@ -534,14 +571,58 @@ export function ChannelConfigPicker({
     }
 
     if (mode === 'add-scope') {
+      const pageStart = scopeSuggestionPage * scopeSuggestionPageSize;
+      const pageEndExclusive = Math.min(
+        slackScopeSuggestions.length,
+        pageStart + scopeSuggestionPageSize,
+      );
+      const pageLength = Math.max(0, pageEndExclusive - pageStart);
+      if (pendingPlatform === 'slack' && key.leftArrow && scopeSuggestionPageCount > 1) {
+        const relative = Math.max(0, scopeSuggestionSelection - pageStart);
+        const nextPage = Math.max(0, scopeSuggestionPage - 1);
+        const nextStart = nextPage * scopeSuggestionPageSize;
+        const nextEndExclusive = Math.min(
+          slackScopeSuggestions.length,
+          nextStart + scopeSuggestionPageSize,
+        );
+        const nextLength = Math.max(1, nextEndExclusive - nextStart);
+        const nextIndex = nextStart + Math.min(relative, nextLength - 1);
+        setScopeSuggestionPage(nextPage);
+        setScopeSuggestionSelection(nextIndex);
+        setScopeInput(slackScopeSuggestions[nextIndex] ?? '');
+        return;
+      }
+      if (pendingPlatform === 'slack' && key.rightArrow && scopeSuggestionPageCount > 1) {
+        const relative = Math.max(0, scopeSuggestionSelection - pageStart);
+        const nextPage = Math.min(scopeSuggestionPageCount - 1, scopeSuggestionPage + 1);
+        const nextStart = nextPage * scopeSuggestionPageSize;
+        const nextEndExclusive = Math.min(
+          slackScopeSuggestions.length,
+          nextStart + scopeSuggestionPageSize,
+        );
+        const nextLength = Math.max(1, nextEndExclusive - nextStart);
+        const nextIndex = nextStart + Math.min(relative, nextLength - 1);
+        setScopeSuggestionPage(nextPage);
+        setScopeSuggestionSelection(nextIndex);
+        setScopeInput(slackScopeSuggestions[nextIndex] ?? '');
+        return;
+      }
       if (pendingPlatform === 'slack' && key.upArrow && slackScopeSuggestions.length > 0) {
-        const next = cycleIndex(scopeSuggestionSelection, slackScopeSuggestions.length, -1);
+        const inPageIndex =
+          scopeSuggestionSelection >= pageStart && scopeSuggestionSelection < pageEndExclusive
+            ? scopeSuggestionSelection - pageStart
+            : 0;
+        const next = pageStart + cycleIndex(inPageIndex, pageLength || 1, -1);
         setScopeSuggestionSelection(next);
         setScopeInput(slackScopeSuggestions[next] ?? '');
         return;
       }
       if (pendingPlatform === 'slack' && key.downArrow && slackScopeSuggestions.length > 0) {
-        const next = cycleIndex(scopeSuggestionSelection, slackScopeSuggestions.length, 1);
+        const inPageIndex =
+          scopeSuggestionSelection >= pageStart && scopeSuggestionSelection < pageEndExclusive
+            ? scopeSuggestionSelection - pageStart
+            : 0;
+        const next = pageStart + cycleIndex(inPageIndex, pageLength || 1, 1);
         setScopeSuggestionSelection(next);
         setScopeInput(slackScopeSuggestions[next] ?? '');
         return;
@@ -734,6 +815,7 @@ export function ChannelConfigPicker({
         setPendingSlackAccountId(undefined);
         setScopeInput(chosen === 'slack' ? '#' : '');
         setScopeSuggestionSelection(0);
+        setScopeSuggestionPage(0);
         setMode('add-scope');
       }
       return;
@@ -744,6 +826,7 @@ export function ChannelConfigPicker({
         setPendingSlackAccountId(undefined);
         setScopeInput('#');
         setScopeSuggestionSelection(0);
+        setScopeSuggestionPage(0);
         setMode('add-scope');
         return;
       }
@@ -767,6 +850,7 @@ export function ChannelConfigPicker({
         const firstScope = knownChannels[0]?.displayScope ?? '#';
         setScopeInput(firstScope);
         setScopeSuggestionSelection(0);
+        setScopeSuggestionPage(0);
         setMode('add-scope');
       }
       return;
@@ -1141,12 +1225,28 @@ export function ChannelConfigPicker({
               {suggestedSlackChannels.length > 0 ? (
                 <>
                   <Text>Known channels for this workspace:</Text>
-                  {suggestedSlackChannels.map((channel, idx) => (
-                    <Text key={channel.id} color={idx === scopeSuggestionSelection ? 'cyan' : undefined}>
-                      {idx === scopeSuggestionSelection ? '▸ ' : '  '}
-                      {channel.displayScope}  ({channel.scope})
+                  {suggestedSlackChannels
+                    .slice(
+                      scopeSuggestionPage * scopeSuggestionPageSize,
+                      Math.min(
+                        suggestedSlackChannels.length,
+                        (scopeSuggestionPage + 1) * scopeSuggestionPageSize,
+                      ),
+                    )
+                    .map((channel, idx) => {
+                      const absoluteIdx = (scopeSuggestionPage * scopeSuggestionPageSize) + idx;
+                      return (
+                        <Text key={channel.id} color={absoluteIdx === scopeSuggestionSelection ? 'cyan' : undefined}>
+                          {absoluteIdx === scopeSuggestionSelection ? '▸ ' : '  '}
+                          {channel.displayScope}  ({channel.scope})
+                        </Text>
+                      );
+                    })}
+                  {scopeSuggestionPageCount > 1 && (
+                    <Text dimColor>
+                      Page {scopeSuggestionPage + 1}/{scopeSuggestionPageCount}
                     </Text>
-                  ))}
+                  )}
                 </>
               ) : (
                 <Text dimColor>No channel suggestions found. You can still enter scope manually.</Text>
@@ -1181,7 +1281,7 @@ export function ChannelConfigPicker({
               }}
             />
           </Box>
-          <Text dimColor>↑/↓ pick channel  Enter continue  Esc cancel</Text>
+          <Text dimColor>↑/↓ pick channel  ←/→ page  Enter continue  Esc cancel</Text>
         </>
       )}
 
