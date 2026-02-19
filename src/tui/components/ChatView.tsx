@@ -12,6 +12,7 @@ import type { Message, AgentRole } from '../../types.js';
 import { getModelAlias } from '../../models.js';
 import { formatElapsed } from '../utils.js';
 import { preWrapText, countVisualLines, getSpeakerName } from '../lineCount.js';
+import { sanitizeForTerminal } from '../textSanitize.js';
 
 /** Map agent roles to speaker colors */
 const ROLE_COLORS: Record<AgentRole, string> = {
@@ -277,7 +278,7 @@ export function ChatView({
       {/* Streaming content (only when at bottom and processing) */}
       {isProcessing && scrollOffset === 0 && (
         <Box flexDirection="column">
-          <Text color="cyan" bold>{streamingAgentName ?? getModelAlias(currentModel)}:</Text>
+          <Text color="cyan" bold>{sanitizeForTerminal(streamingAgentName ?? getModelAlias(currentModel))}:</Text>
           <Box paddingLeft={2}>
             {cappedStreaming ? (
               <Text>{cappedStreaming}<Text color="cyan">{'\u258c'}</Text></Text>
@@ -325,7 +326,7 @@ function MessageBlock({ message, isPinned, skipLines = 0, showLines = 0, content
   showLines?: number;
   contentWidth?: number;
 }) {
-  const speakerName = getSpeakerName(message);
+  const speakerName = sanitizeForTerminal(getSpeakerName(message));
 
   const speakerColor = message.role === 'user'
     ? 'green'
@@ -373,7 +374,7 @@ function MessageBlock({ message, isPinned, skipLines = 0, showLines = 0, content
       )}
       {rendered.showSpeaker && message.attachment && (
         <Box paddingLeft={2}>
-          <Text color="blue">[image: {message.attachment.filename} {message.attachment.width}x{message.attachment.height}]</Text>
+          <Text color="blue">[image: {sanitizeForTerminal(message.attachment.filename)} {message.attachment.width}x{message.attachment.height}]</Text>
         </Box>
       )}
       {rendered.text.length > 0 && (

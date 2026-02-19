@@ -11,6 +11,7 @@ import type { TailscaleStatus } from '../../services/tailscale';
 import type { BillingOverride } from '../../config.js';
 import { getModelAlias } from '../../models.js';
 import { ROLE_BY_ID } from '../../agent-roles.js';
+import { sanitizeForTerminal } from '../textSanitize.js';
 
 function formatResetTime(isoTimestamp: string): string {
   const now = Date.now();
@@ -49,18 +50,18 @@ interface StatusBarProps {
 }
 
 export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleStatus, billing, sessionName, terminalWidth = 80, voiceMode, voiceReadiness, ttsEnabled = true, agents, directiveCount = 0, platformBindingCount = 0 }: StatusBarProps) {
-  const modelName = getModelAlias(model);
+  const modelName = sanitizeForTerminal(getModelAlias(model));
   const modelIndicator = modelStatus === 'checking' ? ' ◐' : '';
 
   // Build model display: single model or agent list
   const modelDisplay = agents && agents.length > 0
-    ? agents.map(a => {
-        const alias = getModelAlias(a.model);
+      ? agents.map(a => {
+        const alias = sanitizeForTerminal(getModelAlias(a.model));
         const roleShort = ROLE_BY_ID[a.role]?.shortLabel ?? '?';
         const prefix = a.isPrimary ? '' : '@';
         return `${prefix}${alias}(${roleShort})`;
       }).join(' ')
-    : `${modelName}${modelIndicator}`;
+      : `${modelName}${modelIndicator}`;
   const isSubscription = billing?.mode === 'subscription';
 
   // Icons with colors
@@ -107,8 +108,11 @@ export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleS
   }
 
   // Calculate padding for right-alignment
-  const leftContent = `GW:${gwIcon} TS:${tsIcon} M:${modelDisplay}  ${billingText}`;
-  const rightContent = `V:${ttsIcon} Mic:${micIcon}  ${sessionName ?? ''}`;
+  const safeModelDisplay = sanitizeForTerminal(modelDisplay);
+  const safeBillingText = sanitizeForTerminal(billingText);
+  const safeSessionName = sanitizeForTerminal(sessionName ?? '');
+  const leftContent = `GW:${gwIcon} TS:${tsIcon} M:${safeModelDisplay}  ${safeBillingText}`;
+  const rightContent = `V:${ttsIcon} Mic:${micIcon}  ${safeSessionName}`;
   const padding = Math.max(1, terminalWidth - leftContent.length - rightContent.length - 2);
 
   const separator = '─'.repeat(terminalWidth);
@@ -123,18 +127,18 @@ export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleS
         <Text color={tsColor}>{tsIcon}</Text>
         <Text> </Text>
         <Text dimColor>M:</Text>
-        <Text color={modelColor} bold>{modelDisplay}</Text>
+        <Text color={modelColor} bold>{safeModelDisplay}</Text>
         {directiveCount > 0 && <Text dimColor> R:{directiveCount}</Text>}
         {platformBindingCount > 0 && <Text dimColor> C:{platformBindingCount}</Text>}
         <Text>  </Text>
-        <Text dimColor>{billingText}</Text>
+        <Text dimColor>{safeBillingText}</Text>
         <Text>{' '.repeat(padding)}</Text>
         <Text dimColor>V:</Text>
         <Text color={ttsColor}>{ttsIcon}</Text>
         <Text> </Text>
         <Text dimColor>Mic:</Text>
         <Text color={micColor}>{micIcon}</Text>
-        <Text dimColor>  {sessionName ?? ''}</Text>
+        <Text dimColor>  {safeSessionName}</Text>
       </Box>
       <Box height={1}>
         <Text dimColor>{separator}</Text>

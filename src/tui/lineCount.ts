@@ -7,6 +7,7 @@
 
 import type { Message } from '../types.js';
 import { getModelAlias } from '../models.js';
+import { sanitizeForTerminal } from './textSanitize.js';
 
 // wrap-ansi v6 is a CJS dependency of Ink, available in node_modules
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -18,7 +19,7 @@ const wrapAnsi = require('wrap-ansi') as (input: string, columns: number, option
  */
 export function preWrapText(text: string, width: number): string {
   if (!text || width <= 0) return text || '';
-  return wrapAnsi(text, width, { hard: true, trim: false });
+  return wrapAnsi(sanitizeForTerminal(text), width, { hard: true, trim: false });
 }
 
 /**
@@ -61,5 +62,5 @@ export function messageVisualLines(msg: Message, width: number): number {
 export function getSpeakerName(msg: Message): string {
   if (msg.role === 'user') return 'You';
   if (msg.role === 'system') return 'System';
-  return msg.agentName ?? getModelAlias(msg.model ?? '');
+  return sanitizeForTerminal(msg.agentName ?? getModelAlias(msg.model ?? ''));
 }
