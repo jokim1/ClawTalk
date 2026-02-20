@@ -88,6 +88,19 @@ No linter or formatter configured. Match existing code style:
 - React 17 + Ink 3 for TUI components
 - CommonJS module output (ES2020 target)
 
+## Engineering Principles
+
+These apply to all code changes in this project:
+
+- **Single Responsibility**: Each module/function does one thing. If a function name needs "and" in it, split it.
+- **Dependency Inversion**: Depend on interfaces/types, not concrete implementations. Pass dependencies in (constructor/function params), don't reach out to grab them (no hidden global state).
+- **Composition over inheritance**: Build behavior by combining small, focused functions rather than deep class hierarchies.
+- **Explicit over clever**: No magic. If a reader can't understand what a function does from its name and signature alone, it needs refactoring or better naming.
+- **DRY but "engineered enough"**: Extract shared logic when there are 3+ call sites with identical patterns. Don't prematurely abstract for 2 call sites — duplication is cheaper than the wrong abstraction.
+- **Separation of concerns**: Data access, business logic, and HTTP/presentation are separate layers. A function that reads config should not also format HTTP responses.
+- **Verify assumptions against source**: When integrating with ClawTalkGateway or any external system, read the actual source code before implementing. Do not assume behavior based on naming conventions or documentation alone.
+- **Priority-based issue reporting**: When reviewing or auditing, classify issues as P0 (production failure), P1 (design flaw), P2 (improvement). Never cap issue counts — surface all P0s.
+
 ## Known Issues (2026-02-20)
 
 ### Slack Integration (Gateway-Side)

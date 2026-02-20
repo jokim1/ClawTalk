@@ -3916,6 +3916,13 @@ function App({ options }: AppProps) {
             onSetPrompt={handleSetChannelResponsePrompt}
             onSetAgentChoice={handleSetChannelResponseAgentChoice}
             onClearBehavior={handleClearChannelResponse}
+            onCheckSlackProxySetup={async () => {
+              return chatServiceRef.current?.getSlackProxySetup() ?? null;
+            }}
+            onSaveSlackSigningSecret={async (secret: string) => {
+              if (!chatServiceRef.current) return { ok: false, error: 'Not connected to Gateway' };
+              return chatServiceRef.current.saveSlackSigningSecret(secret);
+            }}
           />
         </Box>
       ) : showJobsConfig ? (

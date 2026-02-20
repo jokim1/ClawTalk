@@ -8,7 +8,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import TextInput from 'ink-text-input';
 import type { PlatformBehavior, PlatformBinding, PlatformPermission, TalkAgent } from '../../types';
-import type { SlackAccountOption, SlackChannelOption } from '../../services/chat';
+import type { SlackAccountOption, SlackChannelOption, SlackProxySetupStatus } from '../../services/chat';
 import {
   buildVisualLayout,
   computeVisibleWindow,
@@ -41,6 +41,8 @@ interface ChannelConfigPickerProps {
   onSetPrompt: (index: number, prompt: string) => void;
   onSetAgentChoice: (index: number, agentName?: string) => void;
   onClearBehavior: (index: number) => void;
+  onCheckSlackProxySetup?: () => Promise<SlackProxySetupStatus | null>;
+  onSaveSlackSigningSecret?: (secret: string) => Promise<{ ok: boolean; error?: string }>;
 }
 
 type PickerMode =
@@ -48,6 +50,7 @@ type PickerMode =
   | 'edit-connection'
   | 'add-platform'
   | 'add-workspace'
+  | 'slack-proxy-setup'
   | 'add-scope'
   | 'add-permission'
   | 'add-response'
@@ -155,11 +158,20 @@ export function ChannelConfigPicker({
   onSetPrompt,
   onSetAgentChoice,
   onClearBehavior,
+  onCheckSlackProxySetup,
+  onSaveSlackSigningSecret,
 }: ChannelConfigPickerProps) {
   const [mode, setMode] = useState<PickerMode>('list');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [scrollOffset, setScrollOffset] = useState(0);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+
+  // Slack proxy setup state
+  const [proxySetupStatus, setProxySetupStatus] = useState<SlackProxySetupStatus | null>(null);
+  const [proxySetupLoading, setProxySetupLoading] = useState(false);
+  const [signingSecretInput, setSigningSecretInput] = useState('');
+  const [signingSecretSaving, setSigningSecretSaving] = useState(false);
+  const [proxySetupError, setProxySetupError] = useState<string | null>(null);
 
   const [platformSelection, setPlatformSelection] = useState(0);
   const [pendingPlatform, setPendingPlatform] = useState<string>(PLATFORM_OPTIONS[0]);
@@ -463,6 +475,47 @@ export function ChannelConfigPicker({
     if (field === 'prompt') {
       setStatusMessage('Press Enter to edit Response Prompt text.');
     }
+  };
+
+  // Check Slack proxy setup and transition to setup mode if needed,
+  // or proceed directly to scope selection if already configured.
+  const checkAndMaybeShowProxySetup = async (
+    afterSetup: () => void,
+  ): Promise<void> => {
+    if (!onCheckSlackProxySetup) {
+      afterSetup();
+      return;
+    }
+    setProxySetupLoading(true);
+    setProxySetupError(null);
+    try {
+      const status = await onCheckSlackProxySetup();
+      setProxySetupStatus(status);
+      if (status && !status.signingSecretConfigured) {
+        // Need signing secret — show setup wizard step
+        setSigningSecretInput('');
+        setMode('slack-proxy-setup');
+      } else {
+        // Already configured — proceed
+        afterSetup();
+      }
+    } catch {
+      // On error, just proceed (don't block the wizard)
+      afterSetup();
+    } finally {
+      setProxySetupLoading(false);
+    }
+  };
+
+  const proceedToScopeFromProxy = (): void => {
+    const knownChannels = pendingSlackAccountId
+      ? (slackChannelsByAccount[pendingSlackAccountId] ?? [])
+      : [];
+    const firstScope = knownChannels[0]?.displayScope ?? '#';
+    setScopeInput(firstScope);
+    setScopeSuggestionSelection(0);
+    setScopeSuggestionPage(0);
+    setMode('add-scope');
   };
 
   useInput((input, key) => {
@@ -813,10 +866,20 @@ export function ChannelConfigPicker({
         }
 
         setPendingSlackAccountId(undefined);
-        setScopeInput(chosen === 'slack' ? '#' : '');
-        setScopeSuggestionSelection(0);
-        setScopeSuggestionPage(0);
-        setMode('add-scope');
+        if (chosen === 'slack') {
+          // For Slack without workspace accounts, check proxy setup first
+          void checkAndMaybeShowProxySetup(() => {
+            setScopeInput('#');
+            setScopeSuggestionSelection(0);
+            setScopeSuggestionPage(0);
+            setMode('add-scope');
+          });
+        } else {
+          setScopeInput('');
+          setScopeSuggestionSelection(0);
+          setScopeSuggestionPage(0);
+          setMode('add-scope');
+        }
       }
       return;
     }
@@ -824,10 +887,12 @@ export function ChannelConfigPicker({
     if (mode === 'add-workspace') {
       if (slackAccounts.length === 0) {
         setPendingSlackAccountId(undefined);
-        setScopeInput('#');
-        setScopeSuggestionSelection(0);
-        setScopeSuggestionPage(0);
-        setMode('add-scope');
+        void checkAndMaybeShowProxySetup(() => {
+          setScopeInput('#');
+          setScopeSuggestionSelection(0);
+          setScopeSuggestionPage(0);
+          setMode('add-scope');
+        });
         return;
       }
       if (key.upArrow) {
@@ -846,12 +911,31 @@ export function ChannelConfigPicker({
       if (key.return) {
         const chosen = selectedWorkspace;
         setPendingSlackAccountId(chosen?.id);
-        const knownChannels = chosen?.id ? (slackChannelsByAccount[chosen.id] ?? []) : [];
-        const firstScope = knownChannels[0]?.displayScope ?? '#';
-        setScopeInput(firstScope);
-        setScopeSuggestionSelection(0);
-        setScopeSuggestionPage(0);
-        setMode('add-scope');
+        // After workspace selection, check proxy setup before proceeding to scope
+        void checkAndMaybeShowProxySetup(() => {
+          const knownChannels = chosen?.id ? (slackChannelsByAccount[chosen.id] ?? []) : [];
+          const firstScope = knownChannels[0]?.displayScope ?? '#';
+          setScopeInput(firstScope);
+          setScopeSuggestionSelection(0);
+          setScopeSuggestionPage(0);
+          setMode('add-scope');
+        });
+      }
+      return;
+    }
+
+    if (mode === 'slack-proxy-setup') {
+      // Signing secret input is handled by TextInput's onSubmit.
+      // Only handle Escape here to go back.
+      if (key.escape) {
+        setMode('add-platform');
+        return;
+      }
+      // 's' key to skip setup (proceed without signing secret)
+      if (input === 's' && !signingSecretInput) {
+        setStatusMessage('Skipping Slack signing secret setup (can be configured later).');
+        proceedToScopeFromProxy();
+        return;
       }
       return;
     }
@@ -1206,6 +1290,78 @@ export function ChannelConfigPicker({
           )}
           <Box height={1} />
           <Text dimColor>Enter continue  Esc cancel  r refresh</Text>
+        </>
+      )}
+
+      {mode === 'slack-proxy-setup' && (
+        <>
+          <Box height={1} />
+          <Text bold>Slack Event Proxy Setup</Text>
+          <Box height={1} />
+          {proxySetupLoading ? (
+            <Text dimColor>Checking Slack event proxy configuration...</Text>
+          ) : (
+            <>
+              <Text>ClawTalk needs a Slack Signing Secret to receive messages from Slack.</Text>
+              <Box height={1} />
+              <Text dimColor>To find your signing secret:</Text>
+              <Text dimColor>  1. Go to https://api.slack.com/apps and select your app</Text>
+              <Text dimColor>  2. Click "Basic Information" in the sidebar</Text>
+              <Text dimColor>  3. Under "App Credentials", copy the "Signing Secret"</Text>
+              <Box height={1} />
+              {proxySetupError && (
+                <Text color="red">{proxySetupError}</Text>
+              )}
+              {signingSecretSaving ? (
+                <Text dimColor>Saving signing secret...</Text>
+              ) : (
+                <Box>
+                  <Text>Signing Secret: </Text>
+                  <TextInput
+                    value={signingSecretInput}
+                    onChange={setSigningSecretInput}
+                    onSubmit={async (value) => {
+                      const secret = value.trim();
+                      if (!secret) {
+                        setProxySetupError('Signing secret cannot be empty. Press s to skip.');
+                        return;
+                      }
+                      if (!onSaveSlackSigningSecret) {
+                        proceedToScopeFromProxy();
+                        return;
+                      }
+                      setSigningSecretSaving(true);
+                      setProxySetupError(null);
+                      try {
+                        const result = await onSaveSlackSigningSecret(secret);
+                        if (result.ok) {
+                          setStatusMessage('Slack signing secret saved. Remember to restart OpenClaw for changes to take effect.');
+                          proceedToScopeFromProxy();
+                        } else {
+                          setProxySetupError(result.error ?? 'Failed to save signing secret');
+                        }
+                      } catch (err) {
+                        setProxySetupError(String(err));
+                      } finally {
+                        setSigningSecretSaving(false);
+                      }
+                    }}
+                  />
+                </Box>
+              )}
+              <Box height={1} />
+              {proxySetupStatus?.gatewayProxyUrl && (
+                <>
+                  <Text dimColor>After saving, set your Slack app's Event Request URL to:</Text>
+                  <Text color="cyan">  {proxySetupStatus.gatewayProxyUrl}</Text>
+                  <Box height={1} />
+                </>
+              )}
+              <Text color="yellow">Note: Restart OpenClaw after setup for config changes to take effect.</Text>
+              <Box height={1} />
+              <Text dimColor>Enter save  s skip  Esc back</Text>
+            </>
+          )}
         </>
       )}
 

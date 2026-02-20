@@ -1742,6 +1742,50 @@ export class ChatService implements IChatService {
     }
   }
 
+  async getSlackProxySetup(): Promise<SlackProxySetupStatus | null> {
+    try {
+      const response = await fetch(`${this.config.gatewayUrl}/api/events/slack/proxy-setup`, {
+        method: 'GET',
+        headers: this.authHeaders(),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) return null;
+      const raw = await response.json() as Record<string, unknown>;
+      return {
+        ready: raw.ready === true,
+        slackBindingsDetected: raw.slackBindingsDetected === true,
+        signingSecretConfigured: raw.signingSecretConfigured === true,
+        gatewayProxyUrl: typeof raw.gatewayProxyUrl === 'string' ? raw.gatewayProxyUrl : '',
+        pendingSteps: Array.isArray(raw.pendingSteps)
+          ? raw.pendingSteps.map((s: Record<string, unknown>) => ({
+              id: String(s.id ?? ''),
+              title: String(s.title ?? ''),
+            }))
+          : [],
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  async saveSlackSigningSecret(signingSecret: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const response = await fetch(`${this.config.gatewayUrl}/api/events/slack/proxy-setup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+        body: JSON.stringify({ signingSecret }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        return { ok: false, error: `Gateway error (${response.status}): ${text.slice(0, 200)}` };
+      }
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : 'Unknown error' };
+    }
+  }
+
   async getSlackOptions(accountId?: string, limit = 1000): Promise<SlackOptionsResult | null> {
     try {
       const params = new URLSearchParams();
@@ -1837,6 +1881,14 @@ export interface SlackOptionsResult {
   selectedAccountId?: string;
   channels: SlackChannelOption[];
   channelsSource?: 'slack-api' | 'talk-bindings' | 'none';
+}
+
+export interface SlackProxySetupStatus {
+  ready: boolean;
+  slackBindingsDetected: boolean;
+  signingSecretConfigured: boolean;
+  gatewayProxyUrl: string;
+  pendingSteps: { id: string; title: string }[];
 }
 
 export interface CostUsageResult {
