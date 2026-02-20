@@ -88,6 +88,21 @@ No linter or formatter configured. Match existing code style:
 - React 17 + Ink 3 for TUI components
 - CommonJS module output (ES2020 target)
 
+## Known Issues (2026-02-20)
+
+### Slack Integration (Gateway-Side)
+
+The ClawTalkGateway has open bugs affecting Slack message responses. See `ClawTalkGateway/docs/FIX-PLAN-2026-02-20.md` for the full plan:
+
+- **Duplicate Slack messages** — Suppression TTL (120s) can expire during long LLM tool-loop calls, causing both ClawTalk and OpenClaw to reply
+- **Silent message drops** — If LLM call fails after suppression blocked OpenClaw's reply, user gets no response
+- **Binding changes need restart** — New Talk Slack bindings don't take effect until gateway restart
+
+### Client-Side (Previously Fixed)
+
+- DNS IPv4-first resolution for Node.js 25+ (`setDefaultResultOrder('ipv4first')`)
+- Removed config auto-save that was persisting CLI flags unexpectedly
+
 ## Related Projects
 
 - **ClawTalkGateway** — Moltbot plugin providing HTTP endpoints this client connects to
