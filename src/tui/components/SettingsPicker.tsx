@@ -323,11 +323,12 @@ export function SettingsPicker({
     return value.padEnd(width, ' ');
   };
   const buildDivider = (widths: number[]): string => `  ${'-'.repeat(widths.reduce((sum, width) => sum + width, 0) + ((widths.length - 1) * 2))}`;
-  const toolNameColWidth = 34;
+  const toolNameColWidth = 28;
   const toolStatusColWidth = 8;
-  const toolSourceColWidth = 20;
-  const toolHeader = `  ${padCell('Tool', toolNameColWidth)}  ${padCell('Status', toolStatusColWidth)}  ${padCell('Source', toolSourceColWidth)}`;
-  const toolDivider = buildDivider([toolNameColWidth, toolStatusColWidth, toolSourceColWidth]);
+  const toolClawtalkColWidth = 8;
+  const toolOpenclawColWidth = 8;
+  const toolHeader = `  ${padCell('Tool', toolNameColWidth)}  ${padCell('Status', toolStatusColWidth)}  ${padCell('ClawTalk', toolClawtalkColWidth)}  ${padCell('OpenClaw', toolOpenclawColWidth)}`;
+  const toolDivider = buildDivider([toolNameColWidth, toolStatusColWidth, toolClawtalkColWidth, toolOpenclawColWidth]);
   const catalogNameColWidth = 34;
   const catalogStateColWidth = 12;
   const catalogVersionColWidth = 10;
@@ -928,17 +929,10 @@ export function SettingsPicker({
                     const statusColor: 'green' | 'yellow' = blockedReason ? 'yellow' : (enabled ? 'green' : 'yellow');
                     const selected = rowIndex === selectedIndex;
                     const paddedName = padCell(tool.name, toolNameColWidth);
-                    const sourceLabel = (() => {
-                      if (tool.reasonCode === 'blocked_not_installed') return 'Not Installed';
-                      if (tool.reasonCode === 'blocked_tool_mode') return 'Tool Approval Off';
-                      if (tool.reasonCode === 'blocked_filesystem') return 'Workspace Sandbox';
-                      if (tool.reasonCode === 'blocked_network') return 'Network Restricted';
-                      if (tool.reasonCode === 'blocked_execution_mode') return 'OpenClaw Agent';
-                      if (tool.reasonCode === 'blocked_auth') return 'Google OAuth';
-                      if (tool.reasonCode === 'blocked_allowlist') return 'Talk Allow-list';
-                      if (tool.reasonCode === 'blocked_denylist') return 'Talk Deny-list';
-                      return tool.builtin ? 'builtin' : 'gateway';
-                    })();
+                    const ctStatus = tool.clawtalkStatus === 'on' ? 'on' : '---';
+                    const ctColor: 'green' | 'yellow' = tool.clawtalkStatus === 'on' ? 'green' : 'yellow';
+                    const ocStatus = tool.openclawStatus === 'on' ? 'on' : '---';
+                    const ocColor: 'green' | 'yellow' = tool.openclawStatus === 'on' ? 'green' : 'yellow';
                     return (
                       <Box key={tool.name}>
                         <Text color={selected ? 'cyan' : undefined}>{selected ? '▸ ' : '  '}</Text>
@@ -946,7 +940,9 @@ export function SettingsPicker({
                         <Text>  </Text>
                         <Text color={statusColor}>{padCell(status, toolStatusColWidth)}</Text>
                         <Text>  </Text>
-                        <Text dimColor>{padCell(sourceLabel, toolSourceColWidth)}</Text>
+                        <Text color={ctColor}>{padCell(ctStatus, toolClawtalkColWidth)}</Text>
+                        <Text>  </Text>
+                        <Text color={ocColor}>{padCell(ocStatus, toolOpenclawColWidth)}</Text>
                       </Box>
                     );
                   })

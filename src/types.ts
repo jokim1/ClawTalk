@@ -282,6 +282,8 @@ export interface ToolDescriptor {
     reason?: string;
     requiresUnsandboxed?: boolean;
   };
+  openclawStatus?: 'on' | 'blocked';
+  clawtalkStatus?: 'on' | 'blocked';
 }
 
 export interface TalkToolPolicy {
