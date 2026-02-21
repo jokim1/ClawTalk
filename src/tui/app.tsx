@@ -295,7 +295,7 @@ function App({ options }: AppProps) {
   const [showEditMessages, setShowEditMessages] = useState(false);
   const [showTalks, setShowTalks] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<'talk' | 'tools' | 'mic' | 'stt' | 'tts' | 'realtime'>('talk');
+  const [settingsTab, setSettingsTab] = useState<'talk' | 'tools' | 'speech'>('talk');
   const [showChannelConfig, setShowChannelConfig] = useState(false);
   const [showJobsConfig, setShowJobsConfig] = useState(false);
   const [settingsFromTalks, setSettingsFromTalks] = useState(false);
@@ -3883,7 +3883,7 @@ function App({ options }: AppProps) {
             onSelectTalk={handleSelectTalk}
             onNewChat={() => { setShowTalks(false); handleNewChat(); }}
             onToggleTts={() => { voice.handleTtsToggle?.(); }}
-            onOpenSettings={() => { setShowTalks(false); setSettingsFromTalks(true); setSettingsTab('mic'); setShowSettings(true); }}
+            onOpenSettings={() => { setShowTalks(false); setSettingsFromTalks(true); setSettingsTab('speech'); setShowSettings(true); }}
             onOpenModelPicker={() => { setModelPickerMode('default'); setShowModelPicker(true); }}
             exportDir={savedConfig.exportDir}
             onNewTerminal={() => { spawnNewTerminalWindow(options); }}
@@ -3947,7 +3947,7 @@ function App({ options }: AppProps) {
         <Box flexGrow={1} paddingX={1}>
           <SettingsPicker
             onClose={() => { setShowSettings(false); if (settingsFromTalks) { setSettingsFromTalks(false); setShowTalks(true); } }}
-            initialTab={settingsFromTalks ? 'mic' : settingsTab}
+            initialTab={settingsFromTalks ? 'speech' : settingsTab}
             hideTalkConfig={settingsFromTalks}
             onNewChat={() => { setShowSettings(false); handleNewChat(); }}
             onToggleTts={() => { voice.handleTtsToggle?.(); }}

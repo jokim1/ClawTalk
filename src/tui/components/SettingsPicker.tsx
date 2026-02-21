@@ -112,7 +112,7 @@ interface SettingsPickerProps {
   onUninstallCatalogTool?: (catalogId: string) => void;
 }
 
-type SettingsTab = 'mic' | 'stt' | 'tts' | 'realtime' | 'talk' | 'tools';
+type SettingsTab = 'speech' | 'talk' | 'tools';
 
 const PROVIDER_LABELS: Record<RealtimeVoiceProvider, string> = {
   openai: 'OpenAI Realtime',
@@ -244,7 +244,7 @@ export function SettingsPicker({
   onInstallCatalogTool,
   onUninstallCatalogTool,
 }: SettingsPickerProps) {
-  const [tab, setTab] = useState<SettingsTab>(initialTab ?? (hideTalkConfig ? 'mic' : 'talk'));
+  const [tab, setTab] = useState<SettingsTab>(initialTab ?? (hideTalkConfig ? 'speech' : 'talk'));
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [message, setMessage] = useState<string | null>(null);
@@ -255,6 +255,19 @@ export function SettingsPicker({
   const sttProviders = voiceCaps?.sttProviders ?? [];
   const ttsProviders = voiceCaps?.ttsProviders ?? [];
   const realtimeProviders = realtimeVoiceCaps?.providers ?? [];
+
+  // Speech tab: unified section offsets for continuous cursor navigation
+  const speechMicEnd = devices.length;
+  const speechSttEnd = speechMicEnd + sttProviders.length;
+  const speechTtsEnd = speechSttEnd + ttsProviders.length;
+  const speechRowCount = speechTtsEnd + realtimeProviders.length;
+  const resolveSpeechSection = (index: number): { section: 'mic' | 'stt' | 'tts' | 'realtime'; localIndex: number } => {
+    if (index < speechMicEnd) return { section: 'mic', localIndex: index };
+    if (index < speechSttEnd) return { section: 'stt', localIndex: index - speechMicEnd };
+    if (index < speechTtsEnd) return { section: 'tts', localIndex: index - speechSttEnd };
+    return { section: 'realtime', localIndex: index - speechTtsEnd };
+  };
+
   const toolRows = toolPolicy?.effectiveTools ?? toolPolicy?.availableTools ?? [];
   const catalogRows = toolPolicy?.catalogEntries ?? [];
   const authProfiles = googleAuthProfiles ?? [];
@@ -398,8 +411,8 @@ export function SettingsPicker({
 
     // Tab navigation with left/right
     const allTabs: SettingsTab[] = hideTalkConfig
-      ? ['tools', 'mic', 'stt', 'tts', 'realtime']
-      : ['talk', 'tools', 'mic', 'stt', 'tts', 'realtime'];
+      ? ['tools', 'speech']
+      : ['talk', 'tools', 'speech'];
     if (key.leftArrow) {
       setTab(prev => {
         const idx = allTabs.indexOf(prev);
@@ -423,10 +436,7 @@ export function SettingsPicker({
       return;
     }
     if (key.downArrow) {
-      const maxIndex = tab === 'mic' ? devices.length - 1
-        : tab === 'stt' ? sttProviders.length - 1
-        : tab === 'tts' ? ttsProviders.length - 1
-        : tab === 'realtime' ? realtimeProviders.length - 1
+      const maxIndex = tab === 'speech' ? Math.max(0, speechRowCount - 1)
         : tab === 'tools' ? Math.max(0, executionRowCount + toolApprovalRowCount + filesystemRowCount + networkRowCount + profileRowCount + toolRows.length + catalogRows.length - 1)
         : tab === 'talk' ? 0
         : 0;
@@ -436,46 +446,49 @@ export function SettingsPicker({
 
     // Select with Enter
     if (key.return) {
-      if (tab === 'mic' && devices[selectedIndex]) {
-        const device = devices[selectedIndex];
-        if (setInputDevice(device.name)) {
-          setDevices(prev => prev.map(d => ({ ...d, isDefault: d.name === device.name })));
-          setMessage(`Switched to: ${device.name}`);
-          onMicChange?.(device.name);
-          setTimeout(() => setMessage(null), 2000);
-        } else {
-          setMessage('Failed to switch device');
+      if (tab === 'speech') {
+        const { section, localIndex } = resolveSpeechSection(selectedIndex);
+        if (section === 'mic' && devices[localIndex]) {
+          const device = devices[localIndex];
+          if (setInputDevice(device.name)) {
+            setDevices(prev => prev.map(d => ({ ...d, isDefault: d.name === device.name })));
+            setMessage(`Switched to: ${device.name}`);
+            onMicChange?.(device.name);
+            setTimeout(() => setMessage(null), 2000);
+          } else {
+            setMessage('Failed to switch device');
+            setTimeout(() => setMessage(null), 2000);
+          }
+        } else if (section === 'stt' && sttProviders[localIndex]) {
+          const provider = sttProviders[localIndex];
+          setMessage('Switching STT provider...');
+          onSttProviderChange?.(provider).then(success => {
+            if (success) {
+              setActiveSttProvider(provider);
+              setMessage(`STT: ${STT_PROVIDER_LABELS[provider] || provider}`);
+            } else {
+              setMessage('Failed to switch STT provider');
+            }
+            setTimeout(() => setMessage(null), 2000);
+          });
+        } else if (section === 'tts' && ttsProviders[localIndex]) {
+          const provider = ttsProviders[localIndex];
+          setMessage('Switching TTS provider...');
+          onTtsProviderChange?.(provider).then(success => {
+            if (success) {
+              setActiveTtsProvider(provider);
+              setMessage(`TTS: ${TTS_PROVIDER_LABELS[provider] || provider}`);
+            } else {
+              setMessage('Failed to switch TTS provider');
+            }
+            setTimeout(() => setMessage(null), 2000);
+          });
+        } else if (section === 'realtime' && realtimeProviders[localIndex]) {
+          const provider = realtimeProviders[localIndex];
+          onRealtimeProviderChange?.(provider);
+          setMessage(`Realtime provider: ${PROVIDER_LABELS[provider]}`);
           setTimeout(() => setMessage(null), 2000);
         }
-      } else if (tab === 'stt' && sttProviders[selectedIndex]) {
-        const provider = sttProviders[selectedIndex];
-        setMessage('Switching STT provider...');
-        onSttProviderChange?.(provider).then(success => {
-          if (success) {
-            setActiveSttProvider(provider);
-            setMessage(`STT: ${STT_PROVIDER_LABELS[provider] || provider}`);
-          } else {
-            setMessage('Failed to switch STT provider');
-          }
-          setTimeout(() => setMessage(null), 2000);
-        });
-      } else if (tab === 'tts' && ttsProviders[selectedIndex]) {
-        const provider = ttsProviders[selectedIndex];
-        setMessage('Switching TTS provider...');
-        onTtsProviderChange?.(provider).then(success => {
-          if (success) {
-            setActiveTtsProvider(provider);
-            setMessage(`TTS: ${TTS_PROVIDER_LABELS[provider] || provider}`);
-          } else {
-            setMessage('Failed to switch TTS provider');
-          }
-          setTimeout(() => setMessage(null), 2000);
-        });
-      } else if (tab === 'realtime' && realtimeProviders[selectedIndex]) {
-        const provider = realtimeProviders[selectedIndex];
-        onRealtimeProviderChange?.(provider);
-        setMessage(`Realtime provider: ${PROVIDER_LABELS[provider]}`);
-        setTimeout(() => setMessage(null), 2000);
       } else if (tab === 'tools') {
         if (selectedIndex < executionRowCount) {
           const mode = executionModeOptions[selectedIndex]?.value;
@@ -584,45 +597,8 @@ export function SettingsPicker({
     const num = parseInt(input, 10);
     if (!isNaN(num) && num >= 1 && num <= 9) {
       const idx = num - 1;
-      if (tab === 'mic' && idx < devices.length) {
+      if (tab === 'speech' && idx < speechRowCount) {
         setSelectedIndex(idx);
-        const device = devices[idx];
-        if (setInputDevice(device.name)) {
-          setDevices(prev => prev.map(d => ({ ...d, isDefault: d.name === device.name })));
-          setMessage(`Switched to: ${device.name}`);
-          onMicChange?.(device.name);
-          setTimeout(() => setMessage(null), 2000);
-        }
-      } else if (tab === 'stt' && idx < sttProviders.length) {
-        setSelectedIndex(idx);
-        const provider = sttProviders[idx];
-        onSttProviderChange?.(provider).then(success => {
-          if (success) {
-            setActiveSttProvider(provider);
-            setMessage(`STT: ${STT_PROVIDER_LABELS[provider] || provider}`);
-          } else {
-            setMessage('Failed to switch STT provider');
-          }
-          setTimeout(() => setMessage(null), 2000);
-        });
-      } else if (tab === 'tts' && idx < ttsProviders.length) {
-        setSelectedIndex(idx);
-        const provider = ttsProviders[idx];
-        onTtsProviderChange?.(provider).then(success => {
-          if (success) {
-            setActiveTtsProvider(provider);
-            setMessage(`TTS: ${TTS_PROVIDER_LABELS[provider] || provider}`);
-          } else {
-            setMessage('Failed to switch TTS provider');
-          }
-          setTimeout(() => setMessage(null), 2000);
-        });
-      } else if (tab === 'realtime' && idx < realtimeProviders.length) {
-        setSelectedIndex(idx);
-        const provider = realtimeProviders[idx];
-        onRealtimeProviderChange?.(provider);
-        setMessage(`Realtime provider: ${PROVIDER_LABELS[provider]}`);
-        setTimeout(() => setMessage(null), 2000);
       } else if (tab === 'tools') {
         const max = executionRowCount + toolApprovalRowCount + filesystemRowCount + networkRowCount + profileRowCount + toolRows.length + catalogRows.length;
         if (idx < max) setSelectedIndex(idx);
@@ -631,13 +607,10 @@ export function SettingsPicker({
   });
 
   const tabs: SettingsTab[] = hideTalkConfig
-    ? ['tools', 'mic', 'stt', 'tts', 'realtime']
-    : ['talk', 'tools', 'mic', 'stt', 'tts', 'realtime'];
+    ? ['tools', 'speech']
+    : ['talk', 'tools', 'speech'];
   const tabLabels: Record<SettingsTab, string> = {
-    mic: 'Microphone',
-    stt: 'Speech-to-Text',
-    tts: 'Text-to-Speech',
-    realtime: 'Live Chat',
+    speech: 'Speech',
     talk: 'Talk Config',
     tools: 'Tools',
   };
@@ -666,111 +639,115 @@ export function SettingsPicker({
       </Box>
 
       {/* Tab content */}
-      {tab === 'mic' && (
+      {tab === 'speech' && (
         <Box flexDirection="column">
-          {devices.length === 0 ? (
-            <Text dimColor>No audio devices found. Install: brew install switchaudio-osx</Text>
-          ) : (
-            devices.map((device, idx) => (
-              <Box key={device.name}>
-                <Text color={idx === selectedIndex ? 'cyan' : undefined}>
-                  {idx === selectedIndex ? '▸ ' : '  '}
-                </Text>
-                <Text dimColor>{idx + 1}. </Text>
-                <Text color={device.isDefault ? 'green' : undefined} bold={device.isDefault}>
-                  {device.name}
-                </Text>
-                {device.isDefault && <Text color="green"> (active)</Text>}
-              </Box>
-            ))
-          )}
-        </Box>
-      )}
+          {/* Microphone section */}
+          <Box flexDirection="column">
+            <Text bold>Microphone</Text>
+            {devices.length === 0 ? (
+              <Text dimColor>  No audio devices found. Install: brew install switchaudio-osx</Text>
+            ) : (
+              devices.map((device, idx) => {
+                const rowIndex = idx;
+                return (
+                  <Box key={device.name}>
+                    <Text color={rowIndex === selectedIndex ? 'cyan' : undefined}>
+                      {rowIndex === selectedIndex ? '▸ ' : '  '}
+                    </Text>
+                    <Text dimColor>{idx + 1}. </Text>
+                    <Text color={device.isDefault ? 'green' : undefined} bold={device.isDefault}>
+                      {device.name}
+                    </Text>
+                    {device.isDefault && <Text color="green"> (active)</Text>}
+                  </Box>
+                );
+              })
+            )}
+          </Box>
 
-      {tab === 'stt' && (
-        <Box flexDirection="column">
-          {sttProviders.length === 0 ? (
-            <>
-              <Text dimColor>Speech-to-Text is configured on the gateway server.</Text>
-              <Text dimColor>Current provider: {activeSttProvider || 'Unknown'}</Text>
-            </>
-          ) : (
-            sttProviders.map((provider, idx) => (
-              <Box key={provider}>
-                <Text color={idx === selectedIndex ? 'cyan' : undefined}>
-                  {idx === selectedIndex ? '▸ ' : '  '}
-                </Text>
-                <Text dimColor>{idx + 1}. </Text>
-                <Text
-                  color={provider === activeSttProvider ? 'green' : undefined}
-                  bold={provider === activeSttProvider}
-                >
-                  {STT_PROVIDER_LABELS[provider] || provider}
-                </Text>
-                {provider === activeSttProvider && <Text color="green"> (active)</Text>}
-              </Box>
-            ))
-          )}
-        </Box>
-      )}
+          {/* Speech-to-Text section */}
+          <Box marginTop={1} flexDirection="column">
+            <Text bold>Speech-to-Text</Text>
+            {sttProviders.length === 0 ? (
+              <Text dimColor>  Current provider: {activeSttProvider || 'Unknown'}</Text>
+            ) : (
+              sttProviders.map((provider, idx) => {
+                const rowIndex = speechMicEnd + idx;
+                return (
+                  <Box key={provider}>
+                    <Text color={rowIndex === selectedIndex ? 'cyan' : undefined}>
+                      {rowIndex === selectedIndex ? '▸ ' : '  '}
+                    </Text>
+                    <Text dimColor>{idx + 1}. </Text>
+                    <Text
+                      color={provider === activeSttProvider ? 'green' : undefined}
+                      bold={provider === activeSttProvider}
+                    >
+                      {STT_PROVIDER_LABELS[provider] || provider}
+                    </Text>
+                    {provider === activeSttProvider && <Text color="green"> (active)</Text>}
+                  </Box>
+                );
+              })
+            )}
+          </Box>
 
-      {tab === 'tts' && (
-        <Box flexDirection="column">
-          {ttsProviders.length === 0 ? (
-            <>
-              <Text dimColor>Text-to-Speech is configured on the gateway server.</Text>
-              <Text dimColor>Current provider: {activeTtsProvider || 'Unknown'}</Text>
-              <Text dimColor>Use ^V to toggle AI Voice on/off.</Text>
-            </>
-          ) : (
-            <>
-              {ttsProviders.map((provider, idx) => (
-                <Box key={provider}>
-                  <Text color={idx === selectedIndex ? 'cyan' : undefined}>
-                    {idx === selectedIndex ? '▸ ' : '  '}
-                  </Text>
-                  <Text dimColor>{idx + 1}. </Text>
-                  <Text
-                    color={provider === activeTtsProvider ? 'green' : undefined}
-                    bold={provider === activeTtsProvider}
-                  >
-                    {TTS_PROVIDER_LABELS[provider] || provider}
-                  </Text>
-                  {provider === activeTtsProvider && <Text color="green"> (active)</Text>}
-                </Box>
-              ))}
-              <Box marginTop={1}>
-                <Text dimColor>Use ^V to toggle AI Voice on/off.</Text>
-              </Box>
-            </>
-          )}
-        </Box>
-      )}
+          {/* Text-to-Speech section */}
+          <Box marginTop={1} flexDirection="column">
+            <Text bold>Text-to-Speech</Text>
+            {ttsProviders.length === 0 ? (
+              <Text dimColor>  Current provider: {activeTtsProvider || 'Unknown'}</Text>
+            ) : (
+              ttsProviders.map((provider, idx) => {
+                const rowIndex = speechSttEnd + idx;
+                return (
+                  <Box key={provider}>
+                    <Text color={rowIndex === selectedIndex ? 'cyan' : undefined}>
+                      {rowIndex === selectedIndex ? '▸ ' : '  '}
+                    </Text>
+                    <Text dimColor>{idx + 1}. </Text>
+                    <Text
+                      color={provider === activeTtsProvider ? 'green' : undefined}
+                      bold={provider === activeTtsProvider}
+                    >
+                      {TTS_PROVIDER_LABELS[provider] || provider}
+                    </Text>
+                    {provider === activeTtsProvider && <Text color="green"> (active)</Text>}
+                  </Box>
+                );
+              })
+            )}
+          </Box>
 
-      {tab === 'realtime' && (
-        <Box flexDirection="column">
-          <Box marginBottom={1}><Text bold>Realtime Voice Provider</Text></Box>
-          {realtimeProviders.length === 0 ? (
-            <Text dimColor>No realtime voice providers configured on gateway.</Text>
-          ) : (
-            realtimeProviders.map((provider, idx) => (
-              <Box key={provider}>
-                <Text color={idx === selectedIndex ? 'cyan' : undefined}>
-                  {idx === selectedIndex ? '▸ ' : '  '}
-                </Text>
-                <Text dimColor>{idx + 1}. </Text>
-                <Text
-                  color={provider === realtimeProvider ? 'green' : undefined}
-                  bold={provider === realtimeProvider}
-                >
-                  {PROVIDER_LABELS[provider]}
-                </Text>
-                {provider === realtimeProvider && <Text color="green"> (active)</Text>}
-              </Box>
-            ))
-          )}
+          {/* Live Chat section */}
+          <Box marginTop={1} flexDirection="column">
+            <Text bold>Live Chat</Text>
+            {realtimeProviders.length === 0 ? (
+              <Text dimColor>  No realtime voice providers configured on gateway.</Text>
+            ) : (
+              realtimeProviders.map((provider, idx) => {
+                const rowIndex = speechTtsEnd + idx;
+                return (
+                  <Box key={provider}>
+                    <Text color={rowIndex === selectedIndex ? 'cyan' : undefined}>
+                      {rowIndex === selectedIndex ? '▸ ' : '  '}
+                    </Text>
+                    <Text dimColor>{idx + 1}. </Text>
+                    <Text
+                      color={provider === realtimeProvider ? 'green' : undefined}
+                      bold={provider === realtimeProvider}
+                    >
+                      {PROVIDER_LABELS[provider]}
+                    </Text>
+                    {provider === realtimeProvider && <Text color="green"> (active)</Text>}
+                  </Box>
+                );
+              })
+            )}
+          </Box>
+
           <Box marginTop={1}>
-            <Text dimColor>Use ^C to start Live Chat with the selected provider.</Text>
+            <Text dimColor>Use ^V to toggle AI Voice | ^C to start Live Chat</Text>
           </Box>
         </Box>
       )}
