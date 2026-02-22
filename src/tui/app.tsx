@@ -573,17 +573,6 @@ function App({ options }: AppProps) {
   const { activeTalk, overlayMaxHeight, talkTitle, showTitleBar, chatHeight,
     messageLinesArray, inputLines } = layout;
 
-  // Show loading state until gateway is initialized
-  if (!gateway.isInitialized) {
-    return (
-      <Box flexDirection="column" width={terminalWidth} height={terminalHeight}>
-        <Box paddingX={1}>
-          <Text dimColor>Starting ClawTalk...</Text>
-        </Box>
-      </Box>
-    );
-  }
-
   return (
     <Box flexDirection="column" height={terminalHeight} width={terminalWidth}>
       {/* Status bar pinned at top (2 lines) */}
@@ -691,11 +680,11 @@ function App({ options }: AppProps) {
             setError={setError}
           />
         </Box>
-      ) : showTalks ? (
+      ) : showTalks && talkManagerRef.current && sessionManagerRef.current ? (
         <Box flexGrow={1} paddingX={1}>
           <TalksHub
-            talkManager={talkManagerRef.current!}
-            sessionManager={sessionManagerRef.current!}
+            talkManager={talkManagerRef.current}
+            sessionManager={sessionManagerRef.current}
             maxHeight={overlayMaxHeight}
             terminalWidth={terminalWidth}
             onClose={() => setShowTalks(false)}

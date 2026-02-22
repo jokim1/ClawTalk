@@ -51,7 +51,6 @@ interface GatewayState {
   usage: UsageStats;
   voiceCaps: VoiceCaps;
   realtimeVoiceCaps: RealtimeVoiceCapabilities | null;
-  isInitialized: boolean;
 }
 
 const initialState: GatewayState = {
@@ -76,7 +75,6 @@ const initialState: GatewayState = {
     ttsProviders: undefined,
   },
   realtimeVoiceCaps: null,
-  isInitialized: false,
 };
 
 export function useGateway(
@@ -139,12 +137,12 @@ export function useGateway(
   }, []);
 
   // Wrapper for backward compatibility with app.tsx setUsage calls
-  const setUsage = (updater: UsageStats | ((prev: UsageStats) => UsageStats)) => {
+  const setUsage = useCallback((updater: UsageStats | ((prev: UsageStats) => UsageStats)) => {
     setState(prev => ({
       ...prev,
       usage: typeof updater === 'function' ? updater(prev.usage) : updater,
     }));
-  };
+  }, []);
 
   useEffect(() => {
     let modelsDiscovered = false;
@@ -155,15 +153,7 @@ export function useGateway(
 
     const poll = async () => {
       const chatService = chatServiceRef.current;
-      if (!chatService) {
-        // Service not yet initialized — mark as initialized so TUI renders
-        // (status will show 'connecting' until the next successful poll)
-        if (isFirstPollRef.current) {
-          isFirstPollRef.current = false;
-          setState(prev => prev.isInitialized ? prev : { ...prev, isInitialized: true });
-        }
-        return;
-      }
+      if (!chatService) return;
 
       const isFirstPoll = isFirstPollRef.current;
 
@@ -191,12 +181,10 @@ export function useGateway(
           updates.gatewayStatus = newGatewayStatus;
         }
         if (!healthy) {
-          // Apply updates and mark initialized even if unhealthy
           if (isFirstPoll) {
             isFirstPollRef.current = false;
-            updates.isInitialized = true;
-            setState(prev => ({ ...prev, ...updates }));
-          } else if (Object.keys(updates).length > 0) {
+          }
+          if (Object.keys(updates).length > 0) {
             setState(prev => ({ ...prev, ...updates }));
           }
           return;
@@ -333,7 +321,6 @@ export function useGateway(
         // Apply all updates atomically in a single setState call
         if (isFirstPoll) {
           isFirstPollRef.current = false;
-          updates.isInitialized = true;
         }
 
         if (Object.keys(updates).length > 0) {
@@ -353,7 +340,6 @@ export function useGateway(
         }
         if (isFirstPollRef.current) {
           isFirstPollRef.current = false;
-          catchUpdates.isInitialized = true;
         }
         if (Object.keys(catchUpdates).length > 0) {
           setState(prev => ({ ...prev, ...catchUpdates }));
@@ -368,16 +354,7 @@ export function useGateway(
     const initial = setTimeout(poll, 0);
     const interval = setInterval(poll, GATEWAY_POLL_INTERVAL_MS);
 
-    // Safety net: force initialization after 5s so the TUI never hangs
-    // on startup if the gateway is unreachable or the poll stalls.
-    const initTimeout = setTimeout(() => {
-      setState(prev => {
-        if (prev.isInitialized) return prev;
-        return { ...prev, isInitialized: true, gatewayStatus: 'offline' };
-      });
-    }, 5000);
-
-    return () => { clearTimeout(initial); clearInterval(interval); clearTimeout(initTimeout); };
+    return () => { clearTimeout(initial); clearInterval(interval); };
   }, []);
 
   // Extract individual values for backward compatibility
@@ -393,6 +370,5 @@ export function useGateway(
     refreshModelCatalog,
     voiceCaps: state.voiceCaps,
     realtimeVoiceCaps: state.realtimeVoiceCaps,
-    isInitialized: state.isInitialized,
   };
 }
