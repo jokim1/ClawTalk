@@ -4078,6 +4078,7 @@ function App({ options }: AppProps) {
             allSkillsMode={settingsAllSkillsMode}
             onToggleSkill={handleSettingsToggleSkill}
             onResetSkillsToAll={handleSettingsResetSkillsToAll}
+            onRefreshSkills={refreshSettingsSkills}
             talkConfig={activeTalk ? {
               objective: activeTalk.objective,
               directives: (activeTalk.directives ?? []).map(d => ({ text: d.text, active: d.active })),

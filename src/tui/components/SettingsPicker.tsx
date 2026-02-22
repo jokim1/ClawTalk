@@ -118,6 +118,7 @@ interface SettingsPickerProps {
   allSkillsMode?: boolean;
   onToggleSkill?: (skillName: string) => void;
   onResetSkillsToAll?: () => void;
+  onRefreshSkills?: () => void;
 }
 
 type SettingsTab = 'speech' | 'talk' | 'tools' | 'skills';
@@ -257,6 +258,7 @@ export function SettingsPicker({
   allSkillsMode,
   onToggleSkill,
   onResetSkillsToAll,
+  onRefreshSkills,
 }: SettingsPickerProps) {
   const [tab, setTab] = useState<SettingsTab>(initialTab ?? (hideTalkConfig ? 'speech' : 'talk'));
   const [devices, setDevices] = useState<AudioDevice[]>([]);
@@ -375,6 +377,12 @@ export function SettingsPicker({
       onRefreshToolPolicy?.();
     }
   }, [tab, onRefreshToolPolicy]);
+
+  useEffect(() => {
+    if (tab === 'skills') {
+      onRefreshSkills?.();
+    }
+  }, [tab, onRefreshSkills]);
 
   useInput((input, key) => {
     // Global shortcuts
