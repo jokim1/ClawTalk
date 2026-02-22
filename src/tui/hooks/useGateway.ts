@@ -155,7 +155,15 @@ export function useGateway(
 
     const poll = async () => {
       const chatService = chatServiceRef.current;
-      if (!chatService) return;
+      if (!chatService) {
+        // Service not yet initialized — mark as initialized so TUI renders
+        // (status will show 'connecting' until the next successful poll)
+        if (isFirstPollRef.current) {
+          isFirstPollRef.current = false;
+          setState(prev => prev.isInitialized ? prev : { ...prev, isInitialized: true });
+        }
+        return;
+      }
 
       const isFirstPoll = isFirstPollRef.current;
 
@@ -359,7 +367,17 @@ export function useGateway(
     // voice readiness to stay stuck at 'checking' for 30s.
     const initial = setTimeout(poll, 0);
     const interval = setInterval(poll, GATEWAY_POLL_INTERVAL_MS);
-    return () => { clearTimeout(initial); clearInterval(interval); };
+
+    // Safety net: force initialization after 5s so the TUI never hangs
+    // on startup if the gateway is unreachable or the poll stalls.
+    const initTimeout = setTimeout(() => {
+      setState(prev => {
+        if (prev.isInitialized) return prev;
+        return { ...prev, isInitialized: true, gatewayStatus: 'offline' };
+      });
+    }, 5000);
+
+    return () => { clearTimeout(initial); clearInterval(interval); clearTimeout(initTimeout); };
   }, []);
 
   // Extract individual values for backward compatibility
