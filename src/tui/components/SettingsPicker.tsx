@@ -363,6 +363,24 @@ export function SettingsPicker({
   const catalogVersionColWidth = 10;
   const catalogHeader = `  ${padCell('Package', catalogNameColWidth)}  ${padCell('State', catalogStateColWidth)}  ${padCell('Version', catalogVersionColWidth)}`;
   const catalogDivider = buildDivider([catalogNameColWidth, catalogStateColWidth, catalogVersionColWidth]);
+  const wrapText = (text: string, width: number): string[] => {
+    if (text.length <= width) return [text];
+    const lines: string[] = [];
+    let remaining = text;
+    while (remaining.length > 0) {
+      if (remaining.length <= width) { lines.push(remaining); break; }
+      let breakAt = remaining.lastIndexOf(' ', width);
+      if (breakAt <= 0) breakAt = width;
+      lines.push(remaining.slice(0, breakAt));
+      remaining = remaining.slice(breakAt).trimStart();
+    }
+    return lines;
+  };
+  const skillNameColWidth = 24;
+  const skillStatusColWidth = 6;
+  const skillDescColWidth = 48;
+  const skillHeader = `  ${padCell('Skill', skillNameColWidth)}  ${padCell('Status', skillStatusColWidth)}  Description`;
+  const skillDivider = buildDivider([skillNameColWidth, skillStatusColWidth, skillDescColWidth]);
 
   useEffect(() => {
     const devs = getInputDevices();
@@ -1064,24 +1082,38 @@ export function SettingsPicker({
                 {eligibleSkills.length === 0 ? (
                   <Text dimColor>  (no eligible skills found)</Text>
                 ) : (
-                  eligibleSkills.map((skill, idx) => {
-                    const rowIndex = idx + 1;
-                    const selected = rowIndex === selectedIndex;
-                    const enabled = allSkillsMode || skill.enabled;
-                    return (
-                      <Box key={skill.name}>
-                        <Text color={selected ? 'cyan' : undefined}>
-                          {selected ? '▸ ' : '  '}
-                        </Text>
-                        <Text>{skill.emoji ? `${skill.emoji} ` : ''}</Text>
-                        <Text bold={enabled} color={enabled ? 'green' : undefined}>
-                          {skill.name}
-                        </Text>
-                        <Text dimColor> — {skill.description.length > 60 ? skill.description.slice(0, 57) + '...' : skill.description}</Text>
-                        <Text color={enabled ? 'green' : 'yellow'}> [{enabled ? 'ON' : 'OFF'}]</Text>
-                      </Box>
-                    );
-                  })
+                  <>
+                    <Text dimColor>{skillHeader}</Text>
+                    <Text dimColor>{skillDivider}</Text>
+                    {eligibleSkills.map((skill, idx) => {
+                      const rowIndex = idx + 1;
+                      const selected = rowIndex === selectedIndex;
+                      const enabled = allSkillsMode || skill.enabled;
+                      const emojiPrefix = skill.emoji ? `${skill.emoji} ` : '';
+                      const nameCell = padCell(`${emojiPrefix}${skill.name}`, skillNameColWidth);
+                      const statusLabel = enabled ? 'ON' : 'OFF';
+                      const statusCell = padCell(statusLabel, skillStatusColWidth);
+                      const descLines = wrapText(skill.description, skillDescColWidth);
+                      const continuationPad = '  '.repeat(1) + ' '.repeat(skillNameColWidth) + '  ' + ' '.repeat(skillStatusColWidth) + '  ';
+                      return (
+                        <Box key={skill.name} flexDirection="column">
+                          <Box>
+                            <Text color={selected ? 'cyan' : undefined}>
+                              {selected ? '▸ ' : '  '}
+                            </Text>
+                            <Text bold={enabled} color={enabled ? 'green' : undefined}>{nameCell}</Text>
+                            <Text>  </Text>
+                            <Text color={enabled ? 'green' : 'yellow'}>{statusCell}</Text>
+                            <Text>  </Text>
+                            <Text dimColor>{descLines[0] ?? ''}</Text>
+                          </Box>
+                          {descLines.slice(1).map((line, i) => (
+                            <Text key={i} dimColor>{continuationPad}{line}</Text>
+                          ))}
+                        </Box>
+                      );
+                    })}
+                  </>
                 )}
               </Box>
               {skillsError && (
