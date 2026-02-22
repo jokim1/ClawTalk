@@ -7,7 +7,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Box, Text, useInput, useStdout } from 'ink';
 import { execSync } from 'child_process';
-import stringWidth = require('string-width');
 import type {
   GoogleAuthProfileSummary,
   RealtimeVoiceCapabilities,
@@ -351,9 +350,8 @@ export function SettingsPicker({
     return reasons;
   }, [effectiveGoogleProfile, googleAuthStatus?.accessTokenReady, googleAuthStatus?.activeProfile, googleAuthStatus?.profile, selectedGoogleProfile, toolRows]);
   const padCell = (value: string, width: number): string => {
-    const vw = stringWidth(value);
-    if (vw >= width) return value.slice(0, width);
-    return value + ' '.repeat(width - vw);
+    if (value.length >= width) return value.slice(0, width);
+    return value.padEnd(width, ' ');
   };
   const buildDivider = (widths: number[]): string => `  ${'-'.repeat(widths.reduce((sum, width) => sum + width, 0) + ((widths.length - 1) * 2))}`;
   const toolNameColWidth = 28;
@@ -368,21 +366,13 @@ export function SettingsPicker({
   const catalogHeader = `  ${padCell('Package', catalogNameColWidth)}  ${padCell('State', catalogStateColWidth)}  ${padCell('Version', catalogVersionColWidth)}`;
   const catalogDivider = buildDivider([catalogNameColWidth, catalogStateColWidth, catalogVersionColWidth]);
   const wrapText = (text: string, width: number): string[] => {
-    if (stringWidth(text) <= width) return [text];
+    if (text.length <= width) return [text];
     const lines: string[] = [];
     let remaining = text;
     while (remaining.length > 0) {
-      if (stringWidth(remaining) <= width) { lines.push(remaining); break; }
-      // Find the character index where visual width exceeds the limit
-      let vw = 0;
-      let charLimit = remaining.length;
-      for (let i = 0; i < remaining.length; i++) {
-        const cw = stringWidth(remaining[i]);
-        if (vw + cw > width) { charLimit = i; break; }
-        vw += cw;
-      }
-      let breakAt = remaining.lastIndexOf(' ', charLimit);
-      if (breakAt <= 0) breakAt = charLimit;
+      if (remaining.length <= width) { lines.push(remaining); break; }
+      let breakAt = remaining.lastIndexOf(' ', width);
+      if (breakAt <= 0) breakAt = width;
       lines.push(remaining.slice(0, breakAt));
       remaining = remaining.slice(breakAt).trimStart();
     }
@@ -1134,8 +1124,7 @@ export function SettingsPicker({
                       const rowIndex = idx + 1;
                       const selected = rowIndex === selectedIndex;
                       const enabled = allSkillsMode || skill.enabled;
-                      const emojiPrefix = skill.emoji ? `${skill.emoji} ` : '';
-                      const nameCell = padCell(`${emojiPrefix}${skill.name}`, skillNameColWidth);
+                      const nameCell = padCell(skill.name, skillNameColWidth);
                       const statusLabel = enabled ? 'ON' : 'OFF';
                       const statusCell = padCell(statusLabel, skillStatusColWidth);
                       const descLines = wrapText(skill.description, skillDescColWidth);
