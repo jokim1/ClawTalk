@@ -81,8 +81,8 @@ export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleS
   const ttsIcon = isVoiceActive ? (voiceMode === 'playing' ? '♪' : '◐') : ttsEnabled ? '●' : '○';
   const ttsColor = isVoiceActive ? (voiceMode === 'playing' ? 'magenta' : 'yellow') : ttsEnabled ? 'green' : 'white';
 
-  // Build cost/billing section
-  let billingText = '';
+  // Build cost/billing section as parts (for progressive truncation when space is tight)
+  let billingParts: string[] = [];
   if (isSubscription) {
     const rl = usage.rateLimits;
     const primary = rl?.weekly ?? rl?.session;
@@ -92,28 +92,42 @@ export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleS
       const resetLabel = formatResetTime(primary.resetsAt);
       const windowLabel = rl?.weekly ? 'wk' : 'sess';
       const pausedText = pct >= 100 ? ' PAUSED' : '';
-      billingText = `${billing?.plan ?? 'Sub'} ${'█'.repeat(filled)}${'░'.repeat(10 - filled)} ${pct}% ${windowLabel}${pausedText} Resets ${resetLabel}`;
+      billingParts = [`${billing?.plan ?? 'Sub'} ${'█'.repeat(filled)}${'░'.repeat(10 - filled)} ${pct}% ${windowLabel}${pausedText} Resets ${resetLabel}`];
     } else {
-      billingText = `${billing?.plan ?? 'Sub'} $${billing?.monthlyPrice ?? '?'}/mo`;
+      billingParts = [`${billing?.plan ?? 'Sub'} $${billing?.monthlyPrice ?? '?'}/mo`];
     }
   } else {
     const hasApiCost = usage.modelPricing !== undefined;
-    const parts = [];
-    if (hasApiCost) parts.push(`$${usage.modelPricing!.inputPer1M}/$${usage.modelPricing!.outputPer1M}`);
-    parts.push(`Today $${(usage.todaySpend ?? 0).toFixed(2)}`);
-    parts.push(`Wk $${(usage.weeklySpend ?? 0).toFixed(2)}`);
-    parts.push(`~Mo $${Math.round(usage.monthlyEstimate ?? 0)}`);
-    if ((usage.sessionCost ?? 0) > 0) parts.push(`Sess $${(usage.sessionCost ?? 0).toFixed(2)}`);
-    billingText = parts.join('  ');
+    if (hasApiCost) billingParts.push(`$${usage.modelPricing!.inputPer1M}/$${usage.modelPricing!.outputPer1M}`);
+    billingParts.push(`Today $${(usage.todaySpend ?? 0).toFixed(2)}`);
+    billingParts.push(`Wk $${(usage.weeklySpend ?? 0).toFixed(2)}`);
+    billingParts.push(`~Mo $${Math.round(usage.monthlyEstimate ?? 0)}`);
+    if ((usage.sessionCost ?? 0) > 0) billingParts.push(`Sess $${(usage.sessionCost ?? 0).toFixed(2)}`);
+  }
+  const billingText = billingParts.join('  ');
+
+  // Calculate padding for right-alignment, truncating billing to preserve agent display
+  const safeModelDisplay = sanitizeForTerminal(modelDisplay);
+  const safeSessionName = sanitizeForTerminal(sessionName ?? '');
+  const directiveExtra = directiveCount > 0 ? ` R:${directiveCount}` : '';
+  const bindingExtra = platformBindingCount > 0 ? ` C:${platformBindingCount}` : '';
+  const fixedLeft = `GW:${gwIcon} TS:${tsIcon} M:${safeModelDisplay}${directiveExtra}${bindingExtra}  `;
+  const rightContent = `V:${ttsIcon} Mic:${micIcon}  ${safeSessionName}`;
+  const minPadding = 2;
+  const availableForBilling = terminalWidth - fixedLeft.length - rightContent.length - minPadding;
+
+  // Progressively drop billing parts from the right until it fits
+  let safeBillingText = sanitizeForTerminal(billingText);
+  if (availableForBilling < safeBillingText.length && billingParts.length > 0) {
+    let parts = [...billingParts];
+    while (parts.length > 0 && parts.join('  ').length > availableForBilling) {
+      parts.pop();
+    }
+    safeBillingText = sanitizeForTerminal(parts.join('  '));
   }
 
-  // Calculate padding for right-alignment
-  const safeModelDisplay = sanitizeForTerminal(modelDisplay);
-  const safeBillingText = sanitizeForTerminal(billingText);
-  const safeSessionName = sanitizeForTerminal(sessionName ?? '');
-  const leftContent = `GW:${gwIcon} TS:${tsIcon} M:${safeModelDisplay}  ${safeBillingText}`;
-  const rightContent = `V:${ttsIcon} Mic:${micIcon}  ${safeSessionName}`;
-  const padding = Math.max(1, terminalWidth - leftContent.length - rightContent.length - 2);
+  const leftContent = `${fixedLeft}${safeBillingText}`;
+  const padding = Math.max(1, terminalWidth - leftContent.length - rightContent.length);
 
   const separator = '─'.repeat(terminalWidth);
 
