@@ -21,7 +21,10 @@ Client-server thin client. ClawTalk handles UI and streams SSE responses from th
 - **`src/cli.ts`** — CLI entry point (commander.js)
 - **`src/config.ts`** — Configuration management
 - **`src/services/`** — Gateway API client (SSE streaming), voice I/O, session persistence, Talk metadata, Tailscale detection
-- **`src/tui/`** — React/Ink components, hooks (`useChat`, `useGateway`, `useRealtimeVoice`), slash commands, input handling
+- **`src/tui/hooks/`** — 16 hooks (useGateway, useChat, useVoice, useRealtimeVoice, useLayout, useModelManagement, useAgentManagement, useTalkHandlers, useJobHandlers, usePlatformBindings, useToolPolicy, useTalkNavigation, useAttachments, useKeyboardShortcuts, useSubmitHandler, useMouseScroll)
+- **`src/tui/components/`** — Split components (SettingsPicker coordinator + 4 tab components, ChannelConfigPicker coordinator + 3 sub-components, PromptEditor shared component)
+- **`src/tui/formatters.ts`** — Shared formatters (formatBindingScopeLabel, formatPostingPriority, toDeliveryMode, truncate)
+- **`src/tui/`** — App root, slash commands, input handling
 
 Gateway project: `/home/k1min8r/projects/clawtalkgateway`
 
