@@ -91,6 +91,13 @@ export function useKeyboardShortcuts(deps: UseKeyboardShortcutsDeps): void {
   } = deps;
 
   useInput((input, key) => {
+    // ^X Exit — always available, even during loading or overlays
+    if (input === 'x' && key.ctrl) {
+      voiceCleanup();
+      exit();
+      return;
+    }
+
     if (showModelPicker || showRolePicker || showEditMessages || showTalks || showChannelConfig || showJobsConfig || showSettings) return;
 
     // Clear confirmation mode
@@ -188,13 +195,6 @@ export function useKeyboardShortcuts(deps: UseKeyboardShortcutsDeps): void {
     if (key.escape) {
       if (voiceHandleEscape()) return;
       setShowTalks(true);
-      return;
-    }
-
-    // ^X Exit
-    if (input === 'x' && key.ctrl) {
-      voiceCleanup();
-      exit();
       return;
     }
 

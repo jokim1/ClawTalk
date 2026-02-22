@@ -338,9 +338,17 @@ export function useGateway(
         }
       } catch (err) {
         console.debug('Gateway poll failed:', err);
+        const catchUpdates: Partial<GatewayState> = {};
         if (prevGatewayStatusRef.current !== 'offline') {
           prevGatewayStatusRef.current = 'offline';
-          setState(prev => ({ ...prev, gatewayStatus: 'offline' }));
+          catchUpdates.gatewayStatus = 'offline';
+        }
+        if (isFirstPollRef.current) {
+          isFirstPollRef.current = false;
+          catchUpdates.isInitialized = true;
+        }
+        if (Object.keys(catchUpdates).length > 0) {
+          setState(prev => ({ ...prev, ...catchUpdates }));
         }
       }
     };
