@@ -7,6 +7,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Box, Text, useInput, useStdout } from 'ink';
 import { execSync } from 'child_process';
+import stringWidth = require('string-width');
 import type {
   GoogleAuthProfileSummary,
   RealtimeVoiceCapabilities,
@@ -350,8 +351,9 @@ export function SettingsPicker({
     return reasons;
   }, [effectiveGoogleProfile, googleAuthStatus?.accessTokenReady, googleAuthStatus?.activeProfile, googleAuthStatus?.profile, selectedGoogleProfile, toolRows]);
   const padCell = (value: string, width: number): string => {
-    if (value.length >= width) return value.slice(0, width);
-    return value.padEnd(width, ' ');
+    const vw = stringWidth(value);
+    if (vw >= width) return value.slice(0, width);
+    return value + ' '.repeat(width - vw);
   };
   const buildDivider = (widths: number[]): string => `  ${'-'.repeat(widths.reduce((sum, width) => sum + width, 0) + ((widths.length - 1) * 2))}`;
   const toolNameColWidth = 28;
@@ -366,13 +368,21 @@ export function SettingsPicker({
   const catalogHeader = `  ${padCell('Package', catalogNameColWidth)}  ${padCell('State', catalogStateColWidth)}  ${padCell('Version', catalogVersionColWidth)}`;
   const catalogDivider = buildDivider([catalogNameColWidth, catalogStateColWidth, catalogVersionColWidth]);
   const wrapText = (text: string, width: number): string[] => {
-    if (text.length <= width) return [text];
+    if (stringWidth(text) <= width) return [text];
     const lines: string[] = [];
     let remaining = text;
     while (remaining.length > 0) {
-      if (remaining.length <= width) { lines.push(remaining); break; }
-      let breakAt = remaining.lastIndexOf(' ', width);
-      if (breakAt <= 0) breakAt = width;
+      if (stringWidth(remaining) <= width) { lines.push(remaining); break; }
+      // Find the character index where visual width exceeds the limit
+      let vw = 0;
+      let charLimit = remaining.length;
+      for (let i = 0; i < remaining.length; i++) {
+        const cw = stringWidth(remaining[i]);
+        if (vw + cw > width) { charLimit = i; break; }
+        vw += cw;
+      }
+      let breakAt = remaining.lastIndexOf(' ', charLimit);
+      if (breakAt <= 0) breakAt = charLimit;
       lines.push(remaining.slice(0, breakAt));
       remaining = remaining.slice(breakAt).trimStart();
     }
@@ -1096,7 +1106,7 @@ export function SettingsPicker({
             <Text dimColor>Loading OpenClaw skills...</Text>
           ) : (
             <>
-              <Text dimColor>OpenClaw skills available to managed agents. Toggle to enable/disable per-talk.</Text>
+              <Text dimColor>The skills OpenClaw Agent will use when operating for ClawTalk. Toggle to enable/disable per Talk. Note every skill adds context and delay!</Text>
               <Box marginTop={1} flexDirection="column">
                 <Box>
                   <Text color={selectedIndex === 0 ? 'cyan' : undefined}>
