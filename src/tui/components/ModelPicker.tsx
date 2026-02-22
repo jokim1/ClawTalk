@@ -2,10 +2,14 @@
  * Model Picker Component
  *
  * Grouped list by provider for selecting AI model, with scrolling and pricing.
+ * When agents exist, displays an agent strip at the top for per-agent model management.
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Box, Text, useInput } from 'ink';
+import type { TalkAgent } from '../../types.js';
+import { getModelAlias } from '../../models.js';
+import { ROLE_BY_ID } from '../../agent-roles.js';
 
 export interface Model {
   id: string;
@@ -26,11 +30,22 @@ interface ModelPickerProps {
   modelValidity?: Record<string, 'valid' | 'invalid' | 'unknown'>;
   isRefreshing?: boolean;
   lastRefreshedAt?: number | null;
+  agents?: TalkAgent[];
+  onChangeAgentModel?: (agentName: string, modelId: string) => void;
+  onRemoveAgent?: (agentName: string) => void;
 }
 
 type RenderItem =
   | { type: 'header'; provider: string }
   | { type: 'model'; model: Model; flatIndex: number };
+
+/** Short label for agent strip: alias(RoleAbbrev) */
+function agentSlotLabel(agent: TalkAgent): string {
+  const alias = getModelAlias(agent.model);
+  const role = ROLE_BY_ID[agent.role];
+  const roleAbbrev = role ? role.label.slice(0, 3) : agent.role.slice(0, 3);
+  return `${alias}(${roleAbbrev})`;
+}
 
 export function ModelPicker({
   models,
@@ -43,14 +58,29 @@ export function ModelPicker({
   modelValidity,
   isRefreshing = false,
   lastRefreshedAt = null,
+  agents,
+  onChangeAgentModel,
+  onRemoveAgent,
 }: ModelPickerProps) {
-  // Two-phase flow: 'model' = selecting model, 'action' = choose switch vs add agent
-  const [phase, setPhase] = useState<'model' | 'action'>('model');
-  const [pendingModelId, setPendingModelId] = useState<string | null>(null);
+  const hasAgents = (agents?.length ?? 0) > 0;
+
+  // Focused agent slot index (only meaningful when agents exist)
+  const [focusedAgentIndex, setFocusedAgentIndex] = useState(0);
+
+  // Clamp focusedAgentIndex when agents array shrinks
+  useEffect(() => {
+    if (hasAgents && focusedAgentIndex >= agents!.length) {
+      setFocusedAgentIndex(Math.max(0, agents!.length - 1));
+    }
+  }, [agents?.length]);
+
+  // The "current" model for the focused agent slot (or the global currentModel)
+  const focusedCurrentModel = hasAgents ? agents![focusedAgentIndex]?.model ?? currentModel : currentModel;
+
   // Build grouped render list
   const { renderList, modelIndices } = useMemo(() => {
     const items: RenderItem[] = [];
-    const indices: number[] = []; // maps flat model index -> renderList position
+    const indices: number[] = [];
     let seenProvider: string | null = null;
     let flatIndex = 0;
 
@@ -69,14 +99,14 @@ export function ModelPicker({
   }, [models]);
 
   // Track selected model index (flat, not render-list)
-  const initialIndex = Math.max(0, models.findIndex(m => m.id === currentModel));
+  const initialIndex = Math.max(0, models.findIndex(m => m.id === focusedCurrentModel));
   const [selectedIndex, setSelectedIndex] = useState(initialIndex);
 
   // Scroll offset (in render-list rows)
-  const titleLines = 2; // title + blank line
+  const agentStripLines = hasAgents ? 1 : 0;
+  const titleLines = 2 + agentStripLines; // title + refresh status + optional agent strip
   const visibleRows = Math.max(3, maxHeight - titleLines);
   const [scrollOffset, setScrollOffset] = useState(() => {
-    // Start scrolled so the selected model is visible
     const renderPos = modelIndices[initialIndex] ?? 0;
     if (renderPos >= visibleRows) {
       return Math.max(0, renderPos - Math.floor(visibleRows / 2));
@@ -94,29 +124,51 @@ export function ModelPicker({
     });
   };
 
-  useInput((input, key) => {
-    // --- Action phase: switch model or add agent ---
-    if (phase === 'action') {
-      if (key.escape) {
-        setPhase('model');
-        setPendingModelId(null);
-        return;
-      }
-      if (key.return) {
-        // Enter = switch model (same as current behavior)
-        if (pendingModelId) onSelect(pendingModelId);
-        return;
-      }
-      if ((input === 'a' || input === 'A') && onAddAgent && pendingModelId) {
-        onAddAgent(pendingModelId);
-        return;
-      }
+  // Re-center model list when focusedAgentIndex changes
+  useEffect(() => {
+    if (!hasAgents) return;
+    const agentModel = agents![focusedAgentIndex]?.model;
+    if (!agentModel) return;
+    const idx = models.findIndex(m => m.id === agentModel);
+    if (idx >= 0) {
+      setSelectedIndex(idx);
+      ensureVisible(idx);
+    }
+  }, [focusedAgentIndex]);
+
+  // Helper: dispatch model selection for the current context
+  const selectModelForContext = (modelId: string) => {
+    if (!hasAgents) {
+      // No agents — simple select
+      onSelect(modelId);
       return;
     }
 
-    // --- Model phase ---
+    const agent = agents![focusedAgentIndex];
+    if (!agent) return;
+
+    if (agent.isPrimary) {
+      // Primary slot: close picker + full model switch
+      onSelect(modelId);
+    } else if (onChangeAgentModel) {
+      // Non-primary: change model in place, stay open
+      onChangeAgentModel(agent.name, modelId);
+    }
+  };
+
+  useInput((input, key) => {
     if (key.escape) {
       onClose();
+      return;
+    }
+
+    // Left/Right: switch agent slot focus
+    if (hasAgents && key.leftArrow) {
+      setFocusedAgentIndex(prev => Math.max(0, prev - 1));
+      return;
+    }
+    if (hasAgents && key.rightArrow) {
+      setFocusedAgentIndex(prev => Math.min(agents!.length - 1, prev + 1));
       return;
     }
 
@@ -139,20 +191,29 @@ export function ModelPicker({
     }
 
     if (key.return) {
-      if (onAddAgent) {
-        // Transition to action phase
-        setPendingModelId(models[selectedIndex].id);
-        setPhase('action');
-      } else {
-        onSelect(models[selectedIndex].id);
+      selectModelForContext(models[selectedIndex].id);
+      return;
+    }
+
+    // 'a' key: add agent with highlighted model
+    if ((input === 'a' || input === 'A') && onAddAgent) {
+      onAddAgent(models[selectedIndex].id);
+      return;
+    }
+
+    // 'd' key: delete focused non-primary agent
+    if ((input === 'd' || input === 'D') && hasAgents && onRemoveAgent) {
+      const agent = agents![focusedAgentIndex];
+      if (agent && !agent.isPrimary) {
+        onRemoveAgent(agent.name);
       }
       return;
     }
 
-    // Number keys for quick select (1-9) — fast path, always switch directly
+    // Number keys for quick select (1-9)
     const num = parseInt(input, 10);
     if (num >= 1 && num <= 9 && num <= models.length) {
-      onSelect(models[num - 1].id);
+      selectModelForContext(models[num - 1].id);
     }
   });
 
@@ -161,35 +222,21 @@ export function ModelPicker({
   const hasMore = scrollOffset + visibleRows < renderList.length;
   const hasLess = scrollOffset > 0;
 
-  // --- Action sub-menu ---
-  if (phase === 'action' && pendingModelId) {
-    const pendingModel = models.find(m => m.id === pendingModelId);
-    const label = pendingModel?.label ?? pendingModelId;
-    return (
-      <Box flexDirection="column" paddingX={1}>
-        <Text bold color="cyan">{label}</Text>
-        <Box height={1} />
-        <Text color="cyan">{'>'}  </Text>
-        <Text>Enter — Switch to this model</Text>
-        {onAddAgent && (
-          <Box>
-            <Text>   </Text>
-            <Text>A — Add as AI agent</Text>
-          </Box>
-        )}
-        <Box height={1} />
-        <Text dimColor>Esc to go back</Text>
-      </Box>
-    );
-  }
-
   const refreshLabel = lastRefreshedAt
     ? new Date(lastRefreshedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     : null;
 
+  // Title and key hints
+  const pickerTitle = hasAgents
+    ? 'Manage Agents'
+    : (title ?? 'Select Model');
+  const keyHints = hasAgents
+    ? '(←→ slot, ↑↓ model, Enter select, a add, d del, Esc close)'
+    : '(↑↓ Enter, 1-9 quick, a: add agent, Esc cancel)';
+
   return (
     <Box flexDirection="column" paddingX={1}>
-      <Text bold color="cyan">{title ?? 'Select Model'} (↑↓ Enter, 1-9 quick, Esc cancel)</Text>
+      <Text bold color="cyan">{pickerTitle} {keyHints}</Text>
       <Text dimColor>
         {isRefreshing
           ? 'Checking model availability with gateway...'
@@ -197,6 +244,27 @@ export function ModelPicker({
             ? 'Model availability refreshed at ' + refreshLabel
             : 'Model availability not checked yet in this session')}
       </Text>
+
+      {/* Agent strip */}
+      {hasAgents && (
+        <Box>
+          {agents!.map((agent, i) => {
+            const isFocused = i === focusedAgentIndex;
+            const label = `${i + 1}. ${agentSlotLabel(agent)}`;
+            return (
+              <Box key={agent.name} marginRight={1}>
+                <Text
+                  color={isFocused ? 'cyan' : undefined}
+                  bold={isFocused}
+                >
+                  {isFocused ? `[${label}]` : label}
+                </Text>
+              </Box>
+            );
+          })}
+        </Box>
+      )}
+
       <Box height={1} />
 
       {hasLess ? (
@@ -214,7 +282,7 @@ export function ModelPicker({
 
         const { model, flatIndex } = item;
         const isSelected = flatIndex === selectedIndex;
-        const isCurrent = model.id === currentModel;
+        const isCurrent = model.id === focusedCurrentModel;
         const numLabel = flatIndex < 9 ? `${flatIndex + 1}` : ' ';
 
         return (

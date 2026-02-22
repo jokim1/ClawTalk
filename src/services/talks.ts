@@ -582,6 +582,34 @@ export class TalkManager {
     return agent;
   }
 
+  /** Change an agent's model and update its name. Returns the updated agent or null. */
+  changeAgentModel(talkId: string, agentName: string, newModelId: string, generateName: (alias: string, role: AgentRole) => string): TalkAgent | null {
+    const talk = this.talks.get(talkId);
+    if (!talk?.agents) return null;
+
+    const agent = this.findAgent(talkId, agentName);
+    if (!agent) return null;
+
+    agent.model = newModelId;
+    // Regenerate name from new model alias + existing role
+    const { getModelAlias } = require('../models.js');
+    const alias = getModelAlias(newModelId);
+    let newName = generateName(alias, agent.role);
+
+    // Handle name collision
+    const existing = talk.agents.filter(a => a !== agent).map(a => a.name.toLowerCase());
+    if (existing.includes(newName.toLowerCase())) {
+      let suffix = 2;
+      while (existing.includes(`${newName} ${suffix}`.toLowerCase())) suffix++;
+      newName = `${newName} ${suffix}`;
+    }
+
+    agent.name = newName;
+    talk.updatedAt = Date.now();
+    if (talk.isSaved) this.persistTalk(talk);
+    return agent;
+  }
+
   /** Find an agent by name (case-insensitive, supports prefix matching). */
   findAgent(talkId: string, name: string): TalkAgent | undefined {
     const talk = this.talks.get(talkId);

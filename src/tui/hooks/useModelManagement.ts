@@ -115,6 +115,14 @@ export function useModelManagement(deps: UseModelManagementDeps): UseModelManage
 
     if (activeTalkIdRef.current && talkManagerRef.current) {
       talkManagerRef.current.setModel(activeTalkIdRef.current, modelId);
+
+      // Also update the primary agent's model so the status bar stays in sync
+      const agents = talkManagerRef.current.getAgents(activeTalkIdRef.current);
+      const primary = agents.find(a => a.isPrimary);
+      if (primary) {
+        primary.model = modelId;
+        talkManagerRef.current.setAgents(activeTalkIdRef.current, agents);
+      }
     }
     if (gatewayTalkIdRef.current) {
       chatServiceRef.current?.updateGatewayTalk(gatewayTalkIdRef.current, { model: modelId });

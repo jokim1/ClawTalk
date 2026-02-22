@@ -513,6 +513,58 @@ export function useAgentManagement(deps: UseAgentManagementDeps) {
   }, [syncAgentsToGateway]);
 
   // -------------------------------------------------------------------------
+  // handleChangeAgentModel (from model picker)
+  // -------------------------------------------------------------------------
+
+  /** Change a non-primary agent's model from the model picker. Does NOT close the picker. */
+  const handleChangeAgentModel = useCallback((agentName: string, modelId: string) => {
+    const talkId = activeTalkIdRef.current;
+    if (!talkId || !talkManagerRef.current) return;
+
+    const oldAgent = talkManagerRef.current.findAgent(talkId, agentName);
+    if (!oldAgent) {
+      setError(`Agent "${agentName}" not found`);
+      return;
+    }
+    const oldName = oldAgent.name;
+
+    const updated = talkManagerRef.current.changeAgentModel(talkId, agentName, modelId, generateAgentName);
+    if (!updated) {
+      setError(`Failed to change model for "${agentName}"`);
+      return;
+    }
+
+    talkManagerRef.current.saveTalk(talkId);
+    const agents = talkManagerRef.current.getAgents(talkId);
+    syncAgentsToGateway(agents);
+
+    const sysMsg = createMessage('system', `Agent model changed: ${oldName} → ${updated.name}`);
+    setMessages(prev => [...prev, sysMsg]);
+  }, [syncAgentsToGateway]);
+
+  // -------------------------------------------------------------------------
+  // handleRemoveAgentFromPicker
+  // -------------------------------------------------------------------------
+
+  /** Remove a non-primary agent from the model picker. Does NOT close the picker. */
+  const handleRemoveAgentFromPicker = useCallback((agentName: string) => {
+    const talkId = activeTalkIdRef.current;
+    if (!talkId || !talkManagerRef.current) return;
+
+    const success = talkManagerRef.current.removeAgent(talkId, agentName);
+    if (!success) {
+      setError(`Cannot remove "${agentName}" — not found or is primary agent`);
+      return;
+    }
+
+    const agents = talkManagerRef.current.getAgents(talkId);
+    syncAgentsToGateway(agents);
+
+    const sysMsg = createMessage('system', `Agent removed: ${agentName}`);
+    setMessages(prev => [...prev, sysMsg]);
+  }, [syncAgentsToGateway]);
+
+  // -------------------------------------------------------------------------
   // handleListAgents
   // -------------------------------------------------------------------------
 
@@ -609,7 +661,9 @@ export function useAgentManagement(deps: UseAgentManagementDeps) {
     sendMultiAgentMessage,
     handleAddAgentCommand,
     handleChangeAgentRole,
+    handleChangeAgentModel,
     handleRemoveAgent,
+    handleRemoveAgentFromPicker,
     handleListAgents,
     handleAskAgent,
     handleDebateAll,

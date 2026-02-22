@@ -650,6 +650,9 @@ function App({ options }: AppProps) {
             modelValidity={gateway.modelValidity}
             isRefreshing={gateway.modelsRefreshing}
             lastRefreshedAt={gateway.modelsLastRefreshedAt}
+            agents={modelPickerMode === 'default' ? undefined : activeTalk?.agents}
+            onChangeAgentModel={modelPickerMode === 'default' ? undefined : agents.handleChangeAgentModel}
+            onRemoveAgent={modelPickerMode === 'default' ? undefined : agents.handleRemoveAgentFromPicker}
           />
         </Box>
       ) : showRolePicker ? (
