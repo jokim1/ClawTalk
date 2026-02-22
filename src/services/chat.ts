@@ -16,6 +16,7 @@ import type {
   PlatformBinding,
   PlatformBehavior,
   TalkToolPolicy,
+  TalkSkillsResponse,
   ToolCatalogResponse,
   ToolMode,
   ToolExecutionMode,
@@ -849,6 +850,43 @@ export class ChatService implements IChatService {
       );
       if (!response.ok) return null;
       return await response.json() as TalkToolPolicy;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Fetch OpenClaw skills catalog + enablement state for a gateway talk. */
+  async getGatewayTalkSkills(talkId: string): Promise<TalkSkillsResponse | null> {
+    try {
+      const response = await fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}/skills`, {
+        method: 'GET',
+        headers: this.authHeaders(),
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!response.ok) return null;
+      return await response.json() as TalkSkillsResponse;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Update OpenClaw skills allowlist for a gateway talk. */
+  async updateGatewayTalkSkills(
+    talkId: string,
+    updates: { skills: string[] | null },
+  ): Promise<TalkSkillsResponse | null> {
+    try {
+      const response = await this.executeTalkMutation(
+        talkId,
+        (headers) => fetch(`${this.config.gatewayUrl}/api/talks/${encodeURIComponent(talkId)}/skills`, {
+          method: 'PATCH',
+          headers,
+          body: JSON.stringify(updates),
+          signal: AbortSignal.timeout(10_000),
+        }),
+      );
+      if (!response.ok) return null;
+      return await response.json() as TalkSkillsResponse;
     } catch {
       return null;
     }

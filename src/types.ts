@@ -343,6 +343,20 @@ export interface ToolCatalogResponse {
   registeredTools: ToolDescriptor[];
 }
 
+export interface SkillDescriptor {
+  name: string;
+  description: string;
+  emoji?: string;
+  eligible: boolean;
+  enabled: boolean;
+}
+
+export interface TalkSkillsResponse {
+  talkId: string;
+  skills: SkillDescriptor[];
+  allSkillsMode: boolean;
+}
+
 export interface Talk {
   id: string;              // Same as session ID
   talkVersion?: number;    // Gateway metadata version for optimistic concurrency

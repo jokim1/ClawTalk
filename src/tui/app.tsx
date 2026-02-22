@@ -28,6 +28,7 @@ import type {
   ToolDescriptor,
   ToolCatalogEntry,
   GoogleAuthProfileSummary,
+  SkillDescriptor,
 } from '../types.js';
 import type { Talk } from '../types.js';
 import { AGENT_ROLES, ROLE_BY_ID, AGENT_PREAMBLE, generateAgentName } from '../agent-roles.js';
@@ -295,7 +296,7 @@ function App({ options }: AppProps) {
   const [showEditMessages, setShowEditMessages] = useState(false);
   const [showTalks, setShowTalks] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<'talk' | 'tools' | 'speech'>('talk');
+  const [settingsTab, setSettingsTab] = useState<'talk' | 'tools' | 'skills' | 'speech'>('talk');
   const [showChannelConfig, setShowChannelConfig] = useState(false);
   const [showJobsConfig, setShowJobsConfig] = useState(false);
   const [settingsFromTalks, setSettingsFromTalks] = useState(false);
@@ -326,6 +327,10 @@ function App({ options }: AppProps) {
   } | null>(null);
   const [settingsToolPolicyLoading, setSettingsToolPolicyLoading] = useState(false);
   const [settingsToolPolicyError, setSettingsToolPolicyError] = useState<string | null>(null);
+  const [settingsSkills, setSettingsSkills] = useState<SkillDescriptor[] | null>(null);
+  const [settingsSkillsLoading, setSettingsSkillsLoading] = useState(false);
+  const [settingsSkillsError, setSettingsSkillsError] = useState<string | null>(null);
+  const [settingsAllSkillsMode, setSettingsAllSkillsMode] = useState(true);
   const [sessionName, setSessionName] = useState('Session 1');
   const [activeTalkId, setActiveTalkId] = useState<string | null>(null);
   const activeTalkIdRef = useRef<string | null>(null);
@@ -2158,6 +2163,76 @@ function App({ options }: AppProps) {
     });
   }, [syncToolPolicyLocal]);
 
+  const refreshSettingsSkills = useCallback(() => {
+    const talk = activeTalkIdRef.current ? talkManagerRef.current?.getTalk(activeTalkIdRef.current) : null;
+    const gwId = gatewayTalkIdRef.current ?? talk?.gatewayTalkId ?? null;
+    if (!gwId || !chatServiceRef.current) {
+      setSettingsSkillsError('No active gateway talk.');
+      return;
+    }
+    setSettingsSkillsLoading(true);
+    setSettingsSkillsError(null);
+    chatServiceRef.current.getGatewayTalkSkills(gwId).then((result) => {
+      if (!result) {
+        setSettingsSkillsError('Failed to load skills from gateway.');
+        return;
+      }
+      setSettingsSkills(result.skills);
+      setSettingsAllSkillsMode(result.allSkillsMode);
+    }).finally(() => {
+      setSettingsSkillsLoading(false);
+    });
+  }, []);
+
+  const handleSettingsToggleSkill = useCallback((skillName: string) => {
+    const gwId = gatewayTalkIdRef.current;
+    if (!gwId || !chatServiceRef.current) return;
+
+    // Compute new skills list
+    const currentSkills = settingsSkills ?? [];
+    const currentAllMode = settingsAllSkillsMode;
+    let newSkillNames: string[];
+
+    if (currentAllMode) {
+      // Switching from all-skills to explicit: enable all eligible except the toggled one
+      newSkillNames = currentSkills
+        .filter(s => s.eligible && s.name !== skillName)
+        .map(s => s.name);
+    } else {
+      const skill = currentSkills.find(s => s.name === skillName);
+      if (skill?.enabled) {
+        // Disable: remove from list
+        newSkillNames = currentSkills
+          .filter(s => s.enabled && s.name !== skillName)
+          .map(s => s.name);
+      } else {
+        // Enable: add to list
+        newSkillNames = [
+          ...currentSkills.filter(s => s.enabled).map(s => s.name),
+          skillName,
+        ];
+      }
+    }
+
+    chatServiceRef.current.updateGatewayTalkSkills(gwId, { skills: newSkillNames }).then((result) => {
+      if (result) {
+        setSettingsSkills(result.skills);
+        setSettingsAllSkillsMode(result.allSkillsMode);
+      }
+    });
+  }, [settingsSkills, settingsAllSkillsMode]);
+
+  const handleSettingsResetSkillsToAll = useCallback(() => {
+    const gwId = gatewayTalkIdRef.current;
+    if (!gwId || !chatServiceRef.current) return;
+    chatServiceRef.current.updateGatewayTalkSkills(gwId, { skills: null }).then((result) => {
+      if (result) {
+        setSettingsSkills(result.skills);
+        setSettingsAllSkillsMode(result.allSkillsMode);
+      }
+    });
+  }, []);
+
   const handleSettingsSetToolMode = useCallback((mode: ToolMode) => {
     const gwId = gatewayTalkIdRef.current;
     if (!gwId || !chatServiceRef.current) {
@@ -3283,7 +3358,10 @@ function App({ options }: AppProps) {
     if (settingsTab === 'tools') {
       refreshSettingsToolPolicy();
     }
-  }, [showSettings, settingsTab, refreshSettingsToolPolicy]);
+    if (settingsTab === 'skills') {
+      refreshSettingsSkills();
+    }
+  }, [showSettings, settingsTab, refreshSettingsToolPolicy, refreshSettingsSkills]);
 
   const commandCtx = useRef({
     switchModel,
@@ -3994,6 +4072,12 @@ function App({ options }: AppProps) {
             onSetTalkGoogleAuthProfile={handleSettingsSetTalkGoogleAuthProfile}
             onInstallCatalogTool={handleSettingsCatalogInstall}
             onUninstallCatalogTool={handleSettingsCatalogUninstall}
+            skills={settingsSkills ?? undefined}
+            skillsLoading={settingsSkillsLoading}
+            skillsError={settingsSkillsError}
+            allSkillsMode={settingsAllSkillsMode}
+            onToggleSkill={handleSettingsToggleSkill}
+            onResetSkillsToAll={handleSettingsResetSkillsToAll}
             talkConfig={activeTalk ? {
               objective: activeTalk.objective,
               directives: (activeTalk.directives ?? []).map(d => ({ text: d.text, active: d.active })),

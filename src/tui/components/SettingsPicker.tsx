@@ -11,6 +11,7 @@ import type {
   GoogleAuthProfileSummary,
   RealtimeVoiceCapabilities,
   RealtimeVoiceProvider,
+  SkillDescriptor,
   ToolCatalogEntry,
   ToolDescriptor,
   ToolExecutionMode,
@@ -110,9 +111,16 @@ interface SettingsPickerProps {
   onSetTalkGoogleAuthProfile?: (profile: string | undefined) => void;
   onInstallCatalogTool?: (catalogId: string) => void;
   onUninstallCatalogTool?: (catalogId: string) => void;
+  // Skills props
+  skills?: SkillDescriptor[];
+  skillsLoading?: boolean;
+  skillsError?: string | null;
+  allSkillsMode?: boolean;
+  onToggleSkill?: (skillName: string) => void;
+  onResetSkillsToAll?: () => void;
 }
 
-type SettingsTab = 'speech' | 'talk' | 'tools';
+type SettingsTab = 'speech' | 'talk' | 'tools' | 'skills';
 
 const PROVIDER_LABELS: Record<RealtimeVoiceProvider, string> = {
   openai: 'OpenAI Realtime',
@@ -243,6 +251,12 @@ export function SettingsPicker({
   onSetTalkGoogleAuthProfile,
   onInstallCatalogTool,
   onUninstallCatalogTool,
+  skills: skillsProp,
+  skillsLoading,
+  skillsError,
+  allSkillsMode,
+  onToggleSkill,
+  onResetSkillsToAll,
 }: SettingsPickerProps) {
   const [tab, setTab] = useState<SettingsTab>(initialTab ?? (hideTalkConfig ? 'speech' : 'talk'));
   const [devices, setDevices] = useState<AudioDevice[]>([]);
@@ -411,8 +425,8 @@ export function SettingsPicker({
 
     // Tab navigation with left/right
     const allTabs: SettingsTab[] = hideTalkConfig
-      ? ['tools', 'speech']
-      : ['talk', 'tools', 'speech'];
+      ? ['tools', 'skills', 'speech']
+      : ['talk', 'tools', 'skills', 'speech'];
     if (key.leftArrow) {
       setTab(prev => {
         const idx = allTabs.indexOf(prev);
@@ -438,6 +452,7 @@ export function SettingsPicker({
     if (key.downArrow) {
       const maxIndex = tab === 'speech' ? Math.max(0, speechRowCount - 1)
         : tab === 'tools' ? Math.max(0, executionRowCount + toolApprovalRowCount + filesystemRowCount + networkRowCount + profileRowCount + toolRows.length + catalogRows.length - 1)
+        : tab === 'skills' ? Math.max(0, skillsRowCount - 1)
         : tab === 'talk' ? 0
         : 0;
       setSelectedIndex(prev => Math.min(maxIndex, prev + 1));
@@ -569,6 +584,27 @@ export function SettingsPicker({
           }
           setTimeout(() => setMessage(null), 2000);
         }
+      } else if (tab === 'skills') {
+        if (selectedIndex === 0) {
+          // First row: toggle mode (all skills / explicit)
+          if (allSkillsMode) {
+            // No-op: already in all mode, user needs to toggle individual skills to switch
+            setMessage('Toggle individual skills below to switch to explicit mode.');
+            setTimeout(() => setMessage(null), 2000);
+          } else {
+            onResetSkillsToAll?.();
+            setMessage('Reset to all skills mode.');
+            setTimeout(() => setMessage(null), 2000);
+          }
+        } else {
+          const skillIndex = selectedIndex - 1;
+          const skill = eligibleSkills[skillIndex];
+          if (skill) {
+            onToggleSkill?.(skill.name);
+            setMessage(`${skill.enabled && !allSkillsMode ? 'Disabled' : 'Enabled'} ${skill.name}`);
+            setTimeout(() => setMessage(null), 2000);
+          }
+        }
       }
       return;
     }
@@ -606,13 +642,17 @@ export function SettingsPicker({
     }
   });
 
+  const eligibleSkills = (skillsProp ?? []).filter(s => s.eligible);
+  const skillsRowCount = allSkillsMode ? eligibleSkills.length + 1 : eligibleSkills.length + 1; // +1 for reset/mode row
+
   const tabs: SettingsTab[] = hideTalkConfig
-    ? ['tools', 'speech']
-    : ['talk', 'tools', 'speech'];
+    ? ['tools', 'skills', 'speech']
+    : ['talk', 'tools', 'skills', 'speech'];
   const tabLabels: Record<SettingsTab, string> = {
     speech: 'Speech',
     talk: 'Talk Config',
     tools: 'Tools',
+    skills: 'OpenClaw Skills',
   };
 
   return (
@@ -989,6 +1029,63 @@ export function SettingsPicker({
         </Box>
       )}
 
+      {tab === 'skills' && (
+        <Box flexDirection="column">
+          {skillsLoading ? (
+            <Text dimColor>Loading OpenClaw skills...</Text>
+          ) : (
+            <>
+              <Text dimColor>OpenClaw skills available to managed agents. Toggle to enable/disable per-talk.</Text>
+              <Box marginTop={1} flexDirection="column">
+                <Box>
+                  <Text color={selectedIndex === 0 ? 'cyan' : undefined}>
+                    {selectedIndex === 0 ? '▸ ' : '  '}
+                  </Text>
+                  <Text color={allSkillsMode ? 'green' : 'yellow'} bold>
+                    {allSkillsMode ? 'All Skills Mode (active)' : 'Reset to All Skills'}
+                  </Text>
+                  <Text dimColor>
+                    {allSkillsMode
+                      ? ' — all eligible skills are loaded'
+                      : ' — press Enter to enable all skills'}
+                  </Text>
+                </Box>
+              </Box>
+              <Box marginTop={1} flexDirection="column">
+                <Text bold>Eligible Skills</Text>
+                {eligibleSkills.length === 0 ? (
+                  <Text dimColor>  (no eligible skills found)</Text>
+                ) : (
+                  eligibleSkills.map((skill, idx) => {
+                    const rowIndex = idx + 1;
+                    const selected = rowIndex === selectedIndex;
+                    const enabled = allSkillsMode || skill.enabled;
+                    return (
+                      <Box key={skill.name}>
+                        <Text color={selected ? 'cyan' : undefined}>
+                          {selected ? '▸ ' : '  '}
+                        </Text>
+                        <Text>{skill.emoji ? `${skill.emoji} ` : ''}</Text>
+                        <Text bold={enabled} color={enabled ? 'green' : undefined}>
+                          {skill.name}
+                        </Text>
+                        <Text dimColor> — {skill.description.length > 60 ? skill.description.slice(0, 57) + '...' : skill.description}</Text>
+                        <Text color={enabled ? 'green' : 'yellow'}> [{enabled ? 'ON' : 'OFF'}]</Text>
+                      </Box>
+                    );
+                  })
+                )}
+              </Box>
+              {skillsError && (
+                <Box marginTop={1}>
+                  <Text color="yellow">{skillsError}</Text>
+                </Box>
+              )}
+            </>
+          )}
+        </Box>
+      )}
+
       {tab === 'talk' && (
         <Box flexDirection="column">
           {!talkConfig ? (
@@ -1133,6 +1230,8 @@ export function SettingsPicker({
         <Box marginTop={1}>
           {tab === 'tools' ? (
             <Text dimColor>↑/↓ navigate  Enter select/install  Space toggle tool  r refresh  Esc close</Text>
+          ) : tab === 'skills' ? (
+            <Text dimColor>↑/↓ navigate  Enter toggle skill  Esc close</Text>
           ) : (
             <Text dimColor>↑/↓ navigate  Enter/1-9 select  Esc close</Text>
           )}
