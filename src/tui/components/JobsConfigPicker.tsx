@@ -8,13 +8,9 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import TextInput from 'ink-text-input';
 import type { Job, PlatformBinding } from '../../types';
-import {
-  buildVisualLayout,
-  computeVisibleWindow,
-  moveCursorByVisualRow,
-  sanitizePromptInput,
-  wrapForTerminal,
-} from './promptEditorUtils.js';
+import { formatBindingScopeLabel, truncate } from '../formatters.js';
+import { wrapForTerminal } from './promptEditorUtils.js';
+import { PromptEditor } from './PromptEditor.js';
 
 interface JobsConfigPickerProps {
   maxHeight: number;
@@ -43,23 +39,6 @@ type Mode =
   | 'confirm-delete';
 
 type AddType = 'time' | 'channel';
-
-function truncate(text: string, maxLen: number): string {
-  if (text.length <= maxLen) return text;
-  return `${text.slice(0, Math.max(0, maxLen - 3))}...`;
-}
-
-function formatBindingScopeLabel(binding: {
-  scope: string;
-  displayScope?: string;
-  accountId?: string;
-}): string {
-  const scopeLabel = binding.displayScope?.trim() || binding.scope;
-  if (binding.accountId?.trim()) {
-    return `${binding.accountId}:${scopeLabel}`;
-  }
-  return scopeLabel;
-}
 
 function jobTypeLabel(schedule: string): string {
   if (/^on\s+/i.test(schedule)) return 'event';
@@ -91,9 +70,6 @@ export function JobsConfigPicker({
   const [addTypeSelection, setAddTypeSelection] = useState(0);
   const [channelSelection, setChannelSelection] = useState(0);
   const [scheduleInput, setScheduleInput] = useState('');
-  const [promptInput, setPromptInput] = useState('');
-  const [promptCursor, setPromptCursor] = useState(0);
-  const [promptPreferredCol, setPromptPreferredCol] = useState<number | null>(null);
   const [pendingSchedule, setPendingSchedule] = useState('');
   const [pendingScheduleLabel, setPendingScheduleLabel] = useState('');
 
@@ -176,9 +152,6 @@ export function JobsConfigPicker({
 
   const openAddType = () => {
     setAddTypeSelection(0);
-    setPromptInput('');
-    setPromptCursor(0);
-    setPromptPreferredCol(null);
     setScheduleInput('');
     setPendingSchedule('');
     setPendingScheduleLabel('');
@@ -200,11 +173,6 @@ export function JobsConfigPicker({
   ];
 
   useInput((input, key) => {
-    const isBackspaceKey =
-      key.backspace ||
-      input === '\u0008' || // Ctrl+H
-      input === '\u007f';   // DEL (common Backspace on many terminals)
-
     if (input === 'j' && key.ctrl) {
       onClose();
       return;
@@ -274,10 +242,6 @@ export function JobsConfigPicker({
           setStatusMessage('No automation selected.');
           return;
         }
-        const normalized = sanitizePromptInput(selectedJob.prompt);
-        setPromptInput(normalized);
-        setPromptCursor(normalized.length);
-        setPromptPreferredCol(null);
         setMode('edit-prompt');
         return;
       }
@@ -339,105 +303,8 @@ export function JobsConfigPicker({
       return;
     }
 
+    // add-prompt and edit-prompt modes are handled entirely by <PromptEditor>
     if (mode === 'add-prompt' || mode === 'edit-prompt') {
-      const savePrompt = async (raw: string) => {
-        const trimmed = sanitizePromptInput(raw).trim();
-        if (!trimmed) {
-          setStatusMessage('Prompt cannot be empty.');
-          return;
-        }
-
-        if (mode === 'add-prompt') {
-          const ok = await onAddJob(pendingSchedule, trimmed);
-          if (!ok) {
-            setStatusMessage('Failed to add automation.');
-            setMode('list');
-            return;
-          }
-          await refreshJobs('Automation added.');
-          setMode('list');
-          setSelectedIndex(Math.max(localJobs.length, 0));
-          return;
-        }
-
-        if (!selectedJob) {
-          setStatusMessage('No selected automation.');
-          return;
-        }
-        const jobIndex = selectedIndex + 1;
-        const ok = await onSetJobPrompt(jobIndex, trimmed);
-        if (!ok) {
-          setStatusMessage(`Failed to update prompt for automation #${jobIndex}.`);
-          setMode('list');
-          return;
-        }
-        await refreshJobs(`Updated prompt for automation #${jobIndex}.`);
-        setMode('list');
-      };
-
-      if (key.escape) {
-        setMode('list');
-        setPromptPreferredCol(null);
-        return;
-      }
-      if (key.ctrl && input.toLowerCase() === 's') {
-        void savePrompt(promptInput);
-        setPromptPreferredCol(null);
-        return;
-      }
-      if (key.return) {
-        const next = `${promptInput.slice(0, promptCursor)}\n${promptInput.slice(promptCursor)}`;
-        setPromptInput(next);
-        setPromptCursor(promptCursor + 1);
-        setPromptPreferredCol(null);
-        return;
-      }
-      const isDeleteAsBackspace = key.delete && promptCursor >= promptInput.length;
-      if (isBackspaceKey || isDeleteAsBackspace) {
-        if (promptCursor <= 0) return;
-        const next = `${promptInput.slice(0, promptCursor - 1)}${promptInput.slice(promptCursor)}`;
-        setPromptInput(next);
-        setPromptCursor(promptCursor - 1);
-        setPromptPreferredCol(null);
-        return;
-      }
-      if (key.delete) {
-        if (promptCursor >= promptInput.length) return;
-        const next = `${promptInput.slice(0, promptCursor)}${promptInput.slice(promptCursor + 1)}`;
-        setPromptInput(next);
-        setPromptPreferredCol(null);
-        return;
-      }
-      if (key.leftArrow) {
-        setPromptCursor((prev) => Math.max(0, prev - 1));
-        setPromptPreferredCol(null);
-        return;
-      }
-      if (key.rightArrow) {
-        setPromptCursor((prev) => Math.min(promptInput.length, prev + 1));
-        setPromptPreferredCol(null);
-        return;
-      }
-      if (key.upArrow || key.downArrow) {
-        const moved = moveCursorByVisualRow(
-          promptInput,
-          promptCursor,
-          Math.max(10, terminalWidth - 12),
-          key.upArrow ? -1 : 1,
-          promptPreferredCol,
-        );
-        setPromptCursor(moved.cursor);
-        setPromptPreferredCol(moved.preferredCol);
-        return;
-      }
-      if (input) {
-        const safeInput = sanitizePromptInput(input);
-        if (!safeInput) return;
-        const next = `${promptInput.slice(0, promptCursor)}${safeInput}${promptInput.slice(promptCursor)}`;
-        setPromptInput(next);
-        setPromptCursor(promptCursor + safeInput.length);
-        setPromptPreferredCol(null);
-      }
       return;
     }
 
@@ -460,9 +327,6 @@ export function JobsConfigPicker({
         if (!target) return;
         setPendingSchedule(`on ${target.scope}`);
         setPendingScheduleLabel(`on ${target.label}`);
-        setPromptInput('');
-        setPromptCursor(0);
-        setPromptPreferredCol(null);
         setMode('add-prompt');
       }
       return;
@@ -498,12 +362,6 @@ export function JobsConfigPicker({
   const visibleEnd = Math.min(localJobs.length, scrollOffset + visibleRows);
   const promptEditorWidth = Math.max(10, terminalWidth - 12);
   const promptEditorMaxLines = Math.max(4, Math.min(14, maxHeight - 24));
-  const promptLayout = buildVisualLayout(promptInput, promptCursor, promptEditorWidth);
-  const promptWindow = computeVisibleWindow(
-    promptLayout.lines.length,
-    promptLayout.cursorRow,
-    promptEditorMaxLines,
-  );
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} width={terminalWidth}>
@@ -601,9 +459,6 @@ export function JobsConfigPicker({
                 }
                 setPendingSchedule(trimmed);
                 setPendingScheduleLabel(trimmed);
-                setPromptInput('');
-                setPromptCursor(0);
-                setPromptPreferredCol(null);
                 setMode('add-prompt');
               }}
             />
@@ -637,28 +492,31 @@ export function JobsConfigPicker({
           <Text bold>Step 3: Enter Prompt</Text>
           <Text dimColor>Trigger: {pendingScheduleLabel || pendingSchedule}</Text>
           <Text dimColor>Multi-line editor. Ctrl+S save  Enter newline  Esc cancel</Text>
-          <Box borderStyle="round" borderColor="gray" paddingX={1} flexDirection="column">
-            {promptWindow.start > 0 && <Text dimColor>▲ more</Text>}
-            {promptLayout.lines.slice(promptWindow.start, promptWindow.end).map((line, idx) => {
-              const row = promptWindow.start + idx;
-              if (row !== promptLayout.cursorRow) {
-                return <Text key={`add-prompt-editor-${row}`}>{line.text || ' '}</Text>;
+          <PromptEditor
+            initialValue=""
+            editorWidth={promptEditorWidth}
+            maxVisibleLines={promptEditorMaxLines}
+            onSave={(text) => {
+              const trimmed = text.trim();
+              if (!trimmed) {
+                setStatusMessage('Prompt cannot be empty.');
+                return;
               }
-              const col = Math.max(0, Math.min(promptLayout.cursorCol, line.text.length));
-              const before = line.text.slice(0, col);
-              const hasChar = col < line.text.length;
-              const at = hasChar ? line.text[col] : ' ';
-              const after = hasChar ? line.text.slice(col + 1) : '';
-              return (
-                <Text key={`add-prompt-editor-${row}`}>
-                  {before}
-                  <Text inverse>{at}</Text>
-                  {after}
-                </Text>
-              );
-            })}
-            {promptWindow.end < promptLayout.lines.length && <Text dimColor>▼ more</Text>}
-          </Box>
+              void (async () => {
+                const ok = await onAddJob(pendingSchedule, trimmed);
+                if (!ok) {
+                  setStatusMessage('Failed to add automation.');
+                  setMode('list');
+                  return;
+                }
+                await refreshJobs('Automation added.');
+                setMode('list');
+                setSelectedIndex(Math.max(localJobs.length, 0));
+              })();
+            }}
+            onCancel={() => setMode('list')}
+            keyPrefix="add-prompt-editor"
+          />
         </>
       )}
 
@@ -711,28 +569,35 @@ export function JobsConfigPicker({
             <Text dimColor>No selected automation.</Text>
           )}
           <Text dimColor>Multi-line editor. Ctrl+S save  Enter newline  Esc cancel</Text>
-          <Box borderStyle="round" borderColor="gray" paddingX={1} flexDirection="column">
-            {promptWindow.start > 0 && <Text dimColor>▲ more</Text>}
-            {promptLayout.lines.slice(promptWindow.start, promptWindow.end).map((line, idx) => {
-              const row = promptWindow.start + idx;
-              if (row !== promptLayout.cursorRow) {
-                return <Text key={`edit-prompt-editor-${row}`}>{line.text || ' '}</Text>;
+          <PromptEditor
+            initialValue={selectedJob?.prompt ?? ''}
+            editorWidth={promptEditorWidth}
+            maxVisibleLines={promptEditorMaxLines}
+            onSave={(text) => {
+              const trimmed = text.trim();
+              if (!trimmed) {
+                setStatusMessage('Prompt cannot be empty.');
+                return;
               }
-              const col = Math.max(0, Math.min(promptLayout.cursorCol, line.text.length));
-              const before = line.text.slice(0, col);
-              const hasChar = col < line.text.length;
-              const at = hasChar ? line.text[col] : ' ';
-              const after = hasChar ? line.text.slice(col + 1) : '';
-              return (
-                <Text key={`edit-prompt-editor-${row}`}>
-                  {before}
-                  <Text inverse>{at}</Text>
-                  {after}
-                </Text>
-              );
-            })}
-            {promptWindow.end < promptLayout.lines.length && <Text dimColor>▼ more</Text>}
-          </Box>
+              if (!selectedJob) {
+                setStatusMessage('No selected automation.');
+                return;
+              }
+              const jobIndex = selectedIndex + 1;
+              void (async () => {
+                const ok = await onSetJobPrompt(jobIndex, trimmed);
+                if (!ok) {
+                  setStatusMessage(`Failed to update prompt for automation #${jobIndex}.`);
+                  setMode('list');
+                  return;
+                }
+                await refreshJobs(`Updated prompt for automation #${jobIndex}.`);
+                setMode('list');
+              })();
+            }}
+            onCancel={() => setMode('list')}
+            keyPrefix="edit-prompt-editor"
+          />
         </>
       )}
 
