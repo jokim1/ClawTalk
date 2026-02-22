@@ -5,7 +5,7 @@
  */
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { Box, Text, useInput } from 'ink';
+import { Box, Text, useInput, useStdout } from 'ink';
 import { execSync } from 'child_process';
 import type {
   GoogleAuthProfileSummary,
@@ -266,6 +266,8 @@ export function SettingsPicker({
   const [message, setMessage] = useState<string | null>(null);
   const [activeSttProvider, setActiveSttProvider] = useState<string | undefined>(voiceCaps?.sttActiveProvider);
   const [activeTtsProvider, setActiveTtsProvider] = useState<string | undefined>(voiceCaps?.ttsActiveProvider);
+  const [skillsScrollX, setSkillsScrollX] = useState(0);
+  const { stdout } = useStdout();
 
   // Available providers
   const sttProviders = voiceCaps?.sttProviders ?? [];
@@ -378,9 +380,30 @@ export function SettingsPicker({
   };
   const skillNameColWidth = 24;
   const skillStatusColWidth = 6;
-  const skillDescColWidth = 48;
+  const skillDescColWidth = Math.max(20, (stdout?.columns ?? 120) - 2 - skillNameColWidth - 2 - skillStatusColWidth - 2 - 4);
   const skillHeader = `  ${padCell('Skill', skillNameColWidth)}  ${padCell('Status', skillStatusColWidth)}  Description`;
   const skillDivider = buildDivider([skillNameColWidth, skillStatusColWidth, skillDescColWidth]);
+  type Seg = { text: string; color?: string; bold?: boolean; dimColor?: boolean };
+  const sliceSegments = (segments: Seg[], offset: number): React.ReactNode[] => {
+    if (offset <= 0) {
+      return segments.map((s, i) => (
+        <Text key={i} color={s.color as never} bold={s.bold} dimColor={s.dimColor}>{s.text}</Text>
+      ));
+    }
+    const result: React.ReactNode[] = [];
+    let pos = 0;
+    for (let i = 0; i < segments.length; i++) {
+      const s = segments[i];
+      const end = pos + s.text.length;
+      if (end <= offset) { pos = end; continue; }
+      const clip = Math.max(0, offset - pos);
+      result.push(
+        <Text key={i} color={s.color as never} bold={s.bold} dimColor={s.dimColor}>{s.text.slice(clip)}</Text>
+      );
+      pos = end;
+    }
+    return result;
+  };
 
   useEffect(() => {
     const devs = getInputDevices();
@@ -449,6 +472,16 @@ export function SettingsPicker({
       return;
     }
 
+    // Horizontal scroll in skills tab
+    if (tab === 'skills' && input === '>') {
+      setSkillsScrollX(prev => Math.min(prev + 8, 2 + skillNameColWidth + 2 + skillStatusColWidth));
+      return;
+    }
+    if (tab === 'skills' && input === '<') {
+      setSkillsScrollX(prev => Math.max(0, prev - 8));
+      return;
+    }
+
     // Tab navigation with left/right
     const allTabs: SettingsTab[] = hideTalkConfig
       ? ['tools', 'skills', 'speech']
@@ -459,6 +492,7 @@ export function SettingsPicker({
         return allTabs[(idx - 1 + allTabs.length) % allTabs.length];
       });
       setSelectedIndex(0);
+      setSkillsScrollX(0);
       return;
     }
     if (key.rightArrow) {
@@ -467,6 +501,7 @@ export function SettingsPicker({
         return allTabs[(idx + 1) % allTabs.length];
       });
       setSelectedIndex(0);
+      setSkillsScrollX(0);
       return;
     }
 
@@ -1083,9 +1118,9 @@ export function SettingsPicker({
                   <Text dimColor>  (no eligible skills found)</Text>
                 ) : (
                   <>
-                    <Text dimColor>{skillHeader}</Text>
-                    <Text dimColor>{skillDivider}</Text>
-                    {eligibleSkills.map((skill, idx) => {
+                    <Text dimColor>{skillsScrollX > 0 ? skillHeader.slice(skillsScrollX) : skillHeader}</Text>
+                    <Text dimColor>{skillsScrollX > 0 ? skillDivider.slice(skillsScrollX) : skillDivider}</Text>
+                    {eligibleSkills.flatMap((skill, idx) => {
                       const rowIndex = idx + 1;
                       const selected = rowIndex === selectedIndex;
                       const enabled = allSkillsMode || skill.enabled;
@@ -1094,24 +1129,27 @@ export function SettingsPicker({
                       const statusLabel = enabled ? 'ON' : 'OFF';
                       const statusCell = padCell(statusLabel, skillStatusColWidth);
                       const descLines = wrapText(skill.description, skillDescColWidth);
-                      const continuationPad = '  '.repeat(1) + ' '.repeat(skillNameColWidth) + '  ' + ' '.repeat(skillStatusColWidth) + '  ';
-                      return (
-                        <Box key={skill.name} flexDirection="column">
-                          <Box>
-                            <Text color={selected ? 'cyan' : undefined}>
-                              {selected ? '▸ ' : '  '}
-                            </Text>
-                            <Text bold={enabled} color={enabled ? 'green' : undefined}>{nameCell}</Text>
-                            <Text>  </Text>
-                            <Text color={enabled ? 'green' : 'yellow'}>{statusCell}</Text>
-                            <Text>  </Text>
-                            <Text dimColor>{descLines[0] ?? ''}</Text>
-                          </Box>
-                          {descLines.slice(1).map((line, i) => (
-                            <Text key={i} dimColor>{continuationPad}{line}</Text>
-                          ))}
-                        </Box>
-                      );
+                      const continuationPad = '  ' + ' '.repeat(skillNameColWidth) + '  ' + ' '.repeat(skillStatusColWidth) + '  ';
+                      const segments: Seg[] = [
+                        { text: selected ? '▸ ' : '  ', color: selected ? 'cyan' : undefined },
+                        { text: nameCell, color: enabled ? 'green' : undefined, bold: enabled },
+                        { text: '  ' },
+                        { text: statusCell, color: enabled ? 'green' : 'yellow' },
+                        { text: '  ' },
+                        { text: descLines[0] ?? '', dimColor: true },
+                      ];
+                      const lines: React.ReactElement[] = [
+                        <Text key={skill.name}>{sliceSegments(segments, skillsScrollX)}</Text>,
+                      ];
+                      for (let i = 1; i < descLines.length; i++) {
+                        const fullLine = continuationPad + descLines[i];
+                        lines.push(
+                          <Text key={`${skill.name}-${i}`} dimColor>
+                            {skillsScrollX > 0 ? fullLine.slice(skillsScrollX) : fullLine}
+                          </Text>
+                        );
+                      }
+                      return lines;
                     })}
                   </>
                 )}
@@ -1271,7 +1309,7 @@ export function SettingsPicker({
           {tab === 'tools' ? (
             <Text dimColor>↑/↓ navigate  Enter select/install  Space toggle tool  r refresh  Esc close</Text>
           ) : tab === 'skills' ? (
-            <Text dimColor>↑/↓ navigate  Enter toggle skill  Esc close</Text>
+            <Text dimColor>↑/↓ navigate  Enter toggle skill  &lt;/&gt; scroll  Esc close</Text>
           ) : (
             <Text dimColor>↑/↓ navigate  Enter/1-9 select  Esc close</Text>
           )}
