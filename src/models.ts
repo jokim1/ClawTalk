@@ -50,9 +50,9 @@ export const MODEL_REGISTRY: ModelInfo[] = [
     aliases: ['opus'],
   },
   {
-    id: 'anthropic/claude-sonnet-4-5',
+    id: 'anthropic/claude-sonnet-4-6',
     provider: 'Anthropic',
-    name: 'Claude Sonnet 4.5',
+    name: 'Claude Sonnet 4.6',
     shortAlias: 'Sonnet',
     emoji: '⚖️ ',
     tier: 'balanced',
