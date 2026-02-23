@@ -139,6 +139,7 @@ type TalkUpdatePayload = {
   toolsDeny?: string[];
   googleAuthProfile?: string;
   agents?: TalkAgent[];
+  replaceAgents?: boolean;
 };
 
 function toTalkUpdatePayload(updates: {
@@ -146,6 +147,7 @@ function toTalkUpdatePayload(updates: {
   topicTitle?: string;
   model?: string;
   agents?: TalkAgent[];
+  replaceAgents?: boolean;
   directives?: Directive[];
   platformBindings?: PlatformBinding[];
   platformBehaviors?: PlatformBehavior[];
@@ -161,6 +163,7 @@ function toTalkUpdatePayload(updates: {
     topicTitle: updates.topicTitle,
     model: updates.model,
     agents: updates.agents,
+    replaceAgents: updates.replaceAgents,
   };
   if (updates.objective !== undefined) {
     payload.objectives = updates.objective;
@@ -624,6 +627,7 @@ export class ChatService implements IChatService {
     topicTitle?: string;
     model?: string;
     agents?: TalkAgent[];
+    replaceAgents?: boolean;
     directives?: Directive[];
     platformBindings?: PlatformBinding[];
     platformBehaviors?: PlatformBehavior[];

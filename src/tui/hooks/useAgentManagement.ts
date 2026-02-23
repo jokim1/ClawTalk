@@ -82,7 +82,7 @@ export function useAgentManagement(deps: UseAgentManagementDeps) {
     primaryAgentRef.current = agents.find(a => a.isPrimary) ?? null;
     const gwId = gatewayTalkIdRef.current;
     if (gwId && chatServiceRef.current) {
-      chatServiceRef.current.updateGatewayTalk(gwId, { agents })
+      chatServiceRef.current.updateGatewayTalk(gwId, { agents, replaceAgents: true })
         .then(result => { if (!result.ok) setError(`Agent sync failed: ${result.error}`); })
         .catch(err => setError(`Agent sync failed: ${err instanceof Error ? err.message : err}`));
     }
