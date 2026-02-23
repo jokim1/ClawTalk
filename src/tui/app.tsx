@@ -814,7 +814,9 @@ function App({ options }: AppProps) {
               onRemoveDirective: bindings.handleRemoveDirective,
             } : undefined}
             agentsInfo={activeTalk ? {
-              agents: (activeTalk.agents ?? []).map(a => ({ name: a.name, role: a.role, model: a.model, isPrimary: a.isPrimary })),
+              agents: (activeTalk.agents ?? []).length > 0
+                ? activeTalk.agents!.map(a => ({ name: a.name, role: a.role, model: a.model, isPrimary: a.isPrimary }))
+                : [{ name: getModelAlias(currentModel), role: 'general', model: currentModel, isPrimary: true }],
             } : undefined}
           />
         </Box>
