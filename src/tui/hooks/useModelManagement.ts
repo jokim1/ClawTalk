@@ -18,6 +18,7 @@ import {
   getProviderKey,
   formatPricingLabel,
 } from '../../models.js';
+import { generateAgentName } from '../../agent-roles.js';
 import { loadConfig, saveConfig, getBillingForProvider } from '../../config.js';
 import { createMessage } from '../helpers.js';
 
@@ -116,16 +117,27 @@ export function useModelManagement(deps: UseModelManagementDeps): UseModelManage
     if (activeTalkIdRef.current && talkManagerRef.current) {
       talkManagerRef.current.setModel(activeTalkIdRef.current, modelId);
 
-      // Also update the primary agent's model so the status bar stays in sync
+      // Also update the primary agent's model + name so speaker labels stay in sync
       const agents = talkManagerRef.current.getAgents(activeTalkIdRef.current);
       const primary = agents.find(a => a.isPrimary);
       if (primary) {
         primary.model = modelId;
+        const alias = getModelAlias(modelId);
+        let newName = generateAgentName(alias, primary.role);
+        // Handle name collision with other agents
+        const existing = agents.filter(a => a !== primary).map(a => a.name.toLowerCase());
+        if (existing.includes(newName.toLowerCase())) {
+          let suffix = 2;
+          while (existing.includes(`${newName} ${suffix}`.toLowerCase())) suffix++;
+          newName = `${newName} ${suffix}`;
+        }
+        primary.name = newName;
         talkManagerRef.current.setAgents(activeTalkIdRef.current, agents);
       }
     }
     if (gatewayTalkIdRef.current) {
-      chatServiceRef.current?.updateGatewayTalk(gatewayTalkIdRef.current, { model: modelId });
+      const agents = activeTalkIdRef.current ? talkManagerRef.current?.getAgents(activeTalkIdRef.current) : undefined;
+      chatServiceRef.current?.updateGatewayTalk(gatewayTalkIdRef.current, { model: modelId, ...(agents && { agents }) });
     }
 
     const sysMsg = createMessage('system', `Switching to ${getModelAlias(modelId)}. Checking connection...`);
