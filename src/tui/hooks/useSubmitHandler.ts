@@ -100,6 +100,7 @@ export interface CommandCtxHandlers {
   showGoogleDocsAuthStatus: () => void;
   setGoogleDocsRefreshToken: (token: string) => void;
   openToolsSettings: () => void;
+  newChat: () => void;
   showPlaybook: () => void;
 }
 

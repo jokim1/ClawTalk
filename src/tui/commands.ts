@@ -59,6 +59,7 @@ export interface CommandContext {
   showGoogleDocsAuthStatus: () => void;
   setGoogleDocsRefreshToken: (token: string) => void;
   openToolsSettings: () => void;
+  newChat: () => void;
   showPlaybook: () => void;
 }
 
@@ -671,6 +672,12 @@ function handleToolsCommand(args: string, ctx: CommandContext): CommandResult {
   return { handled: true };
 }
 
+/** Handle /newchat — start a new chat session. */
+function handleNewChatCommand(_args: string, ctx: CommandContext): CommandResult {
+  ctx.newChat();
+  return { handled: true };
+}
+
 /** Handle /playbook — show full talk configuration overview. */
 function handlePlaybookCommand(_args: string, ctx: CommandContext): CommandResult {
   ctx.showPlaybook();
@@ -690,16 +697,12 @@ const COMMANDS: Record<string, { handler: CommandHandler; description: string }>
   pins: { handler: handlePinsCommand, description: 'List pinned messages' },
   objectives: { handler: handleObjectivesCommand, description: 'Set talk objectives (desired outcome)' },
   reports: { handler: handleReportsCommand, description: 'View automation reports' },
-  agent: { handler: handleAgentCommand, description: 'Add or remove an agent' },
-  agents: { handler: handleAgentsCommand, description: 'List agents for this talk' },
   ask: { handler: handleAskCommand, description: 'Ask a specific agent' },
   debate: { handler: handleDebateCommand, description: 'All agents discuss a topic' },
   file: { handler: handleFileCommand, description: 'Attach a file (image, PDF, text)' },
   export: { handler: handleExportCommand, description: 'Export current talk' },
   edit: { handler: handleEditCommand, description: 'Edit messages (mark and delete)' },
-  rule: { handler: handleRuleCommand, description: 'Add or manage a rule' },
-  rules: { handler: handleRulesCommand, description: 'List rules for this talk' },
-  tools: { handler: handleToolsCommand, description: 'Open Settings > Tools and tool auth helpers' },
+  newchat: { handler: handleNewChatCommand, description: 'Start a new chat session' },
   playbook: { handler: handlePlaybookCommand, description: 'Show full talk configuration' },
 };
 
@@ -710,8 +713,6 @@ const COMMANDS: Record<string, { handler: CommandHandler; description: string }>
 const HIDDEN_COMMANDS: Record<string, CommandHandler> = {
   objective: handleObjectiveCommand,
   model: handleModelCommand,
-  directive: handleDirectiveCommand,
-  directives: handleDirectivesCommand,
   platform: handlePlatformCommand,
   platforms: handlePlatformsCommand,
   job: handleJobCommand,
@@ -796,18 +797,6 @@ export function getCommandCompletions(prefix: string): CommandInfo[] {
         results.push(
           { name: 'export [txt|md|docx] [last N]', description: 'Export current talk' },
         );
-      } else if (name === 'agent') {
-        results.push(
-          { name: 'agent add <model> <role>', description: 'Add agent with role' },
-          { name: 'agent remove <name>', description: 'Remove an agent' },
-          { name: 'agent role <name> <role>', description: 'Change role: Analyst, Critic, Strategist, Devil\'s Advocate, Synthesizer, Editor' },
-        );
-      } else if (name === 'rule') {
-        results.push(
-          { name: `${name} <text>`, description: 'Add a rule' },
-          { name: `${name} toggle N`, description: 'Enable/disable rule #N' },
-          { name: `${name} delete N`, description: 'Delete rule #N' },
-        );
       } else if (name === 'channel') {
         results.push(
           {
@@ -815,12 +804,6 @@ export function getCommandCompletions(prefix: string): CommandInfo[] {
             description: 'Add connection (Slack full support; Telegram/WhatsApp for event jobs)',
           },
           { name: `${name} delete N`, description: 'Remove channel connection #N' },
-        );
-      } else if (name === 'tools') {
-        results.push(
-          { name: 'tools', description: 'Open Settings > Tools manager' },
-          { name: 'tools auth status', description: 'Check Google Docs auth readiness' },
-          { name: 'tools auth set-refresh <token>', description: 'Update Google refresh token for Docs tools' },
         );
       } else if (name === 'objectives') {
         results.push(

@@ -530,6 +530,7 @@ function App({ options }: AppProps) {
       showGoogleDocsAuthStatus: toolPolicy.handleShowGoogleDocsAuthStatus,
       setGoogleDocsRefreshToken: toolPolicy.handleSetGoogleDocsRefreshToken,
       openToolsSettings: () => { setSettingsFromTalks(false); setSettingsTab('tools'); setShowSettings(true); },
+      newChat: talkNav.handleNewChat,
       showPlaybook: talks.handleShowPlaybook,
     },
   });
@@ -558,7 +559,6 @@ function App({ options }: AppProps) {
     realtimeVoiceEndSession: realtimeVoice.endSession,
     realtimeVoiceStartSession: realtimeVoice.startSession,
     realtimeVoiceCapsAvailable: !!gateway.realtimeVoiceCaps,
-    handleNewChat: talkNav.handleNewChat,
     exit,
     voiceCleanup: () => { voiceServiceRef.current?.cleanup(); },
     talkManagerRef,

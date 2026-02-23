@@ -61,7 +61,6 @@ export interface UseKeyboardShortcutsDeps {
   realtimeVoiceStartSession: () => Promise<boolean>;
   realtimeVoiceCapsAvailable: boolean;
   // Handlers
-  handleNewChat: () => void;
   exit: () => void;
   voiceCleanup: () => void;
   talkManagerRef: React.MutableRefObject<any>;
@@ -83,7 +82,7 @@ export function useKeyboardShortcuts(deps: UseKeyboardShortcutsDeps): void {
     voiceHandleEscape, voiceHandleVoiceToggle, voiceHandleLiveTalk, voiceHandleTtsToggle,
     voiceMode, realtimeVoiceIsActive, realtimeVoiceEndSession, realtimeVoiceStartSession,
     realtimeVoiceCapsAvailable,
-    handleNewChat, exit, voiceCleanup, talkManagerRef,
+    exit, voiceCleanup, talkManagerRef,
   } = deps;
 
   useInput((input, key) => {
@@ -253,13 +252,6 @@ export function useKeyboardShortcuts(deps: UseKeyboardShortcutsDeps): void {
     if (input === 'e' && key.ctrl) {
       setGrabTextMode(prev => !prev);
       cleanInputChar(setInputText, 'e');
-      return;
-    }
-
-    // ^N New Chat
-    if (input === 'n' && key.ctrl) {
-      handleNewChat();
-      cleanInputChar(setInputText, 'n');
       return;
     }
 
