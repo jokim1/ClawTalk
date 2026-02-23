@@ -37,6 +37,10 @@ import { SettingsSkillsTab } from './SettingsSkillsTab.js';
 import { SettingsToolsTab, normalizeExecutionModeOptions } from './SettingsToolsTab.js';
 import { ChannelConfigPicker } from './ChannelConfigPicker.js';
 import { JobsConfigPicker } from './JobsConfigPicker.js';
+import { TalkConfigPicker } from './TalkConfigPicker.js';
+import type { TalkConfigEmbedProps } from './TalkConfigPicker.js';
+import { SettingsAgentsTab } from './SettingsAgentsTab.js';
+import type { AgentsTabInfo } from './SettingsAgentsTab.js';
 
 interface VoiceCapsInfo {
   sttProviders: string[];
@@ -106,6 +110,8 @@ interface SettingsPickerProps {
   initialTab?: SettingsTab;
   channelConfig?: ChannelConfigEmbedProps;
   jobsConfig?: JobsConfigEmbedProps;
+  talkConfigEmbed?: TalkConfigEmbedProps;
+  agentsInfo?: AgentsTabInfo;
   toolPolicy?: {
     mode: ToolMode;
     executionMode: ToolExecutionMode;
@@ -153,7 +159,7 @@ interface SettingsPickerProps {
   onRefreshSkills?: () => void;
 }
 
-type SettingsTab = 'speech' | 'talk' | 'channels' | 'jobs' | 'tools' | 'skills';
+type SettingsTab = 'speech' | 'talk' | 'agents' | 'channels' | 'jobs' | 'tools' | 'skills';
 
 const STT_PROVIDER_LABELS: Record<string, string> = {
   openai: 'OpenAI Whisper',
@@ -224,6 +230,8 @@ export function SettingsPicker({
   initialTab,
   channelConfig,
   jobsConfig,
+  talkConfigEmbed,
+  agentsInfo,
   toolPolicy,
   toolPolicyLoading,
   toolPolicyError,
@@ -353,6 +361,7 @@ export function SettingsPicker({
   // Compute tab list once for reuse
   const tabs: SettingsTab[] = (() => {
     const base: SettingsTab[] = hideTalkConfig ? [] : ['talk'];
+    if (agentsInfo) base.push('agents');
     if (channelConfig) base.push('channels');
     if (jobsConfig) base.push('jobs');
     base.push('tools', 'skills', 'speech');
@@ -362,6 +371,7 @@ export function SettingsPicker({
   const tabLabels: Record<SettingsTab, string> = {
     speech: 'Speech',
     talk: 'Talk Config',
+    agents: 'Agents',
     channels: 'Channels',
     jobs: 'Jobs',
     tools: 'Tools',
@@ -384,9 +394,9 @@ export function SettingsPicker({
     if (input === 'v' && key.ctrl) { onToggleTts(); return; }
     if (input === 'x' && key.ctrl) { onExit(); return; }
 
-    // When channels/jobs tab is active, delegate all input to the embedded picker
-    // except for global ctrl shortcuts handled above.
-    if (tab === 'channels' || tab === 'jobs') return;
+    // When channels/jobs/talk-config-embed tab is active, delegate all input to
+    // the embedded picker except for global ctrl shortcuts handled above.
+    if (tab === 'channels' || tab === 'jobs' || (tab === 'talk' && talkConfigEmbed)) return;
 
     if (input === 's' && key.ctrl) { onClose(); return; }
     if ((input === 'c' || input === 'p') && key.ctrl) {
@@ -678,8 +688,22 @@ export function SettingsPicker({
         />
       )}
 
-      {tab === 'talk' && (
+      {tab === 'talk' && talkConfigEmbed && (
+        <TalkConfigPicker
+          {...talkConfigEmbed}
+          onClose={onClose}
+          onTabLeft={() => switchTab(-1)}
+          onTabRight={() => switchTab(1)}
+          embedded
+        />
+      )}
+
+      {tab === 'talk' && !talkConfigEmbed && (
         <SettingsTalkTab talkConfig={talkConfig} />
+      )}
+
+      {tab === 'agents' && (
+        <SettingsAgentsTab agentsInfo={agentsInfo} />
       )}
 
       {tab === 'channels' && channelConfig && (
@@ -702,15 +726,15 @@ export function SettingsPicker({
         />
       )}
 
-      {/* Status message (not shown for channels/jobs — they have their own) */}
-      {message && tab !== 'channels' && tab !== 'jobs' && (
+      {/* Status message (not shown for tabs with embedded pickers — they have their own) */}
+      {message && tab !== 'channels' && tab !== 'jobs' && !(tab === 'talk' && talkConfigEmbed) && (
         <Box marginTop={1}>
           <Text color="green">{message}</Text>
         </Box>
       )}
 
       {/* Help */}
-      {tab !== 'talk' && tab !== 'channels' && tab !== 'jobs' && (
+      {tab !== 'talk' && tab !== 'agents' && tab !== 'channels' && tab !== 'jobs' && (
         <Box marginTop={1}>
           {tab === 'tools' ? (
             <Text dimColor>↑/↓ navigate  Enter select/install  Space toggle tool  r refresh  Esc close</Text>

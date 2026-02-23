@@ -102,7 +102,6 @@ interface VoiceCapsInfo {
 interface TalkConfigInfo {
   objective?: string;
   directives: Array<{ text: string; active: boolean }>;
-  agents: Array<{ name: string; role: string; model: string; isPrimary: boolean }>;
 }
 
 interface SettingsOverlayProps {

@@ -801,8 +801,21 @@ function App({ options }: AppProps) {
             talkConfig={activeTalk ? {
               objective: activeTalk.objective,
               directives: (activeTalk.directives ?? []).map(d => ({ text: d.text, active: d.active })),
-              agents: (activeTalk.agents ?? []).map(a => ({ name: a.name, role: a.role, model: a.model, isPrimary: a.isPrimary })),
             } : null}
+            talkConfigEmbed={activeTalk ? {
+              maxHeight: overlayMaxHeight,
+              terminalWidth,
+              objective: activeTalk.objective,
+              directives: (activeTalk.directives ?? []).map(d => ({ text: d.text, active: d.active })),
+              onSetObjective: talks.handleSetObjective,
+              onAddDirective: bindings.handleAddDirective,
+              onEditDirective: bindings.handleEditDirective,
+              onToggleDirective: bindings.handleToggleDirective,
+              onRemoveDirective: bindings.handleRemoveDirective,
+            } : undefined}
+            agentsInfo={activeTalk ? {
+              agents: (activeTalk.agents ?? []).map(a => ({ name: a.name, role: a.role, model: a.model, isPrimary: a.isPrimary })),
+            } : undefined}
           />
         </Box>
       ) : (

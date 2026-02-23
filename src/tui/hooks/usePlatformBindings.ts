@@ -32,6 +32,7 @@ export interface UsePlatformBindingsResult {
   slackHintsError: string | null;
   loadSlackHints: () => Promise<void>;
   handleAddDirective: (text: string) => void;
+  handleEditDirective: (index: number, text: string) => void;
   handleRemoveDirective: (index: number) => void;
   handleToggleDirective: (index: number) => void;
   handleListDirectives: () => void;
@@ -210,6 +211,21 @@ export function usePlatformBindings(deps: UsePlatformBindingsDeps): UsePlatformB
     if (!directive) { setError('Failed to add rule'); return; }
 
     const sysMsg = createMessage('system', `Rule added: ${text}`);
+    setMessages(prev => [...prev, sysMsg]);
+
+    if (gatewayTalkIdRef.current && chatServiceRef.current) {
+      const directives = talkManagerRef.current.getDirectives(activeTalkId);
+      chatServiceRef.current.updateGatewayTalk(gatewayTalkIdRef.current, { directives });
+    }
+  }, [activeTalkId, talkManagerRef, chatServiceRef, gatewayTalkIdRef, setError, setMessages]);
+
+  const handleEditDirective = useCallback((index: number, text: string) => {
+    if (!activeTalkId || !talkManagerRef.current) return;
+
+    const success = talkManagerRef.current.editDirective(activeTalkId, index, text);
+    if (!success) { setError(`No rule at position ${index}`); return; }
+
+    const sysMsg = createMessage('system', `Rule #${index} updated.`);
     setMessages(prev => [...prev, sysMsg]);
 
     if (gatewayTalkIdRef.current && chatServiceRef.current) {
@@ -560,6 +576,7 @@ export function usePlatformBindings(deps: UsePlatformBindingsDeps): UsePlatformB
     slackHintsError,
     loadSlackHints,
     handleAddDirective,
+    handleEditDirective,
     handleRemoveDirective,
     handleToggleDirective,
     handleListDirectives,

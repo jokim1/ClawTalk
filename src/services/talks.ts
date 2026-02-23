@@ -676,6 +676,23 @@ export class TalkManager {
     return true;
   }
 
+  /** Edit a directive's text by 1-based index. */
+  editDirective(talkId: string, index: number, text: string): boolean {
+    const talk = this.talks.get(talkId);
+    if (!talk?.directives) return false;
+
+    const trimmed = text.trim();
+    if (!trimmed) return false;
+
+    const directive = talk.directives[index - 1];
+    if (!directive) return false;
+
+    directive.text = trimmed;
+    talk.updatedAt = Date.now();
+    if (talk.isSaved) this.persistTalk(talk);
+    return true;
+  }
+
   /** Get all directives for a talk. */
   getDirectives(talkId: string): Directive[] {
     const talk = this.talks.get(talkId);
