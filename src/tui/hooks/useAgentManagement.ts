@@ -649,6 +649,27 @@ export function useAgentManagement(deps: UseAgentManagementDeps) {
   }, [sendMultiAgentMessage, messages]);
 
   // -------------------------------------------------------------------------
+  // handleDirectAddAgent (for AgentsConfigPicker — atomic, no overlay mgmt)
+  // -------------------------------------------------------------------------
+
+  /** Create an agent directly without managing overlay state. */
+  const handleDirectAddAgent = useCallback((modelId: string, roleId: AgentRole) => {
+    const talkId = activeTalkIdRef.current;
+    if (!talkId || !talkManagerRef.current) return;
+    const existingAgents = talkManagerRef.current.getAgents(talkId);
+    const alias = getModelAlias(modelId);
+    const newAgent: TalkAgent = {
+      name: generateAgentName(alias, roleId),
+      model: modelId,
+      role: roleId,
+      isPrimary: existingAgents.length === 0,
+    };
+    talkManagerRef.current.addAgent(talkId, newAgent);
+    talkManagerRef.current.saveTalk(talkId);
+    syncAgentsToGateway(talkManagerRef.current.getAgents(talkId));
+  }, [syncAgentsToGateway]);
+
+  // -------------------------------------------------------------------------
   // Return
   // -------------------------------------------------------------------------
 
@@ -656,6 +677,7 @@ export function useAgentManagement(deps: UseAgentManagementDeps) {
     syncAgentsToGateway,
     handleAddAgentRequest,
     handleRoleSelected,
+    handleDirectAddAgent,
     streamAgentResponse,
     findMentionedAgents,
     sendMultiAgentMessage,

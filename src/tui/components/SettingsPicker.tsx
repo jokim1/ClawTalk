@@ -39,8 +39,8 @@ import { ChannelConfigPicker } from './ChannelConfigPicker.js';
 import { JobsConfigPicker } from './JobsConfigPicker.js';
 import { TalkConfigPicker } from './TalkConfigPicker.js';
 import type { TalkConfigEmbedProps } from './TalkConfigPicker.js';
-import { SettingsAgentsTab } from './SettingsAgentsTab.js';
-import type { AgentsTabInfo } from './SettingsAgentsTab.js';
+import { AgentsConfigPicker } from './SettingsAgentsTab.js';
+import type { AgentsConfigEmbedProps } from './SettingsAgentsTab.js';
 
 interface VoiceCapsInfo {
   sttProviders: string[];
@@ -111,7 +111,7 @@ interface SettingsPickerProps {
   channelConfig?: ChannelConfigEmbedProps;
   jobsConfig?: JobsConfigEmbedProps;
   talkConfigEmbed?: TalkConfigEmbedProps;
-  agentsInfo?: AgentsTabInfo;
+  agentsConfig?: AgentsConfigEmbedProps;
   toolPolicy?: {
     mode: ToolMode;
     executionMode: ToolExecutionMode;
@@ -231,7 +231,7 @@ export function SettingsPicker({
   channelConfig,
   jobsConfig,
   talkConfigEmbed,
-  agentsInfo,
+  agentsConfig,
   toolPolicy,
   toolPolicyLoading,
   toolPolicyError,
@@ -361,7 +361,7 @@ export function SettingsPicker({
   // Compute tab list once for reuse
   const tabs: SettingsTab[] = (() => {
     const base: SettingsTab[] = hideTalkConfig ? [] : ['talk'];
-    if (agentsInfo) base.push('agents');
+    if (agentsConfig) base.push('agents');
     if (channelConfig) base.push('channels');
     if (jobsConfig) base.push('jobs');
     base.push('tools', 'skills', 'speech');
@@ -396,7 +396,7 @@ export function SettingsPicker({
 
     // When channels/jobs/talk-config-embed tab is active, delegate all input to
     // the embedded picker except for global ctrl shortcuts handled above.
-    if (tab === 'channels' || tab === 'jobs' || (tab === 'talk' && talkConfigEmbed)) return;
+    if (tab === 'channels' || tab === 'jobs' || tab === 'agents' || (tab === 'talk' && talkConfigEmbed)) return;
 
     if (input === 's' && key.ctrl) { onClose(); return; }
     if ((input === 'c' || input === 'p') && key.ctrl) {
@@ -702,8 +702,14 @@ export function SettingsPicker({
         <SettingsTalkTab talkConfig={talkConfig} />
       )}
 
-      {tab === 'agents' && (
-        <SettingsAgentsTab agentsInfo={agentsInfo} />
+      {tab === 'agents' && agentsConfig && (
+        <AgentsConfigPicker
+          {...agentsConfig}
+          onClose={onClose}
+          onTabLeft={() => switchTab(-1)}
+          onTabRight={() => switchTab(1)}
+          embedded
+        />
       )}
 
       {tab === 'channels' && channelConfig && (
@@ -727,7 +733,7 @@ export function SettingsPicker({
       )}
 
       {/* Status message (not shown for tabs with embedded pickers — they have their own) */}
-      {message && tab !== 'channels' && tab !== 'jobs' && !(tab === 'talk' && talkConfigEmbed) && (
+      {message && tab !== 'channels' && tab !== 'jobs' && tab !== 'agents' && !(tab === 'talk' && talkConfigEmbed) && (
         <Box marginTop={1}>
           <Text color="green">{message}</Text>
         </Box>

@@ -23,7 +23,7 @@ export interface UseKeyboardShortcutsDeps {
   setShowTalks: React.Dispatch<React.SetStateAction<boolean>>;
   setShowSettings: React.Dispatch<React.SetStateAction<boolean>>;
   setSettingsFromTalks: React.Dispatch<React.SetStateAction<boolean>>;
-  setSettingsTab: React.Dispatch<React.SetStateAction<'talk' | 'channels' | 'jobs' | 'tools' | 'skills' | 'speech'>>;
+  setSettingsTab: React.Dispatch<React.SetStateAction<'talk' | 'agents' | 'channels' | 'jobs' | 'tools' | 'skills' | 'speech'>>;
   setGrabTextMode: React.Dispatch<React.SetStateAction<boolean>>;
   setInputText: React.Dispatch<React.SetStateAction<string>>;
   setError: (msg: string | null) => void;
@@ -201,10 +201,11 @@ export function useKeyboardShortcuts(deps: UseKeyboardShortcutsDeps): void {
       return;
     }
 
-    // ^K AI Model
+    // ^K Agents (Settings → Agents tab)
     if (input === 'k' && key.ctrl) {
-      setModelPickerMode('switch');
-      setShowModelPicker(true);
+      setSettingsFromTalks(false);
+      setSettingsTab('agents');
+      setShowSettings(true);
       cleanInputChar(setInputText, 'k');
       return;
     }

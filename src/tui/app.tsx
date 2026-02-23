@@ -132,7 +132,7 @@ function App({ options }: AppProps) {
   const [showEditMessages, setShowEditMessages] = useState(false);
   const [showTalks, setShowTalks] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<'talk' | 'channels' | 'jobs' | 'tools' | 'skills' | 'speech'>('talk');
+  const [settingsTab, setSettingsTab] = useState<'talk' | 'agents' | 'channels' | 'jobs' | 'tools' | 'skills' | 'speech'>('talk');
   const [settingsFromTalks, setSettingsFromTalks] = useState(false);
   const [sessionName, setSessionName] = useState('Session 1');
   const [activeTalkId, setActiveTalkId] = useState<string | null>(null);
@@ -813,10 +813,20 @@ function App({ options }: AppProps) {
               onToggleDirective: bindings.handleToggleDirective,
               onRemoveDirective: bindings.handleRemoveDirective,
             } : undefined}
-            agentsInfo={activeTalk ? {
-              agents: (activeTalk.agents ?? []).length > 0
-                ? activeTalk.agents!.map(a => ({ name: a.name, role: a.role, model: a.model, isPrimary: a.isPrimary }))
-                : [{ name: getModelAlias(currentModel), role: 'general', model: currentModel, isPrimary: true }],
+            agentsConfig={activeTalk ? {
+              maxHeight: overlayMaxHeight,
+              terminalWidth,
+              agents: activeTalk.agents ?? [],
+              currentModel,
+              pickerModels: modelMgmt.pickerModels,
+              modelValidity: gateway.modelValidity,
+              isRefreshing: gateway.modelsRefreshing,
+              lastRefreshedAt: gateway.modelsLastRefreshedAt,
+              onAddAgent: agents.handleDirectAddAgent,
+              onRemoveAgent: agents.handleRemoveAgent,
+              onChangeAgentRole: agents.handleChangeAgentRole,
+              onChangeAgentModel: agents.handleChangeAgentModel,
+              onSwitchModel: modelMgmt.switchModel,
             } : undefined}
           />
         </Box>
