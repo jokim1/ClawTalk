@@ -26,6 +26,9 @@ interface JobsConfigPickerProps {
   onSetJobPrompt: (index: number, prompt: string) => Promise<boolean>;
   onDeleteJob: (index: number) => Promise<boolean>;
   onViewReports: (index: number) => void;
+  onTabLeft?: () => void;
+  onTabRight?: () => void;
+  embedded?: boolean;
 }
 
 type Mode =
@@ -60,6 +63,9 @@ export function JobsConfigPicker({
   onSetJobPrompt,
   onDeleteJob,
   onViewReports,
+  onTabLeft,
+  onTabRight,
+  embedded,
 }: JobsConfigPickerProps) {
   const [mode, setMode] = useState<Mode>('list');
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -173,11 +179,6 @@ export function JobsConfigPicker({
   ];
 
   useInput((input, key) => {
-    if (input === 'j' && key.ctrl) {
-      onClose();
-      return;
-    }
-
     if (key.escape) {
       if (mode === 'list') onClose();
       else setMode('list');
@@ -189,6 +190,8 @@ export function JobsConfigPicker({
     }
 
     if (mode === 'list') {
+      if (key.leftArrow) { onTabLeft?.(); return; }
+      if (key.rightArrow) { onTabRight?.(); return; }
       if (key.upArrow) {
         setSelectedIndex((prev) => {
           const next = Math.max(0, prev - 1);
@@ -364,13 +367,17 @@ export function JobsConfigPicker({
   const promptEditorMaxLines = Math.max(4, Math.min(14, maxHeight - 24));
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} width={terminalWidth}>
-      <Text bold color="cyan">Automation Jobs</Text>
-      <Text dimColor>Configure recurring, one-off, and event-driven automations for this talk.</Text>
+    <Box flexDirection="column" {...(embedded ? {} : { borderStyle: 'round' as const, borderColor: 'cyan', paddingX: 1, width: terminalWidth })}>
+      {!embedded && (
+        <>
+          <Text bold color="cyan">Automation Jobs</Text>
+          <Text dimColor>Configure recurring, one-off, and event-driven automations for this talk.</Text>
+        </>
+      )}
 
       {mode === 'list' && (
         <>
-          <Text dimColor>↑/↓ select  Enter/t pause/resume  a add  s schedule  p prompt  v reports  d delete  r refresh  Esc/^J close</Text>
+          <Text dimColor>↑/↓ select  ←/→ tabs  Enter/t pause/resume  a add  s schedule  p prompt  v reports  d delete  r refresh  Esc close</Text>
           <Box height={1} />
 
           <Text bold>Jobs</Text>

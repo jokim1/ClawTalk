@@ -16,18 +16,14 @@ export interface UseKeyboardShortcutsDeps {
   showRolePicker: boolean;
   showEditMessages: boolean;
   showTalks: boolean;
-  showChannelConfig: boolean;
-  showJobsConfig: boolean;
   showSettings: boolean;
   // Setters
   setShowModelPicker: React.Dispatch<React.SetStateAction<boolean>>;
   setModelPickerMode: React.Dispatch<React.SetStateAction<'switch' | 'default'>>;
   setShowTalks: React.Dispatch<React.SetStateAction<boolean>>;
-  setShowChannelConfig: React.Dispatch<React.SetStateAction<boolean>>;
-  setShowJobsConfig: React.Dispatch<React.SetStateAction<boolean>>;
   setShowSettings: React.Dispatch<React.SetStateAction<boolean>>;
   setSettingsFromTalks: React.Dispatch<React.SetStateAction<boolean>>;
-  setSettingsTab: React.Dispatch<React.SetStateAction<'talk' | 'tools' | 'skills' | 'speech'>>;
+  setSettingsTab: React.Dispatch<React.SetStateAction<'talk' | 'channels' | 'jobs' | 'tools' | 'skills' | 'speech'>>;
   setGrabTextMode: React.Dispatch<React.SetStateAction<boolean>>;
   setInputText: React.Dispatch<React.SetStateAction<string>>;
   setError: (msg: string | null) => void;
@@ -74,9 +70,9 @@ export interface UseKeyboardShortcutsDeps {
 export function useKeyboardShortcuts(deps: UseKeyboardShortcutsDeps): void {
   const {
     showModelPicker, showRolePicker, showEditMessages, showTalks,
-    showChannelConfig, showJobsConfig, showSettings,
+    showSettings,
     setShowModelPicker, setModelPickerMode, setShowTalks,
-    setShowChannelConfig, setShowJobsConfig, setShowSettings,
+    setShowSettings,
     setSettingsFromTalks, setSettingsTab, setGrabTextMode, setInputText,
     setError,
     messageQueue, setMessageQueue, queueSelectedIndex, setQueueSelectedIndex,
@@ -98,7 +94,7 @@ export function useKeyboardShortcuts(deps: UseKeyboardShortcutsDeps): void {
       return;
     }
 
-    if (showModelPicker || showRolePicker || showEditMessages || showTalks || showChannelConfig || showJobsConfig || showSettings) return;
+    if (showModelPicker || showRolePicker || showEditMessages || showTalks || showSettings) return;
 
     // Clear confirmation mode
     if (pendingClear) {
@@ -270,28 +266,6 @@ export function useKeyboardShortcuts(deps: UseKeyboardShortcutsDeps): void {
     if (input === 'y' && key.ctrl) {
       spawnNewTerminalWindow(options);
       cleanInputChar(setInputText, 'y');
-      return;
-    }
-
-    // ^C Channel Config
-    if (input === 'c' && key.ctrl) {
-      if (!activeTalkId || !talkManagerRef.current) {
-        setError('No active talk to configure.');
-      } else {
-        setShowChannelConfig(true);
-      }
-      cleanInputChar(setInputText, 'c');
-      return;
-    }
-
-    // ^J Jobs Config
-    if (input === 'j' && key.ctrl) {
-      if (!activeTalkId || !talkManagerRef.current) {
-        setError('No active talk to configure.');
-      } else {
-        setShowJobsConfig(true);
-      }
-      cleanInputChar(setInputText, 'j');
       return;
     }
 

@@ -12,9 +12,14 @@ import { Box, Text, useInput, useStdout } from 'ink';
 import { execSync } from 'child_process';
 import type {
   GoogleAuthProfileSummary,
+  Job,
+  PlatformBinding,
+  PlatformBehavior,
+  PlatformPermission,
   RealtimeVoiceCapabilities,
   RealtimeVoiceProvider,
   SkillDescriptor,
+  TalkAgent,
   ToolCatalogEntry,
   ToolDescriptor,
   ToolExecutionMode,
@@ -23,18 +28,63 @@ import type {
   ToolNetworkAccess,
   ToolMode,
 } from '../../types.js';
+import type { SlackAccountOption, SlackChannelOption, SlackProxySetupStatus } from '../../services/chat.js';
 import { SettingsTalkTab } from './SettingsTalkTab.js';
 import type { TalkConfigInfo } from './SettingsTalkTab.js';
 import { SettingsSpeechTab } from './SettingsSpeechTab.js';
 import type { AudioDevice } from './SettingsSpeechTab.js';
 import { SettingsSkillsTab } from './SettingsSkillsTab.js';
 import { SettingsToolsTab, normalizeExecutionModeOptions } from './SettingsToolsTab.js';
+import { ChannelConfigPicker } from './ChannelConfigPicker.js';
+import { JobsConfigPicker } from './JobsConfigPicker.js';
 
 interface VoiceCapsInfo {
   sttProviders: string[];
   sttActiveProvider?: string;
   ttsProviders: string[];
   ttsActiveProvider?: string;
+}
+
+export interface ChannelConfigEmbedProps {
+  maxHeight: number;
+  terminalWidth: number;
+  bindings: PlatformBinding[];
+  behaviors: PlatformBehavior[];
+  agents: TalkAgent[];
+  slackAccounts: SlackAccountOption[];
+  slackChannelsByAccount: Record<string, SlackChannelOption[]>;
+  slackHintsLoading: boolean;
+  slackHintsError: string | null;
+  onRefreshSlackHints: () => void;
+  onAddBinding: (platform: string, scope: string, permission: PlatformPermission) => void;
+  onUpdateBinding: (
+    index: number,
+    updates: Partial<Pick<PlatformBinding, 'platform' | 'scope' | 'permission'>>,
+  ) => void;
+  onRemoveBinding: (index: number) => void;
+  onSetResponseMode: (index: number, mode: 'off' | 'mentions' | 'all') => void;
+  onSetMirrorToTalk: (index: number, mode: 'off' | 'inbound' | 'full') => void;
+  onSetDeliveryMode: (index: number, mode: 'thread' | 'channel' | 'adaptive') => void;
+  onSetPrompt: (index: number, prompt: string) => void;
+  onSetAgentChoice: (index: number, agentName?: string) => void;
+  onClearBehavior: (index: number) => void;
+  onCheckSlackProxySetup?: () => Promise<SlackProxySetupStatus | null>;
+  onSaveSlackSigningSecret?: (secret: string) => Promise<{ ok: boolean; error?: string }>;
+}
+
+export interface JobsConfigEmbedProps {
+  maxHeight: number;
+  terminalWidth: number;
+  jobs: Job[];
+  platformBindings: PlatformBinding[];
+  gatewayConnected: boolean;
+  onRefreshJobs: () => Promise<Job[]>;
+  onAddJob: (schedule: string, prompt: string) => Promise<boolean>;
+  onSetJobActive: (index: number, active: boolean) => Promise<boolean>;
+  onSetJobSchedule: (index: number, schedule: string) => Promise<boolean>;
+  onSetJobPrompt: (index: number, prompt: string) => Promise<boolean>;
+  onDeleteJob: (index: number) => Promise<boolean>;
+  onViewReports: (index: number) => void;
 }
 
 interface SettingsPickerProps {
@@ -54,6 +104,8 @@ interface SettingsPickerProps {
   talkConfig?: TalkConfigInfo | null;
   hideTalkConfig?: boolean;
   initialTab?: SettingsTab;
+  channelConfig?: ChannelConfigEmbedProps;
+  jobsConfig?: JobsConfigEmbedProps;
   toolPolicy?: {
     mode: ToolMode;
     executionMode: ToolExecutionMode;
@@ -101,7 +153,7 @@ interface SettingsPickerProps {
   onRefreshSkills?: () => void;
 }
 
-type SettingsTab = 'speech' | 'talk' | 'tools' | 'skills';
+type SettingsTab = 'speech' | 'talk' | 'channels' | 'jobs' | 'tools' | 'skills';
 
 const STT_PROVIDER_LABELS: Record<string, string> = {
   openai: 'OpenAI Whisper',
@@ -170,6 +222,8 @@ export function SettingsPicker({
   talkConfig,
   hideTalkConfig,
   initialTab,
+  channelConfig,
+  jobsConfig,
   toolPolicy,
   toolPolicyLoading,
   toolPolicyError,
@@ -292,13 +346,49 @@ export function SettingsPicker({
     if (tab === 'skills') onRefreshSkills?.();
   }, [tab, onRefreshSkills]);
 
+  useEffect(() => {
+    if (tab === 'channels') channelConfig?.onRefreshSlackHints();
+  }, [tab]);
+
+  // Compute tab list once for reuse
+  const tabs: SettingsTab[] = (() => {
+    const base: SettingsTab[] = hideTalkConfig ? [] : ['talk'];
+    if (channelConfig) base.push('channels');
+    if (jobsConfig) base.push('jobs');
+    base.push('tools', 'skills', 'speech');
+    return base;
+  })();
+
+  const tabLabels: Record<SettingsTab, string> = {
+    speech: 'Speech',
+    talk: 'Talk Config',
+    channels: 'Channels',
+    jobs: 'Jobs',
+    tools: 'Tools',
+    skills: 'OpenClaw Skills',
+  };
+
+  const switchTab = (dir: -1 | 1) => {
+    setTab(prev => {
+      const idx = tabs.indexOf(prev);
+      return tabs[(idx + dir + tabs.length) % tabs.length];
+    });
+    setSelectedIndex(0);
+    setSkillsScrollX(0);
+  };
+
   useInput((input, key) => {
-    // Global shortcuts
+    // Global shortcuts (available from every tab)
     if (input === 't' && key.ctrl) { onOpenTalks(); return; }
     if (input === 'n' && key.ctrl) { onNewChat(); return; }
     if (input === 'v' && key.ctrl) { onToggleTts(); return; }
-    if (input === 's' && key.ctrl) { onClose(); return; }
     if (input === 'x' && key.ctrl) { onExit(); return; }
+
+    // When channels/jobs tab is active, delegate all input to the embedded picker
+    // except for global ctrl shortcuts handled above.
+    if (tab === 'channels' || tab === 'jobs') return;
+
+    if (input === 's' && key.ctrl) { onClose(); return; }
     if ((input === 'c' || input === 'p') && key.ctrl) {
       setError('You can only use voice input in a Talk!');
       return;
@@ -328,27 +418,8 @@ export function SettingsPicker({
     }
 
     // Tab navigation
-    const allTabs: SettingsTab[] = hideTalkConfig
-      ? ['tools', 'skills', 'speech']
-      : ['talk', 'tools', 'skills', 'speech'];
-    if (key.leftArrow) {
-      setTab(prev => {
-        const idx = allTabs.indexOf(prev);
-        return allTabs[(idx - 1 + allTabs.length) % allTabs.length];
-      });
-      setSelectedIndex(0);
-      setSkillsScrollX(0);
-      return;
-    }
-    if (key.rightArrow) {
-      setTab(prev => {
-        const idx = allTabs.indexOf(prev);
-        return allTabs[(idx + 1) % allTabs.length];
-      });
-      setSelectedIndex(0);
-      setSkillsScrollX(0);
-      return;
-    }
+    if (key.leftArrow) { switchTab(-1); return; }
+    if (key.rightArrow) { switchTab(1); return; }
 
     // Item navigation
     if (key.upArrow) {
@@ -542,16 +613,6 @@ export function SettingsPicker({
     }
   });
 
-  const tabs: SettingsTab[] = hideTalkConfig
-    ? ['tools', 'skills', 'speech']
-    : ['talk', 'tools', 'skills', 'speech'];
-  const tabLabels: Record<SettingsTab, string> = {
-    speech: 'Speech',
-    talk: 'Talk Config',
-    tools: 'Tools',
-    skills: 'OpenClaw Skills',
-  };
-
   return (
     <Box flexDirection="column" width="100%" borderStyle="round" borderColor="cyan" paddingX={1}>
       <Box justifyContent="center" marginBottom={1}>
@@ -621,15 +682,35 @@ export function SettingsPicker({
         <SettingsTalkTab talkConfig={talkConfig} />
       )}
 
-      {/* Status message */}
-      {message && (
+      {tab === 'channels' && channelConfig && (
+        <ChannelConfigPicker
+          {...channelConfig}
+          onClose={onClose}
+          onTabLeft={() => switchTab(-1)}
+          onTabRight={() => switchTab(1)}
+          embedded
+        />
+      )}
+
+      {tab === 'jobs' && jobsConfig && (
+        <JobsConfigPicker
+          {...jobsConfig}
+          onClose={onClose}
+          onTabLeft={() => switchTab(-1)}
+          onTabRight={() => switchTab(1)}
+          embedded
+        />
+      )}
+
+      {/* Status message (not shown for channels/jobs — they have their own) */}
+      {message && tab !== 'channels' && tab !== 'jobs' && (
         <Box marginTop={1}>
           <Text color="green">{message}</Text>
         </Box>
       )}
 
       {/* Help */}
-      {tab !== 'talk' && (
+      {tab !== 'talk' && tab !== 'channels' && tab !== 'jobs' && (
         <Box marginTop={1}>
           {tab === 'tools' ? (
             <Text dimColor>↑/↓ navigate  Enter select/install  Space toggle tool  r refresh  Esc close</Text>

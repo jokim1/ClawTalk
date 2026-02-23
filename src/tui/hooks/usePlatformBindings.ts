@@ -5,7 +5,7 @@
  * Slack hints loading, and gateway binding sync.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import type {
   Message, PlatformBinding, PlatformBehavior, PlatformPermission,
 } from '../../types.js';
@@ -23,7 +23,6 @@ export interface UsePlatformBindingsDeps {
   currentModelRef: React.MutableRefObject<string>;
   setError: (msg: string | null) => void;
   setMessages: React.Dispatch<React.SetStateAction<Message[]>>;
-  showChannelConfig: boolean;
 }
 
 export interface UsePlatformBindingsResult {
@@ -55,7 +54,7 @@ export function usePlatformBindings(deps: UsePlatformBindingsDeps): UsePlatformB
   const {
     chatServiceRef, talkManagerRef,
     activeTalkId, activeTalkIdRef, gatewayTalkIdRef, currentModelRef,
-    setError, setMessages, showChannelConfig,
+    setError, setMessages,
   } = deps;
 
   // --- Slack hints state ---
@@ -111,12 +110,6 @@ export function usePlatformBindings(deps: UsePlatformBindingsDeps): UsePlatformB
       setSlackHintsLoading(false);
     }
   }, [chatServiceRef]);
-
-  // Auto-load Slack hints when channel config opens
-  useEffect(() => {
-    if (!showChannelConfig) return;
-    void loadSlackHints();
-  }, [showChannelConfig, loadSlackHints]);
 
   // --- Gateway binding sync ---
 

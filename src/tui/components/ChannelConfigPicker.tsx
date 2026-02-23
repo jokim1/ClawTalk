@@ -43,6 +43,9 @@ interface ChannelConfigPickerProps {
   onClearBehavior: (index: number) => void;
   onCheckSlackProxySetup?: () => Promise<SlackProxySetupStatus | null>;
   onSaveSlackSigningSecret?: (secret: string) => Promise<{ ok: boolean; error?: string }>;
+  onTabLeft?: () => void;
+  onTabRight?: () => void;
+  embedded?: boolean;
 }
 
 type PickerMode = 'list' | 'edit-connection' | 'edit-prompt' | 'confirm-delete' | 'adding';
@@ -105,6 +108,9 @@ export function ChannelConfigPicker({
   onClearBehavior,
   onCheckSlackProxySetup,
   onSaveSlackSigningSecret,
+  onTabLeft,
+  onTabRight,
+  embedded,
 }: ChannelConfigPickerProps) {
   const [mode, setMode] = useState<PickerMode>('list');
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -295,11 +301,8 @@ export function ChannelConfigPicker({
   useInput((input, key) => {
     // ChannelAddFlow and PromptEditor handle their own input
     if (mode === 'adding' || mode === 'edit-prompt') {
-      if (input === 'b' && key.ctrl) onClose();
       return;
     }
-
-    if (input === 'b' && key.ctrl) { onClose(); return; }
 
     if (key.escape) {
       if (mode === 'list') onClose();
@@ -308,6 +311,8 @@ export function ChannelConfigPicker({
     }
 
     if (mode === 'list') {
+      if (key.leftArrow) { onTabLeft?.(); return; }
+      if (key.rightArrow) { onTabRight?.(); return; }
       if (key.upArrow) { cycleSelectedConnection(-1); return; }
       if (key.downArrow) { cycleSelectedConnection(1); return; }
       if (key.return) {
@@ -422,12 +427,16 @@ export function ChannelConfigPicker({
   const promptEditorMaxLines = Math.max(4, Math.min(14, maxHeight - 24));
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} width={terminalWidth}>
-      <Text bold color="cyan">Channel Config</Text>
-      <Text dimColor>
-        Channels are specific external messaging platforms like Slack, Telegram, Discord, etc. that you can configure ClawTalk agents to interact with.
-      </Text>
-      <Box height={1} />
+    <Box flexDirection="column" {...(embedded ? {} : { borderStyle: 'round' as const, borderColor: 'cyan', paddingX: 1, width: terminalWidth })}>
+      {!embedded && (
+        <>
+          <Text bold color="cyan">Channel Config</Text>
+          <Text dimColor>
+            Channels are specific external messaging platforms like Slack, Telegram, Discord, etc. that you can configure ClawTalk agents to interact with.
+          </Text>
+          <Box height={1} />
+        </>
+      )}
       <Text dimColor>Workflow: configure all fields, review, then save.</Text>
 
       {mode === 'list' && (

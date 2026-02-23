@@ -178,8 +178,7 @@ export function ShortcutBar({ terminalWidth = 80, ttsEnabled = true, grabTextMod
   ];
   const row2 = [
     { key: '^K', label: 'AI Model' },
-    { key: '^C', label: 'Channels' },
-    { key: '^J', label: 'Jobs' },
+    { key: '^N', label: 'New Chat' },
     { key: '^S', label: 'Settings' },
     { key: '^X', label: 'Exit' },
   ];

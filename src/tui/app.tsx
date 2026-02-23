@@ -24,8 +24,6 @@ import { ModelPicker } from './components/ModelPicker.js';
 import { RolePicker } from './components/RolePicker.js';
 import { TalksHub } from './components/TalksHub';
 import { EditMessages } from './components/EditMessages';
-import { ChannelConfigPicker } from './components/ChannelConfigPicker';
-import { JobsConfigPicker } from './components/JobsConfigPicker';
 import { SettingsPicker } from './components/SettingsPicker.js';
 import { ChatService } from '../services/chat';
 import type { SessionManager } from '../services/sessions';
@@ -134,9 +132,7 @@ function App({ options }: AppProps) {
   const [showEditMessages, setShowEditMessages] = useState(false);
   const [showTalks, setShowTalks] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<'talk' | 'tools' | 'skills' | 'speech'>('talk');
-  const [showChannelConfig, setShowChannelConfig] = useState(false);
-  const [showJobsConfig, setShowJobsConfig] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<'talk' | 'channels' | 'jobs' | 'tools' | 'skills' | 'speech'>('talk');
   const [settingsFromTalks, setSettingsFromTalks] = useState(false);
   const [sessionName, setSessionName] = useState('Session 1');
   const [activeTalkId, setActiveTalkId] = useState<string | null>(null);
@@ -237,7 +233,7 @@ function App({ options }: AppProps) {
 
   const attachments = useAttachments({
     chatServiceRef,
-    isOverlayActive: showModelPicker || showRolePicker || showEditMessages || showTalks || showChannelConfig || showJobsConfig || showSettings,
+    isOverlayActive: showModelPicker || showRolePicker || showEditMessages || showTalks || showSettings,
     inputText,
     setInputText,
     setError,
@@ -248,7 +244,7 @@ function App({ options }: AppProps) {
 
   // ── Computed values ──────────────────────────────────────────────────
 
-  const isOverlayActive = showModelPicker || showRolePicker || showEditMessages || showTalks || showChannelConfig || showJobsConfig || showSettings;
+  const isOverlayActive = showModelPicker || showRolePicker || showEditMessages || showTalks || showSettings;
 
   // Command completions when input starts with "/"
   const commandHints = useMemo(() => {
@@ -444,7 +440,7 @@ function App({ options }: AppProps) {
   const bindings = usePlatformBindings({
     chatServiceRef, talkManagerRef,
     activeTalkId, activeTalkIdRef, gatewayTalkIdRef, currentModelRef,
-    setError, setMessages: chat.setMessages, showChannelConfig,
+    setError, setMessages: chat.setMessages,
   });
 
   const toolPolicy = useToolPolicy({
@@ -542,9 +538,9 @@ function App({ options }: AppProps) {
 
   useKeyboardShortcuts({
     showModelPicker, showRolePicker, showEditMessages, showTalks,
-    showChannelConfig, showJobsConfig, showSettings,
+    showSettings,
     setShowModelPicker, setModelPickerMode, setShowTalks,
-    setShowChannelConfig, setShowJobsConfig, setShowSettings,
+    setShowSettings,
     setSettingsFromTalks, setSettingsTab, setGrabTextMode, setInputText, setError,
     messageQueue, setMessageQueue, queueSelectedIndex, setQueueSelectedIndex,
     pendingFiles: attachments.pendingFiles,
@@ -704,56 +700,6 @@ function App({ options }: AppProps) {
             onDeleteTalk={talks.handleDeleteTalk}
           />
         </Box>
-      ) : showChannelConfig ? (
-        <Box flexGrow={1} paddingX={1}>
-          <ChannelConfigPicker
-            maxHeight={overlayMaxHeight}
-            terminalWidth={terminalWidth}
-            bindings={activeTalk?.platformBindings ?? []}
-            behaviors={activeTalk?.platformBehaviors ?? []}
-            agents={activeTalk?.agents ?? []}
-            slackAccounts={bindings.slackAccountHints}
-            slackChannelsByAccount={bindings.slackChannelsByAccount}
-            slackHintsLoading={bindings.slackHintsLoading}
-            slackHintsError={bindings.slackHintsError}
-            onRefreshSlackHints={() => { void bindings.loadSlackHints(); }}
-            onClose={() => setShowChannelConfig(false)}
-            onAddBinding={bindings.handleAddPlatformBinding}
-            onUpdateBinding={bindings.handleUpdatePlatformBinding}
-            onRemoveBinding={bindings.handleRemovePlatformBinding}
-            onSetResponseMode={bindings.handleSetChannelResponseMode}
-            onSetDeliveryMode={bindings.handleSetChannelDeliveryMode}
-            onSetMirrorToTalk={bindings.handleSetChannelMirrorToTalk}
-            onSetPrompt={bindings.handleSetChannelResponsePrompt}
-            onSetAgentChoice={bindings.handleSetChannelResponseAgentChoice}
-            onClearBehavior={bindings.handleClearChannelResponse}
-            onCheckSlackProxySetup={async () => {
-              return chatServiceRef.current?.getSlackProxySetup() ?? null;
-            }}
-            onSaveSlackSigningSecret={async (secret: string) => {
-              if (!chatServiceRef.current) return { ok: false, error: 'Not connected to Gateway' };
-              return chatServiceRef.current.saveSlackSigningSecret(secret);
-            }}
-          />
-        </Box>
-      ) : showJobsConfig ? (
-        <Box flexGrow={1} paddingX={1}>
-          <JobsConfigPicker
-            maxHeight={overlayMaxHeight}
-            terminalWidth={terminalWidth}
-            jobs={activeTalk?.jobs ?? []}
-            platformBindings={activeTalk?.platformBindings ?? []}
-            gatewayConnected={Boolean((gatewayTalkIdRef.current ?? activeTalk?.gatewayTalkId) && chatServiceRef.current)}
-            onClose={() => setShowJobsConfig(false)}
-            onRefreshJobs={jobs.refreshJobsFromSource}
-            onAddJob={jobs.handleAddJob}
-            onSetJobActive={jobs.handleSetJobActive}
-            onSetJobSchedule={jobs.handleSetJobSchedule}
-            onSetJobPrompt={jobs.handleSetJobPrompt}
-            onDeleteJob={jobs.handleDeleteJobForPicker}
-            onViewReports={talks.handleViewReports}
-          />
-        </Box>
       ) : showSettings ? (
         <Box flexGrow={1} paddingX={1}>
           <SettingsPicker
@@ -812,30 +758,49 @@ function App({ options }: AppProps) {
             onToggleSkill={toolPolicy.handleSettingsToggleSkill}
             onResetSkillsToAll={toolPolicy.handleSettingsResetSkillsToAll}
             onRefreshSkills={toolPolicy.refreshSettingsSkills}
+            channelConfig={activeTalk ? {
+              maxHeight: overlayMaxHeight,
+              terminalWidth,
+              bindings: activeTalk.platformBindings ?? [],
+              behaviors: activeTalk.platformBehaviors ?? [],
+              agents: activeTalk.agents ?? [],
+              slackAccounts: bindings.slackAccountHints,
+              slackChannelsByAccount: bindings.slackChannelsByAccount,
+              slackHintsLoading: bindings.slackHintsLoading,
+              slackHintsError: bindings.slackHintsError,
+              onRefreshSlackHints: () => { void bindings.loadSlackHints(); },
+              onAddBinding: bindings.handleAddPlatformBinding,
+              onUpdateBinding: bindings.handleUpdatePlatformBinding,
+              onRemoveBinding: bindings.handleRemovePlatformBinding,
+              onSetResponseMode: bindings.handleSetChannelResponseMode,
+              onSetDeliveryMode: bindings.handleSetChannelDeliveryMode,
+              onSetMirrorToTalk: bindings.handleSetChannelMirrorToTalk,
+              onSetPrompt: bindings.handleSetChannelResponsePrompt,
+              onSetAgentChoice: bindings.handleSetChannelResponseAgentChoice,
+              onClearBehavior: bindings.handleClearChannelResponse,
+              onCheckSlackProxySetup: async () => chatServiceRef.current?.getSlackProxySetup() ?? null,
+              onSaveSlackSigningSecret: async (secret: string) => {
+                if (!chatServiceRef.current) return { ok: false, error: 'Not connected to Gateway' };
+                return chatServiceRef.current.saveSlackSigningSecret(secret);
+              },
+            } : undefined}
+            jobsConfig={activeTalk ? {
+              maxHeight: overlayMaxHeight,
+              terminalWidth,
+              jobs: activeTalk.jobs ?? [],
+              platformBindings: activeTalk.platformBindings ?? [],
+              gatewayConnected: Boolean((gatewayTalkIdRef.current ?? activeTalk.gatewayTalkId) && chatServiceRef.current),
+              onRefreshJobs: jobs.refreshJobsFromSource,
+              onAddJob: jobs.handleAddJob,
+              onSetJobActive: jobs.handleSetJobActive,
+              onSetJobSchedule: jobs.handleSetJobSchedule,
+              onSetJobPrompt: jobs.handleSetJobPrompt,
+              onDeleteJob: jobs.handleDeleteJobForPicker,
+              onViewReports: talks.handleViewReports,
+            } : undefined}
             talkConfig={activeTalk ? {
               objective: activeTalk.objective,
               directives: (activeTalk.directives ?? []).map(d => ({ text: d.text, active: d.active })),
-              platformBindings: (activeTalk.platformBindings ?? []).map(b => ({
-                platform: b.platform,
-                scope: b.scope,
-                displayScope: b.displayScope,
-                accountId: b.accountId,
-                permission: b.permission,
-              })),
-              channelResponseSettings: (() => {
-                const crsBindings = activeTalk.platformBindings ?? [];
-                const crsBehaviors = activeTalk.platformBehaviors ?? [];
-                return crsBindings.map((binding, idx) => {
-                  const behavior = crsBehaviors.find((entry) => entry.platformBindingId === binding.id);
-                  return {
-                    connectionIndex: idx + 1,
-                    responseMode: (behavior?.responseMode ?? (behavior?.autoRespond === false ? 'off' : 'all')) as 'off' | 'mentions' | 'all',
-                    agentName: behavior?.agentName,
-                    onMessagePrompt: behavior?.onMessagePrompt,
-                  };
-                });
-              })(),
-              jobs: (activeTalk.jobs ?? []).map(j => ({ schedule: j.schedule, prompt: j.prompt, active: j.active })),
               agents: (activeTalk.agents ?? []).map(a => ({ name: a.name, role: a.role, model: a.model, isPrimary: a.isPrimary })),
             } : null}
           />

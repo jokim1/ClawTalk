@@ -4,25 +4,10 @@
 
 import React from 'react';
 import { Box, Text } from 'ink';
-import { formatBindingScopeLabel } from '../formatters.js';
 
 export interface TalkConfigInfo {
   objective?: string;
   directives: Array<{ text: string; active: boolean }>;
-  platformBindings: Array<{
-    platform: string;
-    scope: string;
-    displayScope?: string;
-    accountId?: string;
-    permission: string;
-  }>;
-  channelResponseSettings: Array<{
-    connectionIndex: number;
-    responseMode: 'off' | 'mentions' | 'all';
-    agentName?: string;
-    onMessagePrompt?: string;
-  }>;
-  jobs: Array<{ schedule: string; prompt: string; active: boolean }>;
   agents: Array<{ name: string; role: string; model: string; isPrimary: boolean }>;
 }
 
@@ -82,85 +67,22 @@ export function SettingsTalkTab({ talkConfig }: SettingsTalkTabProps) {
         <Text dimColor italic>  /rules   /rule toggle 1   /rule delete 2</Text>
       </Box>
 
-      {/* Channel Connections */}
+      {/* Agents */}
       <Box marginBottom={1} flexDirection="column">
-        <Text bold>Channel Connections</Text>
-        {talkConfig.platformBindings.length > 0 ? (
-          talkConfig.platformBindings.map((b, i) => (
+        <Text bold>Agents</Text>
+        {talkConfig.agents.length > 0 ? (
+          talkConfig.agents.map((a, i) => (
             <Text key={i}>
               <Text dimColor>  {i + 1}. </Text>
-              <Text>platform{i + 1}: </Text>
-              <Text bold>{b.platform}</Text>
-              <Text> {formatBindingScopeLabel(b)} </Text>
-              <Text dimColor>({b.permission})</Text>
+              <Text bold>{a.name}</Text>
+              <Text> ({a.role}) </Text>
+              <Text dimColor>{a.model}</Text>
+              {a.isPrimary && <Text color="cyan"> [primary]</Text>}
             </Text>
           ))
         ) : (
-          <>
-            <Text dimColor>  (none) — press ^B to add a channel connection</Text>
-            <Text dimColor italic>  Slack full support (auto-response + connection)</Text>
-            <Text dimColor italic>  Telegram/WhatsApp: connection + event jobs</Text>
-            <Text dimColor italic>  Example: choose workspace "kimfamily", channel "#general", permission read+write</Text>
-          </>
+          <Text dimColor>  (none)</Text>
         )}
-        <Text dimColor>  Manage via ^B Channel Config.</Text>
-      </Box>
-
-      {/* Channel Response Settings */}
-      <Box marginBottom={1} flexDirection="column">
-        <Text bold>Channel Response Settings</Text>
-        <Text dimColor>  Applies to Slack channel connections.</Text>
-        {talkConfig.channelResponseSettings.length > 0 ? (
-          talkConfig.channelResponseSettings.map((s) => (
-            <Box key={s.connectionIndex} flexDirection="column">
-              <Text>
-                <Text dimColor>  {s.connectionIndex}. </Text>
-                <Text>mode:</Text>
-                <Text color={s.responseMode === 'off' ? 'yellow' : 'green'}>{s.responseMode}</Text>
-                <Text> agent:{s.agentName ?? '(default)'}</Text>
-              </Text>
-              <Text dimColor>    prompt:</Text>
-              {(s.onMessagePrompt?.trim() ? s.onMessagePrompt.split('\n') : ['(none)']).map((line, idx) => (
-                <Text key={`settings-channel-prompt-${s.connectionIndex}-${idx}`} dimColor>
-                  {'      '}
-                  {line || ' '}
-                </Text>
-              ))}
-            </Box>
-          ))
-        ) : (
-          <Text dimColor>  (none) — add channel connections first</Text>
-        )}
-        <Text dimColor>  Manage via ^B Channel Config.</Text>
-      </Box>
-
-      {/* Automations */}
-      <Box marginBottom={1} flexDirection="column">
-        <Text bold>Automations</Text>
-        {talkConfig.jobs.length > 0 ? (
-          talkConfig.jobs.map((j, i) => (
-            <Box key={i} flexDirection="column">
-              <Text>
-                <Text dimColor>  {i + 1}. </Text>
-                <Text color={j.active ? undefined : 'yellow'}>[{j.active ? 'active' : 'paused'}] </Text>
-                <Text>"{j.schedule}"</Text>
-              </Text>
-              <Text dimColor>    prompt:</Text>
-              {(j.prompt?.trim() ? j.prompt.split('\n') : ['(none)']).map((line, idx) => (
-                <Text key={`settings-job-prompt-${i}-${idx}`} dimColor>
-                  {'      '}
-                  {line || ' '}
-                </Text>
-              ))}
-            </Box>
-          ))
-        ) : (
-          <>
-            <Text dimColor>  (none) — press ^J to add an automation</Text>
-            <Text dimColor italic>  Example: schedule "daily 9am", prompt "Summarize unresolved issues and owners"</Text>
-          </>
-        )}
-        <Text dimColor>  Manage via ^J Jobs.</Text>
       </Box>
     </Box>
   );
