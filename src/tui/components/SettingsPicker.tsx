@@ -9,7 +9,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { Box, Text, useInput, useStdout } from 'ink';
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import type {
   GoogleAuthProfileSummary,
   Job,
@@ -201,6 +201,17 @@ function getInputDevices(): AudioDevice[] {
 function setInputDevice(name: string): boolean {
   try {
     execSync(`SwitchAudioSource -s "${name}" -t input`, { timeout: 3000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function tryOpenUrl(url: string): boolean {
+  try {
+    const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+    const child = spawn(cmd, [url], { detached: true, stdio: 'ignore' });
+    child.unref();
     return true;
   } catch {
     return false;
@@ -414,7 +425,14 @@ export function SettingsPicker({
     }
     if (tab === 'tools' && input.toLowerCase() === 'c') {
       setMessage('Starting Google OAuth...');
-      onStartGoogleOAuthConnect?.((msg) => setMessage(msg));
+      onStartGoogleOAuthConnect?.((msg) => {
+        const urlMatch = msg.match(/https?:\/\/\S+/);
+        if (urlMatch && tryOpenUrl(urlMatch[0])) {
+          setMessage('Opened Google OAuth in browser. Complete authorization there.');
+        } else {
+          setMessage(msg);
+        }
+      });
       return;
     }
     if (tab === 'skills' && input === '>') {
