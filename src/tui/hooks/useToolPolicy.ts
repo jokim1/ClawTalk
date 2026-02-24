@@ -743,11 +743,14 @@ export function useToolPolicy(deps: UseToolPolicyDeps): UseToolPolicyResult {
         setError(failMsg);
         return;
       }
+      const redirectHint = started.redirectUri
+        ? `\n\nIf you see redirect_uri_mismatch, add this URI in Google Cloud Console → Credentials → OAuth client:\n${started.redirectUri}`
+        : '';
       const urlMsg = `Open in browser:\n${started.authUrl}`;
       onOverlayMessage?.(urlMsg);
       const sysMsg = createMessage(
         'system',
-        `Google OAuth started.\nOpen this URL in your browser:\n${started.authUrl}\n\nAfter approval, ClawTalk will auto-refresh tools.`,
+        `Google OAuth started.\nOpen this URL in your browser:\n${started.authUrl}\n\nAfter approval, ClawTalk will auto-refresh tools.${redirectHint}`,
       );
       setMessages((prev) => [...prev, sysMsg]);
 

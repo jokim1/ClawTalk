@@ -89,6 +89,7 @@ export interface GoogleDocsAuthProfilesPayload {
 export interface GoogleOAuthConnectStart {
   sessionId: string;
   authUrl: string;
+  redirectUri?: string;
   profile?: string;
   expiresAt: number;
 }
