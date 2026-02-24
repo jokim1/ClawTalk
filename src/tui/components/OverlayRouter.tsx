@@ -155,7 +155,7 @@ interface SettingsOverlayProps {
     identityError?: string;
     error?: string;
   } | undefined;
-  onStartGoogleOAuthConnect: (() => void) | undefined;
+  onStartGoogleOAuthConnect: ((onOverlayMessage?: (msg: string) => void) => void) | undefined;
   onSetTalkGoogleAuthProfile: ((profile: string | undefined) => void) | undefined;
   onInstallCatalogTool: ((catalogId: string) => void) | undefined;
   onUninstallCatalogTool: ((catalogId: string) => void) | undefined;

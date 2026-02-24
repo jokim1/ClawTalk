@@ -176,7 +176,7 @@ export interface UseToolPolicyResult {
   handleSettingsSetNetworkAccess: (networkAccess: ToolNetworkAccess) => void;
   handleSettingsSetToolEnabled: (toolName: string, enabled: boolean) => void;
   handleSettingsSetTalkGoogleAuthProfile: (profile: string | undefined) => void;
-  handleSettingsStartGoogleOAuthConnect: () => void;
+  handleSettingsStartGoogleOAuthConnect: (onOverlayMessage?: (msg: string) => void) => void;
   handleSettingsCatalogInstall: (catalogId: string) => void;
   handleSettingsCatalogUninstall: (catalogId: string) => void;
 }
@@ -730,7 +730,7 @@ export function useToolPolicy(deps: UseToolPolicyDeps): UseToolPolicyResult {
     });
   }, [chatServiceRef, gatewayTalkIdRef, setError, settingsToolPolicy, syncToolPolicyLocal]);
 
-  const handleSettingsStartGoogleOAuthConnect = useCallback(() => {
+  const handleSettingsStartGoogleOAuthConnect = useCallback((onOverlayMessage?: (msg: string) => void) => {
     if (!chatServiceRef.current) {
       setError('Gateway unavailable.');
       return;
@@ -738,9 +738,13 @@ export function useToolPolicy(deps: UseToolPolicyDeps): UseToolPolicyResult {
     const requestedProfile = settingsToolPolicy?.talkGoogleAuthProfile;
     chatServiceRef.current.startGoogleOAuthConnect(requestedProfile).then((started) => {
       if (!started) {
-        setError('Failed to start Google OAuth flow.');
+        const failMsg = 'Failed to start Google OAuth flow.';
+        onOverlayMessage?.(failMsg);
+        setError(failMsg);
         return;
       }
+      const urlMsg = `Open in browser:\n${started.authUrl}`;
+      onOverlayMessage?.(urlMsg);
       const sysMsg = createMessage(
         'system',
         `Google OAuth started.\nOpen this URL in your browser:\n${started.authUrl}\n\nAfter approval, ClawTalk will auto-refresh tools.`,
@@ -763,15 +767,16 @@ export function useToolPolicy(deps: UseToolPolicyDeps): UseToolPolicyResult {
           }
           googleOAuthSessionRef.current = null;
           if (status.status === 'success') {
-            const okMsg = createMessage(
-              'system',
-              `Google OAuth connected.\nProfile: ${status.profile ?? '(unknown)'}\nAccount: ${status.accountEmail ?? '(unknown)'}`,
-            );
+            const successText = `Google OAuth connected.\nProfile: ${status.profile ?? '(unknown)'}\nAccount: ${status.accountEmail ?? '(unknown)'}`;
+            onOverlayMessage?.(successText);
+            const okMsg = createMessage('system', successText);
             setMessages((prev) => [...prev, okMsg]);
             refreshSettingsToolPolicy();
             return;
           }
-          const failMsg = createMessage('system', `Google OAuth failed: ${status.error ?? 'Unknown error'}`);
+          const failText = `Google OAuth failed: ${status.error ?? 'Unknown error'}`;
+          onOverlayMessage?.(failText);
+          const failMsg = createMessage('system', failText);
           setMessages((prev) => [...prev, failMsg]);
         });
       }, 2000);

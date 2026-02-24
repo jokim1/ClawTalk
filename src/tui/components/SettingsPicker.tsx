@@ -146,7 +146,7 @@ interface SettingsPickerProps {
     identityError?: string;
     error?: string;
   };
-  onStartGoogleOAuthConnect?: () => void;
+  onStartGoogleOAuthConnect?: (onOverlayMessage?: (msg: string) => void) => void;
   onSetTalkGoogleAuthProfile?: (profile: string | undefined) => void;
   onInstallCatalogTool?: (catalogId: string) => void;
   onUninstallCatalogTool?: (catalogId: string) => void;
@@ -413,9 +413,8 @@ export function SettingsPicker({
       return;
     }
     if (tab === 'tools' && input.toLowerCase() === 'c') {
-      onStartGoogleOAuthConnect?.();
-      setMessage('Starting Google OAuth in browser...');
-      setTimeout(() => setMessage(null), 1500);
+      setMessage('Starting Google OAuth...');
+      onStartGoogleOAuthConnect?.((msg) => setMessage(msg));
       return;
     }
     if (tab === 'skills' && input === '>') {
