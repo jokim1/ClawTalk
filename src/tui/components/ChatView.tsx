@@ -16,6 +16,7 @@ import { sanitizeForTerminal } from '../textSanitize.js';
 
 /** Map agent roles to speaker colors */
 const ROLE_COLORS: Record<AgentRole, string> = {
+  assistant: 'cyan',
   analyst: 'cyan',
   critic: 'red',
   strategist: 'blue',

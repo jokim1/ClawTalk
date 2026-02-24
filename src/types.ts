@@ -19,7 +19,7 @@ export interface Session {
   updatedAt: number;
 }
 
-export type AgentRole = 'analyst' | 'critic' | 'strategist' | 'devils-advocate' | 'synthesizer' | 'editor';
+export type AgentRole = 'assistant' | 'analyst' | 'critic' | 'strategist' | 'devils-advocate' | 'synthesizer' | 'editor';
 
 export interface TalkAgent {
   name: string;

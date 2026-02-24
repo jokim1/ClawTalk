@@ -54,7 +54,8 @@ export function StatusBar({ model, modelStatus, usage, gatewayStatus, tailscaleS
   const modelIndicator = modelStatus === 'checking' ? ' ◐' : '';
 
   // Build model display: single model or agent list
-  const modelDisplay = agents && agents.length > 0
+  const singleAssistant = agents && agents.length === 1 && agents[0].role === 'assistant';
+  const modelDisplay = agents && agents.length > 0 && !singleAssistant
       ? agents.map(a => {
         const alias = sanitizeForTerminal(getModelAlias(a.model));
         const roleShort = ROLE_BY_ID[a.role]?.shortLabel ?? '?';

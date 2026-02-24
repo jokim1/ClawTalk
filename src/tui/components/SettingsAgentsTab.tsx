@@ -345,7 +345,7 @@ export function AgentsConfigPicker({
         agents.map((a, i) => {
           const isSelected = i === selectedIndex;
           const alias = getModelAlias(a.model);
-          const roleLabel = ROLE_BY_ID[a.role]?.label ?? a.role;
+          const roleLabel = a.role !== 'assistant' ? (ROLE_BY_ID[a.role]?.label ?? a.role) : '';
           return (
             <Box key={a.name}>
               <Text color={isSelected ? 'cyan' : undefined}>
@@ -355,7 +355,7 @@ export function AgentsConfigPicker({
               <Text color={isSelected ? 'cyan' : undefined} bold={isSelected}>
                 {a.name}
               </Text>
-              <Text dimColor> — {roleLabel} [{alias}]</Text>
+              <Text dimColor>{roleLabel ? ` — ${roleLabel}` : ''} [{alias}]</Text>
               {a.isPrimary && <Text color="cyan"> [primary]</Text>}
             </Box>
           );

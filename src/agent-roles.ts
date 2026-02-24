@@ -39,6 +39,13 @@ export const AGENT_PREAMBLE =
 
 export const AGENT_ROLES: RoleTemplate[] = [
   {
+    id: 'assistant',
+    label: 'Assistant',
+    shortLabel: 'Ast',
+    description: 'General-purpose default agent',
+    instructions: '',
+  },
+  {
     id: 'analyst',
     label: 'Analyst',
     shortLabel: 'Anl',

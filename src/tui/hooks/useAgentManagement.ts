@@ -581,7 +581,8 @@ export function useAgentManagement(deps: UseAgentManagementDeps) {
     const lines = agents.map((a, i) => {
       const primary = a.isPrimary ? ' (primary)' : '';
       const alias = getModelAlias(a.model);
-      return `  ${i + 1}. ${a.name} — ${ROLE_BY_ID[a.role]?.label ?? a.role} [${alias}]${primary}`;
+      const roleLabel = a.role !== 'assistant' ? ` — ${ROLE_BY_ID[a.role]?.label ?? a.role}` : '';
+      return `  ${i + 1}. ${a.name}${roleLabel} [${alias}]${primary}`;
     });
     const sysMsg = createMessage('system', `Agents:\n${lines.join('\n')}`);
     setMessages(prev => [...prev, sysMsg]);

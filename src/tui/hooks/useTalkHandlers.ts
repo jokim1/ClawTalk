@@ -310,7 +310,8 @@ export function useTalkHandlers(deps: UseTalkHandlersDeps): UseTalkHandlersResul
     if (agents.length > 0) {
       const lines = agents.map(a => {
         const primary = a.isPrimary ? ' (primary)' : '';
-        return `  - ${a.name} [${a.role}] ${a.model}${primary}`;
+        const roleTag = a.role !== 'assistant' ? ` [${a.role}]` : '';
+        return `  - ${a.name}${roleTag} ${a.model}${primary}`;
       });
       sections.push(`\nAgents:\n${lines.join('\n')}`);
     } else {
