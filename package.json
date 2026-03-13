@@ -29,7 +29,7 @@
     "ink": "^3.2.0",
     "ink-text-input": "^4.0.3",
     "react": "^17.0.2",
-    "undici": "^7.21.0"
+    "undici": "^7.24.0"
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",
