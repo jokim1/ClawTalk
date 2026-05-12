@@ -1604,10 +1604,7 @@ export async function enqueueTalkTurnAtomic(input: {
   if (input.targetAgentIds.length === 0) {
     throw new Error('talk turn requires at least one target agent');
   }
-  if (
-    input.runIds &&
-    input.runIds.length !== input.targetAgentIds.length
-  ) {
+  if (input.runIds && input.runIds.length !== input.targetAgentIds.length) {
     throw new Error('talk turn requires one run id per target agent');
   }
   if (
@@ -1684,7 +1681,7 @@ export async function enqueueTalkTurnAtomic(input: {
       status: 'queued',
       triggerMessageId: message.id,
       targetAgentId: input.targetAgentIds[i],
-      idempotencyKey: i === 0 ? input.idempotencyKey ?? null : null,
+      idempotencyKey: i === 0 ? (input.idempotencyKey ?? null) : null,
       responseGroupId,
       sequenceIndex: sequenceIndexes[i],
     });
@@ -1759,6 +1756,391 @@ export async function enqueueTalkTurnAtomic(input: {
   }
 
   return { message, runs, threadId };
+}
+
+// ---------------------------------------------------------------------------
+// claimQueuedTalkRuns — promote queued runs to running
+//
+// Within a response group, sequence_index enforces ordering: a higher-
+// index run can't claim until lower-index siblings have terminated
+// (completed or failed). Browser-phase shenanigans from sqlite are
+// dropped (chassis removal).
+// ---------------------------------------------------------------------------
+
+export async function claimQueuedTalkRuns(
+  limit: number,
+  startedAtOverride?: string,
+): Promise<TalkRunRecord[]> {
+  const normalizedLimit = Math.max(1, Math.floor(limit));
+  const startedAt = startedAtOverride ?? new Date().toISOString();
+  const db = getDbPg();
+
+  const queued = await db<TalkRunRecord[]>`
+    select ${db.unsafe(TALK_RUN_COLUMNS)}
+    from public.talk_runs r
+    where r.status = 'queued' and r.talk_id is not null
+      and (
+        r.sequence_index is null
+        or not exists (
+          select 1 from public.talk_runs prior
+          where prior.response_group_id = r.response_group_id
+            and prior.sequence_index is not null
+            and prior.sequence_index < r.sequence_index
+            and prior.status not in ('completed', 'failed')
+        )
+      )
+    order by r.created_at asc, coalesce(r.sequence_index, -1) asc, r.id asc
+    limit ${normalizedLimit}
+  `;
+
+  const claimed: TalkRunRecord[] = [];
+  for (const run of queued) {
+    const updated = await db<TalkRunRecord[]>`
+      update public.talk_runs
+      set status = 'running',
+          timeout_phase = null,
+          started_at = ${startedAt}::timestamptz,
+          ended_at = null,
+          cancel_reason = null
+      where id = ${run.id}::uuid and status = 'queued'
+      returning ${db.unsafe(TALK_RUN_COLUMNS)}
+    `;
+    if (updated.length !== 1) continue;
+    claimed.push(updated[0]);
+    await appendOutboxEvent({
+      topic: `talk:${run.talk_id}`,
+      eventType: 'talk_run_started',
+      payload: {
+        talkId: run.talk_id,
+        threadId: run.thread_id,
+        runId: run.id,
+        runKind: run.run_kind,
+        triggerMessageId: run.trigger_message_id,
+        targetAgentId: run.target_agent_id ?? null,
+        responseGroupId: run.response_group_id ?? null,
+        sequenceIndex: run.sequence_index ?? null,
+        status: 'running',
+        executorAlias: run.executor_alias,
+        executorModel: run.executor_model,
+      },
+    });
+  }
+  return claimed;
+}
+
+// ---------------------------------------------------------------------------
+// completeRunAndPromoteNextAtomic — finalize a run, append the assistant
+// message, record the LLM attempt, emit completed event.
+//
+// Channel delivery surface (talk_channel_bindings + channel_delivery_outbox)
+// from sqlite is dropped — chassis removal. The "promote next" in the
+// name is implicit: claimQueuedTalkRuns will pick up the next ordered
+// sibling on its next tick once this run reaches a terminal state.
+// ---------------------------------------------------------------------------
+
+export async function completeRunAndPromoteNextAtomic(input: {
+  ownerId: string;
+  runId: string;
+  responseMessageId?: string;
+  responseContent: string;
+  responseMetadata?: Record<string, unknown> | null;
+  agentId?: string | null;
+  agentNickname?: string | null;
+  providerId?: string | null;
+  modelId?: string | null;
+  latencyMs?: number | null;
+  usage?: {
+    inputTokens?: number;
+    cachedInputTokens?: number;
+    outputTokens?: number;
+    estimatedCostUsd?: number;
+  } | null;
+  responseSequenceInRun?: number | null;
+  endedAt?: string;
+}): Promise<{ applied: boolean; talkId: string | null }> {
+  const now = input.endedAt ?? new Date().toISOString();
+  const db = getDbPg();
+
+  const runs = await db<
+    Pick<
+      TalkRunRecord,
+      | 'id'
+      | 'talk_id'
+      | 'thread_id'
+      | 'trigger_message_id'
+      | 'target_agent_id'
+      | 'executor_alias'
+      | 'executor_model'
+      | 'run_kind'
+      | 'response_group_id'
+      | 'sequence_index'
+      | 'metadata_json'
+    >[]
+  >`
+    select id, talk_id, thread_id, trigger_message_id, target_agent_id,
+           executor_alias, executor_model, run_kind, response_group_id,
+           sequence_index, metadata_json
+    from public.talk_runs
+    where id = ${input.runId}::uuid and status = 'running'
+    limit 1
+  `;
+  const run = runs[0];
+  if (!run) return { applied: false, talkId: null };
+
+  const updated = await db<{ id: string }[]>`
+    update public.talk_runs
+    set status = 'completed', ended_at = ${now}::timestamptz, cancel_reason = null
+    where id = ${run.id}::uuid and status = 'running'
+    returning id
+  `;
+  if (updated.length !== 1) {
+    return { applied: false, talkId: run.talk_id };
+  }
+
+  // Merge responseMetadata into the run's existing metadata_json under
+  // a `responseMetadata` key (mirrors sqlite behavior).
+  if (input.responseMetadata && Object.keys(input.responseMetadata).length) {
+    await updateTalkRunMetadata(run.id, {
+      responseMetadata: input.responseMetadata,
+    });
+  }
+
+  const responseMessage = await appendAssistantMessageWithOutbox({
+    ownerId: input.ownerId,
+    talkId: run.talk_id!,
+    threadId: run.thread_id,
+    runId: run.id,
+    messageId: input.responseMessageId,
+    content: input.responseContent,
+    metadata: input.responseMetadata ?? null,
+    agentId: input.agentId ?? run.target_agent_id ?? null,
+    agentNickname: input.agentNickname ?? null,
+    sequenceInRun: input.responseSequenceInRun ?? null,
+    createdAt: now,
+  });
+
+  if (input.modelId) {
+    // llm_attempts.agent_id is FK-validated against registered_agents.
+    // target_agent_id on talk_runs is just a "we asked for this" hint
+    // and is NOT FK-validated, so it can hold pre-registration UUIDs.
+    // Only the explicit agentId param (already FK-validated by the
+    // caller's path) is safe to use here.
+    await db`
+      insert into public.llm_attempts
+        (run_id, talk_id, owner_id, agent_id, provider_id, model_id, status,
+         latency_ms, input_tokens, cached_input_tokens, output_tokens,
+         estimated_cost_usd)
+      values
+        (${input.runId}::uuid, ${run.talk_id}::uuid, ${input.ownerId}::uuid,
+         ${input.agentId ?? null}::uuid,
+         ${input.providerId ?? null}, ${input.modelId}, 'success',
+         ${input.latencyMs ?? null},
+         ${input.usage?.inputTokens ?? null},
+         ${input.usage?.cachedInputTokens ?? null},
+         ${input.usage?.outputTokens ?? null},
+         ${input.usage?.estimatedCostUsd ?? null})
+    `;
+  }
+
+  await appendOutboxEvent({
+    topic: `talk:${run.talk_id}`,
+    eventType: 'talk_run_completed',
+    payload: {
+      talkId: run.talk_id,
+      threadId: run.thread_id,
+      runId: run.id,
+      runKind: run.run_kind,
+      triggerMessageId: run.trigger_message_id,
+      responseMessageId: responseMessage.id,
+      responseGroupId: run.response_group_id,
+      sequenceIndex: run.sequence_index,
+      executorAlias: run.executor_alias,
+      executorModel: run.executor_model,
+    },
+  });
+  return { applied: true, talkId: run.talk_id };
+}
+
+// ---------------------------------------------------------------------------
+// failRunAndPromoteNextAtomic — mark a run as failed, record the reason,
+// emit failed event. As with complete, the "promote next" semantic is
+// implicit via claimQueuedTalkRuns's next tick.
+// ---------------------------------------------------------------------------
+
+export async function failRunAndPromoteNextAtomic(input: {
+  runId: string;
+  errorCode: string;
+  errorMessage: string;
+  metadataPatch?: Record<string, unknown> | null;
+  endedAt?: string;
+}): Promise<{ applied: boolean; talkId: string | null }> {
+  const now = input.endedAt ?? new Date().toISOString();
+  const db = getDbPg();
+
+  const runs = await db<
+    Pick<
+      TalkRunRecord,
+      | 'id'
+      | 'talk_id'
+      | 'thread_id'
+      | 'trigger_message_id'
+      | 'target_agent_id'
+      | 'executor_alias'
+      | 'executor_model'
+      | 'run_kind'
+      | 'response_group_id'
+      | 'sequence_index'
+    >[]
+  >`
+    select id, talk_id, thread_id, trigger_message_id, target_agent_id,
+           executor_alias, executor_model, run_kind, response_group_id,
+           sequence_index
+    from public.talk_runs
+    where id = ${input.runId}::uuid and status = 'running'
+    limit 1
+  `;
+  const run = runs[0];
+  if (!run) return { applied: false, talkId: null };
+
+  const reason = `${input.errorCode}: ${input.errorMessage}`.slice(0, 500);
+  const failed = await db<{ id: string }[]>`
+    update public.talk_runs
+    set status = 'failed',
+        ended_at = ${now}::timestamptz,
+        cancel_reason = ${reason}
+    where id = ${run.id}::uuid and status = 'running'
+    returning id
+  `;
+  if (failed.length !== 1) {
+    return { applied: false, talkId: run.talk_id };
+  }
+
+  if (input.metadataPatch && Object.keys(input.metadataPatch).length) {
+    await updateTalkRunMetadata(run.id, {
+      responseMetadata: input.metadataPatch,
+    });
+  }
+
+  await appendOutboxEvent({
+    topic: `talk:${run.talk_id}`,
+    eventType: 'talk_run_failed',
+    payload: {
+      talkId: run.talk_id,
+      threadId: run.thread_id,
+      runId: run.id,
+      runKind: run.run_kind,
+      triggerMessageId: run.trigger_message_id,
+      responseGroupId: run.response_group_id,
+      sequenceIndex: run.sequence_index,
+      errorCode: input.errorCode,
+      errorMessage: input.errorMessage,
+      executorAlias: run.executor_alias,
+      executorModel: run.executor_model,
+    },
+  });
+  return { applied: true, talkId: run.talk_id };
+}
+
+// ---------------------------------------------------------------------------
+// cancelTalkRunsAtomic — cancel every active run on a talk (or thread).
+// ---------------------------------------------------------------------------
+
+export async function cancelTalkRunsAtomic(input: {
+  talkId: string;
+  threadId?: string | null;
+  cancelledBy: string;
+  ownerId: string;
+  endedAt?: string;
+}): Promise<{
+  cancelledRuns: number;
+  cancelledRunIds: string[];
+  cancelledRunning: boolean;
+}> {
+  const now = input.endedAt ?? new Date().toISOString();
+  const threadId = input.threadId
+    ? await resolveThreadIdForTalk({
+        talkId: input.talkId,
+        threadId: input.threadId,
+        ownerId: input.ownerId,
+      })
+    : null;
+  const db = getDbPg();
+  const activeRuns = await db<
+    Pick<
+      TalkRunRecord,
+      | 'id'
+      | 'thread_id'
+      | 'status'
+      | 'target_agent_id'
+      | 'response_group_id'
+      | 'sequence_index'
+    >[]
+  >`
+    select id, thread_id, status, target_agent_id, response_group_id,
+           sequence_index
+    from public.talk_runs
+    where talk_id = ${input.talkId}::uuid
+      and (${threadId}::uuid is null or thread_id = ${threadId}::uuid)
+      and status in ('queued', 'running', 'awaiting_confirmation')
+    order by created_at asc
+  `;
+
+  const cancelledRunIds: string[] = [];
+  let cancelledRunning = false;
+  const cancelReason =
+    `Cancelled by ${input.cancelledBy}`.slice(0, 500);
+  for (const run of activeRuns) {
+    const updated = await db<{ id: string }[]>`
+      update public.talk_runs
+      set status = 'cancelled',
+          ended_at = ${now}::timestamptz,
+          cancel_reason = ${cancelReason}
+      where id = ${run.id}::uuid
+        and status in ('queued', 'running', 'awaiting_confirmation')
+      returning id
+    `;
+    if (updated.length !== 1) continue;
+    cancelledRunIds.push(run.id);
+    if (run.status === 'running') {
+      cancelledRunning = true;
+      await appendOutboxEvent({
+        topic: `talk:${input.talkId}`,
+        eventType: 'talk_response_cancelled',
+        payload: {
+          talkId: input.talkId,
+          threadId: run.thread_id,
+          runId: run.id,
+          agentId: run.target_agent_id ?? null,
+          responseGroupId: run.response_group_id,
+          sequenceIndex: run.sequence_index,
+        },
+      });
+    }
+  }
+  if (cancelledRunIds.length > 0) {
+    const threadIds = Array.from(
+      new Set(
+        activeRuns
+          .filter((r) => cancelledRunIds.includes(r.id))
+          .map((r) => r.thread_id),
+      ),
+    );
+    await appendOutboxEvent({
+      topic: `talk:${input.talkId}`,
+      eventType: 'talk_run_cancelled',
+      payload: {
+        talkId: input.talkId,
+        cancelledBy: input.cancelledBy,
+        runIds: cancelledRunIds,
+        threadIds,
+      },
+    });
+  }
+  return {
+    cancelledRuns: cancelledRunIds.length,
+    cancelledRunIds,
+    cancelledRunning,
+  };
 }
 
 export async function appendRuntimeTalkMessage(input: {

@@ -17,6 +17,9 @@ import {
   appendRuntimeTalkMessage,
   canUserAccessTalk,
   canUserEditTalk,
+  cancelTalkRunsAtomic,
+  claimQueuedTalkRuns,
+  completeRunAndPromoteNextAtomic,
   countRunningTalkRuns,
   createTalk,
   createTalkFolder,
@@ -28,6 +31,7 @@ import {
   deleteTalkMember,
   deleteTalkThread,
   enqueueTalkTurnAtomic,
+  failRunAndPromoteNextAtomic,
   getIdempotencyCache,
   getOrCreateDefaultThread,
   getOutboxEventsForTopics,
@@ -862,20 +866,17 @@ describe('accessors-pg slice 1: talks/folders/members/threads', () => {
     const AGENT_1 = '0c555555-9999-9999-9999-000000000001';
     const AGENT_2 = '0c555555-9999-9999-9999-000000000002';
 
-    const { talkId, threadId } = await withUserContext(
-      USER_A_ID,
-      async () => {
-        const t = await createTalk({
-          ownerId: USER_A_ID,
-          topicTitle: 'Turn',
-        });
-        const tid = await getOrCreateDefaultThread({
-          talkId: t.id,
-          ownerId: USER_A_ID,
-        });
-        return { talkId: t.id, threadId: tid };
-      },
-    );
+    const { talkId, threadId } = await withUserContext(USER_A_ID, async () => {
+      const t = await createTalk({
+        ownerId: USER_A_ID,
+        topicTitle: 'Turn',
+      });
+      const tid = await getOrCreateDefaultThread({
+        talkId: t.id,
+        ownerId: USER_A_ID,
+      });
+      return { talkId: t.id, threadId: tid };
+    });
 
     const result = await withUserContext(USER_A_ID, async () => {
       return await enqueueTalkTurnAtomic({
@@ -933,6 +934,186 @@ describe('accessors-pg slice 1: talks/folders/members/threads', () => {
         });
       }),
     ).rejects.toBeInstanceOf(TalkActiveRoundError);
+  });
+
+  // ── Run lifecycle atomics ──────────────────────────────────────────
+
+  it('claimQueuedTalkRuns → completeRunAndPromoteNextAtomic: queued→running→completed lifecycle', async () => {
+    const AGENT_1 = '0c555555-aaaa-9999-9999-000000000001';
+
+    const { talkId, threadId } = await withUserContext(
+      USER_A_ID,
+      async () => {
+        const t = await createTalk({
+          ownerId: USER_A_ID,
+          topicTitle: 'Lifecycle',
+        });
+        const tid = await getOrCreateDefaultThread({
+          talkId: t.id,
+          ownerId: USER_A_ID,
+        });
+        return { talkId: t.id, threadId: tid };
+      },
+    );
+
+    const turn = await withUserContext(USER_A_ID, async () => {
+      return await enqueueTalkTurnAtomic({
+        ownerId: USER_A_ID,
+        talkId,
+        threadId,
+        userId: USER_A_ID,
+        content: 'Tell me about pgvector',
+        targetAgentIds: [AGENT_1],
+      });
+    });
+    const runId = turn.runs[0].id;
+
+    // claim
+    const claimed = await withUserContext(USER_A_ID, async () => {
+      return await claimQueuedTalkRuns(10);
+    });
+    expect(claimed.length).toBe(1);
+    expect(claimed[0].id).toBe(runId);
+    expect(claimed[0].status).toBe('running');
+    expect(claimed[0].started_at).toBeTruthy();
+
+    // complete with response. agentId + providerId null here — AGENT_1
+    // isn't a real registered_agents row and 'provider.anthropic' isn't
+    // a real llm_providers row in this test (FK would reject); see
+    // agent-accessors-pg.test.ts for FK-correct fixtures.
+    const completed = await withUserContext(USER_A_ID, async () => {
+      return await completeRunAndPromoteNextAtomic({
+        ownerId: USER_A_ID,
+        runId,
+        responseContent: 'pgvector adds vector similarity to Postgres.',
+        agentId: null,
+        agentNickname: 'Argus',
+        providerId: null,
+        modelId: 'claude-opus-4-7',
+        latencyMs: 1234,
+        usage: { inputTokens: 50, outputTokens: 80 },
+      });
+    });
+    expect(completed.applied).toBe(true);
+    expect(completed.talkId).toBe(talkId);
+
+    await withUserContext(USER_A_ID, async () => {
+      const final = await getTalkRunById(runId);
+      expect(final?.status).toBe('completed');
+      expect(final?.ended_at).toBeTruthy();
+      const messages = await listTalkMessages({ talkId });
+      const assistant = messages.find((m) => m.role === 'assistant');
+      expect(assistant?.run_id).toBe(runId);
+      expect(assistant?.content).toMatch(/pgvector/);
+      // llm_attempts row recorded.
+      const db = getDbPg();
+      const attempts = await db<{ status: string; model_id: string }[]>`
+        select status, model_id from public.llm_attempts where run_id = ${runId}::uuid
+      `;
+      expect(attempts).toHaveLength(1);
+      expect(attempts[0].status).toBe('success');
+      // talk_run_completed event present.
+      const events = await getOutboxEventsForTopics([`talk:${talkId}`], 0);
+      expect(
+        events.some((e) => e.event_type === 'talk_run_completed'),
+      ).toBe(true);
+    });
+  });
+
+  it('failRunAndPromoteNextAtomic: queued→running→failed with reason recorded', async () => {
+    const AGENT_1 = '0c555555-aaaa-9999-9999-000000000002';
+    const { talkId, threadId } = await withUserContext(
+      USER_A_ID,
+      async () => {
+        const t = await createTalk({ ownerId: USER_A_ID, topicTitle: 'Fail' });
+        return {
+          talkId: t.id,
+          threadId: await getOrCreateDefaultThread({
+            talkId: t.id,
+            ownerId: USER_A_ID,
+          }),
+        };
+      },
+    );
+    const runId = await withUserContext(USER_A_ID, async () => {
+      const turn = await enqueueTalkTurnAtomic({
+        ownerId: USER_A_ID,
+        talkId,
+        threadId,
+        userId: USER_A_ID,
+        content: 'fail me',
+        targetAgentIds: [AGENT_1],
+      });
+      await claimQueuedTalkRuns(10);
+      return turn.runs[0].id;
+    });
+    const failed = await withUserContext(USER_A_ID, async () => {
+      return await failRunAndPromoteNextAtomic({
+        runId,
+        errorCode: 'provider_timeout',
+        errorMessage: 'Anthropic API timed out after 60s',
+      });
+    });
+    expect(failed.applied).toBe(true);
+
+    await withUserContext(USER_A_ID, async () => {
+      const final = await getTalkRunById(runId);
+      expect(final?.status).toBe('failed');
+      expect(final?.cancel_reason).toMatch(/provider_timeout/);
+    });
+  });
+
+  it('cancelTalkRunsAtomic: cancels all queued + running on the thread', async () => {
+    const AGENT_1 = '0c555555-aaaa-9999-9999-000000000003';
+    const AGENT_2 = '0c555555-aaaa-9999-9999-000000000004';
+    const { talkId, threadId, runIds } = await withUserContext(
+      USER_A_ID,
+      async () => {
+        const t = await createTalk({
+          ownerId: USER_A_ID,
+          topicTitle: 'Cancel',
+        });
+        const tid = await getOrCreateDefaultThread({
+          talkId: t.id,
+          ownerId: USER_A_ID,
+        });
+        const turn = await enqueueTalkTurnAtomic({
+          ownerId: USER_A_ID,
+          talkId: t.id,
+          threadId: tid,
+          userId: USER_A_ID,
+          content: 'cancel-target',
+          targetAgentIds: [AGENT_1, AGENT_2],
+        });
+        return {
+          talkId: t.id,
+          threadId: tid,
+          runIds: turn.runs.map((r) => r.id),
+        };
+      },
+    );
+
+    // Claim one (so it's 'running'), leave the other 'queued'. Both
+    // should cancel.
+    await withUserContext(USER_A_ID, async () => {
+      await claimQueuedTalkRuns(1);
+    });
+    const result = await withUserContext(USER_A_ID, async () => {
+      return await cancelTalkRunsAtomic({
+        talkId,
+        threadId,
+        cancelledBy: USER_A_ID,
+        ownerId: USER_A_ID,
+      });
+    });
+    expect(result.cancelledRuns).toBe(2);
+    expect(result.cancelledRunning).toBe(true);
+    expect(result.cancelledRunIds.sort()).toEqual([...runIds].sort());
+
+    await withUserContext(USER_A_ID, async () => {
+      const final = await listTalkRunsForTalk(talkId);
+      expect(final.every((r) => r.status === 'cancelled')).toBe(true);
+    });
   });
 
   // ── RLS gates ──────────────────────────────────────────────────────
