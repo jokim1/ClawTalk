@@ -41,7 +41,11 @@ export interface Env {
 // every consumer module to import @cloudflare/workers-types globals.
 interface KVNamespace {
   get(key: string): Promise<string | null>;
-  put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>;
+  put(
+    key: string,
+    value: string,
+    options?: { expirationTtl?: number },
+  ): Promise<void>;
 }
 
 interface Queue {
@@ -77,10 +81,7 @@ async function handleHealthCheck(env: Env): Promise<Response> {
   });
 }
 
-async function handleApiRequest(
-  request: Request,
-  env: Env,
-): Promise<Response> {
+async function handleApiRequest(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   if (url.pathname === '/api/v1/health') {
     return handleHealthCheck(env);
@@ -113,10 +114,8 @@ export default {
     }
 
     try {
-      return await withRequestScopedDb(
-        env.DB.connectionString,
-        ctx,
-        async () => handleApiRequest(request, env),
+      return await withRequestScopedDb(env.DB.connectionString, ctx, async () =>
+        handleApiRequest(request, env),
       );
     } catch (err) {
       console.error('Worker request failed', err);
