@@ -29,8 +29,10 @@ import {
   deleteTalkFolderAndMoveTalksToTopLevel,
   deleteTalkForOwner,
   deleteTalkMember,
+  deleteTalkMessagesAtomic,
   deleteTalkThread,
   enqueueTalkTurnAtomic,
+  failInterruptedRunsOnStartup,
   failRunAndPromoteNextAtomic,
   getIdempotencyCache,
   getOrCreateDefaultThread,
@@ -1107,6 +1109,199 @@ describe('accessors-pg slice 1: talks/folders/members/threads', () => {
     await withUserContext(USER_A_ID, async () => {
       const final = await listTalkRunsForTalk(talkId);
       expect(final.every((r) => r.status === 'cancelled')).toBe(true);
+    });
+  });
+
+  // ── deleteTalkMessagesAtomic ───────────────────────────────────────
+
+  it('deleteTalkMessagesAtomic: deletes batch, NULLs trigger refs, emits outbox', async () => {
+    const { talkId, threadId, msgIdA, msgIdB } = await withUserContext(
+      USER_A_ID,
+      async () => {
+        const t = await createTalk({
+          ownerId: USER_A_ID,
+          topicTitle: 'EditHistory',
+        });
+        const tid = await getOrCreateDefaultThread({
+          talkId: t.id,
+          ownerId: USER_A_ID,
+        });
+        const a = await createTalkMessage({
+          ownerId: USER_A_ID,
+          talkId: t.id,
+          threadId: tid,
+          role: 'user',
+          content: 'one',
+        });
+        const b = await createTalkMessage({
+          ownerId: USER_A_ID,
+          talkId: t.id,
+          threadId: tid,
+          role: 'assistant',
+          content: 'two',
+        });
+        // Park a (completed) run whose trigger points at message A so we
+        // can verify the trigger reference is NULLed on delete.
+        await createTalkRun({
+          ownerId: USER_A_ID,
+          talkId: t.id,
+          threadId: tid,
+          requestedBy: USER_A_ID,
+          status: 'completed',
+          triggerMessageId: a.id,
+        });
+        return { talkId: t.id, threadId: tid, msgIdA: a.id, msgIdB: b.id };
+      },
+    );
+
+    const result = await withUserContext(USER_A_ID, async () => {
+      return await deleteTalkMessagesAtomic({
+        talkId,
+        threadId,
+        messageIds: [msgIdA, msgIdB],
+      });
+    });
+    expect(result.deletedCount).toBe(2);
+    expect(result.deletedMessageIds.sort()).toEqual([msgIdA, msgIdB].sort());
+
+    await withUserContext(USER_A_ID, async () => {
+      // Messages gone.
+      expect(await getTalkMessageById(msgIdA)).toBeUndefined();
+      expect(await getTalkMessageById(msgIdB)).toBeUndefined();
+      // Trigger reference cleared on parked run.
+      const runs = await listTalkRunsForTalk(talkId);
+      expect(runs.length).toBe(1);
+      expect(runs[0].trigger_message_id).toBeNull();
+      // talk_history_edited event emitted on the talk topic.
+      const events = await getOutboxEventsForTopics([`talk:${talkId}`], 0);
+      const edited = events.find((e) => e.event_type === 'talk_history_edited');
+      expect(edited?.payload).toMatchObject({
+        talkId,
+        deletedCount: 2,
+        threadIds: [threadId],
+      });
+    });
+  });
+
+  it('deleteTalkMessagesAtomic: refuses system messages', async () => {
+    const { talkId, threadId, sysId } = await withUserContext(
+      USER_A_ID,
+      async () => {
+        const t = await createTalk({ ownerId: USER_A_ID, topicTitle: 'Sys' });
+        const tid = await getOrCreateDefaultThread({
+          talkId: t.id,
+          ownerId: USER_A_ID,
+        });
+        const sys = await createTalkMessage({
+          ownerId: USER_A_ID,
+          talkId: t.id,
+          threadId: tid,
+          role: 'system',
+          content: 'system prompt',
+        });
+        return { talkId: t.id, threadId: tid, sysId: sys.id };
+      },
+    );
+
+    await expect(
+      withUserContext(USER_A_ID, async () => {
+        await deleteTalkMessagesAtomic({
+          talkId,
+          threadId,
+          messageIds: [sysId],
+        });
+      }),
+    ).rejects.toThrow(/system messages cannot be deleted/);
+  });
+
+  it('deleteTalkMessagesAtomic: refuses while an active run exists on the thread', async () => {
+    const AGENT_1 = '0c555555-aaaa-9999-9999-000000000099';
+    const { talkId, threadId, msgId } = await withUserContext(
+      USER_A_ID,
+      async () => {
+        const t = await createTalk({ ownerId: USER_A_ID, topicTitle: 'Busy' });
+        const tid = await getOrCreateDefaultThread({
+          talkId: t.id,
+          ownerId: USER_A_ID,
+        });
+        const m = await createTalkMessage({
+          ownerId: USER_A_ID,
+          talkId: t.id,
+          threadId: tid,
+          role: 'user',
+          content: 'in flight',
+        });
+        // enqueue + claim leaves status='running'.
+        await enqueueTalkTurnAtomic({
+          ownerId: USER_A_ID,
+          talkId: t.id,
+          threadId: tid,
+          userId: USER_A_ID,
+          content: 'go',
+          targetAgentIds: [AGENT_1],
+        });
+        await claimQueuedTalkRuns(10);
+        return { talkId: t.id, threadId: tid, msgId: m.id };
+      },
+    );
+
+    await expect(
+      withUserContext(USER_A_ID, async () => {
+        await deleteTalkMessagesAtomic({
+          talkId,
+          threadId,
+          messageIds: [msgId],
+        });
+      }),
+    ).rejects.toBeInstanceOf(TalkActiveRoundError);
+  });
+
+  // ── failInterruptedRunsOnStartup ───────────────────────────────────
+
+  it('failInterruptedRunsOnStartup: marks running runs failed and emits events', async () => {
+    const AGENT_1 = '0c555555-aaaa-9999-9999-000000000201';
+    const AGENT_2 = '0c555555-aaaa-9999-9999-000000000202';
+    const { talkId, runIds } = await withUserContext(USER_A_ID, async () => {
+      const t = await createTalk({
+        ownerId: USER_A_ID,
+        topicTitle: 'BootCleanup',
+      });
+      const tid = await getOrCreateDefaultThread({
+        talkId: t.id,
+        ownerId: USER_A_ID,
+      });
+      const turn = await enqueueTalkTurnAtomic({
+        ownerId: USER_A_ID,
+        talkId: t.id,
+        threadId: tid,
+        userId: USER_A_ID,
+        content: 'startup',
+        targetAgentIds: [AGENT_1, AGENT_2],
+      });
+      // Claim both so they're status='running' — simulates the state
+      // that gets left behind when the worker process restarts.
+      await claimQueuedTalkRuns(10);
+      return { talkId: t.id, runIds: turn.runs.map((r) => r.id) };
+    });
+
+    // Runs as the postgres role outside withUserContext (boot cleanup).
+    const result = await failInterruptedRunsOnStartup();
+    expect(result.failedRunIds.sort()).toEqual([...runIds].sort());
+    expect(result.promotedRunIds).toEqual([]);
+
+    await withUserContext(USER_A_ID, async () => {
+      const final = await listTalkRunsForTalk(talkId);
+      expect(final.every((r) => r.status === 'failed')).toBe(true);
+      expect(
+        final.every((r) => r.cancel_reason === 'interrupted_by_restart'),
+      ).toBe(true);
+      const events = await getOutboxEventsForTopics([`talk:${talkId}`], 0);
+      const failures = events.filter((e) => e.event_type === 'talk_run_failed');
+      expect(failures.length).toBe(2);
+      expect(failures[0].payload).toMatchObject({
+        errorCode: 'interrupted_by_restart',
+        talkId,
+      });
     });
   });
 

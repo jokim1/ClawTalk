@@ -792,6 +792,95 @@ export async function getTalkMessageById(
 }
 
 // ---------------------------------------------------------------------------
+// deleteTalkMessagesAtomic — multi-row delete with validation + outbox emit.
+//
+// Validates: (a) every id resolves to a row on (talkId), (b) no system
+// messages in the batch, (c) every row belongs to the requested thread,
+// (d) the thread has no active runs. Then NULLs trigger_message_id on any
+// talk_runs that point at deleted ids and finally deletes the messages.
+//
+// The sqlite-era executor-session reset is dropped (chassis removal —
+// talk_executor_sessions doesn't exist in pg). Callers don't need to
+// invoke anything similar; executor state lives inside the run record.
+// ---------------------------------------------------------------------------
+
+export async function deleteTalkMessagesAtomic(input: {
+  talkId: string;
+  threadId: string;
+  messageIds: string[];
+  now?: string;
+}): Promise<{ deletedCount: number; deletedMessageIds: string[] }> {
+  const normalizedIds = Array.from(
+    new Set(
+      input.messageIds
+        .map((messageId) => messageId.trim())
+        .filter((messageId) => messageId.length > 0),
+    ),
+  );
+  if (normalizedIds.length === 0) {
+    throw new Error('talk history edit requires at least one message');
+  }
+
+  const db = getDbPg();
+  const rows = await db<
+    Array<{ id: string; role: TalkMessageRole; thread_id: string }>
+  >`
+    select id, role, thread_id
+    from public.talk_messages
+    where talk_id = ${input.talkId}::uuid
+      and id in ${db(normalizedIds)}
+  `;
+  if (rows.length !== normalizedIds.length) {
+    throw new Error('one or more talk messages were not found');
+  }
+  if (rows.some((row) => row.role === 'system')) {
+    throw new Error('system messages cannot be deleted');
+  }
+  const threadIds = Array.from(new Set(rows.map((row) => row.thread_id)));
+  if (threadIds.length !== 1 || threadIds[0] !== input.threadId) {
+    throw new Error('selected messages do not belong to the requested thread');
+  }
+  if (
+    await hasActiveTalkRuns({
+      talkId: input.talkId,
+      threadId: input.threadId,
+    })
+  ) {
+    throw new TalkActiveRoundError('thread');
+  }
+
+  const now = input.now ?? new Date().toISOString();
+  await db`
+    update public.talk_runs
+    set trigger_message_id = null
+    where talk_id = ${input.talkId}::uuid
+      and thread_id = ${input.threadId}::uuid
+      and trigger_message_id in ${db(normalizedIds)}
+  `;
+  await db`
+    delete from public.talk_messages
+    where talk_id = ${input.talkId}::uuid
+      and id in ${db(normalizedIds)}
+  `;
+  await touchTalkUpdatedAt(input.talkId, now);
+  await appendOutboxEvent({
+    topic: `talk:${input.talkId}`,
+    eventType: 'talk_history_edited',
+    payload: {
+      talkId: input.talkId,
+      threadIds: [input.threadId],
+      deletedCount: normalizedIds.length,
+      deletedMessageIds: normalizedIds,
+      editedAt: now,
+    },
+  });
+  return {
+    deletedCount: normalizedIds.length,
+    deletedMessageIds: normalizedIds,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Talk runs
 // ---------------------------------------------------------------------------
 
@@ -2140,6 +2229,72 @@ export async function cancelTalkRunsAtomic(input: {
     cancelledRunIds,
     cancelledRunning,
   };
+}
+
+// ---------------------------------------------------------------------------
+// failInterruptedRunsOnStartup — boot-time cleanup.
+//
+// Runs *outside* withUserContext: this is a process-startup pass that
+// touches every active run regardless of owner, so it executes as the
+// postgres role (RLS bypassed). Marks every status='running' row failed
+// with cancel_reason='interrupted_by_restart' and emits a
+// talk_run_failed outbox event for each so live subscribers learn the
+// run died. The main-channel sibling (failInterruptedMainRunsOnStartup)
+// is dropped — chassis removal.
+// ---------------------------------------------------------------------------
+
+export async function failInterruptedRunsOnStartup(
+  now?: string,
+): Promise<{ failedRunIds: string[]; promotedRunIds: string[] }> {
+  const currentNow = now ?? new Date().toISOString();
+  const db = getDbPg();
+  const runningRuns = await db<
+    Array<{
+      id: string;
+      talk_id: string;
+      thread_id: string;
+      trigger_message_id: string | null;
+      executor_alias: string | null;
+      executor_model: string | null;
+      run_kind: TalkRunKind;
+    }>
+  >`
+    select id, talk_id, thread_id, trigger_message_id, executor_alias,
+           executor_model, run_kind
+    from public.talk_runs
+    where status = 'running' and talk_id is not null
+    order by created_at asc
+  `;
+
+  const failedRunIds: string[] = [];
+  for (const run of runningRuns) {
+    const updated = await db<{ id: string }[]>`
+      update public.talk_runs
+      set status = 'failed',
+          ended_at = ${currentNow}::timestamptz,
+          cancel_reason = 'interrupted_by_restart'
+      where id = ${run.id}::uuid and status = 'running'
+      returning id
+    `;
+    if (updated.length !== 1) continue;
+    failedRunIds.push(run.id);
+    await appendOutboxEvent({
+      topic: `talk:${run.talk_id}`,
+      eventType: 'talk_run_failed',
+      payload: {
+        talkId: run.talk_id,
+        threadId: run.thread_id,
+        runId: run.id,
+        runKind: run.run_kind,
+        triggerMessageId: run.trigger_message_id,
+        errorCode: 'interrupted_by_restart',
+        errorMessage: 'Run interrupted by process restart',
+        executorAlias: run.executor_alias,
+        executorModel: run.executor_model,
+      },
+    });
+  }
+  return { failedRunIds, promotedRunIds: [] };
 }
 
 export async function appendRuntimeTalkMessage(input: {
