@@ -1,0 +1,92 @@
+# Scoring pipeline — GameMakers default (Phase 0p, no SSR)
+# Schema: EDITORIAL_ROOM_CONTRACT.md §3.6 ScoringPipelineCompiledTruth
+#
+# Phase 0p scope: AutoNovel Mechanical (gate, blocking) + AutoNovel Judge
+# (score, weight 1.0). SSR persona-panel scoring is added in Phase 1A
+# when the SSR API rewrite (per SYNTHETICALRESEARCH_API_CHANGES.md) and
+# AnchorSets land.
+
+slug: gamemakers_default
+name: "GameMakers Default (Phase 0p)"
+description: |
+  Default scoring pipeline for GameMakers content during Phase 0p.
+  Two scorers: AutoNovel Mechanical as a gate (blocks ship if penalty
+  too high) and AutoNovel Judge as the score (weighted mean across
+  rubric dimensions). SSR persona-panel scoring is deferred to Phase
+  1A; this pipeline is forward-compatible — Phase 1A adds SSR scorers
+  as additional rows with role: score and recomputes the aggregate.
+
+scorers:
+
+  # ─────────────────────────────────────────────────────────────────
+  # 1. AutoNovel Mechanical — runs first, gates downstream scorers
+  # ─────────────────────────────────────────────────────────────────
+  - scorer_id: autonovel_mechanical
+    role: gate
+    weight: null
+    threshold:
+      score: "<3.0"           # block if slop_penalty >= 3.0
+      direction: "penalty"     # lower is better for this scorer
+    params:
+      ban_lists:
+        - tier1_banned         # delve, utilize, leverage, etc.
+        - tier2_suspicious     # robust, comprehensive, seamless, etc.
+        - tier3_filler         # "it's worth noting", "let's dive into", etc.
+        - structural_ai_tics   # "I'm not saying X. I'm saying Y" patterns
+      em_dash_threshold_per_1000: 15
+      sentence_length_cv_min: 0.3
+      transition_opener_ratio_max: 0.3
+      include_fiction_tells: false
+      # ^ GameMakers is non-fiction. Skip the fiction-AI-tells list
+      #   ("eyes widened", "a wave of X washed over", etc.).
+      include_telling_violations: false
+      # ^ show-don't-tell is a fiction craft rule. Non-fiction is told.
+
+  # ─────────────────────────────────────────────────────────────────
+  # 2. AutoNovel Judge — Opus rubric scorer, returns weighted score
+  # ─────────────────────────────────────────────────────────────────
+  - scorer_id: autonovel_judge
+    role: score
+    weight: 1.0
+    threshold: null            # not a gate; aggregated into composite
+    params:
+      model_id: "claude-opus-4-7"
+      temperature: 0.3
+      max_tokens: 2000
+
+      # Per-dimension weights for the rubric. Sum to 1.0.
+      rubric:
+        voice_match: 0.25      # does it match voice/gamemakers-2026?
+        thesis_clarity: 0.20   # is the position legible in 1–3 sentences?
+        specificity: 0.20      # named studios / numbers / clauses present?
+        falsifiability: 0.15   # claims actually claimable?
+        engagement: 0.10       # would a reader keep going?
+        structural_quality: 0.10
+        # ^ opening, arc, closing per voice/gamemakers-2026
+        #   "Structural defaults" section
+
+      # Mandatory output fields. The judge prompt requires these and
+      # the runtime rejects responses that lack them.
+      mandatory_outputs:
+        - weakest_quote        # judge must quote the weakest passage verbatim
+        - top_3_revisions      # judge must propose 3 specific actionable fixes
+        - persona_fit_qualitative
+        # ^ qualitative read on whether the piece would land with each
+        #   persona in setup_state.audience_persona_slugs
+
+      # Pre-scoring cross-checks the judge runs before assigning numbers.
+      pre_scoring_checks:
+        - quote_test           # find 3 best, 3 weakest sentences
+        - scene_vs_summary     # ratio of scene to summary
+        - ai_pattern_check     # uniform paragraph length, schedule beats, etc.
+        - earned_vs_given      # tension earned through work or asserted
+
+# Aggregation: weighted mean of all role: score scorers (currently just
+# AutoNovel Judge; Phase 1A adds SSR scorers).
+aggregation_rule: weighted_mean
+
+# What happens when the gate scorer (AutoNovel Mechanical) fails:
+on_gate_fail: short_circuit_with_diagnostic
+# ^ AutoNovel Judge does not run; the user sees the slop_penalty
+#   breakdown so they know which words/patterns tripped the gate.
+#   Saves cost and surfaces the actionable diagnostic immediately.
