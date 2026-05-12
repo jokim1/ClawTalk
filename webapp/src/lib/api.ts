@@ -1927,6 +1927,7 @@ export type RegisteredAgent = {
   toolPermissions: Record<string, boolean>;
   personaRole: string | null;
   systemPrompt: string | null;
+  description: string | null;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -1981,6 +1982,7 @@ export async function createRegisteredAgent(input: {
   toolPermissionsJson?: string;
   personaRole?: string;
   systemPrompt?: string;
+  description?: string;
 }): Promise<RegisteredAgent> {
   return apiMutationRequest<RegisteredAgent>('/api/v1/registered-agents', {
     method: 'POST',
@@ -1997,6 +1999,7 @@ export async function updateRegisteredAgent(input: {
   toolPermissionsJson?: string;
   personaRole?: string | null;
   systemPrompt?: string | null;
+  description?: string | null;
   enabled?: boolean;
 }): Promise<RegisteredAgent> {
   const { agentId, ...body } = input;

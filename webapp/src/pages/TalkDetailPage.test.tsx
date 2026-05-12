@@ -4688,6 +4688,7 @@ function buildRegisteredAgent(
     toolPermissions: input.toolPermissions ?? { web: true, connectors: true },
     personaRole: input.personaRole ?? 'assistant',
     systemPrompt: input.systemPrompt ?? null,
+    description: input.description ?? null,
     enabled: input.enabled ?? true,
     createdAt: input.createdAt ?? '2026-03-06T00:00:00.000Z',
     updatedAt: input.updatedAt ?? '2026-03-06T00:00:00.000Z',

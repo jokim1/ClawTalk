@@ -29,6 +29,7 @@ type AgentDraft = {
   providerId: string;
   modelId: string;
   personaRole: string;
+  description: string;
   systemPrompt: string;
   toolPermissions: Record<string, boolean>;
   enabled: boolean;
@@ -412,6 +413,7 @@ export function RegisteredAgentsPanel(props: Props): JSX.Element {
       providerId: defaultProviderId,
       modelId: defaultModelId,
       personaRole: '',
+      description: '',
       systemPrompt: '',
       toolPermissions: buildDefaultRegisteredAgentToolPermissions(),
       enabled: true,
@@ -436,6 +438,7 @@ export function RegisteredAgentsPanel(props: Props): JSX.Element {
         providerId: createDraft.providerId,
         modelId: createDraft.modelId,
         personaRole: createDraft.personaRole || undefined,
+        description: createDraft.description || undefined,
         systemPrompt: createDraft.systemPrompt || undefined,
         toolPermissionsJson: JSON.stringify(createDraft.toolPermissions),
       };
@@ -464,6 +467,7 @@ export function RegisteredAgentsPanel(props: Props): JSX.Element {
       providerId: agent.providerId,
       modelId: agent.modelId,
       personaRole: agent.personaRole || '',
+      description: agent.description || '',
       systemPrompt: agent.systemPrompt || '',
       toolPermissions: { ...agent.toolPermissions },
       enabled: agent.enabled,
@@ -489,6 +493,7 @@ export function RegisteredAgentsPanel(props: Props): JSX.Element {
         providerId: editDraft.providerId,
         modelId: editDraft.modelId,
         personaRole: editDraft.personaRole || null,
+        description: editDraft.description || null,
         systemPrompt: editDraft.systemPrompt || null,
         toolPermissionsJson: JSON.stringify(editDraft.toolPermissions),
         enabled: editDraft.enabled,
@@ -727,11 +732,23 @@ function AgentForm({
       </label>
 
       <label className="agent-form-field agent-form-field-full">
-        <span>System Prompt (optional)</span>
+        <span>Description (optional)</span>
+        <textarea
+          value={draft.description}
+          onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+          placeholder="Short summary that shows up in the Talk invite picker"
+          disabled={!canManage}
+          rows={2}
+          className="agent-form-textarea"
+        />
+      </label>
+
+      <label className="agent-form-field agent-form-field-full">
+        <span>System Prompt Template (optional)</span>
         <textarea
           value={draft.systemPrompt}
           onChange={(e) => setDraft({ ...draft, systemPrompt: e.target.value })}
-          placeholder="Custom instructions for this agent"
+          placeholder="Persona instructions sent as the system prompt for every Talk run"
           disabled={!canManage}
           rows={3}
           className="agent-form-textarea"
@@ -859,6 +876,11 @@ function AgentCardView({
                 <span className="registered-agent-disabled">Disabled</span>
               )}
             </div>
+            {agent.description ? (
+              <p className="registered-agent-description">
+                {agent.description}
+              </p>
+            ) : null}
             <p
               className={
                 agent.executionPreview.ready

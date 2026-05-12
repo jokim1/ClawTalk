@@ -8674,11 +8674,23 @@ export function TalkDetailPage({
                         )
                         .map((ra) => (
                           <option key={ra.id} value={ra.id}>
-                            {ra.name} ({ra.modelId})
+                            {ra.name}
+                            {ra.personaRole ? ` · ${ra.personaRole}` : ''} (
+                            {ra.modelId})
                           </option>
                         ))}
                     </select>
                   </label>
+                  {(() => {
+                    const persona = registeredAgentsCatalog.find(
+                      (ra) => ra.id === agent.id,
+                    );
+                    return persona?.description ? (
+                      <p className="talk-llm-meta talk-agent-persona-blurb">
+                        {persona.description}
+                      </p>
+                    ) : null;
+                  })()}
                   <label>
                     <span>Nickname</span>
                     <input
@@ -8783,7 +8795,9 @@ export function TalkDetailPage({
                       )
                       .map((ra) => (
                         <option key={ra.id} value={ra.id}>
-                          {ra.name} ({ra.modelId})
+                          {ra.name}
+                          {ra.personaRole ? ` · ${ra.personaRole}` : ''} (
+                          {ra.modelId})
                         </option>
                       ))}
                   </select>

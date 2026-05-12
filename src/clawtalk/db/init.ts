@@ -536,6 +536,7 @@ function createClawtalkSchema(database: Database.Database): void {
       tool_permissions_json TEXT NOT NULL,
       persona_role TEXT,
       system_prompt TEXT,
+      description TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -1516,6 +1517,7 @@ function migrateRegisteredAgentsTable(database: Database.Database): void {
       tool_permissions_json TEXT NOT NULL DEFAULT '{}',
       persona_role TEXT,
       system_prompt TEXT,
+      description TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -1700,6 +1702,11 @@ function migrateAddMissingColumns(database: Database.Database): void {
     {
       table: 'registered_agents',
       column: 'system_prompt',
+      definition: 'TEXT',
+    },
+    {
+      table: 'registered_agents',
+      column: 'description',
       definition: 'TEXT',
     },
     // talks — folder + ordering support

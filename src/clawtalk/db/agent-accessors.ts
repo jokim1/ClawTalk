@@ -176,6 +176,7 @@ export interface RegisteredAgentRecord {
   tool_permissions_json: string;
   persona_role: string | null;
   system_prompt: string | null;
+  description: string | null;
   enabled: number;
   created_at: string;
   updated_at: string;
@@ -208,6 +209,7 @@ export interface RegisteredAgentSnapshot {
   toolPermissions: Record<string, boolean>;
   personaRole: string | null;
   systemPrompt: string | null;
+  description: string | null;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -248,6 +250,7 @@ export function toAgentSnapshot(
     toolPermissions,
     personaRole: record.persona_role,
     systemPrompt: record.system_prompt,
+    description: record.description,
     enabled: record.enabled === 1,
     createdAt: record.created_at,
     updatedAt: record.updated_at,
@@ -321,6 +324,7 @@ export function createRegisteredAgent(params: {
   toolPermissionsJson?: string;
   personaRole?: string;
   systemPrompt?: string;
+  description?: string;
 }): RegisteredAgentRecord {
   const now = new Date().toISOString();
   const agentId = randomUUID();
@@ -347,9 +351,11 @@ export function createRegisteredAgent(params: {
     .prepare(
       `
     INSERT INTO registered_agents (
-      id, name, provider_id, model_id, tool_permissions_json, persona_role, system_prompt, enabled, created_at, updated_at
+      id, name, provider_id, model_id, tool_permissions_json,
+      persona_role, system_prompt, description,
+      enabled, created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
     )
     .run(
@@ -360,6 +366,7 @@ export function createRegisteredAgent(params: {
       normalizedJson,
       params.personaRole || null,
       params.systemPrompt || null,
+      params.description || null,
       1,
       now,
       now,
@@ -386,6 +393,7 @@ export function updateRegisteredAgent(
     toolPermissionsJson: string;
     personaRole: string | null;
     systemPrompt: string | null;
+    description: string | null;
     enabled: boolean;
   }>,
 ): RegisteredAgentRecord | undefined {
@@ -435,6 +443,10 @@ export function updateRegisteredAgent(
   if (updates.systemPrompt !== undefined) {
     setClauses.push('system_prompt = ?');
     values.push(updates.systemPrompt);
+  }
+  if (updates.description !== undefined) {
+    setClauses.push('description = ?');
+    values.push(updates.description);
   }
   if (updates.enabled !== undefined) {
     setClauses.push('enabled = ?');
