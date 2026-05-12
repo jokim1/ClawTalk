@@ -234,9 +234,7 @@ describe('extractJwksEnv', () => {
   it('returns null when bindings are missing', () => {
     expect(extractJwksEnv(null)).toBeNull();
     expect(extractJwksEnv({})).toBeNull();
-    expect(
-      extractJwksEnv({ SUPABASE_PROJECT_URL: 'https://x' }),
-    ).toBeNull();
+    expect(extractJwksEnv({ SUPABASE_PROJECT_URL: 'https://x' })).toBeNull();
   });
 
   it('returns env when SUPABASE_PROJECT_URL + JWKS_CACHE are present', () => {

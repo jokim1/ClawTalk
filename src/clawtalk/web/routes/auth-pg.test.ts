@@ -9,10 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CLAWTALK_ALLOWED_ORIGINS } from '../../config.js';
 import { handleAuthCallback } from './auth-callback.js';
 import { handleAuthLogoutWithEnv } from './auth-logout.js';
-import {
-  handleAuthRefresh,
-  handleAuthRefreshWithEnv,
-} from './auth-refresh.js';
+import { handleAuthRefresh, handleAuthRefreshWithEnv } from './auth-refresh.js';
 import type { SupabaseAuthEnv } from '../middleware/supabase-api.js';
 
 const VALID_ORIGIN = CLAWTALK_ALLOWED_ORIGINS[0] ?? 'http://localhost:5173';
@@ -139,10 +136,7 @@ const REFRESH_ENV: SupabaseAuthEnv = {
   SUPABASE_PUBLISHABLE_KEY: 'pk_test',
 };
 
-function newReq(opts: {
-  cookie?: string;
-  origin?: string;
-}): Request {
+function newReq(opts: { cookie?: string; origin?: string }): Request {
   const headers = new Headers();
   if (opts.cookie) headers.set('cookie', opts.cookie);
   headers.set('origin', opts.origin ?? VALID_ORIGIN);
@@ -180,10 +174,7 @@ describe('POST /api/v1/auth/refresh', () => {
   });
 
   it('returns 400 when eb_rt cookie shape is invalid', async () => {
-    const res = await callRefresh(
-      newReq({ cookie: 'eb_rt=!!!' }),
-      REFRESH_ENV,
-    );
+    const res = await callRefresh(newReq({ cookie: 'eb_rt=!!!' }), REFRESH_ENV);
     expect(res.status).toBe(400);
   });
 

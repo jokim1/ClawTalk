@@ -19,10 +19,7 @@
 // Mirrors editorialroom's same-named module.
 
 import { logger } from '../../../logger.js';
-import {
-  ACCESS_TOKEN_COOKIE,
-  parseCookieHeader,
-} from '../cookies.js';
+import { ACCESS_TOKEN_COOKIE, parseCookieHeader } from '../cookies.js';
 import { AuthContext } from '../types.js';
 import { type JwksEnv, verifyJwt } from './jwks.js';
 

@@ -9,10 +9,7 @@
 // Anything outside this file that hand-rolls a Set-Cookie for these
 // three names is a bug.
 
-import {
-  ACCESS_TOKEN_TTL_SEC,
-  REFRESH_TOKEN_TTL_SEC,
-} from '../config.js';
+import { ACCESS_TOKEN_TTL_SEC, REFRESH_TOKEN_TTL_SEC } from '../config.js';
 
 // Cookie names locked at CLOUD_TARGET §3.1 — shared with editorialroom.
 export const ACCESS_TOKEN_COOKIE = 'eb_at';
