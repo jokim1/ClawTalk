@@ -7,9 +7,9 @@ import {
   completeDevCallback,
   getAuthConfig,
   startGoogleAuth,
-} from '../lib/session-api';
+} from '../lib/api';
 
-vi.mock('../lib/session-api', () => ({
+vi.mock('../lib/api', () => ({
   getAuthConfig: vi.fn(),
   startGoogleAuth: vi.fn(),
   completeDevCallback: vi.fn(),

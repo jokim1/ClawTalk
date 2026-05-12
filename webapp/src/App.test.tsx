@@ -1,20 +1,18 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { App } from './App';
 
-// PR-1 of the PURGE deleted the ClawTalk shell, sidebar, talks/main-channel
-// pages, and AvatarMenu. App.tsx now renders only the editorial product:
-// loading → sign-in → editorial routes.
-
 describe('App', () => {
   afterEach(() => {
     cleanup();
+    window.localStorage.clear();
     vi.unstubAllGlobals();
   });
 
-  it('shows sign-in when the session call returns 401', async () => {
+  it('shows sign-in and hides dev quick login when dev mode is disabled', async () => {
     mockFetchByPath({
       '/api/v1/session/me': [
         jsonResponse(401, {
@@ -39,115 +37,462 @@ describe('App', () => {
       ],
     });
 
-    renderWithRouter('/');
+    renderWithRouter('/app/talks');
+    await screen.findByRole('heading', { name: 'ClawRocket' });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('heading', { name: 'Developer Quick Login' }),
+      ).toBeNull(),
+    );
+  });
+
+  it('shows dev quick login when dev mode is enabled', async () => {
+    mockFetchByPath({
+      '/api/v1/session/me': [
+        jsonResponse(401, {
+          ok: false,
+          error: {
+            code: 'unauthorized',
+            message: 'Authentication is required',
+          },
+        }),
+      ],
+      '/api/v1/auth/refresh': [
+        jsonResponse(401, {
+          ok: false,
+          error: { code: 'invalid_refresh_token', message: 'Refresh failed' },
+        }),
+      ],
+      '/api/v1/auth/config': [
+        jsonResponse(200, {
+          ok: true,
+          data: { devMode: true },
+        }),
+      ],
+    });
+
+    renderWithRouter('/app/talks');
+    await screen.findByRole('heading', { name: 'ClawRocket' });
+    await screen.findByRole('heading', { name: 'Developer Quick Login' });
+  });
+
+  it('renders talks list when session is authenticated', async () => {
+    mockFetchByPath({
+      '/api/v1/session/me': [
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            user: {
+              id: 'u1',
+              email: 'owner@example.com',
+              displayName: 'Owner',
+              role: 'owner',
+            },
+          },
+        }),
+      ],
+      '/api/v1/talks/sidebar': [
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            items: [
+              {
+                id: 'talk-1',
+                type: 'talk',
+                title: 'Family Planning',
+                status: 'active',
+                sortOrder: 0,
+              },
+            ],
+          },
+        }),
+      ],
+    });
+
+    renderWithRouter('/app/talks');
+    await screen.findByRole('heading', { name: 'Talks' });
+    expect(screen.getByText('ClawTalk')).toBeTruthy();
+    expect(screen.getByRole('searchbox', { name: 'Search' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Help' })).toHaveAttribute(
+      'href',
+      'https://clawtalk.app/help',
+    );
+    expect(
+      screen.getByRole('button', { name: 'Collapse sidebar' }),
+    ).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Home' })).toBeTruthy();
+    expect(
+      screen.getAllByRole('link', { name: /Family Planning/i }),
+    ).toHaveLength(2);
+  });
+
+  it('collapses and re-expands the sidebar from the top header', async () => {
+    const user = userEvent.setup();
+    mockFetchByPath({
+      '/api/v1/session/me': [
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            user: {
+              id: 'u1',
+              email: 'owner@example.com',
+              displayName: 'Owner',
+              role: 'owner',
+            },
+          },
+        }),
+      ],
+      '/api/v1/talks/sidebar': [
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            items: [],
+          },
+        }),
+      ],
+    });
+
+    renderWithRouter('/app/talks');
+    const collapseButton = await screen.findByRole('button', {
+      name: 'Collapse sidebar',
+    });
+    expect(screen.getByRole('link', { name: 'Home' })).toBeTruthy();
+
+    await user.click(collapseButton);
+
+    expect(screen.getByRole('button', { name: 'Expand sidebar' })).toBeTruthy();
+    expect(screen.queryByRole('link', { name: 'Home' })).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Expand sidebar' }));
 
     expect(
-      await screen.findByRole('heading', { name: /editorialboard/i }),
-    ).toBeInTheDocument();
+      await screen.findByRole('button', { name: 'Collapse sidebar' }),
+    ).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Home' })).toBeTruthy();
   });
 
-  it('redirects authenticated users from / into /editorial/setup', async () => {
-    mockFetchByPath(authenticatedRoutes());
+  it('shows talk activity and unread badges in the sidebar', async () => {
+    window.localStorage.setItem(
+      'clawtalk.talkReadMarkers',
+      JSON.stringify({
+        'talk-1': {
+          messageCount: 2,
+          lastMessageAt: '2026-03-18T09:00:00.000Z',
+        },
+      }),
+    );
 
-    renderWithRouter('/');
+    mockFetchByPath({
+      '/api/v1/session/me': [
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            user: {
+              id: 'u1',
+              email: 'owner@example.com',
+              displayName: 'Owner',
+              role: 'owner',
+            },
+          },
+        }),
+      ],
+      '/api/v1/talks/sidebar': [
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            items: [
+              {
+                id: 'talk-1',
+                type: 'talk',
+                title: 'Family Planning',
+                status: 'active',
+                sortOrder: 0,
+                lastMessageAt: '2026-03-18T10:00:00.000Z',
+                messageCount: 5,
+                hasActiveRun: true,
+              },
+            ],
+          },
+        }),
+      ],
+    });
 
-    await waitFor(
-      () => {
-        expect(screen.getByText(/editorial room/i)).toBeInTheDocument();
-      },
-      { timeout: 4000 },
+    renderWithRouter('/app/talks');
+    await screen.findByRole('heading', { name: 'Talks' });
+    expect(screen.getByLabelText('Response in progress')).toBeTruthy();
+    expect(screen.getByLabelText('3 unread messages')).toBeTruthy();
+  });
+
+  it('does not show unread badges when only the stored count is stale', async () => {
+    window.localStorage.setItem(
+      'clawtalk.talkReadMarkers',
+      JSON.stringify({
+        'talk-1': {
+          messageCount: 2,
+          lastMessageAt: '2026-03-18T10:00:00.000Z',
+        },
+      }),
+    );
+
+    mockFetchByPath({
+      '/api/v1/session/me': [
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            user: {
+              id: 'u1',
+              email: 'owner@example.com',
+              displayName: 'Owner',
+              role: 'owner',
+            },
+          },
+        }),
+      ],
+      '/api/v1/talks/sidebar': [
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            items: [
+              {
+                id: 'talk-1',
+                type: 'talk',
+                title: 'Family Planning',
+                status: 'active',
+                sortOrder: 0,
+                lastMessageAt: '2026-03-18T10:00:00.000Z',
+                messageCount: 5,
+                hasActiveRun: false,
+              },
+            ],
+          },
+        }),
+      ],
+    });
+
+    renderWithRouter('/app/talks');
+    await screen.findByRole('heading', { name: 'Talks' });
+    expect(screen.queryByLabelText(/unread messages/i)).toBeNull();
+
+    await waitFor(() =>
+      expect(
+        JSON.parse(
+          window.localStorage.getItem('clawtalk.talkReadMarkers') || '{}',
+        ),
+      ).toMatchObject({
+        'talk-1': {
+          messageCount: 5,
+          lastMessageAt: '2026-03-18T10:00:00.000Z',
+        },
+      }),
     );
   });
 
-  it('redirects unknown routes to /editorial/setup when authenticated', async () => {
-    mockFetchByPath(authenticatedRoutes());
+  it('returns to sign-in when a later API call returns 401', async () => {
+    mockFetchByPath({
+      '/api/v1/session/me': [
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            user: {
+              id: 'u1',
+              email: 'owner@example.com',
+              displayName: 'Owner',
+              role: 'owner',
+            },
+          },
+        }),
+      ],
+      '/api/v1/talks/sidebar': [
+        jsonResponse(401, {
+          ok: false,
+          error: {
+            code: 'unauthorized',
+            message: 'Authentication is required',
+          },
+        }),
+      ],
+      '/api/v1/auth/refresh': [
+        jsonResponse(401, {
+          ok: false,
+          error: { code: 'invalid_refresh_token', message: 'Refresh failed' },
+        }),
+      ],
+      '/api/v1/auth/config': [
+        jsonResponse(200, {
+          ok: true,
+          data: { devMode: false },
+        }),
+      ],
+    });
 
-    renderWithRouter('/some/unknown/path');
-
-    await waitFor(
-      () => {
-        expect(screen.getByText(/editorial room/i)).toBeInTheDocument();
-      },
-      { timeout: 4000 },
+    renderWithRouter('/app/talks');
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'ClawRocket' })).toBeTruthy(),
     );
+  });
+
+  it('shows sign-in after clicking sign out from authenticated shell', async () => {
+    mockFetchByPath({
+      '/api/v1/session/me': [
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            user: {
+              id: 'u1',
+              email: 'owner@example.com',
+              displayName: 'Owner',
+              role: 'owner',
+            },
+          },
+        }),
+      ],
+      '/api/v1/talks/sidebar': [
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            items: [],
+          },
+        }),
+      ],
+      '/api/v1/auth/logout': [
+        jsonResponse(200, {
+          ok: true,
+          data: { loggedOut: true },
+        }),
+      ],
+      '/api/v1/auth/config': [
+        jsonResponse(200, {
+          ok: true,
+          data: { devMode: false },
+        }),
+      ],
+    });
+
+    renderWithRouter('/app/talks');
+    const avatarButton = await screen.findByRole('button', {
+      name: 'Owner',
+    });
+    avatarButton.click();
+    const logOutButton = await screen.findByRole('menuitem', {
+      name: 'Log Out',
+    });
+    logOutButton.click();
+
+    await screen.findByRole('heading', { name: 'ClawRocket' });
+  });
+
+  it('shows unavailable talk state for 404 detail fetch', async () => {
+    mockFetchByPath({
+      '/api/v1/session/me': [
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            user: {
+              id: 'u1',
+              email: 'owner@example.com',
+              displayName: 'Owner',
+              role: 'owner',
+            },
+          },
+        }),
+      ],
+      '/api/v1/talks/sidebar': [
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            items: [],
+          },
+        }),
+      ],
+      '/api/v1/talks/talk-missing': [
+        jsonResponse(404, {
+          ok: false,
+          error: { code: 'talk_not_found', message: 'Talk not found' },
+        }),
+      ],
+      '/api/v1/talks/talk-missing/messages': [
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            talkId: 'talk-missing',
+            messages: [],
+            page: { limit: 100, count: 0, beforeCreatedAt: null },
+          },
+        }),
+      ],
+      '/api/v1/talks/talk-missing/threads': [
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            threads: [],
+          },
+        }),
+      ],
+      '/api/v1/talks/talk-missing/agents': [
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            talkId: 'talk-missing',
+            agents: [],
+          },
+        }),
+      ],
+      '/api/v1/talks/talk-missing/runs': [
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            talkId: 'talk-missing',
+            runs: [],
+            page: { limit: 50, count: 0, offset: 0 },
+          },
+        }),
+      ],
+    });
+
+    renderWithRouter('/app/talks/talk-missing');
+    await screen.findByRole('heading', { name: 'Talk Unavailable' });
   });
 });
 
-// ─── Test helpers ───────────────────────────────────────────────────────────
-
-function renderWithRouter(initialPath: string) {
-  return render(
-    <MemoryRouter initialEntries={[initialPath]}>
+function renderWithRouter(initialEntry: string): void {
+  render(
+    <MemoryRouter initialEntries={[initialEntry]}>
       <App />
     </MemoryRouter>,
   );
 }
 
+function mockFetchByPath(
+  responsesByPath: Record<string, Response | Response[]>,
+): void {
+  const queues = new Map(
+    Object.entries(responsesByPath).map(([path, responses]) => [
+      path,
+      Array.isArray(responses) ? [...responses] : [responses],
+    ]),
+  );
+
+  vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
+    const url =
+      typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
+    const path = new URL(url, 'http://localhost').pathname;
+    const queue = queues.get(path);
+    if (!queue || queue.length === 0) {
+      throw new Error(`No mocked response left for fetch(${path})`);
+    }
+    return queue.shift()!;
+  });
+}
+
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+    },
   });
-}
-
-type ResponseQueue = Response[];
-
-function mockFetchByPath(routes: Record<string, ResponseQueue>): void {
-  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-    const url = typeof input === 'string' ? input : input.toString();
-    const path = url.startsWith('http')
-      ? new URL(url).pathname
-      : url.split('?')[0];
-    const queue = routes[path];
-    if (!queue || queue.length === 0) {
-      // Default 404 for any path the test didn't mock — keeps page renders
-      // from blowing up on background data fetches we don't care about.
-      return jsonResponse(404, {
-        ok: false,
-        error: { code: 'unmocked_path', message: `No mock for ${path}` },
-      });
-    }
-    const next = queue.shift()!;
-    return next.clone();
-  });
-  vi.stubGlobal('fetch', fetchMock);
-}
-
-function authenticatedRoutes(): Record<string, ResponseQueue> {
-  return {
-    '/api/v1/session/me': [
-      jsonResponse(200, {
-        ok: true,
-        data: {
-          user: {
-            id: 'u_test',
-            email: 'owner@example.com',
-            displayName: 'Owner',
-            role: 'owner',
-            createdAt: new Date().toISOString(),
-          },
-        },
-      }),
-    ],
-    // Editorial Setup polls /api/v1/agents and the OAuth status endpoints
-    // for the LLM Room provider list — return empty so the page renders.
-    '/api/v1/agents': [
-      jsonResponse(200, {
-        ok: true,
-        data: { additionalProviders: [] },
-      }),
-    ],
-    '/api/v1/agents/providers/anthropic/oauth/status': [
-      jsonResponse(200, {
-        ok: true,
-        data: { connected: false },
-      }),
-    ],
-    '/api/v1/agents/providers/openai/oauth/status': [
-      jsonResponse(200, {
-        ok: true,
-        data: { connected: false },
-      }),
-    ],
-  };
 }

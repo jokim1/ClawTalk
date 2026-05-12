@@ -1,7 +1,0 @@
-{
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://clawrocket.dev/contracts/editorial-room/v0/top_k_candidate.schema.json",
-  "title": "TopKCandidate (wrapper)",
-  "description": "Standalone wrapper for fixture validation only. Canonical definition lives in optimization_round.schema.json#/definitions/TopKCandidate. NOTE: §10 of EDITORIAL_ROOM_CONTRACT.md doesn't list this schema explicitly, but §9.1 lists `top_k_candidate.full.json` as a fixture and per-fixture validation requires a self-addressable schema. Shipped as a sibling wrapper to keep the contract self-consistent.",
-  "$ref": "https://clawrocket.dev/contracts/editorial-room/v0/optimization_round.schema.json#/definitions/TopKCandidate"
-}

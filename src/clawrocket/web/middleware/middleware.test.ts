@@ -2,12 +2,15 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   _initTestDatabase,
+  saveIdempotencyCache,
   upsertUser,
   upsertWebSession,
 } from '../../db/index.js';
 import { hashSessionToken } from '../../identity/session.js';
+import { hashRequestBody } from '../../security/hash.js';
 import { authenticateRequest } from './auth.js';
 import { validateCsrfToken } from './csrf.js';
+import { idempotencyPrecheck } from './idempotency.js';
 import { _resetRateLimitStateForTests, checkRateLimit } from './rate-limit.js';
 
 describe('web middleware', () => {
@@ -77,6 +80,70 @@ describe('web middleware', () => {
       csrfHeader: 'abc',
     });
     expect(good.ok).toBe(true);
+  });
+
+  it('replays idempotent requests with same key and body', () => {
+    saveIdempotencyCache({
+      idempotency_key: 'idem-1',
+      user_id: 'u1',
+      method: 'POST',
+      path: '/api/v1/talks/t1/chat/cancel',
+      request_hash: hashRequestBody('{}'),
+      status_code: 200,
+      response_body: '{"ok":true}',
+      created_at: new Date().toISOString(),
+      expires_at: new Date(Date.now() + 3600_000).toISOString(),
+    });
+
+    const replay = idempotencyPrecheck({
+      userId: 'u1',
+      idempotencyKey: 'idem-1',
+      method: 'POST',
+      path: '/api/v1/talks/t1/chat/cancel',
+      bodyText: '{}',
+    });
+
+    expect(replay.replay).toBe(true);
+    expect(replay.response?.statusCode).toBe(200);
+  });
+
+  it('rejects idempotency key reused with different request body', () => {
+    saveIdempotencyCache({
+      idempotency_key: 'idem-mismatch',
+      user_id: 'u1',
+      method: 'POST',
+      path: '/api/v1/talks/t1/chat/cancel',
+      request_hash: hashRequestBody('{"a":1}'),
+      status_code: 200,
+      response_body: '{"ok":true}',
+      created_at: new Date().toISOString(),
+      expires_at: new Date(Date.now() + 3600_000).toISOString(),
+    });
+
+    const mismatch = idempotencyPrecheck({
+      userId: 'u1',
+      idempotencyKey: 'idem-mismatch',
+      method: 'POST',
+      path: '/api/v1/talks/t1/chat/cancel',
+      bodyText: '{"a":2}',
+    });
+
+    expect(mismatch.replay).toBe(false);
+    expect(mismatch.error).toContain('different request body');
+  });
+
+  it('allows mutating request precheck with no idempotency key', () => {
+    const result = idempotencyPrecheck({
+      userId: 'u1',
+      idempotencyKey: null,
+      method: 'POST',
+      path: '/api/v1/talks/t1/chat/cancel',
+      bodyText: '{}',
+    });
+
+    expect(result.hasKey).toBe(false);
+    expect(result.replay).toBe(false);
+    expect(result.error).toBeUndefined();
   });
 
   it('enforces per-user rate limits', () => {

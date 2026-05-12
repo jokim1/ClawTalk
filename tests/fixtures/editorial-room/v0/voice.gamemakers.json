@@ -1,6 +1,0 @@
-{
-  "schema_version": "0",
-  "slug": "voice/gamemakers-2026",
-  "name": "GameMakers (2026)",
-  "body_md": "# GameMakers voice\n\nReader: indie devs surviving the Embracer-era platform shifts.\n\n## Signature moves\n- Declarative sentences. No 'I think.'\n- First-person plural sparingly.\n- Numbers > adjectives.\n- Quote primary sources by name.\n- Counter-take in every piece, sourced.\n\n## Anti-patterns\n- Clickbait headlines.\n- Round numbers without provenance.\n- 'As we've previously discussed.'\n- Hedge stacking ('it could be argued that perhaps').\n\n## Cadence\n- Lede ≤ 60 words.\n- Body paragraphs ≤ 4 sentences.\n- Section breaks every ~300 words.\n- Close on a specific forward-looking question.\n"
-}

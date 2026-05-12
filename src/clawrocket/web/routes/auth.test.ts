@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { _initTestDatabase } from '../../db/index.js';
 import { _resetRateLimitStateForTests } from '../middleware/rate-limit.js';
-import { createWebServer, WebServerHandle } from '../editorial-app.js';
+import { createWebServer, WebServerHandle } from '../server.js';
 
 describe('auth routes (phase 1)', () => {
   let server: WebServerHandle;
@@ -72,7 +72,7 @@ describe('auth routes (phase 1)', () => {
     expect(meBody.data.user.email).toBe('owner@example.com');
   });
 
-  it('redirects browser callback requests to root after setting cookies', async () => {
+  it('redirects browser callback requests to /app/talks after setting cookies', async () => {
     const startRes = await server.request('/api/v1/auth/google/start', {
       method: 'POST',
     });
@@ -92,7 +92,7 @@ describe('auth routes (phase 1)', () => {
       },
     );
     expect(callbackRes.status).toBe(302);
-    expect(callbackRes.headers.get('location')).toBe('/');
+    expect(callbackRes.headers.get('location')).toBe('/app/talks');
     expect(callbackRes.headers.get('cache-control')).toBe('no-store');
 
     const cookies = getCookieHeader(callbackRes);
@@ -137,11 +137,11 @@ describe('auth routes (phase 1)', () => {
     );
   });
 
-  it('falls back to root when returnTo is unsafe', async () => {
+  it('falls back to /app/talks when returnTo is unsafe', async () => {
     const unsafeReturnToCases = [
       '//evil.com',
       '/\\evil.com',
-      '/editorial%0d%0aX-Injected: yes',
+      '/app/talks%0d%0aX-Injected: yes',
     ];
 
     for (const returnTo of unsafeReturnToCases) {
@@ -168,7 +168,7 @@ describe('auth routes (phase 1)', () => {
         },
       );
       expect(callbackRes.status).toBe(302);
-      expect(callbackRes.headers.get('location')).toBe('/');
+      expect(callbackRes.headers.get('location')).toBe('/app/talks');
     }
   });
 

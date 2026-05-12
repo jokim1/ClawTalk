@@ -19,7 +19,7 @@ describe('auth routes in public mode', () => {
 
     const db = await import('../../db/index.js');
     db._initTestDatabase();
-    const { createWebServer } = await import('../editorial-app.js');
+    const { createWebServer } = await import('../server.js');
     return createWebServer({
       host: '127.0.0.1',
       port: 0,

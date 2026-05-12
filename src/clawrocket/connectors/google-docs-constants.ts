@@ -1,0 +1,1 @@
+export const MAX_GOOGLE_DOCS_BATCH_REQUESTS = 50;

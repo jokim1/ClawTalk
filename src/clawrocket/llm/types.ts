@@ -157,44 +157,7 @@ export interface TalkRouteUsageCounts {
   assignedTalkCount: number;
 }
 
-// ProviderSecretPayload — what gets encrypted in `LlmProviderSecretRecord`.
-// Discriminated union so we can store API keys (current behavior) plus
-// subscription-OAuth credentials (Anthropic Claude.ai login, OpenAI Codex
-// CLI piggyback) without forking the storage layer.
-//
-// Backwards compatibility: existing rows in the DB encrypted before this
-// change have shape `{ apiKey, organizationId? }` with no `kind` field.
-// `decryptProviderSecret` treats a missing `kind` as `'api_key'` so old
-// rows decode without re-encryption.
-export type ProviderSecretPayload =
-  | ProviderApiKeySecret
-  | ProviderAnthropicOAuthSecret
-  | ProviderOpenaiCodexSecret;
-
-export interface ProviderApiKeySecret {
-  kind: 'api_key';
+export interface ProviderSecretPayload {
   apiKey: string;
   organizationId?: string;
-}
-
-export interface ProviderAnthropicOAuthSecret {
-  kind: 'anthropic_oauth';
-  accessToken: string;
-  refreshToken: string;
-  // ISO-8601 instant when the access token expires.
-  expiresAt: string;
-  // The Claude Code CLI version we sent on the originating User-Agent.
-  // Anthropic gates oauth-routed requests on a recent CLI version; we record
-  // the value so refreshes mirror it.
-  claudeCodeVersion?: string;
-}
-
-export interface ProviderOpenaiCodexSecret {
-  kind: 'openai_codex';
-  accessToken: string;
-  refreshToken?: string;
-  // Account ID returned by Codex CLI's auth.json.
-  accountId?: string;
-  // ISO-8601; optional because Codex CLI's auth.json doesn't always include it.
-  expiresAt?: string;
 }

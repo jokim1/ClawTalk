@@ -1,4 +1,4 @@
-import { BUILTIN_ADDITIONAL_PROVIDERS } from './builtin-providers.js';
+import { BUILTIN_ADDITIONAL_PROVIDERS } from '../agents/builtin-additional-providers.js';
 
 export interface ModelCapabilities {
   supports_tools: boolean;
