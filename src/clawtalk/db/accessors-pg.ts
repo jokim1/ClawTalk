@@ -315,10 +315,7 @@ export async function patchTalkMetadata(input: {
     `;
   }
 
-  if (
-    input.folderId !== undefined &&
-    input.folderId !== existing.folder_id
-  ) {
+  if (input.folderId !== undefined && input.folderId !== existing.folder_id) {
     const sourceFolderId = existing.folder_id;
     // Compact the source list so deleted-position siblings don't keep
     // their gap.
@@ -768,7 +765,10 @@ export async function reorderTalkSidebarItem(input: {
       const talkIds = (await listOwnedFolderTalkIds(sourceFolderId)).filter(
         (id) => id !== input.itemId,
       );
-      const index = Math.max(0, Math.min(input.destinationIndex, talkIds.length));
+      const index = Math.max(
+        0,
+        Math.min(input.destinationIndex, talkIds.length),
+      );
       talkIds.splice(index, 0, input.itemId);
       await writeFolderTalkOrder(sourceFolderId, talkIds);
     }
@@ -783,9 +783,9 @@ export async function reorderTalkSidebarItem(input: {
       .map((item) => ({ type: item.type, id: item.id }));
     await writeRootSidebarOrder(rootItems);
   } else {
-    const sourceTalkIds = (
-      await listOwnedFolderTalkIds(sourceFolderId)
-    ).filter((id) => id !== input.itemId);
+    const sourceTalkIds = (await listOwnedFolderTalkIds(sourceFolderId)).filter(
+      (id) => id !== input.itemId,
+    );
     await writeFolderTalkOrder(sourceFolderId, sourceTalkIds);
   }
 
