@@ -277,7 +277,8 @@ export async function createRegisteredAgent(params: {
   systemPrompt?: string | null;
   description?: string | null;
 }): Promise<RegisteredAgentRecord> {
-  const toolPermissions = params.toolPermissions ?? buildDefaultTalkToolPermissions();
+  const toolPermissions =
+    params.toolPermissions ?? buildDefaultTalkToolPermissions();
   const validation = validateToolPermissions(toolPermissions);
   if (!validation.valid) {
     throw new Error(`Invalid tool permissions: ${validation.error}`);
@@ -339,9 +340,11 @@ export async function updateRegisteredAgent(
       provider_id = coalesce(${updates.providerId ?? null}, provider_id),
       model_id = coalesce(${updates.modelId ?? null}, model_id),
       tool_permissions_json = coalesce(
-        ${normalizedToolPermissions !== undefined
-          ? db.json(normalizedToolPermissions as never)
-          : null},
+        ${
+          normalizedToolPermissions !== undefined
+            ? db.json(normalizedToolPermissions as never)
+            : null
+        },
         tool_permissions_json
       ),
       persona_role = case when ${updates.personaRole !== undefined}::boolean
@@ -491,9 +494,7 @@ export async function getEffectiveToolsForAgent(
 
   const agentPermissions = agent.tool_permissions_json;
   const userPermissions = await listUserToolPermissions();
-  const userPermissionMap = new Map(
-    userPermissions.map((p) => [p.toolId, p]),
-  );
+  const userPermissionMap = new Map(userPermissions.map((p) => [p.toolId, p]));
 
   const result: EffectiveToolAccess[] = [];
   for (const [family, tools] of Object.entries(TOOL_FAMILY_MAP)) {
@@ -514,7 +515,12 @@ export async function getEffectiveToolsForAgent(
         }
       }
     }
-    result.push({ toolFamily: family, runtimeTools, enabled, requiresApproval });
+    result.push({
+      toolFamily: family,
+      runtimeTools,
+      enabled,
+      requiresApproval,
+    });
   }
   return result;
 }
