@@ -1,11 +1,11 @@
-import { getDb } from '../../db.js';
+import { getDbPg } from '../../db-pg.js';
 import {
   getEffectiveToolsForAgent,
   type EffectiveToolAccess,
-} from '../db/agent-accessors.js';
-import type { RegisteredAgentRecord } from '../db/agent-accessors-pg.js';
+  type RegisteredAgentRecord,
+} from '../db/agent-accessors-pg.js';
 import { getSettingValue } from '../db/accessors-pg.js';
-import { decryptProviderSecret } from '../llm/provider-secret-store.js';
+import { decryptProviderSecret } from '../llm/provider-secret-store-pg.js';
 import type { LlmProviderRecord } from '../llm/types.js';
 import {
   resolveExecution,
@@ -121,27 +121,33 @@ const BASE_CONTAINER_ALLOWED_TOOLS = [
   'NotebookEdit',
 ] as const;
 
-function getProviderRecord(providerId: string): LlmProviderRecord | undefined {
-  return getDb()
-    .prepare(`SELECT * FROM llm_providers WHERE id = ? LIMIT 1`)
-    .get(providerId) as LlmProviderRecord | undefined;
+async function getProviderRecord(
+  providerId: string,
+): Promise<LlmProviderRecord | undefined> {
+  const db = getDbPg();
+  const rows = await db<LlmProviderRecord[]>`
+    select * from public.llm_providers where id = ${providerId} limit 1
+  `;
+  return rows[0];
 }
 
-export function getProviderVerificationStatus(
+export async function getProviderVerificationStatus(
   providerId: string,
-):
+): Promise<
   | 'missing'
   | 'not_verified'
   | 'verifying'
   | 'verified'
   | 'invalid'
   | 'unavailable'
-  | null {
-  const row = getDb()
-    .prepare(
-      `SELECT status FROM llm_provider_verifications WHERE provider_id = ? LIMIT 1`,
-    )
-    .get(providerId) as { status: string } | undefined;
+  | null
+> {
+  const db = getDbPg();
+  const rows = await db<{ status: string }[]>`
+    select status from public.llm_provider_verifications
+    where provider_id = ${providerId} limit 1
+  `;
+  const row = rows[0];
   if (!row?.status) return null;
   if (
     row.status === 'missing' ||
@@ -156,18 +162,19 @@ export function getProviderVerificationStatus(
   return null;
 }
 
-export function getAnthropicApiKeyFromDb(): string | null {
-  const row = getDb()
-    .prepare(
-      `SELECT ciphertext FROM llm_provider_secrets WHERE provider_id = 'provider.anthropic' LIMIT 1`,
-    )
-    .get() as { ciphertext: string } | undefined;
+export async function getAnthropicApiKeyFromDb(): Promise<string | null> {
+  const db = getDbPg();
+  const rows = await db<{ ciphertext: string }[]>`
+    select ciphertext from public.llm_provider_secrets
+    where provider_id = 'provider.anthropic' limit 1
+  `;
+  const row = rows[0];
   if (!row?.ciphertext) {
     return null;
   }
 
   try {
-    return decryptProviderSecret(row.ciphertext).apiKey.trim();
+    return (await decryptProviderSecret(row.ciphertext)).apiKey.trim();
   } catch {
     return null;
   }
@@ -199,7 +206,8 @@ export async function resolveContainerCredential(input?: {
     (await getSettingValue('executor.anthropicAuthToken'))?.trim() || null;
   const envOauth = TALK_EXECUTOR_CLAUDE_OAUTH_TOKEN.trim() || null;
   const envAuth = TALK_EXECUTOR_ANTHROPIC_AUTH_TOKEN.trim() || null;
-  const apiKey = getAnthropicApiKeyFromDb() || TALK_EXECUTOR_ANTHROPIC_API_KEY;
+  const dbApiKey = await getAnthropicApiKeyFromDb();
+  const apiKey = dbApiKey || TALK_EXECUTOR_ANTHROPIC_API_KEY;
   const normalizedApiKey = apiKey?.trim() || null;
 
   const inferredAuthMode =
@@ -220,7 +228,7 @@ export async function resolveContainerCredential(input?: {
     }
     return {
       authMode: 'api_key',
-      credentialSource: getAnthropicApiKeyFromDb() ? 'db_secret' : 'env',
+      credentialSource: dbApiKey ? 'db_secret' : 'env',
       secrets: {
         ANTHROPIC_API_KEY: normalizedApiKey,
       },
@@ -299,11 +307,11 @@ function getUnsupportedCodexToolFamilies(
   return Array.from(unsupported);
 }
 
-function resolveCodexHostExecutionPlan(input: {
+async function resolveCodexHostExecutionPlan(input: {
   agent: RegisteredAgentRecord;
   effectiveTools: EffectiveToolAccess[];
   heavyToolFamilies: string[];
-}): HostCodexExecutionPlan {
+}): Promise<HostCodexExecutionPlan> {
   const shellEnabled = hasEnabledToolFamily(input.effectiveTools, 'shell');
   const filesystemEnabled = hasEnabledToolFamily(
     input.effectiveTools,
@@ -335,7 +343,7 @@ function resolveCodexHostExecutionPlan(input: {
     );
   }
 
-  const verificationStatus = getProviderVerificationStatus(
+  const verificationStatus = await getProviderVerificationStatus(
     input.agent.provider_id,
   );
   if (verificationStatus !== 'verified') {
@@ -429,7 +437,7 @@ async function tryResolveDirectExecutionPlan(input: {
     input.configuredAuthMode === 'subscription' &&
     input.allowAnthropicDirectWhenSubscriptionMode === true
   ) {
-    const verificationStatus = getProviderVerificationStatus(
+    const verificationStatus = await getProviderVerificationStatus(
       input.agent.provider_id,
     );
     if (verificationStatus !== 'verified') {
@@ -439,13 +447,17 @@ async function tryResolveDirectExecutionPlan(input: {
 
   try {
     const binding = await resolveExecution(input.agent);
+    const dbApiKey =
+      input.agent.provider_id === 'provider.anthropic'
+        ? await getAnthropicApiKeyFromDb()
+        : null;
     return {
       backend: 'direct_http',
       routeReason: 'normal',
       authPath: 'api_key',
       credentialSource:
         input.agent.provider_id === 'provider.anthropic'
-          ? getAnthropicApiKeyFromDb()
+          ? dbApiKey
             ? 'db_secret'
             : TALK_EXECUTOR_ANTHROPIC_API_KEY
               ? 'env'
@@ -536,18 +548,18 @@ async function tryResolveContainerExecutionPlan(input: {
 
 export async function planExecution(
   agent: RegisteredAgentRecord,
-  userId: string,
+  _userId: string,
 ): Promise<ExecutionPlan> {
-  const effectiveTools = getEffectiveToolsForAgent(agent.id, userId);
+  const effectiveTools = await getEffectiveToolsForAgent(agent.id);
   const browserEnabled = effectiveTools.some(
     (tool) => tool.toolFamily === 'browser' && tool.enabled,
   );
   const heavyToolFamilies = resolveHeavyToolFamilies(effectiveTools);
-  const provider = getProviderRecord(agent.provider_id);
+  const provider = await getProviderRecord(agent.provider_id);
   const configuredAuthMode = await getConfiguredExecutorAuthMode();
 
   if (agent.provider_id === 'provider.openai_codex') {
-    return resolveCodexHostExecutionPlan({
+    return await resolveCodexHostExecutionPlan({
       agent,
       effectiveTools,
       heavyToolFamilies,
@@ -667,14 +679,14 @@ export async function planExecution(
 
 export async function planMainExecution(
   agent: RegisteredAgentRecord,
-  userId: string,
+  _userId: string,
 ): Promise<MainExecutionPlan> {
-  const effectiveTools = getEffectiveToolsForAgent(agent.id, userId);
+  const effectiveTools = await getEffectiveToolsForAgent(agent.id);
   const browserEnabled = effectiveTools.some(
     (tool) => tool.toolFamily === 'browser' && tool.enabled,
   );
   const heavyToolFamilies = resolveHeavyToolFamilies(effectiveTools);
-  const provider = getProviderRecord(agent.provider_id);
+  const provider = await getProviderRecord(agent.provider_id);
   const configuredAuthMode = await getConfiguredExecutorAuthMode();
 
   if (agent.provider_id === 'provider.openai_codex') {
@@ -684,7 +696,7 @@ export async function planMainExecution(
       heavyToolFamilies,
       directPlan: null,
       containerPlan: null,
-      hostCodexPlan: resolveCodexHostExecutionPlan({
+      hostCodexPlan: await resolveCodexHostExecutionPlan({
         agent,
         effectiveTools,
         heavyToolFamilies,

@@ -2812,3 +2812,41 @@ export async function deleteSettingValue(key: string): Promise<void> {
     delete from public.settings_kv where key = ${key}
   `;
 }
+
+// ---------------------------------------------------------------------------
+// Users (public.users; auto-mirrored from auth.users via
+// handle_new_auth_user trigger). RLS-gated by users_self_select policy so
+// callers inside withUserContext only see their own row.
+// ---------------------------------------------------------------------------
+
+export interface UserRecord {
+  id: string;
+  email: string;
+  display_name: string;
+  role: 'owner' | 'admin' | 'member';
+  is_active: boolean;
+  created_at: string;
+  last_login_at: string | null;
+}
+
+export async function getUserById(
+  userId: string,
+): Promise<UserRecord | undefined> {
+  const db = getDbPg();
+  const rows = await db<UserRecord[]>`
+    select * from public.users where id = ${userId}::uuid limit 1
+  `;
+  return rows[0];
+}
+
+export async function updateUserDisplayName(input: {
+  userId: string;
+  displayName: string;
+}): Promise<void> {
+  const db = getDbPg();
+  await db`
+    update public.users
+    set display_name = ${input.displayName}
+    where id = ${input.userId}::uuid
+  `;
+}
