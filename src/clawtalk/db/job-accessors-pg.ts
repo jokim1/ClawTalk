@@ -53,6 +53,7 @@ export interface TalkJobScope {
 interface TalkJobRow {
   id: string;
   talk_id: string;
+  owner_id: string;
   title: string;
   prompt: string;
   target_agent_id: string | null;
@@ -77,6 +78,7 @@ interface TalkJobRow {
 export interface TalkJob {
   id: string;
   talkId: string;
+  ownerId: string;
   title: string;
   prompt: string;
   targetAgentId: string | null;
@@ -326,6 +328,7 @@ function toTalkJob(row: TalkJobRow): TalkJob {
   return {
     id: row.id,
     talkId: row.talk_id,
+    ownerId: row.owner_id,
     title: row.title,
     prompt: row.prompt,
     targetAgentId: row.target_agent_id,
@@ -351,6 +354,7 @@ function toTalkJob(row: TalkJobRow): TalkJob {
 const TALK_JOB_SELECT = `
   j.id,
   j.talk_id,
+  j.owner_id,
   j.title,
   j.prompt,
   j.target_agent_id,

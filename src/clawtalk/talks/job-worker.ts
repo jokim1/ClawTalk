@@ -1,5 +1,9 @@
+import { withUserContext } from '../../db-pg.js';
 import { TALK_RUN_POLL_MS } from '../config.js';
-import { claimDueTalkJobs, createJobTriggerRun } from '../db/index.js';
+import {
+  claimDueTalkJobs,
+  createJobTriggerRun,
+} from '../db/job-accessors-pg.js';
 import { logger } from '../../logger.js';
 import { WakeablePollLoop } from './wakeable-poll-loop.js';
 
@@ -46,17 +50,24 @@ export class TalkJobWorker implements TalkJobWorkerControl {
   }
 
   private async processCycle(): Promise<boolean> {
-    const claimed = claimDueTalkJobs(this.claimBatchSize);
+    const claimed = await claimDueTalkJobs(this.claimBatchSize);
     if (claimed.length === 0) {
       return false;
     }
 
     let didWork = false;
     for (const job of claimed) {
-      const result = createJobTriggerRun({
-        jobId: job.id,
-        triggerSource: 'scheduler',
-      });
+      // The scheduler runs outside withUserContext (BYPASSRLS pool). To
+      // create the trigger run + message we must enter the job owner's
+      // user context so RLS WITH CHECK / auth.uid() match the inserted
+      // owner_id.
+      const result = await withUserContext(job.ownerId, () =>
+        createJobTriggerRun({
+          ownerId: job.ownerId,
+          jobId: job.id,
+          triggerSource: 'scheduler',
+        }),
+      );
 
       if (result.status === 'enqueued') {
         didWork = true;
