@@ -15,7 +15,7 @@
  * observations in memory and compute exact percentiles.
  */
 
-import { getDb } from '../../db.js';
+import { getDbPg } from '../../db-pg.js';
 import { logger } from '../../logger.js';
 
 // ---------------------------------------------------------------------------
@@ -81,30 +81,31 @@ export interface TtftStats {
  * This is called from the hot path (streaming loop) so it must be fast.
  * SQLite writes are serialized anyway, and a single UPSERT is sub-ms.
  */
-export function recordTtftObservation(
+export async function recordTtftObservation(
   providerId: string,
   modelId: string,
   ttftMs: number,
-): void {
+): Promise<void> {
   try {
-    const db = getDb();
-    const now = new Date().toISOString();
+    const db = getDbPg();
 
-    const existing = db
-      .prepare(
-        `SELECT sample_count, p50_ms, p95_ms, p99_ms, max_ms
-         FROM llm_ttft_stats
-         WHERE provider_id = ? AND model_id = ?`,
-      )
-      .get(providerId, modelId) as TtftStatsRow | undefined;
+    const existingRows = await db<ExistingStatsRow[]>`
+      select sample_count, p50_ms, p95_ms, p99_ms, max_ms
+      from public.llm_ttft_stats
+      where provider_id = ${providerId} and model_id = ${modelId}
+    `;
+    const existing = existingRows[0];
 
     if (!existing) {
       // First observation for this (provider, model)
-      db.prepare(
-        `INSERT INTO llm_ttft_stats
-           (provider_id, model_id, sample_count, p50_ms, p95_ms, p99_ms, max_ms, last_updated_at)
-         VALUES (?, ?, 1, ?, ?, ?, ?, ?)`,
-      ).run(providerId, modelId, ttftMs, ttftMs, ttftMs, ttftMs, now);
+      await db`
+        insert into public.llm_ttft_stats
+          (provider_id, model_id, sample_count,
+           p50_ms, p95_ms, p99_ms, max_ms, last_updated_at)
+        values
+          (${providerId}, ${modelId}, 1,
+           ${ttftMs}, ${ttftMs}, ${ttftMs}, ${ttftMs}, now())
+      `;
       return;
     }
 
@@ -123,11 +124,16 @@ export function recordTtftObservation(
     const p99 = updatePercentile(existing.p99_ms, ttftMs, 0.99, alpha);
     const max = Math.max(existing.max_ms, ttftMs);
 
-    db.prepare(
-      `UPDATE llm_ttft_stats
-       SET sample_count = ?, p50_ms = ?, p95_ms = ?, p99_ms = ?, max_ms = ?, last_updated_at = ?
-       WHERE provider_id = ? AND model_id = ?`,
-    ).run(n, p50, p95, p99, max, now, providerId, modelId);
+    await db`
+      update public.llm_ttft_stats
+      set sample_count = ${n},
+          p50_ms = ${p50},
+          p95_ms = ${p95},
+          p99_ms = ${p99},
+          max_ms = ${max},
+          last_updated_at = now()
+      where provider_id = ${providerId} and model_id = ${modelId}
+    `;
   } catch (err) {
     // Recording failures must never break the streaming pipeline
     logger.warn(
@@ -172,23 +178,20 @@ function updatePercentile(
  *
  * The result is always clamped to [ABSOLUTE_FLOOR_MS, ∞).
  */
-export function computeAdaptiveResponseStartTimeout(
+export async function computeAdaptiveResponseStartTimeout(
   providerId: string,
   modelId: string,
-): number {
+): Promise<number> {
   try {
-    const db = getDb();
+    const db = getDbPg();
 
     // Check for adaptive stats
-    const stats = db
-      .prepare(
-        `SELECT sample_count, p99_ms
-         FROM llm_ttft_stats
-         WHERE provider_id = ? AND model_id = ?`,
-      )
-      .get(providerId, modelId) as
-      | { sample_count: number; p99_ms: number }
-      | undefined;
+    const statsRows = await db<{ sample_count: number; p99_ms: number }[]>`
+      select sample_count, p99_ms
+      from public.llm_ttft_stats
+      where provider_id = ${providerId} and model_id = ${modelId}
+    `;
+    const stats = statsRows[0];
 
     if (stats && stats.sample_count >= MIN_SAMPLES) {
       const adaptive = Math.ceil(stats.p99_ms * P99_MULTIPLIER);
@@ -196,15 +199,12 @@ export function computeAdaptiveResponseStartTimeout(
     }
 
     // Check for per-model default
-    const modelRow = db
-      .prepare(
-        `SELECT default_ttft_timeout_ms
-         FROM llm_provider_models
-         WHERE provider_id = ? AND model_id = ?`,
-      )
-      .get(providerId, modelId) as
-      | { default_ttft_timeout_ms: number | null }
-      | undefined;
+    const modelRows = await db<{ default_ttft_timeout_ms: number | null }[]>`
+      select default_ttft_timeout_ms
+      from public.llm_provider_models
+      where provider_id = ${providerId} and model_id = ${modelId}
+    `;
+    const modelRow = modelRows[0];
 
     if (modelRow?.default_ttft_timeout_ms) {
       return Math.max(modelRow.default_ttft_timeout_ms, ABSOLUTE_FLOOR_MS);
@@ -232,19 +232,18 @@ export function computeAdaptiveResponseStartTimeout(
  * Get the current TTFT stats for a (provider, model) pair.
  * Returns null if no observations exist yet. Useful for diagnostics.
  */
-export function getTtftStats(
+export async function getTtftStats(
   providerId: string,
   modelId: string,
-): TtftStats | null {
-  const db = getDb();
-  const row = db
-    .prepare(
-      `SELECT provider_id, model_id, sample_count, p50_ms, p95_ms, p99_ms, max_ms, last_updated_at
-       FROM llm_ttft_stats
-       WHERE provider_id = ? AND model_id = ?`,
-    )
-    .get(providerId, modelId) as TtftStatsRow | undefined;
-
+): Promise<TtftStats | null> {
+  const db = getDbPg();
+  const rows = await db<TtftStatsRow[]>`
+    select provider_id, model_id, sample_count,
+           p50_ms, p95_ms, p99_ms, max_ms, last_updated_at
+    from public.llm_ttft_stats
+    where provider_id = ${providerId} and model_id = ${modelId}
+  `;
+  const row = rows[0];
   if (!row) return null;
 
   return {
@@ -273,3 +272,8 @@ interface TtftStatsRow {
   max_ms: number;
   last_updated_at: string;
 }
+
+type ExistingStatsRow = Pick<
+  TtftStatsRow,
+  'sample_count' | 'p50_ms' | 'p95_ms' | 'p99_ms' | 'max_ms'
+>;

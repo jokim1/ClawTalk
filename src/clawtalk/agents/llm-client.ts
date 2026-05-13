@@ -272,10 +272,10 @@ export function buildAuthHeaders(
  *
  * Steps 2-4 are handled by computeAdaptiveResponseStartTimeout().
  */
-function buildTimeoutConfig(
+async function buildTimeoutConfig(
   provider: LlmProviderConfig,
   modelId?: string,
-): TimeoutConfig {
+): Promise<TimeoutConfig> {
   let responseStartTimeoutMs: number;
 
   if (provider.responseStartTimeoutMs != null) {
@@ -283,7 +283,7 @@ function buildTimeoutConfig(
     responseStartTimeoutMs = provider.responseStartTimeoutMs;
   } else if (provider.providerId && modelId) {
     // Adaptive computation from TTFT stats / model defaults / heuristics
-    responseStartTimeoutMs = computeAdaptiveResponseStartTimeout(
+    responseStartTimeoutMs = await computeAdaptiveResponseStartTimeout(
       provider.providerId,
       modelId,
     );
@@ -968,13 +968,18 @@ export async function* streamLlmResponse(
   parentSignal.addEventListener('abort', onAbort, { once: true });
 
   try {
-    const timeouts = buildTimeoutConfig(provider, modelId);
+    const timeouts = await buildTimeoutConfig(provider, modelId);
     const authHeaders = buildAuthHeaders(provider, secret);
 
-    // TTFT recording callback — fires once per streaming call on first chunk
+    // TTFT recording callback — fires once per streaming call on first chunk.
+    // Fire-and-forget: recordTtftObservation swallows its own errors via the
+    // inline try/catch; the trailing .catch() guards against any unhandled
+    // rejection slipping past, since onFirstChunk is invoked synchronously.
     const onFirstChunk = (elapsedMs: number) => {
       if (provider.providerId) {
-        recordTtftObservation(provider.providerId, modelId, elapsedMs);
+        recordTtftObservation(provider.providerId, modelId, elapsedMs).catch(
+          () => {},
+        );
       }
     };
 
