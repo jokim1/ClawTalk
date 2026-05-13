@@ -27,6 +27,13 @@
 //                                     policy + project-mount)
 //   /api/v1/talk-folders[/...]      — talks.ts (folder CRUD)
 //   /api/v1/user/tool-permissions   — user-settings.ts
+//   /api/v1/talks/:talkId/context[/...] — talk-context.ts (goal +
+//                                         rules + state + sources)
+//   /api/v1/talks/:talkId/state[/...]   — talk-context.ts (talk state
+//                                         entries are served from the
+//                                         same module as the rest of
+//                                         the context surface)
+//   /api/v1/talks/:talkId/outputs[/...] — talk-outputs.ts
 //
 // NOT mounted (still sqlite-bound or needs Workers Queue plumbing):
 //   /api/v1/talks/:talkId/chat[/cancel] — needs run-worker wake; will
@@ -34,7 +41,7 @@
 //                                          producer in a future unit.
 //   /api/v1/talks/:talkId/threads[/...] — talk-threads.ts still on
 //                                          sqlite.
-//   /api/v1/talks/:talkId/{context,attachments,jobs,outputs,state}
+//   /api/v1/talks/:talkId/{attachments,jobs}
 //                                       — corresponding route file
 //                                          still on sqlite.
 //   /api/v1/events, /api/v1/talks/:talkId/events — SSE streams; SSE
@@ -81,6 +88,29 @@ import {
   updateDefaultClaudeModelRoute,
   verifyAiProviderCredentialRoute,
 } from './routes/ai-agents.js';
+import {
+  createTalkContextRuleRoute,
+  createTalkContextSourceRoute,
+  deleteTalkContextRuleRoute,
+  deleteTalkContextSourceRoute,
+  deleteTalkStateEntryRoute,
+  getTalkContextRoute,
+  getTalkContextSourceContentRoute,
+  getTalkStateRoute,
+  listTalkContextRulesRoute,
+  patchTalkContextRuleRoute,
+  patchTalkContextSourceRoute,
+  retryTalkContextSourceRoute,
+  setTalkGoalRoute,
+  uploadTalkContextSourceRoute,
+} from './routes/talk-context.js';
+import {
+  createTalkOutputRoute,
+  deleteTalkOutputRoute,
+  getTalkOutputRoute,
+  listTalkOutputsRoute,
+  patchTalkOutputRoute,
+} from './routes/talk-outputs.js';
 import {
   cancelTalkChat,
   clearTalkProjectMountRoute,
@@ -799,6 +829,384 @@ function buildApp(): Hono<{ Variables: Variables }> {
     });
     return jsonResponse(result);
   });
+
+  // ── talk-outputs.ts: per-Talk markdown outputs CRUD ──────────
+  app.get('/api/v1/talks/:talkId/outputs', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'read' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const result = await listTalkOutputsRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+    });
+    return jsonResponse(result);
+  });
+
+  app.get('/api/v1/talks/:talkId/outputs/:outputId', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'read' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const result = await getTalkOutputRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      outputId: c.req.param('outputId'),
+    });
+    return jsonResponse(result);
+  });
+
+  app.post('/api/v1/talks/:talkId/outputs', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const csrfFail = checkCsrf(c, auth);
+    if (csrfFail) return csrfFail;
+    const payload = await readJsonBody<{
+      title?: string;
+      contentMarkdown?: string;
+    }>(c);
+    if (!payload.ok) return invalidJsonResponse(c, payload.error);
+    const result = await createTalkOutputRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      title: typeof payload.data.title === 'string' ? payload.data.title : '',
+      contentMarkdown:
+        typeof payload.data.contentMarkdown === 'string'
+          ? payload.data.contentMarkdown
+          : '',
+    });
+    return jsonResponse(result);
+  });
+
+  app.patch('/api/v1/talks/:talkId/outputs/:outputId', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const csrfFail = checkCsrf(c, auth);
+    if (csrfFail) return csrfFail;
+    const payload = await readJsonBody<{
+      expectedVersion?: number;
+      title?: string;
+      contentMarkdown?: string;
+    }>(c);
+    if (!payload.ok) return invalidJsonResponse(c, payload.error);
+    const result = await patchTalkOutputRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      outputId: c.req.param('outputId'),
+      expectedVersion:
+        typeof payload.data.expectedVersion === 'number'
+          ? payload.data.expectedVersion
+          : undefined,
+      title:
+        typeof payload.data.title === 'string' ? payload.data.title : undefined,
+      contentMarkdown:
+        typeof payload.data.contentMarkdown === 'string'
+          ? payload.data.contentMarkdown
+          : undefined,
+    });
+    return jsonResponse(result);
+  });
+
+  app.delete('/api/v1/talks/:talkId/outputs/:outputId', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const csrfFail = checkCsrf(c, auth);
+    if (csrfFail) return csrfFail;
+    const result = await deleteTalkOutputRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      outputId: c.req.param('outputId'),
+    });
+    return jsonResponse(result);
+  });
+
+  // ── talk-context.ts: goal + rules + state + sources ──────────
+  app.get('/api/v1/talks/:talkId/context', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'read' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const result = await getTalkContextRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+    });
+    return jsonResponse(result);
+  });
+
+  app.put('/api/v1/talks/:talkId/context/goal', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const csrfFail = checkCsrf(c, auth);
+    if (csrfFail) return csrfFail;
+    const payload = await readJsonBody<{ goalText?: string }>(c);
+    if (!payload.ok) return invalidJsonResponse(c, payload.error);
+    const result = await setTalkGoalRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      goalText:
+        typeof payload.data.goalText === 'string' ? payload.data.goalText : '',
+    });
+    return jsonResponse(result);
+  });
+
+  app.get('/api/v1/talks/:talkId/context/rules', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'read' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const result = await listTalkContextRulesRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+    });
+    return jsonResponse(result);
+  });
+
+  app.post('/api/v1/talks/:talkId/context/rules', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const csrfFail = checkCsrf(c, auth);
+    if (csrfFail) return csrfFail;
+    const payload = await readJsonBody<{ ruleText?: string }>(c);
+    if (!payload.ok) return invalidJsonResponse(c, payload.error);
+    const result = await createTalkContextRuleRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      ruleText:
+        typeof payload.data.ruleText === 'string' ? payload.data.ruleText : '',
+    });
+    return jsonResponse(result);
+  });
+
+  app.patch('/api/v1/talks/:talkId/context/rules/:ruleId', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const csrfFail = checkCsrf(c, auth);
+    if (csrfFail) return csrfFail;
+    const payload = await readJsonBody<{
+      ruleText?: string;
+      isActive?: boolean;
+      sortOrder?: number;
+    }>(c);
+    if (!payload.ok) return invalidJsonResponse(c, payload.error);
+    const result = await patchTalkContextRuleRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      ruleId: c.req.param('ruleId'),
+      ruleText:
+        typeof payload.data.ruleText === 'string'
+          ? payload.data.ruleText
+          : undefined,
+      isActive:
+        typeof payload.data.isActive === 'boolean'
+          ? payload.data.isActive
+          : undefined,
+      sortOrder:
+        typeof payload.data.sortOrder === 'number'
+          ? payload.data.sortOrder
+          : undefined,
+    });
+    return jsonResponse(result);
+  });
+
+  app.delete('/api/v1/talks/:talkId/context/rules/:ruleId', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const csrfFail = checkCsrf(c, auth);
+    if (csrfFail) return csrfFail;
+    const result = await deleteTalkContextRuleRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      ruleId: c.req.param('ruleId'),
+    });
+    return jsonResponse(result);
+  });
+
+  app.get('/api/v1/talks/:talkId/state', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'read' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const result = await getTalkStateRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+    });
+    return jsonResponse(result);
+  });
+
+  app.delete('/api/v1/talks/:talkId/state/:key', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const csrfFail = checkCsrf(c, auth);
+    if (csrfFail) return csrfFail;
+    const result = await deleteTalkStateEntryRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      key: c.req.param('key'),
+    });
+    return jsonResponse(result);
+  });
+
+  app.post('/api/v1/talks/:talkId/context/sources', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const csrfFail = checkCsrf(c, auth);
+    if (csrfFail) return csrfFail;
+    const payload = await readJsonBody<{
+      sourceType?: string;
+      title?: string;
+      note?: string | null;
+      sourceUrl?: string | null;
+      extractedText?: string | null;
+    }>(c);
+    if (!payload.ok) return invalidJsonResponse(c, payload.error);
+    const result = await createTalkContextSourceRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      sourceType:
+        typeof payload.data.sourceType === 'string'
+          ? payload.data.sourceType
+          : '',
+      title: typeof payload.data.title === 'string' ? payload.data.title : '',
+      note: typeof payload.data.note === 'string' ? payload.data.note : null,
+      sourceUrl:
+        typeof payload.data.sourceUrl === 'string'
+          ? payload.data.sourceUrl
+          : null,
+      extractedText:
+        typeof payload.data.extractedText === 'string'
+          ? payload.data.extractedText
+          : null,
+    });
+    return jsonResponse(result);
+  });
+
+  app.post('/api/v1/talks/:talkId/context/sources/upload', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const csrfFail = checkCsrf(c, auth);
+    if (csrfFail) return csrfFail;
+    const body = await c.req.parseBody();
+    const file = body['file'];
+    if (!file || !(file instanceof File)) {
+      return c.json(
+        {
+          ok: false,
+          error: { code: 'file_required', message: 'A file field is required' },
+        },
+        400,
+      );
+    }
+    const arrayBuffer = await file.arrayBuffer();
+    const title = typeof body['title'] === 'string' ? body['title'] : undefined;
+    const result = await uploadTalkContextSourceRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      file: {
+        name: file.name || 'unnamed',
+        data: Buffer.from(arrayBuffer),
+        type: file.type || 'application/octet-stream',
+      },
+      title,
+    });
+    return jsonResponse(result);
+  });
+
+  app.get(
+    '/api/v1/talks/:talkId/context/sources/:sourceId/content',
+    async (c) => {
+      const auth = c.get('auth');
+      const rl = checkRateLimit({ principalId: auth.userId, bucket: 'read' });
+      if (!rl.allowed) return rateLimitedResponse(c, rl);
+      const result = await getTalkContextSourceContentRoute({
+        auth,
+        talkId: c.req.param('talkId'),
+        sourceId: c.req.param('sourceId'),
+      });
+      if ('headers' in result && result.headers) {
+        return new Response(result.body, {
+          status: result.statusCode,
+          headers: result.headers,
+        });
+      }
+      return new Response(JSON.stringify(result.body), {
+        status: result.statusCode,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      });
+    },
+  );
+
+  app.patch('/api/v1/talks/:talkId/context/sources/:sourceId', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const csrfFail = checkCsrf(c, auth);
+    if (csrfFail) return csrfFail;
+    const payload = await readJsonBody<{
+      title?: string;
+      note?: string | null;
+      sortOrder?: number;
+      extractedText?: string | null;
+    }>(c);
+    if (!payload.ok) return invalidJsonResponse(c, payload.error);
+    const result = await patchTalkContextSourceRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      sourceId: c.req.param('sourceId'),
+      title:
+        typeof payload.data.title === 'string' ? payload.data.title : undefined,
+      note:
+        payload.data.note !== undefined
+          ? typeof payload.data.note === 'string'
+            ? payload.data.note
+            : null
+          : undefined,
+      sortOrder:
+        typeof payload.data.sortOrder === 'number'
+          ? payload.data.sortOrder
+          : undefined,
+      extractedText:
+        typeof payload.data.extractedText === 'string'
+          ? payload.data.extractedText
+          : undefined,
+    });
+    return jsonResponse(result);
+  });
+
+  app.delete('/api/v1/talks/:talkId/context/sources/:sourceId', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const csrfFail = checkCsrf(c, auth);
+    if (csrfFail) return csrfFail;
+    const result = await deleteTalkContextSourceRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      sourceId: c.req.param('sourceId'),
+    });
+    return jsonResponse(result);
+  });
+
+  app.post(
+    '/api/v1/talks/:talkId/context/sources/:sourceId/retry',
+    async (c) => {
+      const auth = c.get('auth');
+      const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+      if (!rl.allowed) return rateLimitedResponse(c, rl);
+      const csrfFail = checkCsrf(c, auth);
+      if (csrfFail) return csrfFail;
+      const result = await retryTalkContextSourceRoute({
+        auth,
+        talkId: c.req.param('talkId'),
+        sourceId: c.req.param('sourceId'),
+      });
+      return jsonResponse(result);
+    },
+  );
 
   // 501 fallback for any /api/v1/* path that hasn't been mounted.
   // Routes still on sqlite, chassis-removed, or pending Queues
