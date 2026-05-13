@@ -11,19 +11,20 @@
  * Persistence is intentionally handled by the worker / DB atomic helpers.
  */
 
-import { getDb } from '../../db.js';
+import { getDbPg } from '../../db-pg.js';
 import { logger } from '../../logger.js';
 import {
   getRegisteredAgent,
   type EffectiveToolAccess,
   type RegisteredAgentRecord,
-} from '../db/agent-accessors.js';
+} from '../db/agent-accessors-pg.js';
 import {
   getTalkById,
   getTalkMessageById,
   getTalkRunById,
-} from '../db/accessors.js';
-import { getTalkJobById } from '../db/job-accessors.js';
+  setTalkRunMetadata,
+} from '../db/accessors-pg.js';
+import { getTalkJobById } from '../db/job-accessors-pg.js';
 import {
   deleteTalkStateEntry,
   getTalkStateEntry,
@@ -33,8 +34,7 @@ import {
   type MessageAttachmentRecord,
   upsertTalkStateEntry,
   validateStateKey,
-} from '../db/context-accessors.js';
-import { setTalkRunMetadataJson } from '../db/accessors.js';
+} from '../db/context-accessors-pg.js';
 import {
   executeWithAgent,
   type ExecutionContext,
@@ -248,18 +248,12 @@ function mapExecutionEvent(
 }
 
 function parseRunMetadata(
-  metadataJson: string | null | undefined,
+  metadata: Record<string, unknown> | null | undefined,
 ): Record<string, unknown> {
-  if (!metadataJson) return {};
-  try {
-    const parsed = JSON.parse(metadataJson) as unknown;
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
-    }
-  } catch {
-    // ignored
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+    return {};
   }
-  return {};
+  return metadata;
 }
 
 type ChannelInboundTriggerMetadata = {
@@ -279,61 +273,55 @@ type ChannelInboundTriggerMetadata = {
 };
 
 function parseChannelInboundTriggerMetadata(
-  metadataJson: string | null | undefined,
+  metadata: Record<string, unknown> | null | undefined,
 ): ChannelInboundTriggerMetadata | null {
-  if (!metadataJson) return null;
-  try {
-    const parsed = JSON.parse(metadataJson) as unknown;
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return null;
-    }
-    const record = parsed as Record<string, unknown>;
-    if (record.kind !== 'channel_inbound') {
-      return null;
-    }
-    const platform =
-      record.platform === 'slack' || record.platform === 'telegram'
-        ? record.platform
-        : null;
-    if (
-      platform === null ||
-      typeof record.bindingId !== 'string' ||
-      typeof record.connectionId !== 'string' ||
-      typeof record.targetKind !== 'string' ||
-      typeof record.targetId !== 'string'
-    ) {
-      return null;
-    }
-    return {
-      kind: 'channel_inbound',
-      bindingId: record.bindingId,
-      platform,
-      connectionId: record.connectionId,
-      targetKind: record.targetKind,
-      targetId: record.targetId,
-      targetDisplayName:
-        typeof record.targetDisplayName === 'string'
-          ? record.targetDisplayName
-          : null,
-      senderId: typeof record.senderId === 'string' ? record.senderId : null,
-      senderName:
-        typeof record.senderName === 'string' ? record.senderName : null,
-      isMentioned: record.isMentioned === true,
-      timestamp: typeof record.timestamp === 'string' ? record.timestamp : null,
-      externalMessageId:
-        typeof record.externalMessageId === 'string'
-          ? record.externalMessageId
-          : null,
-      metadata:
-        record.metadata &&
-        typeof record.metadata === 'object' &&
-        !Array.isArray(record.metadata)
-          ? (record.metadata as Record<string, unknown>)
-          : null,
-    };
-  } catch {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
     return null;
   }
+  const record = metadata;
+  if (record.kind !== 'channel_inbound') {
+    return null;
+  }
+  const platform =
+    record.platform === 'slack' || record.platform === 'telegram'
+      ? record.platform
+      : null;
+  if (
+    platform === null ||
+    typeof record.bindingId !== 'string' ||
+    typeof record.connectionId !== 'string' ||
+    typeof record.targetKind !== 'string' ||
+    typeof record.targetId !== 'string'
+  ) {
+    return null;
+  }
+  return {
+    kind: 'channel_inbound',
+    bindingId: record.bindingId,
+    platform,
+    connectionId: record.connectionId,
+    targetKind: record.targetKind,
+    targetId: record.targetId,
+    targetDisplayName:
+      typeof record.targetDisplayName === 'string'
+        ? record.targetDisplayName
+        : null,
+    senderId: typeof record.senderId === 'string' ? record.senderId : null,
+    senderName:
+      typeof record.senderName === 'string' ? record.senderName : null,
+    isMentioned: record.isMentioned === true,
+    timestamp: typeof record.timestamp === 'string' ? record.timestamp : null,
+    externalMessageId:
+      typeof record.externalMessageId === 'string'
+        ? record.externalMessageId
+        : null,
+    metadata:
+      record.metadata &&
+      typeof record.metadata === 'object' &&
+      !Array.isArray(record.metadata)
+        ? (record.metadata as Record<string, unknown>)
+        : null,
+  };
 }
 
 function formatChannelResponseModeLabel(
@@ -459,11 +447,13 @@ function buildChannelContextSection(input: {
   return lines.join('\n');
 }
 
-function loadChannelTriggerContext(input: { triggerMessageId: string }): {
+async function loadChannelTriggerContext(input: {
+  triggerMessageId: string;
+}): Promise<{
   trigger: ChannelInboundTriggerMetadata | null;
   binding: ReturnType<typeof getTalkChannelBindingById>;
-} {
-  const triggerMessage = getTalkMessageById(input.triggerMessageId);
+}> {
+  const triggerMessage = await getTalkMessageById(input.triggerMessageId);
   const trigger = parseChannelInboundTriggerMetadata(
     triggerMessage?.metadata_json,
   );
@@ -525,7 +515,7 @@ async function loadChannelExecutionContext(input: {
 
 function buildExecutionDecision(
   agent: RegisteredAgentRecord,
-  plan: ReturnType<typeof planExecution>,
+  plan: Awaited<ReturnType<typeof planExecution>>,
 ): ExecutionDecisionMetadata {
   if (plan.backend === 'container') {
     return {
@@ -560,11 +550,11 @@ function buildExecutionDecision(
   };
 }
 
-function talkUsesUnsupportedCodexExecution(talkId: string): {
+async function talkUsesUnsupportedCodexExecution(talkId: string): Promise<{
   supported: boolean;
   message?: string;
-} {
-  const talk = getTalkById(talkId);
+}> {
+  const talk = await getTalkById(talkId);
   if (talk?.orchestration_mode === 'panel') {
     return {
       supported: false,
@@ -573,7 +563,8 @@ function talkUsesUnsupportedCodexExecution(talkId: string): {
     };
   }
 
-  if (listTalkAgents(talkId).length > 1) {
+  const assignments = await listTalkAgents(talkId);
+  if (assignments.length > 1) {
     return {
       supported: false,
       message: 'Codex host execution only supports single-agent Talks in v1.',
@@ -650,15 +641,15 @@ export function buildToolExecutor(
         return { result: 'Error: sourceRef parameter required', isError: true };
       }
 
-      const sourceRow = getDb()
-        .prepare(
-          `
-        SELECT extracted_text
-        FROM talk_context_sources
-        WHERE talk_id = ? AND (id = ? OR source_ref = ?)
-      `,
-        )
-        .get(talkId, ref, ref) as { extracted_text: string | null } | undefined;
+      const db = getDbPg();
+      const sourceRows = await db<Array<{ extracted_text: string | null }>>`
+        select extracted_text
+        from public.talk_context_sources
+        where talk_id = ${talkId}::uuid
+          and (id::text = ${ref} or source_ref = ${ref})
+        limit 1
+      `;
+      const sourceRow = sourceRows[0];
 
       if (!sourceRow) {
         return { result: `Source ${ref} not found`, isError: true };
@@ -676,21 +667,21 @@ export function buildToolExecutor(
         };
       }
 
-      const attachmentRow = getDb()
-        .prepare(
-          `
-        SELECT extracted_text, mime_type, file_name
-        FROM talk_message_attachments
-        WHERE id = ? AND talk_id = ?
-      `,
-        )
-        .get(attachmentId, talkId) as
-        | {
-            extracted_text: string | null;
-            mime_type: string;
-            file_name: string;
-          }
-        | undefined;
+      const db = getDbPg();
+      const attachmentRows = await db<
+        Array<{
+          extracted_text: string | null;
+          mime_type: string;
+          file_name: string;
+        }>
+      >`
+        select extracted_text, mime_type, file_name
+        from public.talk_message_attachments
+        where id = ${attachmentId}::uuid
+          and talk_id = ${talkId}::uuid
+        limit 1
+      `;
+      const attachmentRow = attachmentRows[0];
 
       if (!attachmentRow) {
         return {
@@ -718,7 +709,7 @@ export function buildToolExecutor(
       }
       try {
         const validatedKey = validateStateKey(rawKey);
-        const entry = getTalkStateEntry(talkId, validatedKey);
+        const entry = await getTalkStateEntry(talkId, validatedKey);
         if (!entry) {
           return {
             result: `State entry "${validatedKey}" does not exist.`,
@@ -739,8 +730,8 @@ export function buildToolExecutor(
       try {
         const entries =
           rawPrefix && rawPrefix.trim()
-            ? listTalkStateEntriesByPrefix(talkId, rawPrefix)
-            : listTalkStateEntries(talkId);
+            ? await listTalkStateEntriesByPrefix(talkId, rawPrefix)
+            : await listTalkStateEntries(talkId);
         return { result: JSON.stringify({ entries }) };
       } catch (error) {
         return {
@@ -776,7 +767,8 @@ export function buildToolExecutor(
       }
 
       try {
-        const result = upsertTalkStateEntry({
+        const result = await upsertTalkStateEntry({
+          ownerId: userId,
           talkId,
           key,
           value: args.value,
@@ -833,7 +825,7 @@ export function buildToolExecutor(
 
       try {
         const validatedKey = validateStateKey(rawKey);
-        const result = deleteTalkStateEntry({
+        const result = await deleteTalkStateEntry({
           talkId,
           key: validatedKey,
           expectedVersion,
@@ -981,11 +973,11 @@ export function buildToolExecutor(
   };
 }
 
-function buildTalkJobExecutionPolicy(
+async function buildTalkJobExecutionPolicy(
   jobId: string | null | undefined,
-): TalkJobExecutionPolicy | null {
+): Promise<TalkJobExecutionPolicy | null> {
   if (!jobId) return null;
-  const job = getTalkJobById(jobId);
+  const job = await getTalkJobById(jobId);
   if (!job) return null;
   return {
     jobId: job.id,
@@ -1011,16 +1003,16 @@ function filterEffectiveToolsForJob(
   );
 }
 
-function resolveTalkAgent(
+async function resolveTalkAgent(
   talkId: string,
   targetAgentId?: string | null,
-): ResolvedTalkAgentExecution {
-  const assignments = listTalkAgents(talkId);
+): Promise<ResolvedTalkAgentExecution> {
+  const assignments = await listTalkAgents(talkId);
   if (targetAgentId) {
     const targetedAssignment = assignments.find(
       (assignment) => assignment.agentId === targetAgentId,
     );
-    const targetedAgent = getRegisteredAgent(targetAgentId);
+    const targetedAgent = await getRegisteredAgent(targetAgentId);
     if (targetedAssignment && targetedAgent) {
       return {
         agent: targetedAgent,
@@ -1035,7 +1027,7 @@ function resolveTalkAgent(
   const primaryAssignment =
     assignments.find((assignment) => assignment.isPrimary) || assignments[0];
   if (primaryAssignment) {
-    const primaryAgent = getRegisteredAgent(primaryAssignment.agentId);
+    const primaryAgent = await getRegisteredAgent(primaryAssignment.agentId);
     if (primaryAgent) {
       return {
         agent: primaryAgent,
@@ -1044,12 +1036,12 @@ function resolveTalkAgent(
     }
   }
 
-  const primary = resolvePrimaryAgent(talkId);
+  const primary = await resolvePrimaryAgent(talkId);
   if (primary) {
     return { agent: primary, nickname: primary.name };
   }
 
-  const main = getMainAgent();
+  const main = await getMainAgent();
   if (main) {
     return { agent: main, nickname: main.name };
   }
@@ -1060,21 +1052,19 @@ function resolveTalkAgent(
   );
 }
 
-function getModelContextWindow(agent: RegisteredAgentRecord): number {
-  const row = getDb()
-    .prepare(
-      `
-      SELECT context_window_tokens
-      FROM llm_provider_models
-      WHERE provider_id = ? AND model_id = ?
-      LIMIT 1
-    `,
-    )
-    .get(agent.provider_id, agent.model_id) as
-    | { context_window_tokens: number }
-    | undefined;
+async function getModelContextWindow(
+  agent: RegisteredAgentRecord,
+): Promise<number> {
+  const db = getDbPg();
+  const rows = await db<Array<{ context_window_tokens: number }>>`
+    select context_window_tokens
+    from public.llm_provider_models
+    where provider_id = ${agent.provider_id}
+      and model_id = ${agent.model_id}
+    limit 1
+  `;
 
-  return row?.context_window_tokens || 128000;
+  return rows[0]?.context_window_tokens || 128000;
 }
 
 function buildMultiAgentExecutionNote(input: {
@@ -1123,108 +1113,123 @@ type PriorOrderedGap = {
   status: TalkRunStatus;
 };
 
-function listPriorOrderedOutputs(
+async function listPriorOrderedOutputs(
   responseGroupId: string,
   currentSequenceIndex: number,
-): PriorOrderedOutput[] {
-  return getDb()
-    .prepare(
-      `
-      WITH ordered_assistant_messages AS (
-        SELECT
-          talk_messages.run_id,
-          talk_messages.content
-        FROM talk_messages
-        WHERE talk_messages.role = 'assistant'
-        ORDER BY
-          talk_messages.run_id ASC,
-          COALESCE(talk_messages.sequence_in_run, 0) ASC,
-          talk_messages.created_at ASC,
-          talk_messages.id ASC
-      ),
-      assistant_outputs AS (
-        SELECT
-          ordered_assistant_messages.run_id,
-          GROUP_CONCAT(ordered_assistant_messages.content, '\n\n') AS content
-        FROM ordered_assistant_messages
-        GROUP BY ordered_assistant_messages.run_id
-      )
-      SELECT
-        r.sequence_index AS sequenceIndex,
-        r.target_agent_id AS agentId,
-        COALESCE(
-          (
-            SELECT ta.nickname
-            FROM talk_agents ta
-            WHERE ta.talk_id = r.talk_id
-              AND ta.registered_agent_id = r.target_agent_id
-            ORDER BY ta.sort_order ASC, ta.created_at ASC
-            LIMIT 1
-          ),
-          ra.name,
-          'Agent'
-        ) AS agentNickname,
-        ao.content AS content
-      FROM talk_runs r
-      JOIN assistant_outputs ao ON ao.run_id = r.id
-      LEFT JOIN registered_agents ra ON ra.id = r.target_agent_id
-      WHERE r.response_group_id = ?
-        AND r.sequence_index IS NOT NULL
-        AND r.sequence_index < ?
-        AND r.status = 'completed'
-      ORDER BY r.sequence_index ASC
-    `,
+): Promise<PriorOrderedOutput[]> {
+  const db = getDbPg();
+  const rows = await db<
+    Array<{
+      sequence_index: number;
+      agent_id: string | null;
+      agent_nickname: string | null;
+      content: string;
+    }>
+  >`
+    with assistant_outputs as (
+      select
+        run_id,
+        string_agg(
+          content,
+          E'\n\n'
+          order by
+            coalesce(sequence_in_run, 0) asc,
+            created_at asc,
+            id asc
+        ) as content
+      from public.talk_messages
+      where role = 'assistant'
+      group by run_id
     )
-    .all(responseGroupId, currentSequenceIndex) as PriorOrderedOutput[];
+    select
+      r.sequence_index as sequence_index,
+      r.target_agent_id as agent_id,
+      coalesce(
+        (
+          select ta.nickname
+          from public.talk_agents ta
+          where ta.talk_id = r.talk_id
+            and ta.registered_agent_id = r.target_agent_id
+          order by ta.sort_order asc, ta.created_at asc
+          limit 1
+        ),
+        ra.name,
+        'Agent'
+      ) as agent_nickname,
+      ao.content as content
+    from public.talk_runs r
+    join assistant_outputs ao on ao.run_id = r.id
+    left join public.registered_agents ra on ra.id = r.target_agent_id
+    where r.response_group_id = ${responseGroupId}::uuid
+      and r.sequence_index is not null
+      and r.sequence_index < ${currentSequenceIndex}
+      and r.status = 'completed'
+    order by r.sequence_index asc
+  `;
+  return rows.map((row) => ({
+    sequenceIndex: row.sequence_index,
+    agentId: row.agent_id,
+    agentNickname: row.agent_nickname,
+    content: row.content,
+  }));
 }
 
-function listPriorOrderedGaps(
+async function listPriorOrderedGaps(
   responseGroupId: string,
   currentSequenceIndex: number,
-): PriorOrderedGap[] {
-  return getDb()
-    .prepare(
-      `
-      SELECT
-        r.sequence_index AS sequenceIndex,
-        r.target_agent_id AS agentId,
-        COALESCE(
-          (
-            SELECT ta.nickname
-            FROM talk_agents ta
-            WHERE ta.talk_id = r.talk_id
-              AND ta.registered_agent_id = r.target_agent_id
-            ORDER BY ta.sort_order ASC, ta.created_at ASC
-            LIMIT 1
-          ),
-          ra.name,
-          'Agent'
-        ) AS agentNickname,
-        r.status AS status
-      FROM talk_runs r
-      LEFT JOIN registered_agents ra ON ra.id = r.target_agent_id
-      WHERE r.response_group_id = ?
-        AND r.sequence_index IS NOT NULL
-        AND r.sequence_index < ?
-        AND r.status <> 'completed'
-      ORDER BY r.sequence_index ASC
-    `,
-    )
-    .all(responseGroupId, currentSequenceIndex) as PriorOrderedGap[];
+): Promise<PriorOrderedGap[]> {
+  const db = getDbPg();
+  const rows = await db<
+    Array<{
+      sequence_index: number;
+      agent_id: string | null;
+      agent_nickname: string | null;
+      status: TalkRunStatus;
+    }>
+  >`
+    select
+      r.sequence_index as sequence_index,
+      r.target_agent_id as agent_id,
+      coalesce(
+        (
+          select ta.nickname
+          from public.talk_agents ta
+          where ta.talk_id = r.talk_id
+            and ta.registered_agent_id = r.target_agent_id
+          order by ta.sort_order asc, ta.created_at asc
+          limit 1
+        ),
+        ra.name,
+        'Agent'
+      ) as agent_nickname,
+      r.status as status
+    from public.talk_runs r
+    left join public.registered_agents ra on ra.id = r.target_agent_id
+    where r.response_group_id = ${responseGroupId}::uuid
+      and r.sequence_index is not null
+      and r.sequence_index < ${currentSequenceIndex}
+      and r.status <> 'completed'
+    order by r.sequence_index asc
+  `;
+  return rows.map((row) => ({
+    sequenceIndex: row.sequence_index,
+    agentId: row.agent_id,
+    agentNickname: row.agent_nickname,
+    status: row.status,
+  }));
 }
 
-function getOrderedGroupMaxSequence(responseGroupId: string): number | null {
-  const row = getDb()
-    .prepare(
-      `
-      SELECT MAX(sequence_index) AS max_sequence_index
-      FROM talk_runs
-      WHERE response_group_id = ?
-        AND sequence_index IS NOT NULL
-    `,
-    )
-    .get(responseGroupId) as { max_sequence_index: number | null } | undefined;
-
+async function getOrderedGroupMaxSequence(
+  responseGroupId: string,
+): Promise<number | null> {
+  const db = getDbPg();
+  const rows = await db<Array<{ max_sequence_index: number | null }>>`
+    select max(sequence_index) as max_sequence_index
+    from public.talk_runs
+    where response_group_id = ${responseGroupId}::uuid
+      and sequence_index is not null
+  `;
+  const row = rows[0];
   if (!row || row.max_sequence_index == null) {
     return null;
   }
@@ -1359,13 +1364,13 @@ function buildOrderedUserMessage(input: {
   return sections.join('\n\n');
 }
 
-function buildStepUserMessageText(input: {
+async function buildStepUserMessageText(input: {
   triggerContent: string;
   estimatedContextTokens: number;
   modelContextWindow: number;
   responseGroupId?: string | null;
   sequenceIndex?: number | null;
-}): { userMessageText: string; isSynthesis: boolean } {
+}): Promise<{ userMessageText: string; isSynthesis: boolean }> {
   if (
     !input.responseGroupId ||
     typeof input.sequenceIndex !== 'number' ||
@@ -1374,11 +1379,11 @@ function buildStepUserMessageText(input: {
     return { userMessageText: input.triggerContent, isSynthesis: false };
   }
 
-  const priorOutputs = listPriorOrderedOutputs(
+  const priorOutputs = await listPriorOrderedOutputs(
     input.responseGroupId,
     input.sequenceIndex,
   );
-  const priorGaps = listPriorOrderedGaps(
+  const priorGaps = await listPriorOrderedGaps(
     input.responseGroupId,
     input.sequenceIndex,
   );
@@ -1386,7 +1391,9 @@ function buildStepUserMessageText(input: {
     return { userMessageText: input.triggerContent, isSynthesis: false };
   }
 
-  const maxSequenceIndex = getOrderedGroupMaxSequence(input.responseGroupId);
+  const maxSequenceIndex = await getOrderedGroupMaxSequence(
+    input.responseGroupId,
+  );
   const isSynthesis =
     maxSequenceIndex != null &&
     maxSequenceIndex > 0 &&
@@ -1551,14 +1558,14 @@ function computeHistoryAttachmentTextBudgetChars(input: {
 }
 
 function hasImageAttachments(rows: MessageAttachmentRecord[]): boolean {
-  return rows.some((row) => isImageAttachmentMimeType(row.mime_type));
+  return rows.some((row) => isImageAttachmentMimeType(row.mime_type ?? ''));
 }
 
-function buildHistoryAttachmentRowsByMessageId(input: {
+async function buildHistoryAttachmentRowsByMessageId(input: {
   history: LlmMessage[];
   historyMessageIds: string[];
   currentTriggerMessageId: string;
-}): Map<string, MessageAttachmentRecord[]> {
+}): Promise<Map<string, MessageAttachmentRecord[]>> {
   const byMessageId = new Map<string, MessageAttachmentRecord[]>();
 
   for (let index = 0; index < input.history.length; index += 1) {
@@ -1572,7 +1579,7 @@ function buildHistoryAttachmentRowsByMessageId(input: {
       continue;
     }
 
-    const rows = listMessageAttachmentRecords(messageId);
+    const rows = await listMessageAttachmentRecords(messageId);
     if (rows.length > 0) {
       byMessageId.set(messageId, rows);
     }
@@ -1616,15 +1623,17 @@ async function loadDirectPromptAttachments(input: {
   const attachments: DirectPromptAttachment[] = [];
 
   for (const row of input.attachmentRows) {
-    if (isImageAttachmentMimeType(row.mime_type)) {
+    const fileSize = row.file_size ?? 0;
+    const mimeType = row.mime_type ?? '';
+    if (isImageAttachmentMimeType(mimeType)) {
       if (input.includeImages === false) {
         attachments.push({
           originalKind: 'image',
           kind: 'text',
           id: row.id,
           fileName: row.file_name || 'image',
-          fileSize: row.file_size,
-          mimeType: row.mime_type,
+          fileSize,
+          mimeType,
           text: null,
           omittedDueToBudget: true,
         });
@@ -1633,15 +1642,15 @@ async function loadDirectPromptAttachments(input: {
 
       if (
         input.historyBudget &&
-        row.file_size > input.historyBudget.remainingImageBytes
+        fileSize > input.historyBudget.remainingImageBytes
       ) {
         attachments.push({
           originalKind: 'image',
           kind: 'text',
           id: row.id,
           fileName: row.file_name || 'image',
-          fileSize: row.file_size,
-          mimeType: row.mime_type,
+          fileSize,
+          mimeType,
           text: null,
           omittedDueToBudget: true,
         });
@@ -1653,7 +1662,7 @@ async function loadDirectPromptAttachments(input: {
         if (input.historyBudget) {
           input.historyBudget.remainingImageBytes = Math.max(
             0,
-            input.historyBudget.remainingImageBytes - row.file_size,
+            input.historyBudget.remainingImageBytes - fileSize,
           );
         }
         attachments.push({
@@ -1661,8 +1670,8 @@ async function loadDirectPromptAttachments(input: {
           kind: 'image',
           id: row.id,
           fileName: row.file_name || 'image',
-          fileSize: row.file_size,
-          mimeType: row.mime_type,
+          fileSize,
+          mimeType,
           base64Data: buffer.toString('base64'),
         });
         continue;
@@ -1682,8 +1691,8 @@ async function loadDirectPromptAttachments(input: {
           kind: 'text',
           id: row.id,
           fileName: row.file_name || 'image',
-          fileSize: row.file_size,
-          mimeType: row.mime_type,
+          fileSize,
+          mimeType,
           text: `Image attachment "${row.file_name || row.id}" could not be loaded for vision input.`,
         });
         continue;
@@ -1709,8 +1718,8 @@ async function loadDirectPromptAttachments(input: {
       kind: 'text',
       id: row.id,
       fileName: row.file_name || 'attachment',
-      fileSize: row.file_size,
-      mimeType: row.mime_type,
+      fileSize,
+      mimeType,
       text: excerpt.text,
       omittedDueToBudget: excerpt.omittedDueToBudget,
     });
@@ -1941,23 +1950,27 @@ export class CleanTalkExecutor implements TalkExecutor {
 
     try {
       const existingRunMetadata = parseRunMetadata(
-        getTalkRunById(input.runId)?.metadata_json,
+        (await getTalkRunById(input.runId))?.metadata_json,
       );
       const runMetadata = { ...existingRunMetadata };
       const browserResumeSection =
         buildBrowserResumeSection(existingRunMetadata);
-      const channelTriggerContext = loadChannelTriggerContext({
+      const channelTriggerContext = await loadChannelTriggerContext({
         triggerMessageId: input.triggerMessageId,
       });
 
-      resolvedAgent = resolveTalkAgent(input.talkId, input.targetAgentId);
-      const activeAgent = resolvedAgent.agent;
-      const modelContextWindow = getModelContextWindow(activeAgent);
-      const jobPolicy = buildTalkJobExecutionPolicy(input.jobId);
-      const plan = planExecution(activeAgent, input.requestedBy);
+      const resolved = await resolveTalkAgent(
+        input.talkId,
+        input.targetAgentId,
+      );
+      resolvedAgent = resolved;
+      const activeAgent = resolved.agent;
+      const modelContextWindow = await getModelContextWindow(activeAgent);
+      const jobPolicy = await buildTalkJobExecutionPolicy(input.jobId);
+      const plan = await planExecution(activeAgent, input.requestedBy);
       const multiAgentExecutionNote = buildMultiAgentExecutionNote({
         responseGroupId: input.responseGroupId,
-        currentAgentNickname: resolvedAgent.nickname,
+        currentAgentNickname: resolved.nickname,
       });
       const channelExecutionContext = await loadChannelExecutionContext({
         trigger: channelTriggerContext.trigger,
@@ -1981,14 +1994,11 @@ export class CleanTalkExecutor implements TalkExecutor {
           channelContextSection: channelExecutionContext.channelContextSection,
         },
       );
-      setTalkRunMetadataJson(
-        input.runId,
-        JSON.stringify({
-          ...runMetadata,
-          ...contextPackage.contextSnapshot,
-          executionDecision: buildExecutionDecision(activeAgent, plan),
-        }),
-      );
+      await setTalkRunMetadata(input.runId, {
+        ...runMetadata,
+        ...contextPackage.contextSnapshot,
+        executionDecision: buildExecutionDecision(activeAgent, plan),
+      });
 
       const context: ExecutionContext = {
         systemPrompt: [
@@ -2004,7 +2014,9 @@ export class CleanTalkExecutor implements TalkExecutor {
         connectorTools: contextPackage.connectorTools,
         history: contextPackage.history,
       };
-      const talkCodexSupport = talkUsesUnsupportedCodexExecution(input.talkId);
+      const talkCodexSupport = await talkUsesUnsupportedCodexExecution(
+        input.talkId,
+      );
       if (plan.backend === 'host_codex' && !talkCodexSupport.supported) {
         throw new TalkExecutorError(
           'CODEX_TALK_UNSUPPORTED',
@@ -2023,7 +2035,7 @@ export class CleanTalkExecutor implements TalkExecutor {
         }
       }
 
-      const orderedStep = buildStepUserMessageText({
+      const orderedStep = await buildStepUserMessageText({
         triggerContent: input.triggerContent,
         estimatedContextTokens: contextPackage.estimatedTokens,
         modelContextWindow,
@@ -2032,7 +2044,7 @@ export class CleanTalkExecutor implements TalkExecutor {
       });
 
       if (plan.backend === 'container') {
-        const talk = getTalkById(input.talkId);
+        const talk = await getTalkById(input.talkId);
         const projectMountHostPath = resolveValidatedProjectMountPath(
           talk?.project_path ?? null,
           false,
@@ -2043,7 +2055,7 @@ export class CleanTalkExecutor implements TalkExecutor {
           talkId: input.talkId,
           threadId: input.threadId,
           agentId: activeAgent.id,
-          agentNickname: resolvedAgent.nickname,
+          agentNickname: resolved.nickname,
           responseGroupId: input.responseGroupId ?? null,
           sequenceIndex: input.sequenceIndex ?? null,
           providerId: activeAgent.provider_id,
@@ -2089,7 +2101,7 @@ export class CleanTalkExecutor implements TalkExecutor {
           talkId: input.talkId,
           threadId: input.threadId,
           agentId: activeAgent.id,
-          agentNickname: resolvedAgent.nickname,
+          agentNickname: resolved.nickname,
           responseGroupId: input.responseGroupId ?? null,
           sequenceIndex: input.sequenceIndex ?? null,
           providerId: activeAgent.provider_id,
@@ -2099,7 +2111,7 @@ export class CleanTalkExecutor implements TalkExecutor {
         return {
           content: containerResult.content,
           agentId: activeAgent.id,
-          agentNickname: resolvedAgent.nickname,
+          agentNickname: resolved.nickname,
           providerId: activeAgent.provider_id,
           modelId: activeAgent.model_id,
           responseSequenceInRun: 1,
@@ -2121,7 +2133,7 @@ export class CleanTalkExecutor implements TalkExecutor {
       }
 
       if (plan.backend === 'host_codex') {
-        const talk = getTalkById(input.talkId);
+        const talk = await getTalkById(input.talkId);
         const projectMountHostPath = resolveValidatedProjectMountPath(
           talk?.project_path ?? null,
           false,
@@ -2132,7 +2144,7 @@ export class CleanTalkExecutor implements TalkExecutor {
           talkId: input.talkId,
           threadId: input.threadId,
           agentId: activeAgent.id,
-          agentNickname: resolvedAgent.nickname,
+          agentNickname: resolved.nickname,
           responseGroupId: input.responseGroupId ?? null,
           sequenceIndex: input.sequenceIndex ?? null,
           providerId: activeAgent.provider_id,
@@ -2169,7 +2181,7 @@ export class CleanTalkExecutor implements TalkExecutor {
             (tool) => tool.toolFamily === 'browser' && tool.enabled,
           ),
           onProgressUpdate: (message: string) => {
-            const currentAgent = resolvedAgent!;
+            const currentAgent = resolved;
             emitTalkEvent({
               type: 'talk_progress_update',
               runId: input.runId,
@@ -2215,7 +2227,7 @@ export class CleanTalkExecutor implements TalkExecutor {
           talkId: input.talkId,
           threadId: input.threadId,
           agentId: activeAgent.id,
-          agentNickname: resolvedAgent.nickname,
+          agentNickname: resolved.nickname,
           responseGroupId: input.responseGroupId ?? null,
           sequenceIndex: input.sequenceIndex ?? null,
           providerId: activeAgent.provider_id,
@@ -2232,7 +2244,7 @@ export class CleanTalkExecutor implements TalkExecutor {
         return {
           content: codexResult.content,
           agentId: activeAgent.id,
-          agentNickname: resolvedAgent.nickname,
+          agentNickname: resolved.nickname,
           providerId: activeAgent.provider_id,
           modelId: activeAgent.model_id,
           usage: codexResult.usage
@@ -2268,11 +2280,11 @@ export class CleanTalkExecutor implements TalkExecutor {
         jobPolicy,
         scopedEffectiveTools,
       );
-      const currentAttachmentRows = listMessageAttachmentRecords(
+      const currentAttachmentRows = await listMessageAttachmentRecords(
         input.triggerMessageId,
       );
       const historyAttachmentRowsByMessageId =
-        buildHistoryAttachmentRowsByMessageId({
+        await buildHistoryAttachmentRowsByMessageId({
           history: context.history,
           historyMessageIds: contextPackage.metadata.historyMessageIds,
           currentTriggerMessageId: input.triggerMessageId,
@@ -2317,7 +2329,7 @@ export class CleanTalkExecutor implements TalkExecutor {
           userId: input.requestedBy,
           signal,
           emit: (event: ExecutionEvent) => {
-            const mappedEvent = mapExecutionEvent(event, input, resolvedAgent!);
+            const mappedEvent = mapExecutionEvent(event, input, resolved);
             if (mappedEvent) {
               emitTalkEvent(mappedEvent);
             }
@@ -2329,7 +2341,7 @@ export class CleanTalkExecutor implements TalkExecutor {
       return {
         content: result.content,
         agentId: result.agentId,
-        agentNickname: resolvedAgent.nickname,
+        agentNickname: resolved.nickname,
         providerId: result.providerId,
         modelId: result.modelId,
         usage: result.usage
