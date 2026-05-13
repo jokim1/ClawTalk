@@ -690,55 +690,58 @@ export async function getTalkContextSourceContentRoute(input: {
   return await withUserContext<SourceContentResult>(
     input.auth.userId,
     async (): Promise<SourceContentResult> => {
-    const talk = await talkOrNull(input.talkId);
-    if (!talk) return notFoundResponse('Talk not found.');
+      const talk = await talkOrNull(input.talkId);
+      if (!talk) return notFoundResponse('Talk not found.');
 
-    const source = await getTalkContextSourceById(
-      input.sourceId,
-      input.talkId,
-    );
-    if (!source) return notFoundResponse('Source not found.');
+      const source = await getTalkContextSourceById(
+        input.sourceId,
+        input.talkId,
+      );
+      if (!source) return notFoundResponse('Source not found.');
 
-    // For file sources with a storage key, serve the raw file
-    const storageKey = await getContextSourceStorageKey(
-      input.sourceId,
-      input.talkId,
-    );
-    if (source.sourceType === 'file' && storageKey) {
-      try {
-        const content = await loadAttachmentFile(storageKey);
-        return {
-          statusCode: 200,
-          body: content,
-          headers: {
-            'content-type': source.mimeType || 'application/octet-stream',
-            'content-length': String(content.byteLength),
-            'cache-control': 'private, max-age=31536000, immutable',
-            'content-disposition': `inline; filename="${(source.fileName || 'file').replaceAll('"', '')}"`,
-          },
-        };
-      } catch {
-        return notFoundResponse('Source file not found on disk.');
+      // For file sources with a storage key, serve the raw file
+      const storageKey = await getContextSourceStorageKey(
+        input.sourceId,
+        input.talkId,
+      );
+      if (source.sourceType === 'file' && storageKey) {
+        try {
+          const content = await loadAttachmentFile(storageKey);
+          return {
+            statusCode: 200,
+            body: content,
+            headers: {
+              'content-type': source.mimeType || 'application/octet-stream',
+              'content-length': String(content.byteLength),
+              'cache-control': 'private, max-age=31536000, immutable',
+              'content-disposition': `inline; filename="${(source.fileName || 'file').replaceAll('"', '')}"`,
+            },
+          };
+        } catch {
+          return notFoundResponse('Source file not found on disk.');
+        }
       }
-    }
 
-    // For URL/text sources, return extracted text
-    const full = await getContextSourceWithContent(
-      input.sourceId,
-      input.talkId,
-    );
-    if (!full?.extractedText) {
-      return notFoundResponse('No content available for this source.');
-    }
+      // For URL/text sources, return extracted text
+      const full = await getContextSourceWithContent(
+        input.sourceId,
+        input.talkId,
+      );
+      if (!full?.extractedText) {
+        return notFoundResponse('No content available for this source.');
+      }
 
-    return {
-      statusCode: 200,
-      body: full.extractedText,
-      headers: {
-        'content-type': 'text/plain; charset=utf-8',
-        'content-length': String(Buffer.byteLength(full.extractedText, 'utf-8')),
-        'cache-control': 'private, no-cache',
-      },
-    };
-  });
+      return {
+        statusCode: 200,
+        body: full.extractedText,
+        headers: {
+          'content-type': 'text/plain; charset=utf-8',
+          'content-length': String(
+            Buffer.byteLength(full.extractedText, 'utf-8'),
+          ),
+          'cache-control': 'private, no-cache',
+        },
+      };
+    },
+  );
 }
