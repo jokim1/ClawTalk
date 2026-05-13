@@ -1,20 +1,23 @@
 import { randomUUID } from 'crypto';
 
+import { withUserContext } from '../../db-pg.js';
 import { TALK_RUN_MAX_CONCURRENCY, TALK_RUN_POLL_MS } from '../config.js';
 import {
-  claimQueuedTalkRuns,
   appendOutboxEvent,
-  blockTalkJob,
+  claimQueuedTalkRuns,
   completeRunAndPromoteNextAtomic,
   failInterruptedRunsOnStartup,
   failRunAndPromoteNextAtomic,
-  getTalkJobById,
   getTalkMessageById,
   getTalkRunById,
-  markTalkJobRunFinished,
-  replaceJobReportOutput,
   type TalkRunRecord,
-} from '../db/index.js';
+} from '../db/accessors-pg.js';
+import {
+  blockTalkJob,
+  getTalkJobById,
+  markTalkJobRunFinished,
+} from '../db/job-accessors-pg.js';
+import { replaceJobReportOutput } from '../db/output-accessors-pg.js';
 import { logger } from '../../logger.js';
 
 import {
@@ -54,26 +57,18 @@ function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
 }
 
-function parseChannelInboundMetadata(metadataJson: string | null | undefined): {
+function parseChannelInboundMetadata(
+  metadata: Record<string, unknown> | null | undefined,
+): {
   isMentioned: boolean;
 } | null {
-  if (!metadataJson) return null;
-  try {
-    const parsed = JSON.parse(metadataJson) as Record<string, unknown>;
-    if (
-      !parsed ||
-      typeof parsed !== 'object' ||
-      Array.isArray(parsed) ||
-      parsed.kind !== 'channel_inbound'
-    ) {
-      return null;
-    }
-    return {
-      isMentioned: parsed.isMentioned === true,
-    };
-  } catch {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
     return null;
   }
+  if (metadata.kind !== 'channel_inbound') return null;
+  return {
+    isMentioned: metadata.isMentioned === true,
+  };
 }
 
 interface ActiveRun {
@@ -115,7 +110,10 @@ export class TalkRunWorker implements TalkRunWorkerControl {
   async start(): Promise<void> {
     if (this.running) return;
 
-    const recovery = failInterruptedRunsOnStartup();
+    // Cross-user startup recovery — runs against the BYPASSRLS pool
+    // connection (no withUserContext wrapper) so it can see every
+    // interrupted run regardless of owner.
+    const recovery = await failInterruptedRunsOnStartup();
     if (
       recovery.failedRunIds.length > 0 ||
       recovery.promotedRunIds.length > 0
@@ -184,7 +182,7 @@ export class TalkRunWorker implements TalkRunWorkerControl {
   private async runLoop(): Promise<void> {
     while (this.running) {
       try {
-        this.processCycle();
+        await this.processCycle();
       } catch (error) {
         logger.error({ err: error }, 'Talk run worker cycle failed');
       }
@@ -195,11 +193,13 @@ export class TalkRunWorker implements TalkRunWorkerControl {
     this.clearSleepState();
   }
 
-  private processCycle(): void {
+  private async processCycle(): Promise<void> {
     const availableSlots = this.maxConcurrency - this.activeRunsById.size;
     if (availableSlots <= 0) return;
 
-    const claimedRuns = claimQueuedTalkRuns(availableSlots);
+    // Scheduler claim runs against the BYPASSRLS pool — cross-user
+    // queue inspection. Per-run work below enters withUserContext.
+    const claimedRuns = await claimQueuedTalkRuns(availableSlots);
     for (const run of claimedRuns) {
       if (this.activeRunsById.size >= this.maxConcurrency) break;
       this.startRun(run);
@@ -210,7 +210,12 @@ export class TalkRunWorker implements TalkRunWorkerControl {
     const controller = new AbortController();
     this.activeRunsById.set(run.id, { run, controller });
 
-    const task = this.executeRun(run, controller.signal)
+    // Every per-run operation (message lookups, completion atomics, job
+    // followups, failure paths) runs as the run's owner so RLS sees the
+    // matching auth.uid().
+    const task = withUserContext(run.owner_id, () =>
+      this.executeRun(run, controller.signal),
+    )
       .catch((error) => {
         logger.error(
           {
@@ -234,7 +239,7 @@ export class TalkRunWorker implements TalkRunWorkerControl {
     signal: AbortSignal,
   ): Promise<void> {
     if (!run.trigger_message_id) {
-      this.failRun(
+      await this.failRun(
         run,
         'trigger_message_missing',
         'Run missing trigger message reference',
@@ -242,9 +247,9 @@ export class TalkRunWorker implements TalkRunWorkerControl {
       return;
     }
 
-    const triggerMessage = getTalkMessageById(run.trigger_message_id);
+    const triggerMessage = await getTalkMessageById(run.trigger_message_id);
     if (!triggerMessage) {
-      this.failRun(
+      await this.failRun(
         run,
         'trigger_message_not_found',
         `Trigger message not found: ${run.trigger_message_id}`,
@@ -254,8 +259,13 @@ export class TalkRunWorker implements TalkRunWorkerControl {
 
     try {
       const executionStartedAt = Date.now();
-      const triggerChannelMetadata = parseChannelInboundMetadata(
-        triggerMessage.metadata_json,
+      // Channel inbound metadata + reply-control parsing survive on the
+      // model side, but cloud-era completeRunAndPromoteNextAtomic dropped
+      // the delivery-suppression knob (channel delivery is a chassis-
+      // removed surface). The parsing is still useful for executor
+      // bookkeeping; ignore the suppression result here.
+      void parseChannelInboundMetadata(
+        triggerMessage.metadata_json as Record<string, unknown> | null,
       );
       const output = await this.executor.execute(
         {
@@ -274,21 +284,19 @@ export class TalkRunWorker implements TalkRunWorkerControl {
         (event) => this.emitExecutionEvent(event),
       );
       const latencyMs = Date.now() - executionStartedAt;
-      const replyControl = extractChannelReplyControl(output.content);
-      const directMention = triggerChannelMetadata?.isMentioned === true;
-      const deliverySuppressed =
-        run.source_binding_id != null &&
-        replyControl.suppressDelivery &&
-        !directMention;
+      void extractChannelReplyControl(output.content);
       const responseContent = stripInternalTalkResponseText(output.content);
 
-      const completed = completeRunAndPromoteNextAtomic({
+      const responseMetadata = output.metadataJson
+        ? (JSON.parse(output.metadataJson) as Record<string, unknown>)
+        : null;
+
+      const completed = await completeRunAndPromoteNextAtomic({
+        ownerId: run.owner_id,
         runId: run.id,
-        responseMessageId: `msg_${randomUUID()}`,
+        responseMessageId: randomUUID(),
         responseContent,
-        responseMetadataJson: output.metadataJson,
-        deliverySuppressed,
-        suppressionReason: deliverySuppressed ? replyControl.rationale : null,
+        responseMetadata,
         agentId: output.agentId,
         agentNickname: output.agentNickname,
         providerId: output.providerId,
@@ -303,21 +311,18 @@ export class TalkRunWorker implements TalkRunWorkerControl {
           'Run completion skipped due to non-running status',
         );
       } else {
-        if (completed.deliveryQueued) {
-          this.onChannelDeliveryQueued?.();
-        }
         await this.handleJobCompletion(run, responseContent);
         this.onTalkTerminal?.(run.talk_id!);
       }
     } catch (error) {
       if (isAbortError(error)) {
         if (!this.running) return;
-        if (this.isCancelled(run.id)) return;
-        this.failRun(run, 'execution_aborted', errorMessage(error));
+        if (await this.isCancelled(run.id)) return;
+        await this.failRun(run, 'execution_aborted', errorMessage(error));
         return;
       }
 
-      this.failRun(
+      await this.failRun(
         run,
         error instanceof TalkExecutorError ? error.code : 'execution_failed',
         errorMessage(error),
@@ -334,20 +339,20 @@ export class TalkRunWorker implements TalkRunWorkerControl {
     let finalStatus = 'completed';
 
     try {
-      const job = getTalkJobById(run.job_id);
+      const job = await getTalkJobById(run.job_id);
       if (job?.deliverableKind === 'report') {
         if (!job.reportOutputId) {
-          blockTalkJob(job.talkId, job.id, 'blocked');
+          await blockTalkJob(job.talkId, job.id, 'blocked');
           finalStatus = 'blocked';
         } else {
-          const updated = replaceJobReportOutput({
+          const updated = await replaceJobReportOutput({
             talkId: job.talkId,
             outputId: job.reportOutputId,
             contentMarkdown: responseContent,
             updatedByRunId: run.id,
           });
           if (!updated) {
-            blockTalkJob(job.talkId, job.id, 'blocked');
+            await blockTalkJob(job.talkId, job.id, 'blocked');
             finalStatus = 'blocked';
           }
         }
@@ -363,7 +368,7 @@ export class TalkRunWorker implements TalkRunWorkerControl {
         'Job report delivery failed after successful run completion',
       );
     } finally {
-      markTalkJobRunFinished({
+      await markTalkJobRunFinished({
         jobId: run.job_id,
         status: finalStatus,
       });
@@ -399,20 +404,26 @@ export class TalkRunWorker implements TalkRunWorkerControl {
       this.responseSanitizersByRunId.delete(event.runId);
     }
 
+    // event_outbox is RLS-off (per 0003 migration) so this insert works
+    // whether or not we're inside withUserContext. Fire-and-forget keeps
+    // the streaming pipeline from blocking on outbox latency. Payload
+    // is the parsed event object — appendOutboxEvent json-encodes it.
     appendOutboxEvent({
       topic: `talk:${event.talkId}`,
       eventType: event.type,
-      payload: JSON.stringify(event),
+      payload: event as unknown as Record<string, unknown>,
+    }).catch((err) => {
+      logger.warn({ err, eventType: event.type }, 'Outbox append failed');
     });
   }
 
-  private failRun(
+  private async failRun(
     run: TalkRunRecord,
     errorCode: string,
     errorMessageText: string,
     metadataPatch?: Record<string, unknown> | null,
-  ): void {
-    const result = failRunAndPromoteNextAtomic({
+  ): Promise<void> {
+    const result = await failRunAndPromoteNextAtomic({
       runId: run.id,
       errorCode,
       errorMessage: errorMessageText,
@@ -426,7 +437,7 @@ export class TalkRunWorker implements TalkRunWorkerControl {
       return;
     }
     if (run.job_id) {
-      markTalkJobRunFinished({
+      await markTalkJobRunFinished({
         jobId: run.job_id,
         status: 'failed',
       });
@@ -434,8 +445,8 @@ export class TalkRunWorker implements TalkRunWorkerControl {
     this.onTalkTerminal?.(run.talk_id!);
   }
 
-  private isCancelled(runId: string): boolean {
-    return getTalkRunById(runId)?.status === 'cancelled';
+  private async isCancelled(runId: string): Promise<boolean> {
+    return (await getTalkRunById(runId))?.status === 'cancelled';
   }
 
   private waitForNextTick(): Promise<void> {
