@@ -1065,7 +1065,7 @@ function buildApp(opts: WebServerOptions): Hono {
   app.get('/api/v1/agents', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
-    const result = await getAiAgentsRoute();
+    const result = await getAiAgentsRoute(auth);
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
