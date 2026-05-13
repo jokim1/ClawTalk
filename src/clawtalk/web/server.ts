@@ -1186,7 +1186,7 @@ function buildApp(opts: WebServerOptions): Hono {
       bucket: 'read',
     });
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
-    const result = listRegisteredAgentsRoute(auth);
+    const result = await listRegisteredAgentsRoute(auth);
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -1201,7 +1201,7 @@ function buildApp(opts: WebServerOptions): Hono {
       bucket: 'read',
     });
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
-    const result = getMainAgentRoute(auth);
+    const result = await getMainAgentRoute(auth);
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -1217,7 +1217,7 @@ function buildApp(opts: WebServerOptions): Hono {
     });
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
     const body = await c.req.json().catch(() => null);
-    const result = updateMainAgentRoute(auth, body);
+    const result = await updateMainAgentRoute(auth, body);
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -1232,7 +1232,7 @@ function buildApp(opts: WebServerOptions): Hono {
       bucket: 'read',
     });
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
-    const result = getAgentRoute(auth, c.req.param('agentId'));
+    const result = await getAgentRoute(auth, c.req.param('agentId'));
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -1265,7 +1265,7 @@ function buildApp(opts: WebServerOptions): Hono {
         { ok: false, error: { code: 'invalid_json', message: payload.error } },
         400,
       );
-    const result = createAgentRoute(auth, payload.data as any);
+    const result = await createAgentRoute(auth, payload.data as any);
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -1298,7 +1298,7 @@ function buildApp(opts: WebServerOptions): Hono {
         { ok: false, error: { code: 'invalid_json', message: payload.error } },
         400,
       );
-    const result = updateAgentRoute(
+    const result = await updateAgentRoute(
       auth,
       c.req.param('agentId'),
       payload.data as any,
@@ -1328,7 +1328,7 @@ function buildApp(opts: WebServerOptions): Hono {
         { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
         403,
       );
-    const result = deleteAgentRoute(auth, c.req.param('agentId'));
+    const result = await deleteAgentRoute(auth, c.req.param('agentId'));
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -1343,7 +1343,7 @@ function buildApp(opts: WebServerOptions): Hono {
       bucket: 'read',
     });
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
-    const result = getAgentFallbackRoute(auth, c.req.param('agentId'));
+    const result = await getAgentFallbackRoute(auth, c.req.param('agentId'));
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -1376,7 +1376,7 @@ function buildApp(opts: WebServerOptions): Hono {
         { ok: false, error: { code: 'invalid_json', message: payload.error } },
         400,
       );
-    const result = setAgentFallbackRoute(
+    const result = await setAgentFallbackRoute(
       auth,
       c.req.param('agentId'),
       payload.data as any,
