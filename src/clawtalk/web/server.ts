@@ -1395,7 +1395,7 @@ function buildApp(opts: WebServerOptions): Hono {
       bucket: 'read',
     });
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
-    const result = getEffectiveToolsRoute(auth, c.req.param('agentId'));
+    const result = await getEffectiveToolsRoute(auth, c.req.param('agentId'));
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -1414,7 +1414,7 @@ function buildApp(opts: WebServerOptions): Hono {
       bucket: 'read',
     });
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
-    const result = listUserToolPermissionsRoute(auth);
+    const result = await listUserToolPermissionsRoute(auth);
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -1447,7 +1447,10 @@ function buildApp(opts: WebServerOptions): Hono {
         { ok: false, error: { code: 'invalid_json', message: payload.error } },
         400,
       );
-    const result = updateUserToolPermissionRoute(auth, payload.data as any);
+    const result = await updateUserToolPermissionRoute(
+      auth,
+      payload.data as any,
+    );
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
