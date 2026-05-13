@@ -37,7 +37,7 @@ not_found_handling = "single-page-application"
 # `id` below with the value `wrangler hyperdrive create` prints.
 [[hyperdrive]]
 binding = "DB"
-id = "REPLACE_WITH_HYPERDRIVE_ID"
+id = "6612a8ac15c4450a8bcdf0fdd2a1df35"
 # Local supabase stack runs on the clawtalk-specific 54430–54439 port
 # range (see supabase/config.toml). 54432 is the database port.
 localConnectionString = "postgresql://postgres:postgres@127.0.0.1:54432/postgres"
@@ -48,7 +48,7 @@ localConnectionString = "postgresql://postgres:postgres@127.0.0.1:54432/postgres
 #   wrangler kv namespace create JWKS_CACHE
 [[kv_namespaces]]
 binding = "JWKS_CACHE"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "6fc09c6972224a32971b573a8628e5de"
 
 # ─── Queues — multi-agent run dispatch ────────────────────────────────
 #
@@ -91,4 +91,4 @@ PUBLIC_MODE = "true"
 WEB_SECURE_COOKIES = "true"
 TRUSTED_PROXY_MODE = "cloudflare"
 CLAWTALK_ALLOWED_ORIGIN = "https://clawtalk.jokim1.workers.dev,https://clawtalk.app"
-SUPABASE_PROJECT_URL = "REPLACE_WITH_SUPABASE_PROJECT_URL"
+SUPABASE_PROJECT_URL = "https://llklxclnredhtpxmhyea.supabase.co"
