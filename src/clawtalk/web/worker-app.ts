@@ -42,21 +42,13 @@
 //                                         the Cloudflare Queues port
 //                                         lands)
 //   /api/v1/talks/:talkId/attachments[/...] — talk-attachments.ts
-//   /api/v1/talks/:talkId/threads/:threadId — talk-threads.ts (PATCH
-//                                         + DELETE only; GET list and
-//                                         POST create stayed inline
-//                                         in server.ts and are not
-//                                         yet extracted into the route
-//                                         module)
+//   /api/v1/talks/:talkId/threads[/...]     — talk-threads.ts (list +
+//                                         create + PATCH + DELETE)
 //
 // NOT mounted (needs Workers Queue plumbing or other follow-ups):
 //   /api/v1/talks/:talkId/chat[/cancel] — needs run-worker wake; will
 //                                          land alongside the Queue
 //                                          producer in a future unit.
-//   GET /api/v1/talks/:talkId/threads,  — thread list + create inline
-//   POST /api/v1/talks/:talkId/threads     in server.ts; pending
-//                                          extraction into the route
-//                                          module.
 //   /api/v1/events, /api/v1/talks/:talkId/events — SSE streams; SSE
 //                                          + outbox-notifier still
 //                                          sqlite + Node-process
@@ -143,7 +135,9 @@ import {
   patchTalkOutputRoute,
 } from './routes/talk-outputs.js';
 import {
+  createTalkThreadRoute,
   deleteTalkThreadRoute,
+  listTalkThreadsRoute,
   patchTalkThreadRoute,
 } from './routes/talk-threads.js';
 import {
@@ -1348,9 +1342,38 @@ function buildApp(): Hono<{ Variables: Variables }> {
     },
   );
 
-  // ── talk-threads.ts: thread metadata edits + delete ──────────
-  // (GET list + POST create still inline in server.ts and not yet
-  // extracted into the route module; only PATCH + DELETE land here.)
+  // ── talk-threads.ts: thread list + create + metadata edits + delete
+  app.get('/api/v1/talks/:talkId/threads', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'read' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const result = await listTalkThreadsRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+    });
+    return jsonResponse(result);
+  });
+
+  app.post('/api/v1/talks/:talkId/threads', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const csrfFail = checkCsrf(c, auth);
+    if (csrfFail) return csrfFail;
+    const payload = await readJsonBody<{ title?: unknown }>(c);
+    if (!payload.ok) return invalidJsonResponse(c, payload.error);
+    const title =
+      typeof payload.data.title === 'string'
+        ? payload.data.title.trim() || null
+        : null;
+    const result = await createTalkThreadRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      title,
+    });
+    return jsonResponse(result);
+  });
+
   app.patch('/api/v1/talks/:talkId/threads/:threadId', async (c) => {
     const auth = c.get('auth');
     const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });

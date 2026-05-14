@@ -1,10 +1,13 @@
 import { withUserContext } from '../../../db.js';
 import {
+  createTalkThread,
   deleteTalkThread,
   getTalkForUser,
+  listTalkThreads,
   ThreadDeleteConflictError,
   updateTalkThreadMetadata,
   type TalkThreadRecord,
+  type TalkThreadWithMetrics,
 } from '../../db/index.js';
 import {
   ThreadTitleValidationError,
@@ -12,6 +15,82 @@ import {
 } from '../../db/thread-title-utils.js';
 import { canEditTalk } from '../middleware/acl.js';
 import type { AuthContext, ApiEnvelope } from '../types.js';
+
+export async function listTalkThreadsRoute(input: {
+  auth: AuthContext;
+  talkId: string;
+}): Promise<{
+  statusCode: number;
+  body: ApiEnvelope<{ threads: TalkThreadWithMetrics[] }>;
+}> {
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await getTalkForUser(input.talkId);
+    if (!talk) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: { code: 'talk_not_found', message: 'Talk not found' },
+        },
+      };
+    }
+
+    const threads = await listTalkThreads({
+      talkId: input.talkId,
+      ownerId: input.auth.userId,
+    });
+    return {
+      statusCode: 200,
+      body: { ok: true, data: { threads } },
+    };
+  });
+}
+
+export async function createTalkThreadRoute(input: {
+  auth: AuthContext;
+  talkId: string;
+  title: string | null;
+}): Promise<{
+  statusCode: number;
+  body: ApiEnvelope<{ thread: TalkThreadRecord }>;
+}> {
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await getTalkForUser(input.talkId);
+    if (!talk) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: { code: 'talk_not_found', message: 'Talk not found' },
+        },
+      };
+    }
+
+    if (!(await canEditTalk(input.talkId))) {
+      return {
+        statusCode: 403,
+        body: {
+          ok: false,
+          error: {
+            code: 'forbidden',
+            message:
+              'You do not have permission to create threads for this talk',
+          },
+        },
+      };
+    }
+
+    const thread = await createTalkThread({
+      ownerId: input.auth.userId,
+      talkId: input.talkId,
+      title: input.title,
+    });
+    return {
+      statusCode: 201,
+      body: { ok: true, data: { thread } },
+    };
+  });
+}
 
 interface PatchTalkThreadBody {
   title?: unknown;
