@@ -30,7 +30,7 @@
  * header to api.anthropic.com.
  */
 
-import { getDb } from '../../db.js';
+import { getDbPg, type Sql } from '../../db.js';
 import type { RegisteredAgentRecord } from '../db/agent-accessors.js';
 import { decryptProviderSecret } from '../llm/provider-secret-store.js';
 import type { LlmProviderConfig, LlmSecret } from './llm-client.js';
@@ -38,6 +38,24 @@ import {
   TALK_EXECUTOR_ANTHROPIC_API_KEY,
   TALK_EXECUTOR_ANTHROPIC_BASE_URL,
 } from '../config.js';
+
+interface LlmProviderRow {
+  id: string;
+  base_url: string | null;
+  api_format: LlmProviderConfig['apiFormat'];
+  auth_scheme: LlmProviderConfig['authScheme'] | null;
+  response_start_timeout_ms: number | null;
+  stream_idle_timeout_ms: number | null;
+  absolute_timeout_ms: number | null;
+}
+
+interface LlmProviderModelRow {
+  default_max_output_tokens: number;
+}
+
+interface LlmProviderSecretRow {
+  ciphertext: string;
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -72,15 +90,21 @@ export class ExecutionResolverError extends Error {
  * Returns a ready-to-use ExecutionBinding or throws an
  * ExecutionResolverError with a machine-readable code.
  */
-export function resolveExecution(
+export async function resolveExecution(
   agent: RegisteredAgentRecord,
-): ExecutionBinding {
-  const db = getDb();
+): Promise<ExecutionBinding> {
+  const db: Sql = getDbPg();
 
   // --- Step 1: Load provider row ---
-  const providerRecord: any = db
-    .prepare('SELECT * FROM llm_providers WHERE id = ?')
-    .get(agent.provider_id);
+  const providerRows = await db<LlmProviderRow[]>`
+    select id, base_url, api_format, auth_scheme,
+           response_start_timeout_ms, stream_idle_timeout_ms,
+           absolute_timeout_ms
+    from public.llm_providers
+    where id = ${agent.provider_id}
+    limit 1
+  `;
+  const providerRecord = providerRows[0];
 
   if (!providerRecord) {
     throw new ExecutionResolverError(
@@ -90,7 +114,7 @@ export function resolveExecution(
   }
 
   // --- Step 2: Resolve credentials ---
-  const secret = resolveSecret(agent, db);
+  const secret = await resolveSecret(agent, db);
 
   // --- Step 3: Build provider config ---
   // For provider.anthropic, honour the ANTHROPIC_BASE_URL env var override
@@ -99,36 +123,30 @@ export function resolveExecution(
     agent.provider_id === 'provider.anthropic' &&
     TALK_EXECUTOR_ANTHROPIC_BASE_URL
       ? TALK_EXECUTOR_ANTHROPIC_BASE_URL
-      : providerRecord.base_url || undefined;
+      : (providerRecord.base_url ?? '');
 
   const providerConfig: LlmProviderConfig = {
     providerId: agent.provider_id,
     baseUrl,
     apiFormat: providerRecord.api_format,
-    authScheme: providerRecord.auth_scheme || 'x_api_key',
+    authScheme: providerRecord.auth_scheme ?? 'x_api_key',
     responseStartTimeoutMs:
       providerRecord.response_start_timeout_ms ?? undefined,
     streamIdleTimeoutMs: providerRecord.stream_idle_timeout_ms ?? undefined,
     absoluteTimeoutMs: providerRecord.absolute_timeout_ms ?? undefined,
   };
 
-  const modelRecord = db
-    .prepare(
-      `
-        SELECT default_max_output_tokens
-        FROM llm_provider_models
-        WHERE provider_id = ? AND model_id = ?
-        LIMIT 1
-      `,
-    )
-    .get(agent.provider_id, agent.model_id) as
-    | { default_max_output_tokens: number }
-    | undefined;
+  const modelRows = await db<LlmProviderModelRow[]>`
+    select default_max_output_tokens
+    from public.llm_provider_models
+    where provider_id = ${agent.provider_id} and model_id = ${agent.model_id}
+    limit 1
+  `;
 
   return {
     providerConfig,
     secret,
-    defaultMaxOutputTokens: modelRecord?.default_max_output_tokens,
+    defaultMaxOutputTokens: modelRows[0]?.default_max_output_tokens,
   };
 }
 
@@ -142,15 +160,17 @@ export function resolveExecution(
  * Subscription/OAuth credentials are NOT sufficient for direct HTTP
  * execution and this function returns false for them.
  */
-export function isAnthropicDirectHttpReady(): boolean {
+export async function isAnthropicDirectHttpReady(): Promise<boolean> {
   if (TALK_EXECUTOR_ANTHROPIC_API_KEY) return true;
 
-  const db = getDb();
-  const secretRecord: any = db
-    .prepare('SELECT 1 FROM llm_provider_secrets WHERE provider_id = ?')
-    .get('provider.anthropic');
-
-  return !!secretRecord;
+  const db: Sql = getDbPg();
+  const rows = await db`
+    select 1 as one
+    from public.llm_provider_secrets
+    where provider_id = ${'provider.anthropic'}
+    limit 1
+  `;
+  return rows.length > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -166,20 +186,24 @@ export function isAnthropicDirectHttpReady(): boolean {
  *    x-api-key auth scheme required by api.anthropic.com.
  * 3. If nothing found, throw a clear error.
  */
-function resolveSecret(
+async function resolveSecret(
   agent: RegisteredAgentRecord,
-  db: ReturnType<typeof getDb>,
-): LlmSecret {
-  // Try llm_provider_secrets first (all providers)
-  const secretRecord: any = db
-    .prepare(
-      'SELECT ciphertext FROM llm_provider_secrets WHERE provider_id = ?',
-    )
-    .get(agent.provider_id);
+  db: Sql,
+): Promise<LlmSecret> {
+  // Try llm_provider_secrets first (all providers).
+  // Per-user RLS: this call must be inside withUserContext, which downgrades
+  // the connection to `authenticated` and binds auth.uid() to the caller.
+  const secretRows = await db<LlmProviderSecretRow[]>`
+    select ciphertext
+    from public.llm_provider_secrets
+    where provider_id = ${agent.provider_id}
+    limit 1
+  `;
+  const secretRecord = secretRows[0];
 
   if (secretRecord) {
     try {
-      return decryptProviderSecret(secretRecord.ciphertext);
+      return await decryptProviderSecret(secretRecord.ciphertext);
     } catch {
       throw new ExecutionResolverError(
         `Failed to decrypt provider secret for ${agent.provider_id}`,

@@ -2,51 +2,44 @@ import {
   getOutboxEventsForTopics,
   getOutboxMinEventIdForTopics,
   getTalkIdsAccessibleByUser,
+  type OutboxEvent,
 } from '../../db/index.js';
 
-type OutboxEventLike = {
-  event_id: number;
-  event_type: string;
-  payload: string;
-};
+export type OutboxEventFilter = (event: OutboxEvent) => boolean;
 
-export type OutboxEventFilter = (event: OutboxEventLike) => boolean;
-
-export function formatOutboxEventAsSse(event: {
-  event_id: number;
-  event_type: string;
-  payload: string;
-}): string {
-  return `id: ${event.event_id}\nevent: ${event.event_type}\ndata: ${event.payload}\n\n`;
+export function formatOutboxEventAsSse(event: OutboxEvent): string {
+  return `id: ${event.event_id}\nevent: ${event.event_type}\ndata: ${JSON.stringify(event.payload)}\n\n`;
 }
 
-export function getUserScopedEventTopics(userId: string): string[] {
-  const talkIds = getTalkIdsAccessibleByUser(userId);
-  return [`user:${userId}`, ...talkIds.map((id) => `talk:${id}`)];
+export async function getUserScopedEventTopics(
+  userId: string,
+): Promise<string[]> {
+  const talkIds = await getTalkIdsAccessibleByUser();
+  return [`user:${userId}`, ...talkIds.map((id: string) => `talk:${id}`)];
 }
 
 export function getTalkScopedEventTopics(talkId: string): string[] {
   return [`talk:${talkId}`];
 }
 
-export function buildUserScopedSseStream(input: {
+export async function buildUserScopedSseStream(input: {
   userId: string;
   lastEventId: number;
-}): string {
-  const topics = getUserScopedEventTopics(input.userId);
-  return buildSseStreamForTopics(topics, input.lastEventId);
+}): Promise<string> {
+  const topics = await getUserScopedEventTopics(input.userId);
+  return await buildSseStreamForTopics(topics, input.lastEventId);
 }
 
-export function buildTalkScopedSseStream(input: {
+export async function buildTalkScopedSseStream(input: {
   talkId: string;
   lastEventId: number;
   threadId?: string | null;
-}): string {
+}): Promise<string> {
   const filters: OutboxEventFilter[] = [buildConversationRunEventFilter()];
   if (input.threadId) {
     filters.push(buildTalkThreadEventFilter(input.threadId));
   }
-  return buildSseStreamForTopics(
+  return await buildSseStreamForTopics(
     getTalkScopedEventTopics(input.talkId),
     input.lastEventId,
     filters.length === 1
@@ -55,20 +48,20 @@ export function buildTalkScopedSseStream(input: {
   );
 }
 
-function buildSseStreamForTopics(
+async function buildSseStreamForTopics(
   topics: string[],
   lastEventId: number,
   filterEvent?: OutboxEventFilter,
-): string {
+): Promise<string> {
   let output = '';
 
-  const minId = getOutboxMinEventIdForTopics(topics);
+  const minId = await getOutboxMinEventIdForTopics(topics);
   if (lastEventId > 0 && minId !== null && lastEventId < minId - 1) {
     output +=
       'event: replay_gap\ndata: {"message":"Requested replay position is outside retention window"}\n\n';
   }
 
-  const events = getOutboxEventsForTopics(topics, lastEventId);
+  const events = await getOutboxEventsForTopics(topics, lastEventId);
   for (const event of events) {
     if (filterEvent && !filterEvent(event)) {
       continue;
@@ -81,17 +74,6 @@ function buildSseStreamForTopics(
   }
 
   return output;
-}
-
-function parsePayload(payload: string): Record<string, unknown> | null {
-  try {
-    const parsed = JSON.parse(payload) as unknown;
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
 }
 
 function isStringArray(value: unknown): value is string[] {
@@ -110,10 +92,8 @@ function buildConversationRunEventFilter(): OutboxEventFilter {
       case 'talk_run_queued':
       case 'talk_run_started':
       case 'talk_run_completed':
-      case 'talk_run_failed': {
-        const payload = parsePayload(event.payload);
-        return payload ? isConversationRunPayload(payload) : false;
-      }
+      case 'talk_run_failed':
+        return isConversationRunPayload(event.payload);
       default:
         return true;
     }
@@ -124,8 +104,7 @@ export function buildTalkThreadEventFilter(
   threadId: string,
 ): OutboxEventFilter {
   return (event) => {
-    const payload = parsePayload(event.payload);
-    if (!payload) return false;
+    const payload = event.payload;
 
     switch (event.event_type) {
       case 'message_appended':

@@ -1,24 +1,27 @@
+import { withUserContext } from '../../../db.js';
 import {
   listUserToolPermissions,
   upsertUserToolPermission,
   getEffectiveToolsForAgent,
+  getRegisteredAgent,
   TOOL_FAMILY_MAP,
   type UserToolPermission,
   type EffectiveToolAccess,
 } from '../../db/agent-accessors.js';
-import { getRegisteredAgent } from '../../db/agent-accessors.js';
 import type { AuthContext, ApiEnvelope } from '../types.js';
 
 // ---------------------------------------------------------------------------
 // List User Tool Permissions Route
 // ---------------------------------------------------------------------------
 
-export function listUserToolPermissionsRoute(auth: AuthContext): {
+export async function listUserToolPermissionsRoute(auth: AuthContext): Promise<{
   statusCode: number;
   body: ApiEnvelope<UserToolPermission[]>;
-} {
+}> {
   try {
-    const permissions = listUserToolPermissions(auth.userId);
+    const permissions = await withUserContext(auth.userId, () =>
+      listUserToolPermissions(),
+    );
 
     return {
       statusCode: 200,
@@ -51,13 +54,13 @@ interface UpdateToolPermissionBody {
   requiresApproval?: unknown;
 }
 
-export function updateUserToolPermissionRoute(
+export async function updateUserToolPermissionRoute(
   auth: AuthContext,
   body: UpdateToolPermissionBody,
-): {
+): Promise<{
   statusCode: number;
   body: ApiEnvelope<UserToolPermission>;
-} {
+}> {
   // Validate toolFamily
   if (typeof body.toolFamily !== 'string' || !body.toolFamily.trim()) {
     return {
@@ -121,21 +124,25 @@ export function updateUserToolPermissionRoute(
     // Get the runtime tools for this family to store permissions
     const runtimeTools = TOOL_FAMILY_MAP[toolFamily] || [];
 
-    // Store permission for each runtime tool in this family
-    for (const tool of runtimeTools) {
-      upsertUserToolPermission(
-        auth.userId,
-        tool,
-        body.allowed,
-        body.requiresApproval,
-      );
-    }
+    // Store permission for each runtime tool in this family inside the
+    // user's RLS scope. upsertUserToolPermission targets
+    // user_tool_permissions where (user_id = auth.uid()) is enforced.
+    await withUserContext(auth.userId, async () => {
+      for (const tool of runtimeTools) {
+        await upsertUserToolPermission({
+          userId: auth.userId,
+          toolId: tool,
+          allowed: body.allowed as boolean,
+          requiresApproval: body.requiresApproval as boolean,
+        });
+      }
+    });
 
     // Return a permission object representing the family
     const permission: UserToolPermission = {
       toolId: toolFamily,
-      allowed: body.allowed,
-      requiresApproval: body.requiresApproval,
+      allowed: body.allowed as boolean,
+      requiresApproval: body.requiresApproval as boolean,
     };
 
     return {
@@ -163,16 +170,24 @@ export function updateUserToolPermissionRoute(
 // Get Effective Tools for Agent Route
 // ---------------------------------------------------------------------------
 
-export function getEffectiveToolsRoute(
+export async function getEffectiveToolsRoute(
   auth: AuthContext,
   agentId: string,
-): {
+): Promise<{
   statusCode: number;
   body: ApiEnvelope<EffectiveToolAccess[]>;
-} {
+}> {
   try {
-    // Verify agent exists
-    const agent = getRegisteredAgent(agentId);
+    const { agent, effectiveTools } = await withUserContext(
+      auth.userId,
+      async () => {
+        const agentRecord = await getRegisteredAgent(agentId);
+        if (!agentRecord) return { agent: null, effectiveTools: [] };
+        const tools = await getEffectiveToolsForAgent(agentId);
+        return { agent: agentRecord, effectiveTools: tools };
+      },
+    );
+
     if (!agent) {
       return {
         statusCode: 404,
@@ -185,8 +200,6 @@ export function getEffectiveToolsRoute(
         },
       };
     }
-
-    const effectiveTools = getEffectiveToolsForAgent(agentId, auth.userId);
 
     return {
       statusCode: 200,

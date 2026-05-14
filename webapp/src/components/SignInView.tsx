@@ -6,6 +6,7 @@ import {
   getAuthConfig,
   startGoogleAuth,
 } from '../lib/api';
+import { signInWithGoogle } from '../lib/supabase-cookie-shim';
 
 export function SignInView(props: {
   onSignedIn: () => Promise<void> | void;
@@ -40,8 +41,7 @@ export function SignInView(props: {
     setBusy(true);
     setError(null);
     try {
-      const auth = await startGoogleAuth({ returnTo });
-      window.location.assign(auth.authorizationUrl);
+      await signInWithGoogle();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to start sign-in');
       setBusy(false);

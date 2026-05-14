@@ -23,6 +23,7 @@ const envConfig = readEnvFile([
   'ACCESS_TOKEN_TTL_SEC',
   'REFRESH_TOKEN_TTL_SEC',
   'DEVICE_CODE_TTL_SEC',
+  'CLAWTALK_ALLOWED_ORIGINS',
   'TALK_RUN_POLL_MS',
   'TALK_RUN_MAX_CONCURRENCY',
   'TALK_MOCK_EXECUTION_MS',
@@ -211,6 +212,20 @@ export const DEVICE_CODE_TTL_SEC = parseInt(
   process.env.DEVICE_CODE_TTL_SEC || envConfig.DEVICE_CODE_TTL_SEC || '600',
   10,
 );
+
+// Allowed origins for the Supabase Auth callback + refresh routes.
+// Phase 5 PR 2: locked at clawtalk.app + local dev (vite + tsx).
+// Cleared CSV string → parsed list. Tests run inside Node mode and
+// can override via the env var or by importing CLAWTALK_ALLOWED_ORIGINS
+// directly.
+export const CLAWTALK_ALLOWED_ORIGINS = (
+  process.env.CLAWTALK_ALLOWED_ORIGINS ||
+  envConfig.CLAWTALK_ALLOWED_ORIGINS ||
+  'https://clawtalk.app,http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:3210,http://localhost:3210'
+)
+  .split(',')
+  .map((entry) => entry.trim())
+  .filter(Boolean);
 
 const talkRunPollMs = parseInt(
   process.env.TALK_RUN_POLL_MS || envConfig.TALK_RUN_POLL_MS || '500',

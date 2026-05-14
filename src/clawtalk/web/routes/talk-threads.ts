@@ -1,8 +1,13 @@
+import { withUserContext } from '../../../db.js';
 import {
+  createTalkThread,
   deleteTalkThread,
   getTalkForUser,
+  listTalkThreads,
   ThreadDeleteConflictError,
   updateTalkThreadMetadata,
+  type TalkThreadRecord,
+  type TalkThreadWithMetrics,
 } from '../../db/index.js';
 import {
   ThreadTitleValidationError,
@@ -11,37 +16,96 @@ import {
 import { canEditTalk } from '../middleware/acl.js';
 import type { AuthContext, ApiEnvelope } from '../types.js';
 
+export async function listTalkThreadsRoute(input: {
+  auth: AuthContext;
+  talkId: string;
+}): Promise<{
+  statusCode: number;
+  body: ApiEnvelope<{ threads: TalkThreadWithMetrics[] }>;
+}> {
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await getTalkForUser(input.talkId);
+    if (!talk) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: { code: 'talk_not_found', message: 'Talk not found' },
+        },
+      };
+    }
+
+    const threads = await listTalkThreads({
+      talkId: input.talkId,
+      ownerId: input.auth.userId,
+    });
+    return {
+      statusCode: 200,
+      body: { ok: true, data: { threads } },
+    };
+  });
+}
+
+export async function createTalkThreadRoute(input: {
+  auth: AuthContext;
+  talkId: string;
+  title: string | null;
+}): Promise<{
+  statusCode: number;
+  body: ApiEnvelope<{ thread: TalkThreadRecord }>;
+}> {
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await getTalkForUser(input.talkId);
+    if (!talk) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: { code: 'talk_not_found', message: 'Talk not found' },
+        },
+      };
+    }
+
+    if (!(await canEditTalk(input.talkId))) {
+      return {
+        statusCode: 403,
+        body: {
+          ok: false,
+          error: {
+            code: 'forbidden',
+            message:
+              'You do not have permission to create threads for this talk',
+          },
+        },
+      };
+    }
+
+    const thread = await createTalkThread({
+      ownerId: input.auth.userId,
+      talkId: input.talkId,
+      title: input.title,
+    });
+    return {
+      statusCode: 201,
+      body: { ok: true, data: { thread } },
+    };
+  });
+}
+
 interface PatchTalkThreadBody {
   title?: unknown;
   pinned?: unknown;
 }
 
-type PatchTalkThreadResult = {
-  id: string;
-  talk_id: string;
-  title: string | null;
-  is_default: number;
-  is_internal: number;
-  is_pinned: number;
-  created_at: string;
-  updated_at: string;
-} | null;
-
-interface PatchTalkThreadDeps {
-  getTalkForUser?: typeof getTalkForUser;
-  updateTalkThreadMetadata?: typeof updateTalkThreadMetadata;
-}
-
-export function patchTalkThreadRoute(input: {
+export async function patchTalkThreadRoute(input: {
   auth: AuthContext;
   talkId: string;
   threadId: string;
   body: PatchTalkThreadBody;
-  deps?: PatchTalkThreadDeps;
-}): {
+}): Promise<{
   statusCode: number;
-  body: ApiEnvelope<PatchTalkThreadResult>;
-} {
+  body: ApiEnvelope<TalkThreadRecord | null>;
+}> {
   if (input.body.title === undefined && input.body.pinned === undefined) {
     return {
       statusCode: 400,
@@ -95,157 +159,147 @@ export function patchTalkThreadRoute(input: {
     pinned = input.body.pinned;
   }
 
-  const talk = (input.deps?.getTalkForUser ?? getTalkForUser)(
-    input.talkId,
-    input.auth.userId,
-  );
-  if (!talk) {
-    return {
-      statusCode: 404,
-      body: {
-        ok: false,
-        error: { code: 'talk_not_found', message: 'Talk not found' },
-      },
-    };
-  }
-
-  if (!canEditTalk(input.talkId, input.auth.userId, input.auth.role)) {
-    return {
-      statusCode: 403,
-      body: {
-        ok: false,
-        error: { code: 'forbidden', message: 'Talk is read-only' },
-      },
-    };
-  }
-
-  try {
-    const thread = (
-      input.deps?.updateTalkThreadMetadata ?? updateTalkThreadMetadata
-    )({
-      talkId: input.talkId,
-      threadId: input.threadId,
-      ...(title !== undefined ? { title } : {}),
-      ...(pinned !== undefined ? { pinned } : {}),
-    });
-    if (!thread) {
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await getTalkForUser(input.talkId);
+    if (!talk) {
       return {
         statusCode: 404,
         body: {
           ok: false,
-          error: { code: 'thread_not_found', message: 'Thread not found' },
+          error: { code: 'talk_not_found', message: 'Talk not found' },
         },
       };
     }
 
-    return {
-      statusCode: 200,
-      body: {
-        ok: true,
-        data: thread,
-      },
-    };
-  } catch (err) {
-    if (err instanceof ThreadTitleValidationError) {
+    if (!(await canEditTalk(input.talkId))) {
       return {
-        statusCode: 400,
+        statusCode: 403,
         body: {
           ok: false,
-          error: {
-            code: 'invalid_input',
-            message: err.message,
-          },
+          error: { code: 'forbidden', message: 'Talk is read-only' },
         },
       };
     }
-    return {
-      statusCode: 500,
-      body: {
-        ok: false,
-        error: { code: 'internal_error', message: String(err) },
-      },
-    };
-  }
+
+    try {
+      const thread = await updateTalkThreadMetadata({
+        talkId: input.talkId,
+        threadId: input.threadId,
+        ...(title !== undefined ? { title } : {}),
+        ...(pinned !== undefined ? { pinned } : {}),
+      });
+      if (!thread) {
+        return {
+          statusCode: 404,
+          body: {
+            ok: false,
+            error: { code: 'thread_not_found', message: 'Thread not found' },
+          },
+        };
+      }
+
+      return {
+        statusCode: 200,
+        body: {
+          ok: true,
+          data: thread,
+        },
+      };
+    } catch (err) {
+      if (err instanceof ThreadTitleValidationError) {
+        return {
+          statusCode: 400,
+          body: {
+            ok: false,
+            error: {
+              code: 'invalid_input',
+              message: err.message,
+            },
+          },
+        };
+      }
+      return {
+        statusCode: 500,
+        body: {
+          ok: false,
+          error: { code: 'internal_error', message: String(err) },
+        },
+      };
+    }
+  });
 }
 
-interface DeleteTalkThreadDeps {
-  getTalkForUser?: typeof getTalkForUser;
-  deleteTalkThread?: typeof deleteTalkThread;
-}
-
-export function deleteTalkThreadRoute(input: {
+export async function deleteTalkThreadRoute(input: {
   auth: AuthContext;
   talkId: string;
   threadId: string;
-  deps?: DeleteTalkThreadDeps;
-}): {
+}): Promise<{
   statusCode: number;
   body: ApiEnvelope<{ deleted: true }>;
-} {
-  const talk = (input.deps?.getTalkForUser ?? getTalkForUser)(
-    input.talkId,
-    input.auth.userId,
-  );
-  if (!talk) {
-    return {
-      statusCode: 404,
-      body: {
-        ok: false,
-        error: { code: 'talk_not_found', message: 'Talk not found' },
-      },
-    };
-  }
-
-  if (!canEditTalk(input.talkId, input.auth.userId, input.auth.role)) {
-    return {
-      statusCode: 403,
-      body: {
-        ok: false,
-        error: { code: 'forbidden', message: 'Talk is read-only' },
-      },
-    };
-  }
-
-  try {
-    const deleted = (input.deps?.deleteTalkThread ?? deleteTalkThread)({
-      talkId: input.talkId,
-      threadId: input.threadId,
-    });
-    if (!deleted) {
+}> {
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await getTalkForUser(input.talkId);
+    if (!talk) {
       return {
         statusCode: 404,
         body: {
           ok: false,
-          error: { code: 'thread_not_found', message: 'Thread not found' },
+          error: { code: 'talk_not_found', message: 'Talk not found' },
         },
       };
     }
-    return {
-      statusCode: 200,
-      body: {
-        ok: true,
-        data: { deleted: true },
-      },
-    };
-  } catch (err) {
-    if (err instanceof ThreadDeleteConflictError) {
+
+    if (!(await canEditTalk(input.talkId))) {
       return {
-        statusCode: 409,
+        statusCode: 403,
         body: {
           ok: false,
-          error: {
-            code: err.code,
-            message: err.message,
-          },
+          error: { code: 'forbidden', message: 'Talk is read-only' },
         },
       };
     }
-    return {
-      statusCode: 500,
-      body: {
-        ok: false,
-        error: { code: 'internal_error', message: String(err) },
-      },
-    };
-  }
+
+    try {
+      const deleted = await deleteTalkThread({
+        talkId: input.talkId,
+        threadId: input.threadId,
+      });
+      if (!deleted) {
+        return {
+          statusCode: 404,
+          body: {
+            ok: false,
+            error: { code: 'thread_not_found', message: 'Thread not found' },
+          },
+        };
+      }
+      return {
+        statusCode: 200,
+        body: {
+          ok: true,
+          data: { deleted: true },
+        },
+      };
+    } catch (err) {
+      if (err instanceof ThreadDeleteConflictError) {
+        return {
+          statusCode: 409,
+          body: {
+            ok: false,
+            error: {
+              code: err.code,
+              message: err.message,
+            },
+          },
+        };
+      }
+      return {
+        statusCode: 500,
+        body: {
+          ok: false,
+          error: { code: 'internal_error', message: String(err) },
+        },
+      };
+    }
+  });
 }

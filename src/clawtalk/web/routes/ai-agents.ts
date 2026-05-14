@@ -1,4 +1,4 @@
-import { getDb } from '../../../db.js';
+import { getDbPg, withUserContext } from '../../../db.js';
 import {
   BUILTIN_ADDITIONAL_PROVIDER_IDS,
   BUILTIN_ADDITIONAL_PROVIDERS,
@@ -96,7 +96,7 @@ interface ProviderRow {
   api_format: 'openai_chat_completions';
   base_url: string;
   auth_scheme: 'bearer';
-  enabled: number;
+  enabled: boolean;
   response_start_timeout_ms: number | null;
   stream_idle_timeout_ms: number | null;
   absolute_timeout_ms: number | null;
@@ -135,38 +135,36 @@ function isAdminLike(role: string): boolean {
   return role === 'owner' || role === 'admin';
 }
 
-function providerPlaceholders(): string {
-  return BUILTIN_ADDITIONAL_PROVIDER_IDS.map(() => '?').join(', ');
-}
-
 function maskApiKey(apiKey: string): string {
   return `••••${apiKey.slice(-4)}`;
 }
 
-function parseStoredSecret(ciphertext: string): LlmSecret | null {
+async function parseStoredSecret(
+  ciphertext: string,
+): Promise<LlmSecret | null> {
   try {
-    return decryptProviderSecret(ciphertext);
+    return await decryptProviderSecret(ciphertext);
   } catch {
     return null;
   }
 }
 
-function getClaudeModelSuggestions(): ClaudeModelSuggestion[] {
-  const db = getDb();
-  const rows = db
-    .prepare(
-      `SELECT model_id, display_name, context_window_tokens,
-              default_max_output_tokens
-       FROM llm_provider_models
-       WHERE provider_id = 'provider.anthropic' AND enabled = 1
-       ORDER BY display_name ASC`,
-    )
-    .all() as Array<{
-    model_id: string;
-    display_name: string;
-    context_window_tokens: number;
-    default_max_output_tokens: number;
-  }>;
+async function getClaudeModelSuggestions(): Promise<ClaudeModelSuggestion[]> {
+  const db = getDbPg();
+  const rows = await db<
+    Array<{
+      model_id: string;
+      display_name: string;
+      context_window_tokens: number;
+      default_max_output_tokens: number;
+    }>
+  >`
+    select model_id, display_name, context_window_tokens,
+           default_max_output_tokens
+    from public.llm_provider_models
+    where provider_id = 'provider.anthropic' and enabled = true
+    order by display_name asc
+  `;
 
   return rows.map((row) => {
     const capabilities = resolveModelCapabilities({
@@ -184,27 +182,25 @@ function getClaudeModelSuggestions(): ClaudeModelSuggestion[] {
   });
 }
 
-function getSavedDefaultClaudeModelId(): string | null {
-  const db = getDb();
-  const row = db
-    .prepare(
-      `SELECT value FROM settings_kv WHERE key = 'executor.defaultClaudeModel'`,
-    )
-    .get() as { value: string } | undefined;
-  return row?.value ?? null;
+async function getSavedDefaultClaudeModelId(): Promise<string | null> {
+  const db = getDbPg();
+  const rows = await db<Array<{ value: string | null }>>`
+    select value from public.settings_kv
+    where key = 'executor.defaultClaudeModel'
+    limit 1
+  `;
+  return rows[0]?.value ?? null;
 }
 
-function listAdditionalProviderRows(): ProviderRow[] {
-  const db = getDb();
-  const rows = db
-    .prepare(
-      `SELECT id, name, provider_kind, api_format, base_url, auth_scheme,
-              enabled, response_start_timeout_ms, stream_idle_timeout_ms,
-              absolute_timeout_ms
-       FROM llm_providers
-       WHERE enabled = 1 AND id IN (${providerPlaceholders()})`,
-    )
-    .all(...BUILTIN_ADDITIONAL_PROVIDER_IDS) as ProviderRow[];
+async function listAdditionalProviderRows(): Promise<ProviderRow[]> {
+  const db = getDbPg();
+  const rows = await db<ProviderRow[]>`
+    select id, name, provider_kind, api_format, base_url, auth_scheme,
+           enabled, response_start_timeout_ms, stream_idle_timeout_ms,
+           absolute_timeout_ms
+    from public.llm_providers
+    where enabled = true and id = any(${BUILTIN_ADDITIONAL_PROVIDER_IDS})
+  `;
 
   return rows.sort(
     (left, right) =>
@@ -213,17 +209,18 @@ function listAdditionalProviderRows(): ProviderRow[] {
   );
 }
 
-function listAdditionalProviderModels(): Map<string, ProviderModelRow[]> {
-  const db = getDb();
-  const rows = db
-    .prepare(
-      `SELECT provider_id, model_id, display_name, context_window_tokens,
-              default_max_output_tokens, default_ttft_timeout_ms
-       FROM llm_provider_models
-       WHERE provider_id IN (${providerPlaceholders()}) AND enabled = 1
-       ORDER BY provider_id ASC, display_name ASC`,
-    )
-    .all(...BUILTIN_ADDITIONAL_PROVIDER_IDS) as ProviderModelRow[];
+async function listAdditionalProviderModels(): Promise<
+  Map<string, ProviderModelRow[]>
+> {
+  const db = getDbPg();
+  const rows = await db<ProviderModelRow[]>`
+    select provider_id, model_id, display_name, context_window_tokens,
+           default_max_output_tokens, default_ttft_timeout_ms
+    from public.llm_provider_models
+    where provider_id = any(${BUILTIN_ADDITIONAL_PROVIDER_IDS})
+      and enabled = true
+    order by provider_id asc, display_name asc
+  `;
 
   const byProvider = new Map<string, ProviderModelRow[]>();
   for (const row of rows) {
@@ -234,38 +231,41 @@ function listAdditionalProviderModels(): Map<string, ProviderModelRow[]> {
   return byProvider;
 }
 
-function listProviderSecrets(): Map<string, LlmSecret | null> {
-  const db = getDb();
-  const rows = db
-    .prepare(
-      `SELECT provider_id, ciphertext
-       FROM llm_provider_secrets
-       WHERE provider_id IN (${providerPlaceholders()})`,
-    )
-    .all(...BUILTIN_ADDITIONAL_PROVIDER_IDS) as Array<{
-    provider_id: string;
-    ciphertext: string;
-  }>;
+async function listProviderSecrets(): Promise<Map<string, LlmSecret | null>> {
+  const db = getDbPg();
+  const rows = await db<Array<{ provider_id: string; ciphertext: string }>>`
+    select provider_id, ciphertext
+    from public.llm_provider_secrets
+    where provider_id = any(${BUILTIN_ADDITIONAL_PROVIDER_IDS})
+  `;
 
-  return new Map(
-    rows.map((row) => [row.provider_id, parseStoredSecret(row.ciphertext)]),
+  const entries = await Promise.all(
+    rows.map(
+      async (row): Promise<[string, LlmSecret | null]> => [
+        row.provider_id,
+        await parseStoredSecret(row.ciphertext),
+      ],
+    ),
   );
+  return new Map(entries);
 }
 
-function listProviderVerifications(): Map<string, ProviderVerificationRow> {
-  const db = getDb();
-  const rows = db
-    .prepare(
-      `SELECT provider_id, status, last_verified_at, last_error
-       FROM llm_provider_verifications
-       WHERE provider_id IN (${providerPlaceholders()})`,
-    )
-    .all(...BUILTIN_ADDITIONAL_PROVIDER_IDS) as Array<{
-    provider_id: string;
-    status: AdditionalProviderVerificationStatus;
-    last_verified_at: string | null;
-    last_error: string | null;
-  }>;
+async function listProviderVerifications(): Promise<
+  Map<string, ProviderVerificationRow>
+> {
+  const db = getDbPg();
+  const rows = await db<
+    Array<{
+      provider_id: string;
+      status: AdditionalProviderVerificationStatus;
+      last_verified_at: string | null;
+      last_error: string | null;
+    }>
+  >`
+    select provider_id, status, last_verified_at, last_error
+    from public.llm_provider_verifications
+    where provider_id = any(${BUILTIN_ADDITIONAL_PROVIDER_IDS})
+  `;
 
   return new Map(
     rows.map((row) => [
@@ -280,10 +280,10 @@ function listProviderVerifications(): Map<string, ProviderVerificationRow> {
 }
 
 async function buildAdditionalProviderCards(): Promise<AgentProviderCard[]> {
-  const providerRows = listAdditionalProviderRows();
-  const modelsByProvider = listAdditionalProviderModels();
-  const secretsByProvider = listProviderSecrets();
-  const verificationsByProvider = listProviderVerifications();
+  const providerRows = await listAdditionalProviderRows();
+  const modelsByProvider = await listAdditionalProviderModels();
+  const secretsByProvider = await listProviderSecrets();
+  const verificationsByProvider = await listProviderVerifications();
   const codexHostStatus = providerRows.some(
     (provider) => provider.id === CODEX_PROVIDER_ID,
   )
@@ -331,7 +331,7 @@ async function buildAdditionalProviderCards(): Promise<AgentProviderCard[]> {
       apiFormat: provider.api_format,
       baseUrl: provider.base_url,
       authScheme: provider.auth_scheme,
-      enabled: provider.enabled === 1,
+      enabled: provider.enabled,
       credentialMode,
       hasCredential,
       credentialHint,
@@ -368,78 +368,76 @@ async function buildAdditionalProviderCards(): Promise<AgentProviderCard[]> {
 }
 
 export async function buildAiAgentsPageData(): Promise<AiAgentsPageData> {
-  const claudeModelSuggestions = getClaudeModelSuggestions();
+  const claudeModelSuggestions = await getClaudeModelSuggestions();
+  const savedDefault = await getSavedDefaultClaudeModelId();
   return {
     defaultClaudeModelId:
-      getSavedDefaultClaudeModelId() ||
-      claudeModelSuggestions[0]?.modelId ||
-      'claude-sonnet-4-6',
+      savedDefault || claudeModelSuggestions[0]?.modelId || 'claude-sonnet-4-6',
     claudeModelSuggestions,
     additionalProviders: await buildAdditionalProviderCards(),
   };
 }
 
-function getAdditionalProvider(providerId: string): ProviderRow | null {
+async function getAdditionalProvider(
+  providerId: string,
+): Promise<ProviderRow | null> {
   if (!BUILTIN_ADDITIONAL_PROVIDER_IDS.includes(providerId)) {
     return null;
   }
-  const db = getDb();
-  const row = db
-    .prepare(
-      `SELECT id, name, provider_kind, api_format, base_url, auth_scheme,
-              enabled, response_start_timeout_ms, stream_idle_timeout_ms,
-              absolute_timeout_ms
-       FROM llm_providers
-       WHERE id = ? AND enabled = 1`,
-    )
-    .get(providerId) as ProviderRow | undefined;
-  return row ?? null;
+  const db = getDbPg();
+  const rows = await db<ProviderRow[]>`
+    select id, name, provider_kind, api_format, base_url, auth_scheme,
+           enabled, response_start_timeout_ms, stream_idle_timeout_ms,
+           absolute_timeout_ms
+    from public.llm_providers
+    where id = ${providerId} and enabled = true
+  `;
+  return rows[0] ?? null;
 }
 
-function getPrimaryProviderModel(providerId: string): ProviderModelRow | null {
-  const db = getDb();
-  const row = db
-    .prepare(
-      `SELECT provider_id, model_id, display_name, context_window_tokens,
-              default_max_output_tokens, default_ttft_timeout_ms
-       FROM llm_provider_models
-       WHERE provider_id = ? AND enabled = 1
-       ORDER BY display_name ASC
-       LIMIT 1`,
-    )
-    .get(providerId) as ProviderModelRow | undefined;
-  return row ?? null;
+async function getPrimaryProviderModel(
+  providerId: string,
+): Promise<ProviderModelRow | null> {
+  const db = getDbPg();
+  const rows = await db<ProviderModelRow[]>`
+    select provider_id, model_id, display_name, context_window_tokens,
+           default_max_output_tokens, default_ttft_timeout_ms
+    from public.llm_provider_models
+    where provider_id = ${providerId} and enabled = true
+    order by display_name asc
+    limit 1
+  `;
+  return rows[0] ?? null;
 }
 
-function upsertProviderVerification(
+async function upsertProviderVerification(
+  ownerId: string,
   providerId: string,
   result: ProviderVerificationResult,
-): void {
-  const db = getDb();
-  const now = new Date().toISOString();
-  db.prepare(
-    `INSERT INTO llm_provider_verifications (
-       provider_id, status, last_verified_at, last_error, updated_at
-     )
-     VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(provider_id) DO UPDATE SET
-       status = excluded.status,
-       last_verified_at = excluded.last_verified_at,
-       last_error = excluded.last_error,
-       updated_at = excluded.updated_at`,
-  ).run(
-    providerId,
-    result.status,
-    result.lastVerifiedAt,
-    result.lastError,
-    now,
-  );
+): Promise<void> {
+  const db = getDbPg();
+  await db`
+    insert into public.llm_provider_verifications (
+      owner_id, provider_id, status, last_verified_at, last_error
+    )
+    values (
+      ${ownerId}::uuid, ${providerId}, ${result.status},
+      ${result.lastVerifiedAt}::timestamptz, ${result.lastError}
+    )
+    on conflict (owner_id, provider_id) do update set
+      status = excluded.status,
+      last_verified_at = excluded.last_verified_at,
+      last_error = excluded.last_error,
+      updated_at = now()
+  `;
 }
 
-function deleteProviderVerification(providerId: string): void {
-  getDb()
-    .prepare(`DELETE FROM llm_provider_verifications WHERE provider_id = ?`)
-    .run(providerId);
+async function deleteProviderVerification(providerId: string): Promise<void> {
+  const db = getDbPg();
+  await db`
+    delete from public.llm_provider_verifications
+    where provider_id = ${providerId}
+  `;
 }
 
 function buildProviderConfig(provider: ProviderRow): LlmProviderConfig {
@@ -488,8 +486,11 @@ function mapVerificationFailure(error: unknown): ProviderVerificationResult {
   };
 }
 
-async function verifyProviderSecret(providerId: string): Promise<void> {
-  const provider = getAdditionalProvider(providerId);
+async function verifyProviderSecret(
+  ownerId: string,
+  providerId: string,
+): Promise<void> {
+  const provider = await getAdditionalProvider(providerId);
   if (!provider) {
     throw new Error(`Provider '${providerId}' is not supported.`);
   }
@@ -497,7 +498,7 @@ async function verifyProviderSecret(providerId: string): Promise<void> {
   if (providerId === CODEX_PROVIDER_ID) {
     const hostStatus = await new CodexHostStatusService().getStatusView();
     if (!hostStatus.cliInstalled || !hostStatus.sandboxAvailable) {
-      upsertProviderVerification(providerId, {
+      await upsertProviderVerification(ownerId, providerId, {
         status: 'unavailable',
         lastVerifiedAt: null,
         lastError: hostStatus.message,
@@ -505,10 +506,10 @@ async function verifyProviderSecret(providerId: string): Promise<void> {
       return;
     }
     if (!hostStatus.authenticated) {
-      deleteProviderVerification(providerId);
+      await deleteProviderVerification(providerId);
       return;
     }
-    upsertProviderVerification(providerId, {
+    await upsertProviderVerification(ownerId, providerId, {
       status: 'verified',
       lastVerifiedAt: new Date().toISOString(),
       lastError: null,
@@ -516,21 +517,22 @@ async function verifyProviderSecret(providerId: string): Promise<void> {
     return;
   }
 
-  const db = getDb();
-  const secretRow = db
-    .prepare(
-      `SELECT ciphertext FROM llm_provider_secrets WHERE provider_id = ?`,
-    )
-    .get(providerId) as { ciphertext: string } | undefined;
-  const secret = secretRow ? parseStoredSecret(secretRow.ciphertext) : null;
+  const db = getDbPg();
+  const secretRows = await db<Array<{ ciphertext: string }>>`
+    select ciphertext from public.llm_provider_secrets
+    where provider_id = ${providerId}
+  `;
+  const secret = secretRows[0]
+    ? await parseStoredSecret(secretRows[0].ciphertext)
+    : null;
   if (!secret) {
-    deleteProviderVerification(providerId);
+    await deleteProviderVerification(providerId);
     return;
   }
 
-  const model = getPrimaryProviderModel(providerId);
+  const model = await getPrimaryProviderModel(providerId);
   if (!model) {
-    upsertProviderVerification(providerId, {
+    await upsertProviderVerification(ownerId, providerId, {
       status: 'unavailable',
       lastVerifiedAt: null,
       lastError:
@@ -555,13 +557,17 @@ async function verifyProviderSecret(providerId: string): Promise<void> {
         signal: controller.signal,
       },
     );
-    upsertProviderVerification(providerId, {
+    await upsertProviderVerification(ownerId, providerId, {
       status: 'verified',
       lastVerifiedAt: new Date().toISOString(),
       lastError: null,
     });
   } catch (error) {
-    upsertProviderVerification(providerId, mapVerificationFailure(error));
+    await upsertProviderVerification(
+      ownerId,
+      providerId,
+      mapVerificationFailure(error),
+    );
   } finally {
     clearTimeout(timer);
   }
@@ -595,15 +601,18 @@ async function getProviderCardOrNotFound(providerId: string): Promise<{
   };
 }
 
-export async function getAiAgentsRoute(): Promise<{
+export async function getAiAgentsRoute(auth: AuthContext): Promise<{
   statusCode: number;
   body: ApiEnvelope<AiAgentsPageData>;
 }> {
+  const data = await withUserContext(auth.userId, () =>
+    buildAiAgentsPageData(),
+  );
   return {
     statusCode: 200,
     body: {
       ok: true,
-      data: await buildAiAgentsPageData(),
+      data,
     },
   };
 }
@@ -641,21 +650,26 @@ export async function updateDefaultClaudeModelRoute(
     };
   }
 
-  const now = new Date().toISOString();
-  getDb()
-    .prepare(
-      `INSERT INTO settings_kv (key, value, updated_at, updated_by)
-       VALUES ('executor.defaultClaudeModel', ?, ?, ?)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value,
-         updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
-    )
-    .run(body.modelId, now, auth.userId);
+  const modelId = body.modelId;
+  const data = await withUserContext(auth.userId, async () => {
+    const db = getDbPg();
+    await db`
+      insert into public.settings_kv (key, value, updated_by)
+      values ('executor.defaultClaudeModel', ${modelId},
+              ${auth.userId}::uuid)
+      on conflict (key) do update set
+        value = excluded.value,
+        updated_at = now(),
+        updated_by = excluded.updated_by
+    `;
+    return buildAiAgentsPageData();
+  });
 
   return {
     statusCode: 200,
     body: {
       ok: true,
-      data: await buildAiAgentsPageData(),
+      data,
     },
   };
 }
@@ -681,82 +695,83 @@ export async function putAiProviderCredentialRoute(
     };
   }
 
-  if (!getAdditionalProvider(providerId)) {
-    return {
-      statusCode: 404,
-      body: {
-        ok: false,
-        error: {
-          code: 'not_found',
-          message: `Provider '${providerId}' not found.`,
+  return withUserContext(auth.userId, async () => {
+    if (!(await getAdditionalProvider(providerId))) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: {
+            code: 'not_found',
+            message: `Provider '${providerId}' not found.`,
+          },
         },
-      },
-    };
-  }
+      };
+    }
 
-  if (providerId === CODEX_PROVIDER_ID) {
-    return {
-      statusCode: 400,
-      body: {
-        ok: false,
-        error: {
-          code: 'invalid_input',
-          message:
-            'Host-login providers do not accept API keys here. Use Verify after running the managed Codex login command.',
+    if (providerId === CODEX_PROVIDER_ID) {
+      return {
+        statusCode: 400,
+        body: {
+          ok: false,
+          error: {
+            code: 'invalid_input',
+            message:
+              'Host-login providers do not accept API keys here. Use Verify after running the managed Codex login command.',
+          },
         },
-      },
-    };
-  }
+      };
+    }
 
-  const apiKey =
-    typeof body.apiKey === 'string' ? body.apiKey.trim() : body.apiKey;
-  const organizationId =
-    typeof body.organizationId === 'string'
-      ? body.organizationId.trim() || undefined
-      : undefined;
+    const apiKey =
+      typeof body.apiKey === 'string' ? body.apiKey.trim() : body.apiKey;
+    const organizationId =
+      typeof body.organizationId === 'string'
+        ? body.organizationId.trim() || undefined
+        : undefined;
 
-  if (apiKey !== null && apiKey !== undefined && typeof apiKey !== 'string') {
-    return {
-      statusCode: 400,
-      body: {
-        ok: false,
-        error: {
-          code: 'invalid_input',
-          message: 'apiKey must be a string or null.',
+    if (apiKey !== null && apiKey !== undefined && typeof apiKey !== 'string') {
+      return {
+        statusCode: 400,
+        body: {
+          ok: false,
+          error: {
+            code: 'invalid_input',
+            message: 'apiKey must be a string or null.',
+          },
         },
-      },
-    };
-  }
+      };
+    }
 
-  const db = getDb();
-  if (!apiKey) {
-    db.prepare(`DELETE FROM llm_provider_secrets WHERE provider_id = ?`).run(
-      providerId,
-    );
-    deleteProviderVerification(providerId);
-    return getProviderCardOrNotFound(providerId);
-  }
+    const db = getDbPg();
+    if (!apiKey) {
+      await db`
+        delete from public.llm_provider_secrets
+        where provider_id = ${providerId}
+      `;
+      await deleteProviderVerification(providerId);
+      return getProviderCardOrNotFound(providerId);
+    }
 
-  const now = new Date().toISOString();
-  db.prepare(
-    `INSERT INTO llm_provider_secrets (provider_id, ciphertext, updated_at, updated_by)
-     VALUES (?, ?, ?, ?)
-     ON CONFLICT(provider_id) DO UPDATE SET
-       ciphertext = excluded.ciphertext,
-       updated_at = excluded.updated_at,
-       updated_by = excluded.updated_by`,
-  ).run(
-    providerId,
-    encryptProviderSecret({
+    const ciphertext = await encryptProviderSecret({
       apiKey,
       ...(organizationId ? { organizationId } : {}),
-    }),
-    now,
-    auth.userId,
-  );
+    });
+    await db`
+      insert into public.llm_provider_secrets (
+        owner_id, provider_id, ciphertext
+      )
+      values (
+        ${auth.userId}::uuid, ${providerId}, ${ciphertext}
+      )
+      on conflict (owner_id, provider_id) do update set
+        ciphertext = excluded.ciphertext,
+        updated_at = now()
+    `;
 
-  await verifyProviderSecret(providerId);
-  return getProviderCardOrNotFound(providerId);
+    await verifyProviderSecret(auth.userId, providerId);
+    return getProviderCardOrNotFound(providerId);
+  });
 }
 
 export async function verifyAiProviderCredentialRoute(
@@ -779,19 +794,21 @@ export async function verifyAiProviderCredentialRoute(
     };
   }
 
-  if (!getAdditionalProvider(providerId)) {
-    return {
-      statusCode: 404,
-      body: {
-        ok: false,
-        error: {
-          code: 'not_found',
-          message: `Provider '${providerId}' not found.`,
+  return withUserContext(auth.userId, async () => {
+    if (!(await getAdditionalProvider(providerId))) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: {
+            code: 'not_found',
+            message: `Provider '${providerId}' not found.`,
+          },
         },
-      },
-    };
-  }
+      };
+    }
 
-  await verifyProviderSecret(providerId);
-  return getProviderCardOrNotFound(providerId);
+    await verifyProviderSecret(auth.userId, providerId);
+    return getProviderCardOrNotFound(providerId);
+  });
 }

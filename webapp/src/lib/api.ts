@@ -4023,10 +4023,13 @@ function buildMutationAttemptHeaders(input: {
 
 function getCsrfTokenFromCookie(): string | null {
   if (!globalThis.document?.cookie) return null;
-  const tokenPair = document.cookie
-    .split(';')
-    .map((entry) => entry.trim())
-    .find((entry) => entry.startsWith('cr_csrf_token='));
+  // Prefer the cloud-era eb_csrf cookie (set by /api/v1/auth/callback);
+  // fall back to the sqlite-era cr_csrf_token name until the legacy
+  // node server is retired by the caller swap.
+  const entries = document.cookie.split(';').map((entry) => entry.trim());
+  const tokenPair =
+    entries.find((entry) => entry.startsWith('eb_csrf=')) ??
+    entries.find((entry) => entry.startsWith('cr_csrf_token='));
   if (!tokenPair) return null;
 
   const [, value = ''] = tokenPair.split('=', 2);

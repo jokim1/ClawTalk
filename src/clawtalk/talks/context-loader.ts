@@ -12,7 +12,7 @@
  * 5. Assembling into a ContextPackage with metadata
  */
 
-import { getDb } from '../../db.js';
+import { getDbPg, type Sql } from '../../db.js';
 import { listTalkStateEntries } from '../db/context-accessors.js';
 import type { EffectiveToolAccess } from '../db/agent-accessors.js';
 import { listTalkOutputs } from '../db/output-accessors.js';
@@ -309,27 +309,27 @@ export async function loadTalkContext(
     channelContextSection?: string | null;
   },
 ): Promise<ContextPackage> {
-  const db = getDb();
+  const db = getDbPg();
   const personaRole = options?.personaRole ?? null;
   const roleHint = buildRoleHint(personaRole);
 
   // Step 1: Fetch goal, rules, state, and rolling summary
-  const goal = fetchGoal(db, talkId);
-  const rules = fetchRules(db, talkId);
-  const stateEntries = listTalkStateEntries(talkId);
+  const goal = await fetchGoal(db, talkId);
+  const rules = await fetchRules(db, talkId);
+  const stateEntries = await listTalkStateEntries(talkId);
 
   // When loading for a specific thread, skip talk-level summary to avoid
   // leaking cross-thread context. A stale/wrong summary is worse than no
   // summary — the model still has recent thread history.
-  const summary = threadId ? null : fetchSummary(db, talkId);
+  const summary = threadId ? null : await fetchSummary(db, talkId);
   const stateSnapshot = buildStateSnapshot(
     stateEntries,
     STATE_SNAPSHOT_RESERVE,
   );
-  const outputManifest = buildOutputManifest(talkId);
+  const outputManifest = await buildOutputManifest(talkId);
 
   // Step 2: Build source manifest
-  const sources = fetchSources(db, talkId);
+  const sources = await fetchSources(db, talkId);
   const sourceLines = buildSourceManifest(sources);
   const retrievedContext = buildRetrievedContext({
     query: options?.retrievalQuery ?? null,
@@ -349,7 +349,7 @@ export async function loadTalkContext(
   const boundGoogleDriveResources = '';
 
   // Step 3: Build connector tools (currently empty stub)
-  const connectorTools = buildConnectorTools(db, talkId, options?.jobPolicy);
+  const connectorTools = buildConnectorTools(talkId, options?.jobPolicy);
 
   // Step 4: Assemble system prompt
   const systemPrompt = assembleSystemPrompt(
@@ -380,7 +380,7 @@ export async function loadTalkContext(
     OUTPUT_RESERVE -
     systemPromptTokens -
     TOOL_SCHEMA_RESERVE;
-  const historySelection = loadMessageHistory(
+  const historySelection = await loadMessageHistory(
     db,
     talkId,
     availableBudget,
@@ -486,41 +486,34 @@ export async function loadTalkContext(
 // Step 1: Fetch Goal, Rules, and Summary
 // ---------------------------------------------------------------------------
 
-function fetchGoal(db: any, talkId: string): string | null {
-  const row = db
-    .prepare(
-      `SELECT goal_text FROM talk_context_goal WHERE talk_id = ? LIMIT 1`,
-    )
-    .get(talkId) as { goal_text: string } | undefined;
-  return row?.goal_text ?? null;
+async function fetchGoal(db: Sql, talkId: string): Promise<string | null> {
+  const rows = await db<Array<{ goal_text: string }>>`
+    select goal_text
+    from public.talk_context_goal
+    where talk_id = ${talkId}::uuid
+    limit 1
+  `;
+  return rows[0]?.goal_text ?? null;
 }
 
-function fetchRules(db: any, talkId: string): string[] {
-  const rows = db
-    .prepare(
-      `
-      SELECT rule_text
-      FROM talk_context_rules
-      WHERE talk_id = ? AND is_active = 1
-      ORDER BY sort_order ASC, created_at ASC
-    `,
-    )
-    .all(talkId) as Array<{ rule_text: string }>;
+async function fetchRules(db: Sql, talkId: string): Promise<string[]> {
+  const rows = await db<Array<{ rule_text: string }>>`
+    select rule_text
+    from public.talk_context_rules
+    where talk_id = ${talkId}::uuid and is_active = true
+    order by sort_order asc, created_at asc
+  `;
   return rows.map((r) => r.rule_text);
 }
 
-function fetchSummary(db: any, talkId: string): string | null {
-  const row = db
-    .prepare(
-      `
-      SELECT summary_text
-      FROM talk_context_summary
-      WHERE talk_id = ?
-      LIMIT 1
-    `,
-    )
-    .get(talkId) as { summary_text: string } | undefined;
-  return row?.summary_text ?? null;
+async function fetchSummary(db: Sql, talkId: string): Promise<string | null> {
+  const rows = await db<Array<{ summary_text: string }>>`
+    select summary_text
+    from public.talk_context_summary
+    where talk_id = ${talkId}::uuid
+    limit 1
+  `;
+  return rows[0]?.summary_text ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -537,25 +530,20 @@ interface SourceRow {
   status: string;
 }
 
-function fetchSources(db: any, talkId: string): SourceRow[] {
-  const rows = db
-    .prepare(
-      `
-      SELECT
-        source_ref,
-        source_type,
-        title,
-        source_url,
-        file_name,
-        extracted_text,
-        status
-      FROM talk_context_sources
-      WHERE talk_id = ? AND status = 'ready'
-      ORDER BY sort_order ASC
-    `,
-    )
-    .all(talkId) as SourceRow[];
-  return rows;
+async function fetchSources(db: Sql, talkId: string): Promise<SourceRow[]> {
+  return await db<SourceRow[]>`
+    select
+      source_ref,
+      source_type,
+      title,
+      source_url,
+      file_name,
+      extracted_text,
+      status
+    from public.talk_context_sources
+    where talk_id = ${talkId}::uuid and status = 'ready'
+    order by sort_order asc
+  `;
 }
 
 function buildSourceManifest(sources: SourceRow[]): Array<{
@@ -614,7 +602,6 @@ function buildSourceManifest(sources: SourceRow[]): Array<{
  * unavailable is silently excluded — fail closed.
  */
 function buildConnectorTools(
-  _db: any,
   _talkId: string,
   _jobPolicy?: TalkJobExecutionPolicy | null,
 ): LlmToolDefinition[] {
@@ -941,13 +928,13 @@ function buildContextTools(
   return tools;
 }
 
-function buildOutputManifest(talkId: string): {
+async function buildOutputManifest(talkId: string): Promise<{
   totalCount: number;
   omittedCount: number;
   included: TalkRunContextOutputManifestItem[];
   promptText: string | null;
-} {
-  const outputs = listTalkOutputs(talkId);
+}> {
+  const outputs = await listTalkOutputs(talkId);
   if (outputs.length === 0) {
     return {
       totalCount: 0,
@@ -1202,81 +1189,46 @@ interface MessageRow {
   metadata_json: string | null;
 }
 
-function loadMessageHistory(
-  db: any,
+async function loadMessageHistory(
+  db: Sql,
   talkId: string,
   budgetTokens: number,
   threadId?: string | null,
   historyThroughMessageId?: string | null,
-): { messages: LlmMessage[]; messageIds: string[] } {
+): Promise<{ messages: LlmMessage[]; messageIds: string[] }> {
+  const threadIdArg = threadId ?? null;
   const cutoff = historyThroughMessageId
-    ? (db
-        .prepare(
-          `
-          SELECT id, created_at
-          FROM talk_messages
-          WHERE id = ? AND talk_id = ?
-            AND (? IS NULL OR thread_id = ?)
-          LIMIT 1
-        `,
-        )
-        .get(
-          historyThroughMessageId,
-          talkId,
-          threadId ?? null,
-          threadId ?? null,
-        ) as { id: string; created_at: string } | undefined)
+    ? (
+        await db<Array<{ id: string; created_at: string }>>`
+          select id, created_at
+          from public.talk_messages
+          where id = ${historyThroughMessageId}::uuid
+            and talk_id = ${talkId}::uuid
+            and (${threadIdArg}::uuid is null or thread_id = ${threadIdArg}::uuid)
+          limit 1
+        `
+      )[0]
     : undefined;
+  const cutoffId = cutoff?.id ?? null;
+  const cutoffCreatedAt = cutoff?.created_at ?? null;
 
   // When threadId is provided, only load messages from that thread.
   // Otherwise load all messages for the Talk (legacy/pre-thread behavior).
-  let rows: MessageRow[];
-  if (threadId) {
-    rows = db
-      .prepare(
-        `
-        SELECT id, role, content, agent_id, created_at, metadata_json
-        FROM talk_messages
-        WHERE talk_id = ? AND thread_id = ?
-          AND (
-            ? IS NULL
-            OR created_at < ?
-            OR (created_at = ? AND id <= ?)
-          )
-        ORDER BY created_at DESC
-      `,
+  // The cutoff predicate matches messages strictly before the cutoff time,
+  // PLUS messages at the same created_at with id <= cutoff.id — this keeps
+  // tie-breaking semantics identical to the sqlite era.
+  const rows = await db<MessageRow[]>`
+    select id, role, content, agent_id, created_at, metadata_json
+    from public.talk_messages
+    where talk_id = ${talkId}::uuid
+      and (${threadIdArg}::uuid is null or thread_id = ${threadIdArg}::uuid)
+      and (
+        ${cutoffId}::uuid is null
+        or created_at < ${cutoffCreatedAt}::timestamptz
+        or (created_at = ${cutoffCreatedAt}::timestamptz and id <= ${cutoffId}::uuid)
       )
-      .all(
-        talkId,
-        threadId,
-        cutoff?.id ?? null,
-        cutoff?.created_at ?? null,
-        cutoff?.created_at ?? null,
-        cutoff?.id ?? null,
-      ) as MessageRow[];
-  } else {
-    rows = db
-      .prepare(
-        `
-        SELECT id, role, content, agent_id, created_at, metadata_json
-        FROM talk_messages
-        WHERE talk_id = ?
-          AND (
-            ? IS NULL
-            OR created_at < ?
-            OR (created_at = ? AND id <= ?)
-          )
-        ORDER BY created_at DESC
-      `,
-      )
-      .all(
-        talkId,
-        cutoff?.id ?? null,
-        cutoff?.created_at ?? null,
-        cutoff?.created_at ?? null,
-        cutoff?.id ?? null,
-      ) as MessageRow[];
-  }
+    order by created_at desc
+  `;
 
   // Walk backward through messages, accumulating token count
   let accumulatedTokens = 0;

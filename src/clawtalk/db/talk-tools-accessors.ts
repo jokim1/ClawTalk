@@ -1,6 +1,17 @@
-import { randomUUID } from 'crypto';
+// clawtalk Phase 5 (PR 2) — postgres port of talk-tools-accessors.
+//
+// Surfaces ported:
+//   - talk_resource_bindings (RLS owner_id)
+//   - user_google_credentials (RLS user_id; unique on user_id)
+//   - google_oauth_link_requests (RLS user_id)
+//
+// Chassis cleanup: `talk_tool_grants` was removed from the postgres
+// schema, so initializeTalkToolGrants / listTalkToolGrants /
+// replaceTalkToolGrants are gone here. The BUILTIN_TALK_TOOLS catalog
+// stays (pure metadata, no DB touch); route handlers still use it for
+// the tool-permissions UI.
 
-import { getDb } from '../../db.js';
+import { getDbPg } from '../../db.js';
 
 type JsonMap = Record<string, unknown>;
 
@@ -175,17 +186,14 @@ export const BUILTIN_TALK_TOOLS: ReadonlyArray<BuiltinTalkToolDefinition> = [
   },
 ];
 
-export interface TalkToolGrantRecord {
-  talkId: string;
-  toolId: string;
-  enabled: boolean;
-  updatedAt: string;
-  updatedBy: string | null;
-}
+// ---------------------------------------------------------------------------
+// Records (API-facing, camelCase)
+// ---------------------------------------------------------------------------
 
 export interface TalkResourceBindingRecord {
   id: string;
   talkId: string;
+  ownerId: string;
   bindingKind: TalkResourceBindingKind;
   externalId: string;
   displayName: string;
@@ -214,85 +222,40 @@ export interface GoogleOAuthLinkRequestRecord {
   createdAt: string;
 }
 
-type RawTalkToolGrantRow = {
-  talk_id: string;
-  tool_id: string;
-  enabled: number;
-  updated_at: string;
-  updated_by: string | null;
-};
+// ---------------------------------------------------------------------------
+// Internal raw row shapes (postgres returns jsonb as parsed objects)
+// ---------------------------------------------------------------------------
 
-type RawTalkResourceBindingRow = {
+interface RawTalkResourceBindingRow {
   id: string;
   talk_id: string;
+  owner_id: string;
   binding_kind: TalkResourceBindingKind;
   external_id: string;
   display_name: string;
-  metadata_json: string | null;
+  metadata_json: JsonMap | null;
   created_at: string;
   created_by: string | null;
-};
+}
 
-type RawUserGoogleCredentialRow = {
+interface RawUserGoogleCredentialRow {
   id: string;
   user_id: string;
   google_subject: string;
   email: string;
   display_name: string | null;
-  scopes_json: string;
+  scopes_json: string[];
   ciphertext: string;
   access_expires_at: string | null;
   created_at: string;
   updated_at: string;
-};
+}
 
-type RawGoogleOAuthLinkRequestRow = {
+interface RawGoogleOAuthLinkRequestRow {
   state_hash: string;
   user_id: string;
-  scopes_json: string;
+  scopes_json: string[];
   created_at: string;
-};
-
-function parseJsonMap(value: string | null): JsonMap | null {
-  if (!value) return null;
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return null;
-    }
-    return parsed as JsonMap;
-  } catch {
-    return null;
-  }
-}
-
-function serializeJsonMap(value: JsonMap | null | undefined): string | null {
-  return value ? JSON.stringify(value) : null;
-}
-
-function parseStringArray(value: string): string[] {
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return Array.isArray(parsed)
-      ? parsed.filter((entry): entry is string => typeof entry === 'string')
-      : [];
-  } catch {
-    return [];
-  }
-}
-
-function serializeStringArray(value: string[]): string {
-  return JSON.stringify(value);
-}
-
-function toTalkToolGrantRecord(row: RawTalkToolGrantRow): TalkToolGrantRecord {
-  return {
-    talkId: row.talk_id,
-    toolId: row.tool_id,
-    enabled: row.enabled === 1,
-    updatedAt: row.updated_at,
-    updatedBy: row.updated_by,
-  };
 }
 
 function toTalkResourceBindingRecord(
@@ -301,10 +264,11 @@ function toTalkResourceBindingRecord(
   return {
     id: row.id,
     talkId: row.talk_id,
+    ownerId: row.owner_id,
     bindingKind: row.binding_kind,
     externalId: row.external_id,
     displayName: row.display_name,
-    metadata: parseJsonMap(row.metadata_json),
+    metadata: row.metadata_json,
     createdAt: row.created_at,
     createdBy: row.created_by,
   };
@@ -319,7 +283,7 @@ function toUserGoogleCredentialRecord(
     googleSubject: row.google_subject,
     email: row.email,
     displayName: row.display_name,
-    scopes: parseStringArray(row.scopes_json),
+    scopes: Array.isArray(row.scopes_json) ? row.scopes_json : [],
     ciphertext: row.ciphertext,
     accessExpiresAt: row.access_expires_at,
     createdAt: row.created_at,
@@ -333,209 +297,104 @@ function toGoogleOAuthLinkRequestRecord(
   return {
     stateHash: row.state_hash,
     userId: row.user_id,
-    scopes: parseStringArray(row.scopes_json),
+    scopes: Array.isArray(row.scopes_json) ? row.scopes_json : [],
     createdAt: row.created_at,
   };
 }
 
-export function initializeTalkToolGrants(
+// ---------------------------------------------------------------------------
+// Talk resource bindings
+// ---------------------------------------------------------------------------
+
+export async function listTalkResourceBindings(
   talkId: string,
-  updatedBy?: string | null,
-): void {
-  const now = new Date().toISOString();
-  const insert = getDb().prepare(
-    `
-      INSERT INTO talk_tool_grants (
-        talk_id,
-        tool_id,
-        enabled,
-        updated_at,
-        updated_by
-      )
-      VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(talk_id, tool_id) DO NOTHING
-    `,
-  );
-  const tx = getDb().transaction(() => {
-    BUILTIN_TALK_TOOLS.forEach((tool) => {
-      insert.run(
-        talkId,
-        tool.id,
-        tool.defaultGrant ? 1 : 0,
-        now,
-        updatedBy ?? null,
-      );
-    });
-  });
-  tx();
+): Promise<TalkResourceBindingRecord[]> {
+  const db = getDbPg();
+  const rows = await db<RawTalkResourceBindingRow[]>`
+    select id, talk_id, owner_id, binding_kind, external_id, display_name,
+           metadata_json, created_at, created_by
+    from public.talk_resource_bindings
+    where talk_id = ${talkId}::uuid
+    order by created_at asc, id asc
+  `;
+  return rows.map(toTalkResourceBindingRecord);
 }
 
-export function listTalkToolGrants(talkId: string): TalkToolGrantRecord[] {
-  return (
-    getDb()
-      .prepare(
-        `
-        SELECT *
-        FROM talk_tool_grants
-        WHERE talk_id = ?
-        ORDER BY tool_id ASC
-      `,
-      )
-      .all(talkId) as RawTalkToolGrantRow[]
-  ).map(toTalkToolGrantRecord);
-}
-
-export function replaceTalkToolGrants(input: {
-  talkId: string;
-  grants: Array<{ toolId: string; enabled: boolean }>;
-  updatedBy?: string | null;
-}): TalkToolGrantRecord[] {
-  const now = new Date().toISOString();
-  const clear = getDb().prepare(
-    `DELETE FROM talk_tool_grants WHERE talk_id = ?`,
-  );
-  const insert = getDb().prepare(
-    `
-      INSERT INTO talk_tool_grants (
-        talk_id,
-        tool_id,
-        enabled,
-        updated_at,
-        updated_by
-      )
-      VALUES (?, ?, ?, ?, ?)
-    `,
-  );
-  const tx = getDb().transaction(() => {
-    clear.run(input.talkId);
-    input.grants.forEach((grant) => {
-      insert.run(
-        input.talkId,
-        grant.toolId,
-        grant.enabled ? 1 : 0,
-        now,
-        input.updatedBy ?? null,
-      );
-    });
-  });
-  tx();
-  return listTalkToolGrants(input.talkId);
-}
-
-export function listTalkResourceBindings(
-  talkId: string,
-): TalkResourceBindingRecord[] {
-  return (
-    getDb()
-      .prepare(
-        `
-        SELECT *
-        FROM talk_resource_bindings
-        WHERE talk_id = ?
-        ORDER BY created_at ASC, id ASC
-      `,
-      )
-      .all(talkId) as RawTalkResourceBindingRow[]
-  ).map(toTalkResourceBindingRecord);
-}
-
-export function createTalkResourceBinding(input: {
+export async function createTalkResourceBinding(input: {
+  ownerId: string;
   talkId: string;
   bindingKind: TalkResourceBindingKind;
   externalId: string;
   displayName: string;
   metadata?: JsonMap | null;
   createdBy?: string | null;
-}): TalkResourceBindingRecord {
-  const existing = getDb()
-    .prepare(
-      `
-      SELECT *
-      FROM talk_resource_bindings
-      WHERE talk_id = ?
-        AND binding_kind = ?
-        AND external_id = ?
-      LIMIT 1
-    `,
-    )
-    .get(input.talkId, input.bindingKind, input.externalId) as
-    | RawTalkResourceBindingRow
-    | undefined;
-  if (existing) {
-    return toTalkResourceBindingRecord(existing);
+}): Promise<TalkResourceBindingRecord> {
+  const db = getDbPg();
+  // The unique index (talk_id, binding_kind, external_id) makes the
+  // existing-row lookup idempotent. Use ON CONFLICT DO NOTHING + a
+  // follow-up SELECT to preserve the sqlite-era return semantics
+  // (return whichever row is there, whether we inserted or hit a dup).
+  await db`
+    insert into public.talk_resource_bindings
+      (talk_id, owner_id, binding_kind, external_id, display_name,
+       metadata_json, created_by)
+    values
+      (${input.talkId}::uuid, ${input.ownerId}::uuid, ${input.bindingKind},
+       ${input.externalId}, ${input.displayName},
+       ${input.metadata ? db.json(input.metadata as never) : null},
+       ${input.createdBy ?? null}::uuid)
+    on conflict (talk_id, binding_kind, external_id) do nothing
+  `;
+  const rows = await db<RawTalkResourceBindingRow[]>`
+    select id, talk_id, owner_id, binding_kind, external_id, display_name,
+           metadata_json, created_at, created_by
+    from public.talk_resource_bindings
+    where talk_id = ${input.talkId}::uuid
+      and binding_kind = ${input.bindingKind}
+      and external_id = ${input.externalId}
+    limit 1
+  `;
+  if (!rows[0]) {
+    throw new Error('failed to load talk resource binding after insert');
   }
-
-  const id = randomUUID();
-  const now = new Date().toISOString();
-  getDb()
-    .prepare(
-      `
-      INSERT INTO talk_resource_bindings (
-        id,
-        talk_id,
-        binding_kind,
-        external_id,
-        display_name,
-        metadata_json,
-        created_at,
-        created_by
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `,
-    )
-    .run(
-      id,
-      input.talkId,
-      input.bindingKind,
-      input.externalId,
-      input.displayName,
-      serializeJsonMap(input.metadata),
-      now,
-      input.createdBy ?? null,
-    );
-
-  const row = getDb()
-    .prepare(`SELECT * FROM talk_resource_bindings WHERE id = ? LIMIT 1`)
-    .get(id) as RawTalkResourceBindingRow | undefined;
-  if (!row) {
-    throw new Error(`failed to load talk resource binding ${id}`);
-  }
-  return toTalkResourceBindingRecord(row);
+  return toTalkResourceBindingRecord(rows[0]);
 }
 
-export function deleteTalkResourceBinding(
+export async function deleteTalkResourceBinding(
   talkId: string,
   bindingId: string,
-): boolean {
-  const result = getDb()
-    .prepare(
-      `
-      DELETE FROM talk_resource_bindings
-      WHERE talk_id = ? AND id = ?
-    `,
-    )
-    .run(talkId, bindingId);
-  return result.changes > 0;
+): Promise<boolean> {
+  const db = getDbPg();
+  const rows = await db<{ id: string }[]>`
+    delete from public.talk_resource_bindings
+    where talk_id = ${talkId}::uuid and id = ${bindingId}::uuid
+    returning id
+  `;
+  return rows.length > 0;
 }
 
-export function getUserGoogleCredential(
-  userId: string,
-): UserGoogleCredentialRecord | undefined {
-  const row = getDb()
-    .prepare(
-      `
-      SELECT *
-      FROM user_google_credentials
-      WHERE user_id = ?
-      ORDER BY updated_at DESC, created_at DESC, id DESC
-      LIMIT 1
-    `,
-    )
-    .get(userId) as RawUserGoogleCredentialRow | undefined;
-  return row ? toUserGoogleCredentialRecord(row) : undefined;
+// ---------------------------------------------------------------------------
+// User Google credentials
+// ---------------------------------------------------------------------------
+
+export async function getUserGoogleCredential(): Promise<
+  UserGoogleCredentialRecord | undefined
+> {
+  // Inside withUserContext, user_id = auth.uid() is enforced by RLS —
+  // the SELECT scopes to the caller automatically. The sqlite-era
+  // userId param is now redundant.
+  const db = getDbPg();
+  const rows = await db<RawUserGoogleCredentialRow[]>`
+    select id, user_id, google_subject, email, display_name, scopes_json,
+           ciphertext, access_expires_at, created_at, updated_at
+    from public.user_google_credentials
+    order by updated_at desc, created_at desc, id desc
+    limit 1
+  `;
+  return rows[0] ? toUserGoogleCredentialRecord(rows[0]) : undefined;
 }
 
-export function upsertUserGoogleCredential(input: {
+export async function upsertUserGoogleCredential(input: {
   userId: string;
   googleSubject: string;
   email: string;
@@ -543,111 +402,92 @@ export function upsertUserGoogleCredential(input: {
   scopes: string[];
   ciphertext: string;
   accessExpiresAt?: string | null;
-}): UserGoogleCredentialRecord {
-  const now = new Date().toISOString();
-  const existing = getUserGoogleCredential(input.userId);
-  const id = existing?.id || randomUUID();
-
-  getDb()
-    .prepare(
-      `
-      INSERT INTO user_google_credentials (
-        id,
-        user_id,
-        google_subject,
-        email,
-        display_name,
-        scopes_json,
-        ciphertext,
-        access_expires_at,
-        created_at,
-        updated_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(user_id) DO UPDATE SET
-        google_subject = excluded.google_subject,
-        email = excluded.email,
-        display_name = excluded.display_name,
-        scopes_json = excluded.scopes_json,
-        ciphertext = excluded.ciphertext,
-        access_expires_at = excluded.access_expires_at,
-        updated_at = excluded.updated_at
-    `,
-    )
-    .run(
-      id,
-      input.userId,
-      input.googleSubject,
-      input.email,
-      input.displayName ?? null,
-      serializeStringArray(Array.from(new Set(input.scopes)).sort()),
-      input.ciphertext,
-      input.accessExpiresAt ?? null,
-      existing?.createdAt ?? now,
-      now,
-    );
-
-  return getUserGoogleCredential(input.userId)!;
+}): Promise<UserGoogleCredentialRecord> {
+  const sortedScopes = Array.from(new Set(input.scopes)).sort();
+  const db = getDbPg();
+  await db`
+    insert into public.user_google_credentials
+      (user_id, google_subject, email, display_name, scopes_json,
+       ciphertext, access_expires_at)
+    values
+      (${input.userId}::uuid, ${input.googleSubject}, ${input.email},
+       ${input.displayName ?? null}, ${db.json(sortedScopes as never)},
+       ${input.ciphertext}, ${input.accessExpiresAt ?? null})
+    on conflict (user_id) do update set
+      google_subject = excluded.google_subject,
+      email = excluded.email,
+      display_name = excluded.display_name,
+      scopes_json = excluded.scopes_json,
+      ciphertext = excluded.ciphertext,
+      access_expires_at = excluded.access_expires_at,
+      updated_at = now()
+  `;
+  const got = await getUserGoogleCredential();
+  if (!got) {
+    throw new Error('upsertUserGoogleCredential: missing row after upsert');
+  }
+  return got;
 }
 
-export function deleteUserGoogleCredential(userId: string): boolean {
-  const result = getDb()
-    .prepare(`DELETE FROM user_google_credentials WHERE user_id = ?`)
-    .run(userId);
-  return result.changes > 0;
+export async function deleteUserGoogleCredential(): Promise<boolean> {
+  const db = getDbPg();
+  const rows = await db<{ id: string }[]>`
+    delete from public.user_google_credentials
+    returning id
+  `;
+  return rows.length > 0;
 }
 
-export function createGoogleOAuthLinkRequest(input: {
-  stateHash: string;
+// ---------------------------------------------------------------------------
+// Google OAuth link requests
+// ---------------------------------------------------------------------------
+
+export async function createGoogleOAuthLinkRequest(input: {
   userId: string;
+  stateHash: string;
   scopes: string[];
-}): GoogleOAuthLinkRequestRecord {
-  const createdAt = new Date().toISOString();
-  getDb()
-    .prepare(
-      `
-      INSERT INTO google_oauth_link_requests (
-        state_hash,
-        user_id,
-        scopes_json,
-        created_at
-      )
-      VALUES (?, ?, ?, ?)
-      ON CONFLICT(state_hash) DO UPDATE SET
-        user_id = excluded.user_id,
-        scopes_json = excluded.scopes_json,
-        created_at = excluded.created_at
-    `,
-    )
-    .run(
-      input.stateHash,
-      input.userId,
-      serializeStringArray(Array.from(new Set(input.scopes)).sort()),
-      createdAt,
-    );
-
-  return getGoogleOAuthLinkRequest(input.stateHash)!;
+}): Promise<GoogleOAuthLinkRequestRecord> {
+  const sortedScopes = Array.from(new Set(input.scopes)).sort();
+  const db = getDbPg();
+  await db`
+    insert into public.google_oauth_link_requests
+      (state_hash, user_id, scopes_json)
+    values
+      (${input.stateHash}, ${input.userId}::uuid,
+       ${db.json(sortedScopes as never)})
+    on conflict (state_hash) do update set
+      user_id = excluded.user_id,
+      scopes_json = excluded.scopes_json,
+      created_at = now()
+  `;
+  const got = await getGoogleOAuthLinkRequest(input.stateHash);
+  if (!got) {
+    throw new Error('createGoogleOAuthLinkRequest: missing row after insert');
+  }
+  return got;
 }
 
-export function getGoogleOAuthLinkRequest(
+export async function getGoogleOAuthLinkRequest(
   stateHash: string,
-): GoogleOAuthLinkRequestRecord | undefined {
-  const row = getDb()
-    .prepare(
-      `
-      SELECT *
-      FROM google_oauth_link_requests
-      WHERE state_hash = ?
-      LIMIT 1
-    `,
-    )
-    .get(stateHash) as RawGoogleOAuthLinkRequestRow | undefined;
-  return row ? toGoogleOAuthLinkRequestRecord(row) : undefined;
+): Promise<GoogleOAuthLinkRequestRecord | undefined> {
+  const db = getDbPg();
+  const rows = await db<RawGoogleOAuthLinkRequestRow[]>`
+    select state_hash, user_id, scopes_json, created_at
+    from public.google_oauth_link_requests
+    where state_hash = ${stateHash}
+    limit 1
+  `;
+  return rows[0] ? toGoogleOAuthLinkRequestRecord(rows[0]) : undefined;
 }
 
-export function deleteGoogleOAuthLinkRequest(stateHash: string): boolean {
-  const result = getDb()
-    .prepare(`DELETE FROM google_oauth_link_requests WHERE state_hash = ?`)
-    .run(stateHash);
-  return result.changes > 0;
+export async function deleteGoogleOAuthLinkRequest(
+  stateHash: string,
+): Promise<boolean> {
+  const db = getDbPg();
+  const rows = await db<{ state_hash: string }[]>`
+    delete from public.google_oauth_link_requests
+    where state_hash = ${stateHash}
+    returning state_hash
+  `;
+  return rows.length > 0;
 }

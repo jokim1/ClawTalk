@@ -1,30 +1,21 @@
-// clawtalk Phase 5 (PR 1) — Cloudflare Workers entry, foundation only.
+// clawtalk Phase 5 PR 2 — Cloudflare Workers entry.
 //
-// This file exists so `wrangler dev` boots and proves the
-// Workers + Hyperdrive + Supabase wiring works end-to-end against the
-// local supabase stack. PR 1 does NOT route the Hono app through the
-// Worker yet — the running app is still served by `tsx src/server.ts`
-// against SQLite. PR 2 swaps `getWorkerApp()` to return the real Hono
-// app and deletes the SQLite path.
+// Delegates fetch handling to `getWorkerApp()` from
+// `src/clawtalk/web/worker-app.ts`. That Hono app mounts the
+// cloud-ready surface (health + auth callback/refresh/logout + an
+// auth-protected sanity probe); any sqlite-era route that hasn't
+// been caller-swapped yet returns 501 from the Hono catch-all.
 //
-// What the foundation proves:
-//   - wrangler.toml bindings resolve (ASSETS, DB, JWKS_CACHE, queues)
-//   - postgres.js connects to local supabase via Hyperdrive
-//     localConnectionString
-//   - the per-request DB scope (withRequestScopedDb) wraps cleanly
-//   - the assets binding serves the webapp SPA
+// Request flow:
+//   /api/*    → worker-app Hono router (with per-request DB scope)
+//   non-/api  → env.ASSETS.fetch() (SPA fallback)
 //
-// Request flow today:
-//   /api/v1/health → JSON `{ok: true, data: {status: 'ok', db: <bool>}}`
-//   everything else → env.ASSETS.fetch() (SPA fallback)
-//
-// Adding the full Hono app to this entry happens in PR 2.
+// Queue consumer still acks every message (placeholder). The talk-
+// run-via-queues port lands as its own slice after the route caller-
+// swap finishes.
 
-import {
-  type RequestExecutionContext,
-  isPgDatabaseHealthy,
-  withRequestScopedDb,
-} from './db-pg.js';
+import { type RequestExecutionContext, withRequestScopedDb } from './db.js';
+import { getWorkerApp } from './clawtalk/web/worker-app.js';
 
 // Wrangler bindings declared in wrangler.toml. Workers Secrets (set via
 // `wrangler secret put`) appear on the same env object — those modules
@@ -68,39 +59,6 @@ function jsonResponse(body: unknown, init?: ResponseInit): Response {
   });
 }
 
-async function handleHealthCheck(env: Env): Promise<Response> {
-  const dbHealthy = await isPgDatabaseHealthy().catch(() => false);
-  return jsonResponse({
-    ok: true,
-    data: {
-      status: 'ok',
-      db: dbHealthy,
-      runtime: 'workers',
-      supabaseProject: env.SUPABASE_PROJECT_URL,
-    },
-  });
-}
-
-async function handleApiRequest(request: Request, env: Env): Promise<Response> {
-  const url = new URL(request.url);
-  if (url.pathname === '/api/v1/health') {
-    return handleHealthCheck(env);
-  }
-  // PR 1 foundation stop: every other /api/* route returns a placeholder
-  // 501 until PR 2 wires the full Hono app through this Worker.
-  return jsonResponse(
-    {
-      ok: false,
-      error: {
-        code: 'not_implemented_in_pr1',
-        message:
-          'This Worker is foundation-only. The live app still runs from src/server.ts (SQLite) until the PR 2 cutover.',
-      },
-    },
-    { status: 501 },
-  );
-}
-
 export default {
   async fetch(
     request: Request,
@@ -115,10 +73,19 @@ export default {
 
     try {
       return await withRequestScopedDb(env.DB.connectionString, ctx, async () =>
-        handleApiRequest(request, env),
+        getWorkerApp().fetch(request, env),
       );
     } catch (err) {
-      console.error('Worker request failed', err);
+      console.error(
+        'Worker request failed',
+        url.pathname,
+        request.method,
+        err instanceof Error ? err.name : typeof err,
+        err instanceof Error ? err.message : String(err),
+        err instanceof Error
+          ? err.stack?.split('\n').slice(0, 5).join(' | ')
+          : undefined,
+      );
       return jsonResponse(
         {
           ok: false,

@@ -1,4 +1,4 @@
-import { isDatabaseHealthy } from '../../db/index.js';
+import { isPgDatabaseHealthy } from '../../../db.js';
 import { KeychainBridge } from '../../secrets/keychain.js';
 import { ApiEnvelope } from '../types.js';
 
@@ -10,9 +10,9 @@ export interface DeepStatus {
 }
 
 export async function healthResponse(
-  dbHealthyCheck: () => boolean = isDatabaseHealthy,
+  dbHealthyCheck: () => boolean | Promise<boolean> = isPgDatabaseHealthy,
 ): Promise<ApiEnvelope<{ status: 'ok' }>> {
-  const dbHealthy = dbHealthyCheck();
+  const dbHealthy = await dbHealthyCheck();
   if (!dbHealthy) {
     return {
       ok: false,
@@ -32,7 +32,7 @@ export async function healthResponse(
 export async function statusResponse(
   keychain: KeychainBridge,
 ): Promise<ApiEnvelope<DeepStatus>> {
-  const dbHealthy = isDatabaseHealthy();
+  const dbHealthy = await isPgDatabaseHealthy();
   const keychainHealthy = await keychain.healthCheck();
 
   return {

@@ -1,15 +1,38 @@
-import { randomUUID } from 'crypto';
+// clawtalk Phase 5 (PR 2) — postgres port of context-accessors.
+//
+// Surfaces: talk_context_goal, talk_context_rules, talk_state_entries,
+// talk_context_sources (+ ref counter), talk_message_attachments, plus
+// the composite snapshot/prompt-assembly helpers.
+//
+// Every per-user table has RLS on owner_id (or analogous identity). The
+// talk_context_source_ref_counter table is the exception: its policy
+// walks the FK to public.talks(owner_id = auth.uid()), so the counter
+// row doesn't carry owner_id of its own. Callers MUST wrap calls in
+// `withUserContext(userId, async () => ...)` or RLS short-circuits via
+// the BYPASSRLS pooled connection (gotcha #2 from editorialroom).
+//
+// Writes that need owner_id in the INSERT VALUES take an explicit
+// `ownerId` param (RLS WITH CHECK requires it equals auth.uid()).
+// Updates/reads/deletes filtered by RLS USING drop the redundant userId
+// param the sqlite-era API carried.
+//
+// Schema differences vs sqlite:
+//   - is_active / is_truncated / enabled are booleans (not 0/1).
+//   - value_json + metadata_json are jsonb (postgres.js parses on read,
+//     accepts an object via db.json() on write).
+//   - IDs are uuid; integer literals need ::uuid casts at parameter sites.
+//   - talk_message_attachments.file_size + mime_type are nullable in
+//     pg; the API still requires them — kept the param shapes.
 
-import { getDb } from '../../db.js';
-import { logger } from '../../logger.js';
+import { getDbPg, type Sql } from '../../db.js';
 
 // ---------------------------------------------------------------------------
-// State entry limits
+// State entry limits + key validation (carried over verbatim — DB-agnostic)
 // ---------------------------------------------------------------------------
 
 export const MAX_STATE_ENTRIES_PER_TALK = 30;
 export const MAX_STATE_KEY_LENGTH = 80;
-export const MAX_STATE_VALUE_BYTES = 20_000; // 20 KB
+export const MAX_STATE_VALUE_BYTES = 20_000;
 export const STATE_KEY_PATTERN = /^[a-zA-Z0-9_][a-zA-Z0-9_.:-]*$/;
 
 export function validateStateKey(key: string): string {
@@ -40,6 +63,7 @@ export type ContextSourceFetchStrategy = 'http' | 'browser' | 'managed';
 
 export interface TalkGoalRecord {
   talk_id: string;
+  owner_id: string;
   goal_text: string;
   updated_at: string;
   updated_by: string | null;
@@ -48,9 +72,10 @@ export interface TalkGoalRecord {
 export interface TalkContextRuleRecord {
   id: string;
   talk_id: string;
+  owner_id: string;
   rule_text: string;
   sort_order: number;
-  is_active: number;
+  is_active: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -58,6 +83,7 @@ export interface TalkContextRuleRecord {
 export interface TalkContextSourceRecord {
   id: string;
   talk_id: string;
+  owner_id: string;
   source_ref: string;
   source_type: ContextSourceType;
   title: string;
@@ -74,7 +100,7 @@ export interface TalkContextSourceRecord {
   last_fetched_at: string | null;
   extraction_error: string | null;
   fetch_strategy: ContextSourceFetchStrategy | null;
-  is_truncated: number;
+  is_truncated: boolean;
   created_at: string;
   updated_at: string;
   created_by: string | null;
@@ -83,8 +109,9 @@ export interface TalkContextSourceRecord {
 export interface TalkStateEntryRecord {
   id: string;
   talk_id: string;
+  owner_id: string;
   key: string;
-  value_json: string;
+  value_json: unknown;
   version: number;
   updated_at: string;
   updated_by_user_id: string | null;
@@ -92,7 +119,7 @@ export interface TalkStateEntryRecord {
 }
 
 // ---------------------------------------------------------------------------
-// Snapshot types (API-facing, camelCase)
+// Snapshot types (API-facing)
 // ---------------------------------------------------------------------------
 
 export interface GoalSnapshot {
@@ -154,21 +181,15 @@ export interface TalkStateEntrySnapshot {
 }
 
 export type TalkStateWriteResult =
-  | {
-      ok: true;
-      entry: TalkStateEntrySnapshot;
-    }
-  | {
-      ok: false;
-      current: TalkStateEntrySnapshot;
-    };
+  | { ok: true; entry: TalkStateEntrySnapshot }
+  | { ok: false; current: TalkStateEntrySnapshot };
 
 export type TalkStateDeleteResult =
   | { ok: true; deleted: true }
   | { ok: false; current: TalkStateEntrySnapshot };
 
 // ---------------------------------------------------------------------------
-// Conversions
+// Snapshot conversions
 // ---------------------------------------------------------------------------
 
 function toRuleSnapshot(row: TalkContextRuleRecord): ContextRuleSnapshot {
@@ -176,7 +197,7 @@ function toRuleSnapshot(row: TalkContextRuleRecord): ContextRuleSnapshot {
     id: row.id,
     ruleText: row.rule_text,
     sortOrder: row.sort_order,
-    isActive: row.is_active === 1,
+    isActive: row.is_active,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -200,7 +221,7 @@ function toSourceSnapshot(row: TalkContextSourceRecord): ContextSourceSnapshot {
     lastFetchedAt: row.last_fetched_at,
     extractionError: row.extraction_error,
     fetchStrategy: row.fetch_strategy,
-    isTruncated: row.is_truncated === 1,
+    isTruncated: row.is_truncated,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     createdBy: row.created_by,
@@ -210,29 +231,17 @@ function toSourceSnapshot(row: TalkContextSourceRecord): ContextSourceSnapshot {
 function toSourceWithContent(
   row: TalkContextSourceRecord,
 ): ContextSourceWithContent {
-  return {
-    ...toSourceSnapshot(row),
-    extractedText: row.extracted_text,
-  };
-}
-
-function parseStateValue(valueJson: string, key?: string): unknown {
-  try {
-    return JSON.parse(valueJson);
-  } catch {
-    logger.warn(
-      { key, byteLength: Buffer.byteLength(valueJson, 'utf8') },
-      'Corrupt state JSON',
-    );
-    return valueJson;
-  }
+  return { ...toSourceSnapshot(row), extractedText: row.extracted_text };
 }
 
 function toStateSnapshot(row: TalkStateEntryRecord): TalkStateEntrySnapshot {
+  // jsonb round-trips cleanly via postgres.js — strings come back as
+  // strings, objects as objects. No try/JSON.parse fallback needed (that
+  // was a sqlite-era artifact when value_json was a TEXT column).
   return {
     id: row.id,
     key: row.key,
-    value: parseStateValue(row.value_json, row.key),
+    value: row.value_json,
     version: row.version,
     updatedAt: row.updated_at,
     updatedByUserId: row.updated_by_user_id,
@@ -244,10 +253,17 @@ function toStateSnapshot(row: TalkStateEntryRecord): TalkStateEntrySnapshot {
 // Goal accessors
 // ---------------------------------------------------------------------------
 
-export function getTalkGoal(talkId: string): GoalSnapshot | null {
-  const row = getDb()
-    .prepare(`SELECT * FROM talk_context_goal WHERE talk_id = ? LIMIT 1`)
-    .get(talkId) as TalkGoalRecord | undefined;
+export async function getTalkGoal(
+  talkId: string,
+): Promise<GoalSnapshot | null> {
+  const db = getDbPg();
+  const rows = await db<TalkGoalRecord[]>`
+    select talk_id, owner_id, goal_text, updated_at, updated_by
+    from public.talk_context_goal
+    where talk_id = ${talkId}::uuid
+    limit 1
+  `;
+  const row = rows[0];
   if (!row) return null;
   return {
     goalText: row.goal_text,
@@ -256,120 +272,116 @@ export function getTalkGoal(talkId: string): GoalSnapshot | null {
   };
 }
 
-export function setTalkGoal(input: {
+export async function setTalkGoal(input: {
+  ownerId: string;
   talkId: string;
   goalText: string;
   updatedBy: string;
-}): GoalSnapshot | null {
+}): Promise<GoalSnapshot | null> {
   const text = input.goalText.replace(/[\r\n]/g, '').trim();
+  const db = getDbPg();
   if (!text) {
-    getDb()
-      .prepare(`DELETE FROM talk_context_goal WHERE talk_id = ?`)
-      .run(input.talkId);
+    await db`
+      delete from public.talk_context_goal where talk_id = ${input.talkId}::uuid
+    `;
     return null;
   }
   if (text.length > 160) {
     throw new Error('Goal text exceeds 160-character limit');
   }
-
-  const now = new Date().toISOString();
-  getDb()
-    .prepare(
-      `
-      INSERT INTO talk_context_goal (talk_id, goal_text, updated_at, updated_by)
-      VALUES (?, ?, ?, ?)
-      ON CONFLICT(talk_id) DO UPDATE SET
-        goal_text = excluded.goal_text,
-        updated_at = excluded.updated_at,
-        updated_by = excluded.updated_by
-    `,
-    )
-    .run(input.talkId, text, now, input.updatedBy);
-  return getTalkGoal(input.talkId);
+  await db`
+    insert into public.talk_context_goal
+      (talk_id, owner_id, goal_text, updated_by)
+    values
+      (${input.talkId}::uuid, ${input.ownerId}::uuid, ${text},
+       ${input.updatedBy}::uuid)
+    on conflict (talk_id) do update set
+      goal_text = excluded.goal_text,
+      updated_at = now(),
+      updated_by = excluded.updated_by
+  `;
+  return await getTalkGoal(input.talkId);
 }
 
 // ---------------------------------------------------------------------------
 // Rule accessors
 // ---------------------------------------------------------------------------
 
-export function listTalkContextRules(talkId: string): ContextRuleSnapshot[] {
-  const rows = getDb()
-    .prepare(
-      `
-      SELECT * FROM talk_context_rules
-      WHERE talk_id = ?
-      ORDER BY sort_order ASC, created_at ASC
-    `,
-    )
-    .all(talkId) as TalkContextRuleRecord[];
+export async function listTalkContextRules(
+  talkId: string,
+): Promise<ContextRuleSnapshot[]> {
+  const db = getDbPg();
+  const rows = await db<TalkContextRuleRecord[]>`
+    select id, talk_id, owner_id, rule_text, sort_order, is_active,
+           created_at, updated_at
+    from public.talk_context_rules
+    where talk_id = ${talkId}::uuid
+    order by sort_order asc, created_at asc
+  `;
   return rows.map(toRuleSnapshot);
 }
 
-export function getActiveRuleCount(talkId: string): number {
-  const row = getDb()
-    .prepare(
-      `
-      SELECT COUNT(*) AS count
-      FROM talk_context_rules
-      WHERE talk_id = ? AND is_active = 1
-    `,
-    )
-    .get(talkId) as { count: number };
-  return row.count;
+export async function getActiveRuleCount(talkId: string): Promise<number> {
+  const db = getDbPg();
+  const rows = await db<{ count: number }[]>`
+    select count(*)::int as count
+    from public.talk_context_rules
+    where talk_id = ${talkId}::uuid and is_active = true
+  `;
+  return rows[0]?.count ?? 0;
 }
 
-export function createTalkContextRule(input: {
+export async function createTalkContextRule(input: {
+  ownerId: string;
   talkId: string;
   ruleText: string;
-}): ContextRuleSnapshot {
+}): Promise<ContextRuleSnapshot> {
   const text = input.ruleText.trim();
   if (!text) throw new Error('Rule text is required');
   if (text.length > 240)
     throw new Error('Rule text exceeds 240-character limit');
 
-  const activeCount = getActiveRuleCount(input.talkId);
+  const activeCount = await getActiveRuleCount(input.talkId);
   if (activeCount >= 8) {
     throw new Error('Maximum 8 active rules per talk');
   }
 
-  const id = randomUUID();
-  const now = new Date().toISOString();
-
-  // Insert at end of list
-  const maxOrder = getDb()
-    .prepare(
-      `SELECT COALESCE(MAX(sort_order), -1) AS max_order FROM talk_context_rules WHERE talk_id = ?`,
-    )
-    .get(input.talkId) as { max_order: number };
-
-  getDb()
-    .prepare(
-      `
-      INSERT INTO talk_context_rules (id, talk_id, rule_text, sort_order, is_active, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 1, ?, ?)
-    `,
-    )
-    .run(id, input.talkId, text, maxOrder.max_order + 1, now, now);
-
-  const row = getDb()
-    .prepare(`SELECT * FROM talk_context_rules WHERE id = ?`)
-    .get(id) as TalkContextRuleRecord;
-  return toRuleSnapshot(row);
+  const db = getDbPg();
+  const maxOrder = await db<{ max_order: number }[]>`
+    select coalesce(max(sort_order), -1)::int as max_order
+    from public.talk_context_rules
+    where talk_id = ${input.talkId}::uuid
+  `;
+  const rows = await db<TalkContextRuleRecord[]>`
+    insert into public.talk_context_rules
+      (talk_id, owner_id, rule_text, sort_order, is_active)
+    values
+      (${input.talkId}::uuid, ${input.ownerId}::uuid, ${text},
+       ${(maxOrder[0]?.max_order ?? -1) + 1}, true)
+    returning id, talk_id, owner_id, rule_text, sort_order, is_active,
+              created_at, updated_at
+  `;
+  return toRuleSnapshot(rows[0]);
 }
 
-export function patchTalkContextRule(input: {
+export async function patchTalkContextRule(input: {
   ruleId: string;
   talkId: string;
   ruleText?: string;
   isActive?: boolean;
   sortOrder?: number;
-}): ContextRuleSnapshot | undefined {
-  const existing = getDb()
-    .prepare(`SELECT * FROM talk_context_rules WHERE id = ? AND talk_id = ?`)
-    .get(input.ruleId, input.talkId) as TalkContextRuleRecord | undefined;
+}): Promise<ContextRuleSnapshot | undefined> {
+  const db = getDbPg();
+  const existingRows = await db<TalkContextRuleRecord[]>`
+    select id, talk_id, owner_id, rule_text, sort_order, is_active,
+           created_at, updated_at
+    from public.talk_context_rules
+    where id = ${input.ruleId}::uuid and talk_id = ${input.talkId}::uuid
+    limit 1
+  `;
+  const existing = existingRows[0];
   if (!existing) return undefined;
 
-  const now = new Date().toISOString();
   let nextText = existing.rule_text;
   let nextActive = existing.is_active;
   let nextOrder = existing.sort_order;
@@ -380,282 +392,253 @@ export function patchTalkContextRule(input: {
     if (nextText.length > 240)
       throw new Error('Rule text exceeds 240-character limit');
   }
-
   if (input.isActive !== undefined) {
-    const willActivate = input.isActive && existing.is_active === 0;
-    if (willActivate) {
-      const activeCount = getActiveRuleCount(input.talkId);
+    if (input.isActive && !existing.is_active) {
+      const activeCount = await getActiveRuleCount(input.talkId);
       if (activeCount >= 8) {
         throw new Error('Maximum 8 active rules per talk');
       }
     }
-    nextActive = input.isActive ? 1 : 0;
+    nextActive = input.isActive;
   }
+  if (input.sortOrder !== undefined) nextOrder = input.sortOrder;
 
-  if (input.sortOrder !== undefined) {
-    nextOrder = input.sortOrder;
-  }
-
-  getDb()
-    .prepare(
-      `
-      UPDATE talk_context_rules
-      SET rule_text = ?, is_active = ?, sort_order = ?, updated_at = ?
-      WHERE id = ?
-    `,
-    )
-    .run(nextText, nextActive, nextOrder, now, input.ruleId);
-
-  const row = getDb()
-    .prepare(`SELECT * FROM talk_context_rules WHERE id = ?`)
-    .get(input.ruleId) as TalkContextRuleRecord;
-  return toRuleSnapshot(row);
+  const rows = await db<TalkContextRuleRecord[]>`
+    update public.talk_context_rules
+    set rule_text = ${nextText},
+        is_active = ${nextActive},
+        sort_order = ${nextOrder},
+        updated_at = now()
+    where id = ${input.ruleId}::uuid
+    returning id, talk_id, owner_id, rule_text, sort_order, is_active,
+              created_at, updated_at
+  `;
+  return rows[0] ? toRuleSnapshot(rows[0]) : undefined;
 }
 
-export function deleteTalkContextRule(ruleId: string, talkId: string): boolean {
-  const result = getDb()
-    .prepare(`DELETE FROM talk_context_rules WHERE id = ? AND talk_id = ?`)
-    .run(ruleId, talkId);
-  return result.changes > 0;
+export async function deleteTalkContextRule(
+  ruleId: string,
+  talkId: string,
+): Promise<boolean> {
+  const db = getDbPg();
+  const rows = await db<{ id: string }[]>`
+    delete from public.talk_context_rules
+    where id = ${ruleId}::uuid and talk_id = ${talkId}::uuid
+    returning id
+  `;
+  return rows.length > 0;
 }
 
 // ---------------------------------------------------------------------------
 // State accessors
 // ---------------------------------------------------------------------------
 
-export function listTalkStateEntries(talkId: string): TalkStateEntrySnapshot[] {
-  const rows = getDb()
-    .prepare(
-      `
-      SELECT * FROM talk_state_entries
-      WHERE talk_id = ?
-      ORDER BY updated_at DESC, key ASC
-    `,
-    )
-    .all(talkId) as TalkStateEntryRecord[];
+export async function listTalkStateEntries(
+  talkId: string,
+): Promise<TalkStateEntrySnapshot[]> {
+  const db = getDbPg();
+  const rows = await db<TalkStateEntryRecord[]>`
+    select id, talk_id, owner_id, key, value_json, version, updated_at,
+           updated_by_user_id, updated_by_run_id
+    from public.talk_state_entries
+    where talk_id = ${talkId}::uuid
+    order by updated_at desc, key asc
+  `;
   return rows.map(toStateSnapshot);
 }
 
-export function listTalkStateEntriesByPrefix(
+export async function listTalkStateEntriesByPrefix(
   talkId: string,
   prefix: string,
-): TalkStateEntrySnapshot[] {
-  const normalizedPrefix = validateStateKey(prefix);
-  return listTalkStateEntries(talkId).filter((entry) =>
-    entry.key.startsWith(normalizedPrefix),
-  );
+): Promise<TalkStateEntrySnapshot[]> {
+  const normalized = validateStateKey(prefix);
+  const entries = await listTalkStateEntries(talkId);
+  return entries.filter((entry) => entry.key.startsWith(normalized));
 }
 
-export function getTalkStateEntry(
+export async function getTalkStateEntry(
   talkId: string,
   key: string,
-): TalkStateEntrySnapshot | undefined {
-  const row = getDb()
-    .prepare(
-      `
-      SELECT * FROM talk_state_entries
-      WHERE talk_id = ? AND key = ?
-      LIMIT 1
-    `,
-    )
-    .get(talkId, key) as TalkStateEntryRecord | undefined;
-  return row ? toStateSnapshot(row) : undefined;
+): Promise<TalkStateEntrySnapshot | undefined> {
+  const db = getDbPg();
+  const rows = await db<TalkStateEntryRecord[]>`
+    select id, talk_id, owner_id, key, value_json, version, updated_at,
+           updated_by_user_id, updated_by_run_id
+    from public.talk_state_entries
+    where talk_id = ${talkId}::uuid and key = ${key}
+    limit 1
+  `;
+  return rows[0] ? toStateSnapshot(rows[0]) : undefined;
 }
 
-export function getTalkStateEntryCount(talkId: string): number {
-  const row = getDb()
-    .prepare(
-      `SELECT COUNT(*) AS count FROM talk_state_entries WHERE talk_id = ?`,
-    )
-    .get(talkId) as { count: number };
-  return row.count;
+export async function getTalkStateEntryCount(talkId: string): Promise<number> {
+  const db = getDbPg();
+  const rows = await db<{ count: number }[]>`
+    select count(*)::int as count
+    from public.talk_state_entries
+    where talk_id = ${talkId}::uuid
+  `;
+  return rows[0]?.count ?? 0;
 }
 
-export function upsertTalkStateEntry(input: {
+export async function upsertTalkStateEntry(input: {
+  ownerId: string;
   talkId: string;
   key: string;
   value: unknown;
   expectedVersion: number;
   updatedByUserId?: string | null;
   updatedByRunId?: string | null;
-}): TalkStateWriteResult {
+}): Promise<TalkStateWriteResult> {
   const key = validateStateKey(input.key);
   if (!Number.isInteger(input.expectedVersion) || input.expectedVersion < 0) {
     throw new Error('expectedVersion must be a non-negative integer');
   }
-
+  // Byte-cap matches the API contract: payload must be ≤ 20 KB encoded.
   const valueJson = JSON.stringify(input.value ?? null);
   if (Buffer.byteLength(valueJson, 'utf8') > MAX_STATE_VALUE_BYTES) {
     throw new Error('State value exceeds 20 KB limit');
   }
+  const value = input.value ?? null;
 
-  const existingRow = getDb()
-    .prepare(
-      `
-      SELECT * FROM talk_state_entries
-      WHERE talk_id = ? AND key = ?
-      LIMIT 1
-    `,
-    )
-    .get(input.talkId, key) as TalkStateEntryRecord | undefined;
+  const db: Sql = getDbPg();
+  const existingRows = await db<TalkStateEntryRecord[]>`
+    select id, talk_id, owner_id, key, value_json, version, updated_at,
+           updated_by_user_id, updated_by_run_id
+    from public.talk_state_entries
+    where talk_id = ${input.talkId}::uuid and key = ${key}
+    limit 1
+  `;
+  const existing = existingRows[0];
 
-  const now = new Date().toISOString();
-
-  if (!existingRow) {
+  if (!existing) {
     if (input.expectedVersion !== 0) {
       throw new Error(
         `State entry "${key}" does not exist. Create it with expectedVersion 0.`,
       );
     }
-
-    const count = getTalkStateEntryCount(input.talkId);
+    const count = await getTalkStateEntryCount(input.talkId);
     if (count >= MAX_STATE_ENTRIES_PER_TALK) {
       throw new Error(
         `Maximum ${MAX_STATE_ENTRIES_PER_TALK} state entries per talk`,
       );
     }
-
-    const id = randomUUID();
-    getDb()
-      .prepare(
-        `
-        INSERT INTO talk_state_entries (
-          id, talk_id, key, value_json, version, updated_at,
-          updated_by_user_id, updated_by_run_id
-        )
-        VALUES (?, ?, ?, ?, 1, ?, ?, ?)
-      `,
-      )
-      .run(
-        id,
-        input.talkId,
-        key,
-        valueJson,
-        now,
-        input.updatedByUserId ?? null,
-        input.updatedByRunId ?? null,
-      );
-
-    const created = getDb()
-      .prepare(`SELECT * FROM talk_state_entries WHERE id = ?`)
-      .get(id) as TalkStateEntryRecord;
-    return { ok: true, entry: toStateSnapshot(created) };
+    const inserted = await db<TalkStateEntryRecord[]>`
+      insert into public.talk_state_entries
+        (talk_id, owner_id, key, value_json, version,
+         updated_by_user_id, updated_by_run_id)
+      values
+        (${input.talkId}::uuid, ${input.ownerId}::uuid, ${key},
+         ${db.json(value as never)}, 1,
+         ${input.updatedByUserId ?? null}::uuid,
+         ${input.updatedByRunId ?? null}::uuid)
+      returning id, talk_id, owner_id, key, value_json, version, updated_at,
+                updated_by_user_id, updated_by_run_id
+    `;
+    return { ok: true, entry: toStateSnapshot(inserted[0]) };
   }
 
-  if (existingRow.version !== input.expectedVersion) {
-    return { ok: false, current: toStateSnapshot(existingRow) };
+  if (existing.version !== input.expectedVersion) {
+    return { ok: false, current: toStateSnapshot(existing) };
   }
 
-  getDb()
-    .prepare(
-      `
-      UPDATE talk_state_entries
-      SET value_json = ?,
-          version = version + 1,
-          updated_at = ?,
-          updated_by_user_id = ?,
-          updated_by_run_id = ?
-      WHERE id = ? AND version = ?
-    `,
-    )
-    .run(
-      valueJson,
-      now,
-      input.updatedByUserId ?? null,
-      input.updatedByRunId ?? null,
-      existingRow.id,
-      input.expectedVersion,
-    );
-
-  const updated = getDb()
-    .prepare(`SELECT * FROM talk_state_entries WHERE id = ?`)
-    .get(existingRow.id) as TalkStateEntryRecord;
-  return { ok: true, entry: toStateSnapshot(updated) };
+  const updated = await db<TalkStateEntryRecord[]>`
+    update public.talk_state_entries
+    set value_json = ${db.json(value as never)},
+        version = version + 1,
+        updated_at = now(),
+        updated_by_user_id = ${input.updatedByUserId ?? null}::uuid,
+        updated_by_run_id = ${input.updatedByRunId ?? null}::uuid
+    where id = ${existing.id}::uuid and version = ${input.expectedVersion}
+    returning id, talk_id, owner_id, key, value_json, version, updated_at,
+              updated_by_user_id, updated_by_run_id
+  `;
+  return { ok: true, entry: toStateSnapshot(updated[0]) };
 }
 
-export function deleteTalkStateEntry(input: {
+export async function deleteTalkStateEntry(input: {
   talkId: string;
   key: string;
   expectedVersion: number;
-}): TalkStateDeleteResult {
+}): Promise<TalkStateDeleteResult> {
   const key = validateStateKey(input.key);
   if (!Number.isInteger(input.expectedVersion) || input.expectedVersion < 0) {
     throw new Error('expectedVersion must be a non-negative integer');
   }
-
-  const existingRow = getDb()
-    .prepare(
-      `
-      SELECT * FROM talk_state_entries
-      WHERE talk_id = ? AND key = ?
-      LIMIT 1
-    `,
-    )
-    .get(input.talkId, key) as TalkStateEntryRecord | undefined;
-
-  if (!existingRow) {
-    throw new Error(`State entry "${key}" does not exist.`);
+  const db = getDbPg();
+  const existingRows = await db<TalkStateEntryRecord[]>`
+    select id, talk_id, owner_id, key, value_json, version, updated_at,
+           updated_by_user_id, updated_by_run_id
+    from public.talk_state_entries
+    where talk_id = ${input.talkId}::uuid and key = ${key}
+    limit 1
+  `;
+  const existing = existingRows[0];
+  if (!existing) throw new Error(`State entry "${key}" does not exist.`);
+  if (existing.version !== input.expectedVersion) {
+    return { ok: false, current: toStateSnapshot(existing) };
   }
-
-  if (existingRow.version !== input.expectedVersion) {
-    return { ok: false, current: toStateSnapshot(existingRow) };
-  }
-
-  getDb()
-    .prepare(`DELETE FROM talk_state_entries WHERE id = ? AND version = ?`)
-    .run(existingRow.id, input.expectedVersion);
-
+  await db`
+    delete from public.talk_state_entries
+    where id = ${existing.id}::uuid and version = ${input.expectedVersion}
+  `;
   return { ok: true, deleted: true };
 }
 
-export function forceDeleteTalkStateEntry(
+export async function forceDeleteTalkStateEntry(
   talkId: string,
   key: string,
-): boolean {
+): Promise<boolean> {
   const validatedKey = validateStateKey(key);
-  const result = getDb()
-    .prepare(`DELETE FROM talk_state_entries WHERE talk_id = ? AND key = ?`)
-    .run(talkId, validatedKey);
-  return result.changes > 0;
+  const db = getDbPg();
+  const rows = await db<{ id: string }[]>`
+    delete from public.talk_state_entries
+    where talk_id = ${talkId}::uuid and key = ${validatedKey}
+    returning id
+  `;
+  return rows.length > 0;
 }
 
-export function forceDeleteTalkStateEntriesByPrefix(
+export async function forceDeleteTalkStateEntriesByPrefix(
   talkId: string,
   prefix: string,
-): number {
+): Promise<number> {
   const validatedPrefix = validateStateKey(prefix);
-  const result = getDb()
-    .prepare(
-      `DELETE FROM talk_state_entries WHERE talk_id = ? AND key LIKE ? ESCAPE '\\'`,
-    )
-    .run(talkId, `${validatedPrefix.replace(/[\\%_]/g, '\\$&')}%`);
-  return result.changes;
+  const db = getDbPg();
+  const escaped = validatedPrefix.replace(/[\\%_]/g, '\\$&');
+  const rows = await db<{ id: string }[]>`
+    delete from public.talk_state_entries
+    where talk_id = ${talkId}::uuid
+      and key like ${escaped + '%'}
+    returning id
+  `;
+  return rows.length;
 }
 
 // ---------------------------------------------------------------------------
 // Source ref counter
 // ---------------------------------------------------------------------------
 
-function allocateSourceRef(talkId: string): string {
-  const row = getDb()
-    .prepare(
-      `SELECT next_ref_number FROM talk_context_source_ref_counter WHERE talk_id = ?`,
-    )
-    .get(talkId) as { next_ref_number: number } | undefined;
-
-  const nextNumber = row?.next_ref_number ?? 1;
-
-  getDb()
-    .prepare(
-      `
-      INSERT INTO talk_context_source_ref_counter (talk_id, next_ref_number)
-      VALUES (?, ?)
-      ON CONFLICT(talk_id) DO UPDATE SET
-        next_ref_number = excluded.next_ref_number
-    `,
-    )
-    .run(talkId, nextNumber + 1);
-
+async function allocateSourceRef(talkId: string): Promise<string> {
+  const db = getDbPg();
+  // RETURNING gives the value BEFORE the UPDATE applies, so we use a CTE
+  // pattern: upsert, then return the pre-increment value. Postgres's
+  // `insert ... on conflict do update returning` returns the NEW row, so
+  // we compute the next number client-side via a SELECT first.
+  const rows = await db<{ next_ref_number: number }[]>`
+    select next_ref_number
+    from public.talk_context_source_ref_counter
+    where talk_id = ${talkId}::uuid
+    limit 1
+  `;
+  const nextNumber = rows[0]?.next_ref_number ?? 1;
+  await db`
+    insert into public.talk_context_source_ref_counter
+      (talk_id, next_ref_number)
+    values (${talkId}::uuid, ${nextNumber + 1})
+    on conflict (talk_id) do update set
+      next_ref_number = excluded.next_ref_number
+  `;
   return `S${nextNumber}`;
 }
 
@@ -663,53 +646,78 @@ function allocateSourceRef(talkId: string): string {
 // Source accessors
 // ---------------------------------------------------------------------------
 
-export function listTalkContextSources(
+const SOURCE_COLUMNS = `id, talk_id, owner_id, source_ref, source_type, title,
+  note, sort_order, status, source_url, file_name, file_size, mime_type,
+  storage_key, extracted_text, extracted_at, last_fetched_at, extraction_error,
+  fetch_strategy, is_truncated, created_at, updated_at, created_by`;
+
+export async function listTalkContextSources(
   talkId: string,
-): ContextSourceSnapshot[] {
-  const rows = getDb()
-    .prepare(
-      `
-      SELECT * FROM talk_context_sources
-      WHERE talk_id = ?
-      ORDER BY sort_order ASC, created_at ASC
-    `,
-    )
-    .all(talkId) as TalkContextSourceRecord[];
+): Promise<ContextSourceSnapshot[]> {
+  const db = getDbPg();
+  const rows = await db<TalkContextSourceRecord[]>`
+    select id, talk_id, owner_id, source_ref, source_type, title, note,
+           sort_order, status, source_url, file_name, file_size, mime_type,
+           storage_key, extracted_text, extracted_at, last_fetched_at,
+           extraction_error, fetch_strategy, is_truncated, created_at,
+           updated_at, created_by
+    from public.talk_context_sources
+    where talk_id = ${talkId}::uuid
+    order by sort_order asc, created_at asc
+  `;
   return rows.map(toSourceSnapshot);
 }
 
-export function getTalkContextSourceCount(talkId: string): number {
-  const row = getDb()
-    .prepare(
-      `SELECT COUNT(*) AS count FROM talk_context_sources WHERE talk_id = ?`,
-    )
-    .get(talkId) as { count: number };
-  return row.count;
+export async function getTalkContextSourceCount(
+  talkId: string,
+): Promise<number> {
+  const db = getDbPg();
+  const rows = await db<{ count: number }[]>`
+    select count(*)::int as count
+    from public.talk_context_sources
+    where talk_id = ${talkId}::uuid
+  `;
+  return rows[0]?.count ?? 0;
 }
 
-export function getTalkContextSourceById(
+export async function getTalkContextSourceById(
   sourceId: string,
   talkId: string,
-): ContextSourceSnapshot | undefined {
-  const row = getDb()
-    .prepare(`SELECT * FROM talk_context_sources WHERE id = ? AND talk_id = ?`)
-    .get(sourceId, talkId) as TalkContextSourceRecord | undefined;
-  return row ? toSourceSnapshot(row) : undefined;
+): Promise<ContextSourceSnapshot | undefined> {
+  const db = getDbPg();
+  const rows = await db<TalkContextSourceRecord[]>`
+    select id, talk_id, owner_id, source_ref, source_type, title, note,
+           sort_order, status, source_url, file_name, file_size, mime_type,
+           storage_key, extracted_text, extracted_at, last_fetched_at,
+           extraction_error, fetch_strategy, is_truncated, created_at,
+           updated_at, created_by
+    from public.talk_context_sources
+    where id = ${sourceId}::uuid and talk_id = ${talkId}::uuid
+    limit 1
+  `;
+  return rows[0] ? toSourceSnapshot(rows[0]) : undefined;
 }
 
-export function getTalkContextSourceByRef(
+export async function getTalkContextSourceByRef(
   sourceRef: string,
   talkId: string,
-): ContextSourceWithContent | undefined {
-  const row = getDb()
-    .prepare(
-      `SELECT * FROM talk_context_sources WHERE source_ref = ? AND talk_id = ?`,
-    )
-    .get(sourceRef, talkId) as TalkContextSourceRecord | undefined;
-  return row ? toSourceWithContent(row) : undefined;
+): Promise<ContextSourceWithContent | undefined> {
+  const db = getDbPg();
+  const rows = await db<TalkContextSourceRecord[]>`
+    select id, talk_id, owner_id, source_ref, source_type, title, note,
+           sort_order, status, source_url, file_name, file_size, mime_type,
+           storage_key, extracted_text, extracted_at, last_fetched_at,
+           extraction_error, fetch_strategy, is_truncated, created_at,
+           updated_at, created_by
+    from public.talk_context_sources
+    where source_ref = ${sourceRef} and talk_id = ${talkId}::uuid
+    limit 1
+  `;
+  return rows[0] ? toSourceWithContent(rows[0]) : undefined;
 }
 
-export function createTalkContextSource(input: {
+export async function createTalkContextSource(input: {
+  ownerId: string;
   talkId: string;
   sourceType: ContextSourceType;
   title: string;
@@ -722,295 +730,253 @@ export function createTalkContextSource(input: {
   extractedText?: string | null;
   extractionError?: string | null;
   createdBy: string;
-}): ContextSourceSnapshot {
-  const count = getTalkContextSourceCount(input.talkId);
+}): Promise<ContextSourceSnapshot> {
+  const count = await getTalkContextSourceCount(input.talkId);
   if (count >= 20) {
     throw new Error('Maximum 20 saved sources per talk');
   }
 
-  const id = randomUUID();
-  const sourceRef = allocateSourceRef(input.talkId);
-  const now = new Date().toISOString();
   const title = input.title.trim();
   if (!title) throw new Error('Source title is required');
+  const sourceRef = await allocateSourceRef(input.talkId);
 
-  // Determine initial status
   let status: ContextSourceStatus = 'pending';
   let extractedText: string | null = null;
-  let isTruncated = 0;
+  let isTruncated = false;
   let extractedAt: string | null = null;
-
   if (input.sourceType === 'text' || input.sourceType === 'file') {
-    // Text and file sources with provided content are immediately ready
     extractedText = input.extractedText ?? null;
     if (extractedText !== null) {
       if (extractedText.length > 50_000) {
         extractedText = extractedText.slice(0, 50_000);
-        isTruncated = 1;
+        isTruncated = true;
       }
       status = 'ready';
-      extractedAt = now;
+      extractedAt = new Date().toISOString();
     } else if (input.sourceType === 'file') {
       status = input.extractionError ? 'failed' : 'ready';
-      extractedAt = now;
+      extractedAt = new Date().toISOString();
     }
   }
 
-  // Insert at end
-  const maxOrder = getDb()
-    .prepare(
-      `SELECT COALESCE(MAX(sort_order), -1) AS max_order FROM talk_context_sources WHERE talk_id = ?`,
-    )
-    .get(input.talkId) as { max_order: number };
-
-  getDb()
-    .prepare(
-      `
-      INSERT INTO talk_context_sources (
-        id, talk_id, source_ref, source_type, title, note,
-        sort_order, status, source_url, file_name, file_size,
-        mime_type, storage_key, extracted_text, extracted_at,
-        last_fetched_at, extraction_error, fetch_strategy, is_truncated,
-        created_at, updated_at, created_by
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, ?)
-    `,
-    )
-    .run(
-      id,
-      input.talkId,
-      sourceRef,
-      input.sourceType,
-      title,
-      input.note?.trim() || null,
-      maxOrder.max_order + 1,
-      status,
-      input.sourceUrl ?? null,
-      input.fileName ?? null,
-      input.fileSize ?? null,
-      input.mimeType ?? null,
-      input.storageKey ?? null,
-      extractedText,
-      extractedAt,
-      input.extractionError ?? null,
-      isTruncated,
-      now,
-      now,
-      input.createdBy,
-    );
-
-  const row = getDb()
-    .prepare(`SELECT * FROM talk_context_sources WHERE id = ?`)
-    .get(id) as TalkContextSourceRecord;
-  return toSourceSnapshot(row);
+  const db = getDbPg();
+  const maxOrder = await db<{ max_order: number }[]>`
+    select coalesce(max(sort_order), -1)::int as max_order
+    from public.talk_context_sources
+    where talk_id = ${input.talkId}::uuid
+  `;
+  const rows = await db<TalkContextSourceRecord[]>`
+    insert into public.talk_context_sources
+      (talk_id, owner_id, source_ref, source_type, title, note, sort_order,
+       status, source_url, file_name, file_size, mime_type, storage_key,
+       extracted_text, extracted_at, extraction_error, is_truncated,
+       created_by)
+    values
+      (${input.talkId}::uuid, ${input.ownerId}::uuid, ${sourceRef},
+       ${input.sourceType}, ${title}, ${input.note?.trim() || null},
+       ${(maxOrder[0]?.max_order ?? -1) + 1}, ${status},
+       ${input.sourceUrl ?? null}, ${input.fileName ?? null},
+       ${input.fileSize ?? null}, ${input.mimeType ?? null},
+       ${input.storageKey ?? null}, ${extractedText}, ${extractedAt},
+       ${input.extractionError ?? null}, ${isTruncated},
+       ${input.createdBy}::uuid)
+    returning id, talk_id, owner_id, source_ref, source_type, title, note,
+              sort_order, status, source_url, file_name, file_size, mime_type,
+              storage_key, extracted_text, extracted_at, last_fetched_at,
+              extraction_error, fetch_strategy, is_truncated, created_at,
+              updated_at, created_by
+  `;
+  return toSourceSnapshot(rows[0]);
 }
 
-export function patchTalkContextSource(input: {
+export async function patchTalkContextSource(input: {
   sourceId: string;
   talkId: string;
   title?: string;
   note?: string | null;
   sortOrder?: number;
   extractedText?: string | null;
-}): ContextSourceSnapshot | undefined {
-  const existing = getDb()
-    .prepare(`SELECT * FROM talk_context_sources WHERE id = ? AND talk_id = ?`)
-    .get(input.sourceId, input.talkId) as TalkContextSourceRecord | undefined;
+}): Promise<ContextSourceSnapshot | undefined> {
+  const db = getDbPg();
+  const existingRows = await db<TalkContextSourceRecord[]>`
+    select id, talk_id, owner_id, source_ref, source_type, title, note,
+           sort_order, status, source_url, file_name, file_size, mime_type,
+           storage_key, extracted_text, extracted_at, last_fetched_at,
+           extraction_error, fetch_strategy, is_truncated, created_at,
+           updated_at, created_by
+    from public.talk_context_sources
+    where id = ${input.sourceId}::uuid and talk_id = ${input.talkId}::uuid
+    limit 1
+  `;
+  const existing = existingRows[0];
   if (!existing) return undefined;
 
-  const now = new Date().toISOString();
   let nextTitle = existing.title;
   let nextNote = existing.note;
   let nextOrder = existing.sort_order;
-
   if (input.title !== undefined) {
     nextTitle = input.title.trim();
     if (!nextTitle) throw new Error('Source title is required');
   }
-  if (input.note !== undefined) {
-    nextNote = input.note?.trim() || null;
-  }
-  if (input.sortOrder !== undefined) {
-    nextOrder = input.sortOrder;
-  }
+  if (input.note !== undefined) nextNote = input.note?.trim() || null;
+  if (input.sortOrder !== undefined) nextOrder = input.sortOrder;
 
-  // For text sources, allow inline content editing
   if (input.extractedText !== undefined && existing.source_type === 'text') {
     let text = input.extractedText;
-    let isTruncated = 0;
+    let isTruncated = false;
     if (text && text.length > 50_000) {
       text = text.slice(0, 50_000);
-      isTruncated = 1;
+      isTruncated = true;
     }
-    getDb()
-      .prepare(
-        `
-        UPDATE talk_context_sources
-        SET title = ?, note = ?, sort_order = ?, extracted_text = ?,
-            extracted_at = ?, is_truncated = ?, status = 'ready', updated_at = ?
-        WHERE id = ?
-      `,
-      )
-      .run(
-        nextTitle,
-        nextNote,
-        nextOrder,
-        text,
-        now,
-        isTruncated,
-        now,
-        input.sourceId,
-      );
-  } else {
-    getDb()
-      .prepare(
-        `
-        UPDATE talk_context_sources
-        SET title = ?, note = ?, sort_order = ?, updated_at = ?
-        WHERE id = ?
-      `,
-      )
-      .run(nextTitle, nextNote, nextOrder, now, input.sourceId);
+    const rows = await db<TalkContextSourceRecord[]>`
+      update public.talk_context_sources
+      set title = ${nextTitle},
+          note = ${nextNote},
+          sort_order = ${nextOrder},
+          extracted_text = ${text},
+          extracted_at = now(),
+          is_truncated = ${isTruncated},
+          status = 'ready',
+          updated_at = now()
+      where id = ${input.sourceId}::uuid
+      returning id, talk_id, owner_id, source_ref, source_type, title, note,
+                sort_order, status, source_url, file_name, file_size, mime_type,
+                storage_key, extracted_text, extracted_at, last_fetched_at,
+                extraction_error, fetch_strategy, is_truncated, created_at,
+                updated_at, created_by
+    `;
+    return rows[0] ? toSourceSnapshot(rows[0]) : undefined;
   }
 
-  const row = getDb()
-    .prepare(`SELECT * FROM talk_context_sources WHERE id = ?`)
-    .get(input.sourceId) as TalkContextSourceRecord;
-  return toSourceSnapshot(row);
+  const rows = await db<TalkContextSourceRecord[]>`
+    update public.talk_context_sources
+    set title = ${nextTitle},
+        note = ${nextNote},
+        sort_order = ${nextOrder},
+        updated_at = now()
+    where id = ${input.sourceId}::uuid
+    returning id, talk_id, owner_id, source_ref, source_type, title, note,
+              sort_order, status, source_url, file_name, file_size, mime_type,
+              storage_key, extracted_text, extracted_at, last_fetched_at,
+              extraction_error, fetch_strategy, is_truncated, created_at,
+              updated_at, created_by
+  `;
+  return rows[0] ? toSourceSnapshot(rows[0]) : undefined;
 }
 
-export function updateSourceExtraction(input: {
+export async function updateSourceExtraction(input: {
   sourceId: string;
   extractedText: string | null;
   extractionError: string | null;
   mimeType?: string | null;
   fetchStrategy?: ContextSourceFetchStrategy | null;
   fetchedAt?: string | null;
-}): void {
-  const now = new Date().toISOString();
-  const fetchedAt = input.fetchedAt ?? now;
+}): Promise<void> {
+  const db = getDbPg();
+  const fetchedAt = input.fetchedAt ?? new Date().toISOString();
 
   if (input.extractionError) {
-    // Failed extraction — keep last-good content if it exists
-    getDb()
-      .prepare(
-        `
-        UPDATE talk_context_sources
-        SET extraction_error = ?,
-            last_fetched_at = ?,
-            fetch_strategy = COALESCE(?, fetch_strategy),
-            status = CASE WHEN extracted_text IS NOT NULL THEN status ELSE 'failed' END,
-            updated_at = ?
-        WHERE id = ?
-      `,
-      )
-      .run(
-        input.extractionError,
-        fetchedAt,
-        input.fetchStrategy ?? null,
-        now,
-        input.sourceId,
-      );
+    await db`
+      update public.talk_context_sources
+      set extraction_error = ${input.extractionError},
+          last_fetched_at = ${fetchedAt},
+          fetch_strategy = coalesce(${input.fetchStrategy ?? null}, fetch_strategy),
+          status = case when extracted_text is not null then status else 'failed' end,
+          updated_at = now()
+      where id = ${input.sourceId}::uuid
+    `;
     return;
   }
 
   let text = input.extractedText;
-  let isTruncated = 0;
+  let isTruncated = false;
   if (text && text.length > 50_000) {
     text = text.slice(0, 50_000);
-    isTruncated = 1;
+    isTruncated = true;
   }
 
-  getDb()
-    .prepare(
-      `
-      UPDATE talk_context_sources
-      SET extracted_text = ?,
-          extracted_at = ?,
-          last_fetched_at = ?,
-          extraction_error = NULL,
-          fetch_strategy = COALESCE(?, fetch_strategy),
-          is_truncated = ?,
-          status = 'ready',
-          mime_type = COALESCE(?, mime_type),
-          updated_at = ?
-      WHERE id = ?
-      `,
-    )
-    .run(
-      text,
-      now,
-      fetchedAt,
-      input.fetchStrategy ?? null,
-      isTruncated,
-      input.mimeType ?? null,
-      now,
-      input.sourceId,
-    );
+  await db`
+    update public.talk_context_sources
+    set extracted_text = ${text},
+        extracted_at = now(),
+        last_fetched_at = ${fetchedAt},
+        extraction_error = null,
+        fetch_strategy = coalesce(${input.fetchStrategy ?? null}, fetch_strategy),
+        is_truncated = ${isTruncated},
+        status = 'ready',
+        mime_type = coalesce(${input.mimeType ?? null}, mime_type),
+        updated_at = now()
+    where id = ${input.sourceId}::uuid
+  `;
 }
 
-export function markTalkContextSourcePending(
+export async function markTalkContextSourcePending(
   sourceId: string,
   talkId: string,
-): ContextSourceSnapshot | undefined {
-  const existing = getDb()
-    .prepare(`SELECT * FROM talk_context_sources WHERE id = ? AND talk_id = ?`)
-    .get(sourceId, talkId) as TalkContextSourceRecord | undefined;
-  if (!existing) return undefined;
-
-  const now = new Date().toISOString();
-  getDb()
-    .prepare(
-      `
-      UPDATE talk_context_sources
-      SET status = 'pending',
-          extraction_error = NULL,
-          updated_at = ?
-      WHERE id = ?
-    `,
-    )
-    .run(now, sourceId);
-
-  const row = getDb()
-    .prepare(`SELECT * FROM talk_context_sources WHERE id = ?`)
-    .get(sourceId) as TalkContextSourceRecord;
-  return toSourceSnapshot(row);
+): Promise<ContextSourceSnapshot | undefined> {
+  const db = getDbPg();
+  const rows = await db<TalkContextSourceRecord[]>`
+    update public.talk_context_sources
+    set status = 'pending',
+        extraction_error = null,
+        updated_at = now()
+    where id = ${sourceId}::uuid and talk_id = ${talkId}::uuid
+    returning id, talk_id, owner_id, source_ref, source_type, title, note,
+              sort_order, status, source_url, file_name, file_size, mime_type,
+              storage_key, extracted_text, extracted_at, last_fetched_at,
+              extraction_error, fetch_strategy, is_truncated, created_at,
+              updated_at, created_by
+  `;
+  return rows[0] ? toSourceSnapshot(rows[0]) : undefined;
 }
 
-export function getContextSourceWithContent(
+export async function getContextSourceWithContent(
   sourceId: string,
   talkId: string,
-): ContextSourceWithContent | undefined {
-  const row = getDb()
-    .prepare(`SELECT * FROM talk_context_sources WHERE id = ? AND talk_id = ?`)
-    .get(sourceId, talkId) as TalkContextSourceRecord | undefined;
-  return row ? toSourceWithContent(row) : undefined;
+): Promise<ContextSourceWithContent | undefined> {
+  const db = getDbPg();
+  const rows = await db<TalkContextSourceRecord[]>`
+    select id, talk_id, owner_id, source_ref, source_type, title, note,
+           sort_order, status, source_url, file_name, file_size, mime_type,
+           storage_key, extracted_text, extracted_at, last_fetched_at,
+           extraction_error, fetch_strategy, is_truncated, created_at,
+           updated_at, created_by
+    from public.talk_context_sources
+    where id = ${sourceId}::uuid and talk_id = ${talkId}::uuid
+    limit 1
+  `;
+  return rows[0] ? toSourceWithContent(rows[0]) : undefined;
 }
 
-export function getContextSourceStorageKey(
+export async function getContextSourceStorageKey(
   sourceId: string,
   talkId: string,
-): string | null {
-  const row = getDb()
-    .prepare(
-      `SELECT storage_key FROM talk_context_sources WHERE id = ? AND talk_id = ?`,
-    )
-    .get(sourceId, talkId) as { storage_key: string | null } | undefined;
-  return row?.storage_key ?? null;
+): Promise<string | null> {
+  const db = getDbPg();
+  const rows = await db<{ storage_key: string | null }[]>`
+    select storage_key
+    from public.talk_context_sources
+    where id = ${sourceId}::uuid and talk_id = ${talkId}::uuid
+    limit 1
+  `;
+  return rows[0]?.storage_key ?? null;
 }
 
-export function deleteTalkContextSource(
+export async function deleteTalkContextSource(
   sourceId: string,
   talkId: string,
-): boolean {
-  const result = getDb()
-    .prepare(`DELETE FROM talk_context_sources WHERE id = ? AND talk_id = ?`)
-    .run(sourceId, talkId);
-  return result.changes > 0;
+): Promise<boolean> {
+  const db = getDbPg();
+  const rows = await db<{ id: string }[]>`
+    delete from public.talk_context_sources
+    where id = ${sourceId}::uuid and talk_id = ${talkId}::uuid
+    returning id
+  `;
+  return rows.length > 0;
 }
 
 // ---------------------------------------------------------------------------
-// Message attachment types
+// Message attachments
 // ---------------------------------------------------------------------------
 
 export type AttachmentExtractionStatus = 'pending' | 'ready' | 'failed';
@@ -1019,9 +985,10 @@ export interface MessageAttachmentRecord {
   id: string;
   message_id: string | null;
   talk_id: string;
+  owner_id: string;
   file_name: string;
-  file_size: number;
-  mime_type: string;
+  file_size: number | null;
+  mime_type: string | null;
   storage_key: string;
   extracted_text: string | null;
   extraction_status: AttachmentExtractionStatus;
@@ -1034,8 +1001,8 @@ export interface AttachmentSnapshot {
   id: string;
   messageId: string | null;
   fileName: string;
-  fileSize: number;
-  mimeType: string;
+  fileSize: number | null;
+  mimeType: string | null;
   extractionStatus: AttachmentExtractionStatus;
   extractionError: string | null;
   extractedTextLength: number | null;
@@ -1058,215 +1025,206 @@ function toAttachmentSnapshot(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Message attachment accessors
-// ---------------------------------------------------------------------------
-
-export function createMessageAttachment(input: {
-  id: string;
+export async function createMessageAttachment(input: {
+  ownerId: string;
+  id?: string;
   talkId: string;
   fileName: string;
   fileSize: number;
   mimeType: string;
   storageKey: string;
   createdBy: string;
-}): AttachmentSnapshot {
-  const now = new Date().toISOString();
-  getDb()
-    .prepare(
+}): Promise<AttachmentSnapshot> {
+  const db = getDbPg();
+  // id is optional now (was required in sqlite). When provided, callers
+  // (executor pre-generated ids for streaming) still get the same shape.
+  const rows = input.id
+    ? await db<MessageAttachmentRecord[]>`
+        insert into public.talk_message_attachments
+          (id, talk_id, owner_id, file_name, file_size, mime_type,
+           storage_key, extraction_status, created_by)
+        values
+          (${input.id}::uuid, ${input.talkId}::uuid, ${input.ownerId}::uuid,
+           ${input.fileName}, ${input.fileSize}, ${input.mimeType},
+           ${input.storageKey}, 'pending', ${input.createdBy}::uuid)
+        returning id, message_id, talk_id, owner_id, file_name, file_size,
+                  mime_type, storage_key, extracted_text, extraction_status,
+                  extraction_error, created_at, created_by
       `
-      INSERT INTO talk_message_attachments (
-        id, message_id, talk_id, file_name, file_size,
-        mime_type, storage_key, extraction_status, created_at, created_by
-      )
-      VALUES (?, NULL, ?, ?, ?, ?, ?, 'pending', ?, ?)
-    `,
-    )
-    .run(
-      input.id,
-      input.talkId,
-      input.fileName,
-      input.fileSize,
-      input.mimeType,
-      input.storageKey,
-      now,
-      input.createdBy,
-    );
-
-  const row = getDb()
-    .prepare(`SELECT * FROM talk_message_attachments WHERE id = ?`)
-    .get(input.id) as MessageAttachmentRecord;
-  return toAttachmentSnapshot(row);
+    : await db<MessageAttachmentRecord[]>`
+        insert into public.talk_message_attachments
+          (talk_id, owner_id, file_name, file_size, mime_type, storage_key,
+           extraction_status, created_by)
+        values
+          (${input.talkId}::uuid, ${input.ownerId}::uuid, ${input.fileName},
+           ${input.fileSize}, ${input.mimeType}, ${input.storageKey},
+           'pending', ${input.createdBy}::uuid)
+        returning id, message_id, talk_id, owner_id, file_name, file_size,
+                  mime_type, storage_key, extracted_text, extraction_status,
+                  extraction_error, created_at, created_by
+      `;
+  return toAttachmentSnapshot(rows[0]);
 }
 
-export function linkAttachmentToMessage(
+export async function linkAttachmentToMessage(
   attachmentId: string,
   messageId: string,
   talkId: string,
-): boolean {
-  const result = getDb()
-    .prepare(
-      `
-      UPDATE talk_message_attachments
-      SET message_id = ?
-      WHERE id = ? AND talk_id = ? AND message_id IS NULL
-    `,
-    )
-    .run(messageId, attachmentId, talkId);
-  return result.changes > 0;
+): Promise<boolean> {
+  const db = getDbPg();
+  const rows = await db<{ id: string }[]>`
+    update public.talk_message_attachments
+    set message_id = ${messageId}::uuid
+    where id = ${attachmentId}::uuid
+      and talk_id = ${talkId}::uuid
+      and message_id is null
+    returning id
+  `;
+  return rows.length > 0;
 }
 
-export function listMessageAttachments(
+export async function listMessageAttachments(
   messageId: string,
-): AttachmentSnapshot[] {
-  const rows = getDb()
-    .prepare(
-      `
-      SELECT * FROM talk_message_attachments
-      WHERE message_id = ?
-      ORDER BY created_at ASC
-    `,
-    )
-    .all(messageId) as MessageAttachmentRecord[];
+): Promise<AttachmentSnapshot[]> {
+  const db = getDbPg();
+  const rows = await db<MessageAttachmentRecord[]>`
+    select id, message_id, talk_id, owner_id, file_name, file_size, mime_type,
+           storage_key, extracted_text, extraction_status, extraction_error,
+           created_at, created_by
+    from public.talk_message_attachments
+    where message_id = ${messageId}::uuid
+    order by created_at asc
+  `;
   return rows.map(toAttachmentSnapshot);
 }
 
-export function listMessageAttachmentRecords(
+export async function listMessageAttachmentRecords(
   messageId: string,
-): MessageAttachmentRecord[] {
-  return getDb()
-    .prepare(
-      `
-      SELECT * FROM talk_message_attachments
-      WHERE message_id = ?
-      ORDER BY created_at ASC
-    `,
-    )
-    .all(messageId) as MessageAttachmentRecord[];
+): Promise<MessageAttachmentRecord[]> {
+  const db = getDbPg();
+  return await db<MessageAttachmentRecord[]>`
+    select id, message_id, talk_id, owner_id, file_name, file_size, mime_type,
+           storage_key, extracted_text, extraction_status, extraction_error,
+           created_at, created_by
+    from public.talk_message_attachments
+    where message_id = ${messageId}::uuid
+    order by created_at asc
+  `;
 }
 
-export function listTalkAttachments(talkId: string): AttachmentSnapshot[] {
-  const rows = getDb()
-    .prepare(
-      `
-      SELECT * FROM talk_message_attachments
-      WHERE talk_id = ? AND message_id IS NOT NULL
-      ORDER BY created_at ASC
-    `,
-    )
-    .all(talkId) as MessageAttachmentRecord[];
+export async function listTalkAttachments(
+  talkId: string,
+): Promise<AttachmentSnapshot[]> {
+  const db = getDbPg();
+  const rows = await db<MessageAttachmentRecord[]>`
+    select id, message_id, talk_id, owner_id, file_name, file_size, mime_type,
+           storage_key, extracted_text, extraction_status, extraction_error,
+           created_at, created_by
+    from public.talk_message_attachments
+    where talk_id = ${talkId}::uuid and message_id is not null
+    order by created_at asc
+  `;
   return rows.map(toAttachmentSnapshot);
 }
 
-export function getMessageAttachmentById(
+export async function getMessageAttachmentById(
   attachmentId: string,
   talkId: string,
-): MessageAttachmentRecord | null {
-  const row = getDb()
-    .prepare(
-      `SELECT * FROM talk_message_attachments WHERE id = ? AND talk_id = ?`,
-    )
-    .get(attachmentId, talkId) as MessageAttachmentRecord | undefined;
-  return row ?? null;
+): Promise<MessageAttachmentRecord | null> {
+  const db = getDbPg();
+  const rows = await db<MessageAttachmentRecord[]>`
+    select id, message_id, talk_id, owner_id, file_name, file_size, mime_type,
+           storage_key, extracted_text, extraction_status, extraction_error,
+           created_at, created_by
+    from public.talk_message_attachments
+    where id = ${attachmentId}::uuid and talk_id = ${talkId}::uuid
+    limit 1
+  `;
+  return rows[0] ?? null;
 }
 
-export function updateAttachmentExtraction(input: {
+export async function updateAttachmentExtraction(input: {
   attachmentId: string;
   extractedText?: string | null;
   extractionError?: string | null;
   extractionStatus: 'ready' | 'failed';
-}): void {
+}): Promise<void> {
   let text = input.extractedText ?? null;
-  if (text && text.length > 50_000) {
-    text = text.slice(0, 50_000);
-  }
-
-  getDb()
-    .prepare(
-      `
-      UPDATE talk_message_attachments
-      SET extracted_text = ?,
-          extraction_error = ?,
-          extraction_status = ?
-      WHERE id = ?
-    `,
-    )
-    .run(
-      text,
-      input.extractionError ?? null,
-      input.extractionStatus,
-      input.attachmentId,
-    );
+  if (text && text.length > 50_000) text = text.slice(0, 50_000);
+  const db = getDbPg();
+  await db`
+    update public.talk_message_attachments
+    set extracted_text = ${text},
+        extraction_error = ${input.extractionError ?? null},
+        extraction_status = ${input.extractionStatus}
+    where id = ${input.attachmentId}::uuid
+  `;
 }
 
-export function deleteUnlinkedAttachments(
+export async function deleteUnlinkedAttachments(
   talkId: string,
   olderThanIso: string,
-): number {
-  const result = getDb()
-    .prepare(
-      `
-      DELETE FROM talk_message_attachments
-      WHERE talk_id = ? AND message_id IS NULL AND created_at < ?
-    `,
-    )
-    .run(talkId, olderThanIso);
-  return result.changes;
+): Promise<number> {
+  const db = getDbPg();
+  const rows = await db<{ id: string }[]>`
+    delete from public.talk_message_attachments
+    where talk_id = ${talkId}::uuid
+      and message_id is null
+      and created_at < ${olderThanIso}::timestamptz
+    returning id
+  `;
+  return rows.length;
 }
 
 /**
- * Delete orphan attachments across ALL talks that were uploaded but never
- * linked to a message. Returns the storage keys of deleted rows so the
- * caller can remove the corresponding files from disk.
- *
- * Uses DELETE ... RETURNING so the key collection and row deletion are a
- * single atomic statement — no race with a concurrent link operation.
+ * Cross-talk admin sweep. MUST run outside `withUserContext` — under the
+ * postgres BYPASSRLS pool — or RLS scopes the delete to one user's
+ * attachments and silently underdeletes. The PR-2-era nightly cron will
+ * invoke this directly from the worker entrypoint, not from a request
+ * handler.
  */
-export function pruneOrphanAttachments(olderThanIso: string): {
+export async function pruneOrphanAttachments(olderThanIso: string): Promise<{
   count: number;
   storageKeys: string[];
-} {
-  const deleted = getDb()
-    .prepare(
-      `
-      DELETE FROM talk_message_attachments
-      WHERE message_id IS NULL AND created_at < ?
-      RETURNING storage_key
-    `,
-    )
-    .all(olderThanIso) as Array<{ storage_key: string }>;
-
-  return {
-    count: deleted.length,
-    storageKeys: deleted.map((r) => r.storage_key),
-  };
+}> {
+  const db = getDbPg();
+  const rows = await db<{ storage_key: string }[]>`
+    delete from public.talk_message_attachments
+    where message_id is null
+      and created_at < ${olderThanIso}::timestamptz
+    returning storage_key
+  `;
+  return { count: rows.length, storageKeys: rows.map((r) => r.storage_key) };
 }
 
-export function listMessageAttachmentsForPrompt(messageId: string): Array<{
-  id: string;
-  fileName: string;
-  mimeType: string;
-  fileSize: number;
-  extractedText: string | null;
-  extractionStatus: AttachmentExtractionStatus;
-}> {
-  const rows = getDb()
-    .prepare(
-      `
-      SELECT id, file_name, mime_type, file_size, extracted_text, extraction_status
-      FROM talk_message_attachments
-      WHERE message_id = ?
-      ORDER BY created_at ASC
-    `,
-    )
-    .all(messageId) as Array<{
+export async function listMessageAttachmentsForPrompt(
+  messageId: string,
+): Promise<
+  Array<{
     id: string;
-    file_name: string;
-    mime_type: string;
-    file_size: number;
-    extracted_text: string | null;
-    extraction_status: AttachmentExtractionStatus;
-  }>;
+    fileName: string;
+    mimeType: string | null;
+    fileSize: number | null;
+    extractedText: string | null;
+    extractionStatus: AttachmentExtractionStatus;
+  }>
+> {
+  const db = getDbPg();
+  const rows = await db<
+    Array<{
+      id: string;
+      file_name: string;
+      mime_type: string | null;
+      file_size: number | null;
+      extracted_text: string | null;
+      extraction_status: AttachmentExtractionStatus;
+    }>
+  >`
+    select id, file_name, mime_type, file_size, extracted_text, extraction_status
+    from public.talk_message_attachments
+    where message_id = ${messageId}::uuid
+    order by created_at asc
+  `;
   return rows.map((r) => ({
     id: r.id,
     fileName: r.file_name,
@@ -1278,20 +1236,19 @@ export function listMessageAttachmentsForPrompt(messageId: string): Array<{
 }
 
 // ---------------------------------------------------------------------------
-// Full context snapshot (for the GET /context endpoint)
+// Composite snapshot + prompt assembly
 // ---------------------------------------------------------------------------
 
-export function getTalkContext(talkId: string): TalkContextSnapshot {
-  return {
-    goal: getTalkGoal(talkId),
-    rules: listTalkContextRules(talkId),
-    sources: listTalkContextSources(talkId),
-  };
+export async function getTalkContext(
+  talkId: string,
+): Promise<TalkContextSnapshot> {
+  const [goal, rules, sources] = await Promise.all([
+    getTalkGoal(talkId),
+    listTalkContextRules(talkId),
+    listTalkContextSources(talkId),
+  ]);
+  return { goal, rules, sources };
 }
-
-// ---------------------------------------------------------------------------
-// Prompt assembly helpers — used by context-assembler, not by API routes
-// ---------------------------------------------------------------------------
 
 export interface TalkContextForPrompt {
   goalText: string | null;
@@ -1307,39 +1264,35 @@ export interface TalkContextForPrompt {
   }>;
 }
 
-export function getTalkContextForPrompt(talkId: string): TalkContextForPrompt {
-  const goal = getTalkGoal(talkId);
-
-  const rules = getDb()
-    .prepare(
-      `
-      SELECT rule_text
-      FROM talk_context_rules
-      WHERE talk_id = ? AND is_active = 1
-      ORDER BY sort_order ASC, created_at ASC
+export async function getTalkContextForPrompt(
+  talkId: string,
+): Promise<TalkContextForPrompt> {
+  const db = getDbPg();
+  const [goal, rules, sources] = await Promise.all([
+    getTalkGoal(talkId),
+    db<{ rule_text: string }[]>`
+      select rule_text
+      from public.talk_context_rules
+      where talk_id = ${talkId}::uuid and is_active = true
+      order by sort_order asc, created_at asc
     `,
-    )
-    .all(talkId) as Array<{ rule_text: string }>;
-
-  const sources = getDb()
-    .prepare(
-      `
-      SELECT source_ref, source_type, title, note, status, extracted_text, sort_order
-      FROM talk_context_sources
-      WHERE talk_id = ?
-      ORDER BY sort_order ASC, created_at ASC
+    db<
+      Array<{
+        source_ref: string;
+        source_type: ContextSourceType;
+        title: string;
+        note: string | null;
+        status: ContextSourceStatus;
+        extracted_text: string | null;
+        sort_order: number;
+      }>
+    >`
+      select source_ref, source_type, title, note, status, extracted_text, sort_order
+      from public.talk_context_sources
+      where talk_id = ${talkId}::uuid
+      order by sort_order asc, created_at asc
     `,
-    )
-    .all(talkId) as Array<{
-    source_ref: string;
-    source_type: ContextSourceType;
-    title: string;
-    note: string | null;
-    status: ContextSourceStatus;
-    extracted_text: string | null;
-    sort_order: number;
-  }>;
-
+  ]);
   return {
     goalText: goal?.goalText ?? null,
     activeRules: rules.map((r) => r.rule_text),

@@ -1,400 +1,300 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+// clawtalk Phase 5 PR 2 — auth route tests.
+//
+// Covers auth-callback / auth-refresh / auth-logout. Sets up a tiny
+// Hono app that mounts each route, then drives it via fetch().
 
-import { _initTestDatabase } from '../../db/index.js';
-import { _resetRateLimitStateForTests } from '../middleware/rate-limit.js';
-import { createWebServer, WebServerHandle } from '../server.js';
+import { Hono } from 'hono';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-describe('auth routes (phase 1)', () => {
-  let server: WebServerHandle;
+import { CLAWTALK_ALLOWED_ORIGINS } from '../../config.js';
+import { handleAuthCallback } from './auth-callback.js';
+import { handleAuthLogoutWithEnv } from './auth-logout.js';
+import { handleAuthRefresh, handleAuthRefreshWithEnv } from './auth-refresh.js';
+import type { SupabaseAuthEnv } from '../middleware/supabase-api.js';
 
-  beforeEach(async () => {
-    _initTestDatabase();
-    _resetRateLimitStateForTests();
-    server = createWebServer({
-      host: '127.0.0.1',
-      port: 0,
-    });
-  });
+const VALID_ORIGIN = CLAWTALK_ALLOWED_ORIGINS[0] ?? 'http://localhost:5173';
+const VALID_JWT =
+  // header.payload.signature — shape-valid, not signature-valid (we
+  // never verify in the callback; auth.ts verifies on the next request).
+  'eyJhbGciOiJFUzI1NiIsImtpZCI6InRlc3QifQ' +
+  '.eyJzdWIiOiJ4In0' +
+  '.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+const VALID_RT = 'vlu4rmwiftyrabc123xyz';
 
-  it('returns frontend-safe auth config without authentication', async () => {
-    const res = await server.request('/api/v1/auth/config');
-    expect(res.status).toBe(200);
+function buildApp() {
+  const app = new Hono();
+  app.post('/api/v1/auth/callback', handleAuthCallback);
+  app.post('/api/v1/auth/refresh', handleAuthRefresh);
+  // logout/refresh-with-env are exercised through their _WithEnv
+  // siblings directly so tests don't need to thread Worker bindings.
+  return app;
+}
 
-    const body = (await res.json()) as any;
-    expect(body.ok).toBe(true);
-    expect(typeof body.data.devMode).toBe('boolean');
-  });
+beforeEach(() => {
+  vi.unstubAllGlobals();
+});
 
-  it('uses a local callback URI for loopback auth start requests', async () => {
-    const startRes = await server.request('/api/v1/auth/google/start', {
-      method: 'POST',
-    });
-    expect(startRes.status).toBe(200);
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
-    const startBody = (await startRes.json()) as any;
-    const authorizationUrl = new URL(startBody.data.authorizationUrl);
-    expect(authorizationUrl.origin).toBe('http://127.0.0.1:3210');
-    expect(authorizationUrl.pathname).toBe('/api/v1/auth/google/callback');
-  });
+// ── auth-callback ──────────────────────────────────────────────────
 
-  it('supports owner-claim on first OAuth callback and /session/me', async () => {
-    const startRes = await server.request('/api/v1/auth/google/start', {
-      method: 'POST',
-    });
-    expect(startRes.status).toBe(200);
-    const startBody = (await startRes.json()) as any;
-    const state = startBody.data.state as string;
-
-    const callbackRes = await server.request(
-      `/api/v1/auth/google/callback?state=${encodeURIComponent(
-        state,
-      )}&email=owner@example.com&name=Owner`,
-      {
-        headers: {
-          Accept: 'application/json',
-        },
-      },
-    );
-    expect(callbackRes.status).toBe(200);
-    const callbackBody = (await callbackRes.json()) as any;
-    expect(callbackBody.data.user.role).toBe('owner');
-
-    const cookies = getCookieHeader(callbackRes);
-    expect(cookies).toContain('cr_access_token=');
-
-    const meRes = await server.request('/api/v1/session/me', {
-      headers: {
-        Cookie: cookies,
-      },
-    });
-    expect(meRes.status).toBe(200);
-    const meBody = (await meRes.json()) as any;
-    expect(meBody.data.user.email).toBe('owner@example.com');
-  });
-
-  it('redirects browser callback requests to /app/talks after setting cookies', async () => {
-    const startRes = await server.request('/api/v1/auth/google/start', {
-      method: 'POST',
-    });
-    expect(startRes.status).toBe(200);
-    const startBody = (await startRes.json()) as any;
-    const state = startBody.data.state as string;
-
-    const callbackRes = await server.request(
-      `/api/v1/auth/google/callback?state=${encodeURIComponent(
-        state,
-      )}&email=owner@example.com&name=Owner`,
-      {
-        headers: {
-          Accept:
-            'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        },
-      },
-    );
-    expect(callbackRes.status).toBe(302);
-    expect(callbackRes.headers.get('location')).toBe('/app/talks');
-    expect(callbackRes.headers.get('cache-control')).toBe('no-store');
-
-    const cookies = getCookieHeader(callbackRes);
-    expect(cookies).toContain('cr_access_token=');
-    expect(cookies).toContain('cr_refresh_token=');
-    expect(cookies).toContain('cr_csrf_token=');
-
-    const meRes = await server.request('/api/v1/session/me', {
-      headers: {
-        Cookie: cookies,
-      },
-    });
-    expect(meRes.status).toBe(200);
-  });
-
-  it('redirects browser callback requests to returnTo from start payload', async () => {
-    const startRes = await server.request('/api/v1/auth/google/start', {
+describe('POST /api/v1/auth/callback', () => {
+  it('sets three cookies on a valid body + allowed origin', async () => {
+    const app = buildApp();
+    const res = await app.request('/api/v1/auth/callback', {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ returnTo: '/app/talks/talk-42?view=latest#tail' }),
-    });
-    expect(startRes.status).toBe(200);
-    const startBody = (await startRes.json()) as any;
-    const state = startBody.data.state as string;
-
-    const callbackRes = await server.request(
-      `/api/v1/auth/google/callback?state=${encodeURIComponent(
-        state,
-      )}&email=owner@example.com&name=Owner`,
-      {
-        headers: {
-          Accept:
-            'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        },
-      },
-    );
-    expect(callbackRes.status).toBe(302);
-    expect(callbackRes.headers.get('location')).toBe(
-      '/app/talks/talk-42?view=latest#tail',
-    );
-  });
-
-  it('falls back to /app/talks when returnTo is unsafe', async () => {
-    const unsafeReturnToCases = [
-      '//evil.com',
-      '/\\evil.com',
-      '/app/talks%0d%0aX-Injected: yes',
-    ];
-
-    for (const returnTo of unsafeReturnToCases) {
-      const startRes = await server.request('/api/v1/auth/google/start', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ returnTo }),
-      });
-      expect(startRes.status).toBe(200);
-      const startBody = (await startRes.json()) as any;
-      const state = startBody.data.state as string;
-
-      const callbackRes = await server.request(
-        `/api/v1/auth/google/callback?state=${encodeURIComponent(
-          state,
-        )}&email=owner@example.com&name=Owner`,
-        {
-          headers: {
-            Accept:
-              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          },
-        },
-      );
-      expect(callbackRes.status).toBe(302);
-      expect(callbackRes.headers.get('location')).toBe('/app/talks');
-    }
-  });
-
-  it('requires invite for second account and allows login after invite', async () => {
-    const ownerCtx = await loginViaDevCallback(
-      server,
-      'owner@example.com',
-      'Owner',
-    );
-
-    const startRes = await server.request('/api/v1/auth/google/start', {
-      method: 'POST',
-    });
-    const startBody = (await startRes.json()) as any;
-    const blockedRes = await server.request(
-      `/api/v1/auth/google/callback?state=${encodeURIComponent(
-        startBody.data.state,
-      )}&email=member@example.com&name=Member`,
-      {
-        headers: {
-          Accept: 'application/json',
-        },
-      },
-    );
-    expect(blockedRes.status).toBe(403);
-
-    const inviteRes = await server.request('/api/v1/settings/users/invite', {
-      method: 'POST',
-      headers: {
-        Cookie: ownerCtx.cookies,
-        'Content-Type': 'application/json',
-        'X-CSRF-Token': ownerCtx.csrfToken,
-      },
-      body: JSON.stringify({ email: 'member@example.com', role: 'member' }),
-    });
-    expect(inviteRes.status).toBe(200);
-
-    const startRes2 = await server.request('/api/v1/auth/google/start', {
-      method: 'POST',
-    });
-    const startBody2 = (await startRes2.json()) as any;
-    const allowedRes = await server.request(
-      `/api/v1/auth/google/callback?state=${encodeURIComponent(
-        startBody2.data.state,
-      )}&email=member@example.com&name=Member`,
-      {
-        headers: {
-          Accept: 'application/json',
-        },
-      },
-    );
-    expect(allowedRes.status).toBe(200);
-    const allowedBody = (await allowedRes.json()) as any;
-    expect(allowedBody.data.user.role).toBe('member');
-  });
-
-  it('refreshes and logs out sessions', async () => {
-    const ownerCtx = await loginViaDevCallback(
-      server,
-      'owner@example.com',
-      'Owner',
-    );
-
-    const refreshRes = await server.request('/api/v1/auth/refresh', {
-      method: 'POST',
-      headers: {
-        Cookie: ownerCtx.cookies,
-      },
-    });
-    expect(refreshRes.status).toBe(200);
-    const refreshedCookies = getCookieHeader(refreshRes);
-    expect(refreshedCookies).toContain('cr_access_token=');
-    const refreshedAccessToken =
-      getCookieValue(refreshedCookies, 'cr_access_token') ||
-      ownerCtx.accessToken;
-
-    const logoutRes = await server.request('/api/v1/auth/logout', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${refreshedAccessToken}`,
-      },
-    });
-    expect(logoutRes.status).toBe(200);
-
-    const meRes = await server.request('/api/v1/session/me', {
-      headers: {
-        Authorization: `Bearer ${refreshedAccessToken}`,
-      },
-    });
-    expect(meRes.status).toBe(401);
-  });
-
-  it('supports device flow completion for existing user', async () => {
-    await loginViaDevCallback(server, 'owner@example.com', 'Owner');
-
-    const startRes = await server.request('/api/v1/auth/device/start', {
-      method: 'POST',
-    });
-    expect(startRes.status).toBe(200);
-    const startBody = (await startRes.json()) as any;
-
-    const completeRes = await server.request('/api/v1/auth/device/complete', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
+        origin: VALID_ORIGIN,
+        'content-type': 'application/json',
       },
       body: JSON.stringify({
-        deviceCode: startBody.data.deviceCode,
-        email: 'owner@example.com',
+        accessToken: VALID_JWT,
+        refreshToken: VALID_RT,
       }),
     });
-
-    expect(completeRes.status).toBe(200);
-    const completeBody = (await completeRes.json()) as any;
-    expect(completeBody.data.accessToken).toBeTruthy();
-    expect(completeBody.data.user.email).toBe('owner@example.com');
+    expect(res.status).toBe(204);
+    const setCookies = res.headers.getSetCookie();
+    expect(setCookies).toHaveLength(3);
+    expect(setCookies.some((c) => c.startsWith('eb_at='))).toBe(true);
+    expect(setCookies.some((c) => c.startsWith('eb_rt='))).toBe(true);
+    expect(setCookies.some((c) => c.startsWith('eb_csrf='))).toBe(true);
+    // eb_at + eb_rt are HttpOnly; eb_csrf is not.
+    expect(setCookies.find((c) => c.startsWith('eb_at'))).toMatch(/HttpOnly/);
+    expect(setCookies.find((c) => c.startsWith('eb_csrf'))).not.toMatch(
+      /HttpOnly/,
+    );
   });
 
-  it('rate limits refresh attempts and returns retry-after', async () => {
-    for (let i = 0; i < 10; i += 1) {
-      const res = await server.request('/api/v1/auth/refresh', {
-        method: 'POST',
-        headers: {
-          'X-Forwarded-For': '1.2.3.4',
-          'X-Refresh-Token': `invalid-refresh-${i}`,
-        },
-      });
-      expect(res.status).toBe(401);
-    }
-
-    const limited = await server.request('/api/v1/auth/refresh', {
+  it('rejects an unknown origin with 403', async () => {
+    const app = buildApp();
+    const res = await app.request('/api/v1/auth/callback', {
       method: 'POST',
       headers: {
-        'X-Forwarded-For': '1.2.3.4',
-        'X-Refresh-Token': 'invalid-refresh-over-limit',
-      },
-    });
-    expect(limited.status).toBe(429);
-    expect(limited.headers.get('retry-after')).toBeTruthy();
-  });
-
-  it('rate limits device completion attempts and returns retry-after', async () => {
-    for (let i = 0; i < 10; i += 1) {
-      const res = await server.request('/api/v1/auth/device/complete', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Forwarded-For': '5.6.7.8',
-        },
-        body: JSON.stringify({
-          deviceCode: `invalid-device-${i}`,
-          email: 'owner@example.com',
-        }),
-      });
-      expect(res.status).toBe(401);
-    }
-
-    const limited = await server.request('/api/v1/auth/device/complete', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Forwarded-For': '5.6.7.8',
+        origin: 'https://attacker.example',
+        'content-type': 'application/json',
       },
       body: JSON.stringify({
-        deviceCode: 'invalid-device-over-limit',
-        email: 'owner@example.com',
+        accessToken: VALID_JWT,
+        refreshToken: VALID_RT,
       }),
     });
-    expect(limited.status).toBe(429);
-    expect(limited.headers.get('retry-after')).toBeTruthy();
+    expect(res.status).toBe(403);
+  });
+
+  it('rejects a malformed JWT shape with 400', async () => {
+    const app = buildApp();
+    const res = await app.request('/api/v1/auth/callback', {
+      method: 'POST',
+      headers: {
+        origin: VALID_ORIGIN,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        accessToken: 'not-a-jwt',
+        refreshToken: VALID_RT,
+      }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a malformed refresh token shape with 400', async () => {
+    const app = buildApp();
+    const res = await app.request('/api/v1/auth/callback', {
+      method: 'POST',
+      headers: {
+        origin: VALID_ORIGIN,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        accessToken: VALID_JWT,
+        refreshToken: '!!!',
+      }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a missing body field with 400', async () => {
+    const app = buildApp();
+    const res = await app.request('/api/v1/auth/callback', {
+      method: 'POST',
+      headers: {
+        origin: VALID_ORIGIN,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ accessToken: VALID_JWT }),
+    });
+    expect(res.status).toBe(400);
   });
 });
 
-async function loginViaDevCallback(
-  server: WebServerHandle,
-  email: string,
-  name: string,
-): Promise<{ cookies: string; csrfToken: string; accessToken: string }> {
-  const startRes = await server.request('/api/v1/auth/google/start', {
+// ── auth-refresh ───────────────────────────────────────────────────
+
+const REFRESH_ENV: SupabaseAuthEnv = {
+  SUPABASE_PROJECT_URL: 'https://test-project.supabase.co',
+  SUPABASE_PUBLISHABLE_KEY: 'pk_test',
+};
+
+function newReq(opts: { cookie?: string; origin?: string }): Request {
+  const headers = new Headers();
+  if (opts.cookie) headers.set('cookie', opts.cookie);
+  headers.set('origin', opts.origin ?? VALID_ORIGIN);
+  return new Request('https://app.test/api/v1/auth/refresh', {
     method: 'POST',
+    headers,
   });
-  const startBody = (await startRes.json()) as any;
-  const state = startBody.data.state as string;
+}
 
-  const callbackRes = await server.request(
-    `/api/v1/auth/google/callback?state=${encodeURIComponent(
-      state,
-    )}&email=${encodeURIComponent(email)}&name=${encodeURIComponent(name)}`,
-    {
+async function callRefresh(
+  req: Request,
+  env: SupabaseAuthEnv | null,
+): Promise<Response> {
+  // Mount on a tiny Hono app so handleAuthRefreshWithEnv gets a
+  // proper Context. Skips the c.env extraction (the _WithEnv variant
+  // takes env directly).
+  const app = new Hono();
+  app.post('/api/v1/auth/refresh', (c) => handleAuthRefreshWithEnv(c, env));
+  return app.fetch(req);
+}
+
+describe('POST /api/v1/auth/refresh', () => {
+  it('rejects unknown origin with 403', async () => {
+    const res = await callRefresh(
+      newReq({ origin: 'https://attacker.example' }),
+      REFRESH_ENV,
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it('returns 401 when eb_rt cookie is missing', async () => {
+    const res = await callRefresh(newReq({}), REFRESH_ENV);
+    expect(res.status).toBe(401);
+    expect(res.headers.get('www-authenticate')).toBe('Bearer');
+  });
+
+  it('returns 400 when eb_rt cookie shape is invalid', async () => {
+    const res = await callRefresh(newReq({ cookie: 'eb_rt=!!!' }), REFRESH_ENV);
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 503 when env is missing', async () => {
+    const res = await callRefresh(
+      newReq({ cookie: `eb_rt=${VALID_RT}` }),
+      null,
+    );
+    expect(res.status).toBe(503);
+  });
+
+  it('on supabase 4xx → 401 expired + WWW-Authenticate', async () => {
+    vi.stubGlobal(
+      'fetch',
+      async () => new Response('{"error":"invalid_grant"}', { status: 400 }),
+    );
+    const res = await callRefresh(
+      newReq({ cookie: `eb_rt=${VALID_RT}` }),
+      REFRESH_ENV,
+    );
+    expect(res.status).toBe(401);
+    expect(res.headers.get('www-authenticate')).toMatch(/expired/);
+  });
+
+  it('on supabase network error → 502', async () => {
+    vi.stubGlobal('fetch', async () => {
+      throw new Error('network down');
+    });
+    const res = await callRefresh(
+      newReq({ cookie: `eb_rt=${VALID_RT}` }),
+      REFRESH_ENV,
+    );
+    expect(res.status).toBe(502);
+  });
+
+  it('on supabase success → 204 with new cookie trio', async () => {
+    vi.stubGlobal(
+      'fetch',
+      async () =>
+        new Response(
+          JSON.stringify({
+            access_token: VALID_JWT,
+            refresh_token: VALID_RT + '-new',
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+    );
+    const res = await callRefresh(
+      newReq({ cookie: `eb_rt=${VALID_RT}` }),
+      REFRESH_ENV,
+    );
+    expect(res.status).toBe(204);
+    const setCookies = res.headers.getSetCookie();
+    expect(setCookies).toHaveLength(3);
+    expect(setCookies.find((c) => c.startsWith('eb_rt='))).toMatch(
+      new RegExp(`eb_rt=${VALID_RT}-new`),
+    );
+  });
+});
+
+// ── auth-logout ────────────────────────────────────────────────────
+
+async function callLogout(
+  req: Request,
+  env: SupabaseAuthEnv | null,
+): Promise<Response> {
+  const app = new Hono();
+  app.post('/api/v1/auth/logout', (c) => handleAuthLogoutWithEnv(c, env));
+  return app.fetch(req);
+}
+
+describe('POST /api/v1/auth/logout', () => {
+  it('rejects unknown origin with 403', async () => {
+    const req = new Request('https://app.test/api/v1/auth/logout', {
+      method: 'POST',
+      headers: { origin: 'https://attacker.example' },
+    });
+    const res = await callLogout(req, REFRESH_ENV);
+    expect(res.status).toBe(403);
+  });
+
+  it('clears cookies even when env is null (best-effort)', async () => {
+    const req = new Request('https://app.test/api/v1/auth/logout', {
+      method: 'POST',
+      headers: { origin: VALID_ORIGIN },
+    });
+    const res = await callLogout(req, null);
+    expect(res.status).toBe(204);
+    const setCookies = res.headers.getSetCookie();
+    expect(setCookies).toHaveLength(3);
+    for (const c of setCookies) {
+      expect(c).toMatch(/Max-Age=0/);
+    }
+  });
+
+  it('calls Supabase logout when env + access token are present', async () => {
+    let calledWith: { url: string; auth: string | null } | null = null;
+    vi.stubGlobal('fetch', async (url: string | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      calledWith = {
+        url: String(url),
+        auth: headers.get('authorization'),
+      };
+      return new Response(null, { status: 204 });
+    });
+    const req = new Request('https://app.test/api/v1/auth/logout', {
+      method: 'POST',
       headers: {
-        Accept: 'application/json',
+        origin: VALID_ORIGIN,
+        cookie: `eb_at=${VALID_JWT}`,
       },
-    },
-  );
-  if (callbackRes.status !== 200) {
-    throw new Error(`Login failed: ${callbackRes.status}`);
-  }
-
-  const cookies = getCookieHeader(callbackRes);
-  return {
-    cookies,
-    csrfToken: getCookieValue(cookies, 'cr_csrf_token') || '',
-    accessToken: getCookieValue(cookies, 'cr_access_token') || '',
-  };
-}
-
-function getCookieHeader(res: Response): string {
-  const anyHeaders = res.headers as any;
-  const setCookies: string[] =
-    typeof anyHeaders.getSetCookie === 'function'
-      ? anyHeaders.getSetCookie()
-      : [res.headers.get('set-cookie') || ''];
-
-  return setCookies
-    .filter(Boolean)
-    .map((cookie) => cookie.split(';')[0])
-    .join('; ');
-}
-
-function getCookieValue(
-  cookieHeader: string,
-  name: string,
-): string | undefined {
-  for (const part of cookieHeader.split(';')) {
-    const [rawName, ...rawValue] = part.trim().split('=');
-    if (rawName === name) return rawValue.join('=');
-  }
-  return undefined;
-}
+    });
+    const res = await callLogout(req, REFRESH_ENV);
+    expect(res.status).toBe(204);
+    expect(calledWith).not.toBeNull();
+    const captured = calledWith as unknown as {
+      url: string;
+      auth: string | null;
+    };
+    expect(captured.url).toMatch(/\/auth\/v1\/logout$/);
+    expect(captured.auth).toBe(`Bearer ${VALID_JWT}`);
+  });
+});

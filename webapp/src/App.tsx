@@ -29,6 +29,8 @@ import {
   TalkSidebarTalk,
   UnauthorizedError,
 } from './lib/api';
+import { isSupabaseConfigured } from './lib/supabase-client';
+import { installAuthStateListener } from './lib/supabase-cookie-shim';
 import { AiAgentsPage } from './pages/AiAgentsPage';
 import { TalkDetailPage } from './pages/TalkDetailPage';
 import { TalkListPage } from './pages/TalkListPage';
@@ -433,6 +435,11 @@ export function App() {
 
   useEffect(() => {
     void refreshSession();
+  }, [refreshSession]);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured()) return;
+    return installAuthStateListener({ onSignedIn: refreshSession });
   }, [refreshSession]);
 
   const refreshSidebar = useCallback(async () => {

@@ -16,5 +16,41 @@
     "sourceMap": true
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    // ─── Deferred to Node-path retirement follow-up PR ─────────
+    // These compile against the dead better-sqlite3 path; the
+    // cloud bundle (src/worker.ts → web/worker-app.ts) is the
+    // only typechecked surface that matters for production.
+    // Delete the files themselves (and remove these entries) in
+    // the Node-path retirement PR.
+    "src/server.ts",
+    "src/clawtalk/web/index.ts",
+    "src/clawtalk/web/server.ts",
+    "src/clawtalk/web/server.test.ts",
+    // server-public-access.test.ts dynamic-imports './server.js' for
+    // the IP-resolution helper coverage. The test still runs under
+    // vitest (esbuild doesn't honor tsconfig excludes); excluding
+    // here only skips type-checking it. Re-include once the helper
+    // moves out of the deferred Node server module.
+    "src/clawtalk/web/server-public-access.test.ts",
+    "src/clawtalk/web/middleware/idempotency.ts",
+    "src/clawtalk/identity/auth-service.ts",
+    "src/clawtalk/identity/google-tools-service.ts",
+    "src/clawtalk/identity/auth-service-oauth.test.ts",
+    "src/clawtalk/identity/auth-service-public-mode.test.ts",
+    // ─── Deferred to TF-track sqlite→pg test-harness port ──────
+    // These are route-level tests that still use the sqlite test
+    // harness (`_initTestDatabase`). Re-port to the pg harness
+    // (see src/clawtalk/db/*-accessors.test.ts for the pattern)
+    // and remove from this list in the TF batches PR.
+    "src/clawtalk/web/routes/auth-public-mode.test.ts",
+    "src/clawtalk/web/routes/events.test.ts",
+    "src/clawtalk/web/routes/system.test.ts",
+    "src/clawtalk/web/routes/talk-attachments.test.ts",
+    "src/clawtalk/web/routes/talk-context.test.ts",
+    "src/clawtalk/web/routes/talk-jobs.test.ts",
+    "src/clawtalk/web/routes/talk-outputs.test.ts"
+  ]
 }

@@ -1,24 +1,23 @@
 import { randomUUID } from 'crypto';
 
-import { getDb } from '../../../db.js';
+import { getDbPg, withUserContext } from '../../../db.js';
 function getContainerRuntimeStatus(): 'ready' | 'unavailable' {
   return 'unavailable';
 }
 import {
   AttachmentValidationError,
   TalkActiveRoundError,
+  TalkThreadValidationError,
   cancelTalkRunsAtomic,
   createTalk,
   createTalkFolder,
   deleteTalkFolderAndMoveTalksToTopLevel,
   deleteTalkForOwner,
-  deleteTalkLlmPolicy,
   deleteTalkMessagesAtomic,
   enqueueTalkTurnAtomic,
   getTalkById,
   getTalkForUser,
   getTalkRunById,
-  listMessageAttachments,
   resolveThreadIdForTalk,
   listTalkFoldersForOwner,
   listTalkMessages,
@@ -30,13 +29,13 @@ import {
   renameTalkFolder,
   reorderTalkSidebarItem,
   searchTalkMessages,
-  TalkThreadValidationError,
   updateTalkProjectPath,
-  upsertTalkLlmPolicy,
   type TalkMessageRecord,
+  type TalkRunRecord,
   type TalkSidebarTalkRecord,
   type TalkWithAccessRecord,
-} from '../../db/index.js';
+} from '../../db/accessors.js';
+import { listMessageAttachments } from '../../db/context-accessors.js';
 import type { TalkPersonaRole } from '../../llm/types.js';
 import type { TalkRunContextSnapshot } from '../../talks/context-loader.js';
 type BrowserBlockMetadata = Record<string, unknown>;
@@ -55,10 +54,6 @@ function validateMount(
     reason: 'Mount validation is disabled (chassis removed).',
   };
 }
-import {
-  parsePolicyAgentsForExecution,
-  parsePolicyAgentsForUiBadges,
-} from '../../talks/policy.js';
 import {
   getDefaultTalkAgentId,
   ensureTalkUsesUsableDefaultAgent,
@@ -206,20 +201,12 @@ export interface TalkRunApiRecord {
 }
 
 function parseTalkRunContextSnapshot(
-  metadataJson: string | null | undefined,
+  metadataJson: Record<string, unknown> | null | undefined,
 ): TalkRunContextSnapshot | null {
-  if (!metadataJson) return null;
-  try {
-    const parsed = JSON.parse(metadataJson) as
-      | TalkRunContextSnapshot
-      | { version?: unknown }
-      | null;
-    return parsed && typeof parsed === 'object' && parsed.version === 1
-      ? (parsed as TalkRunContextSnapshot)
-      : null;
-  } catch {
-    return null;
-  }
+  if (!metadataJson || typeof metadataJson !== 'object') return null;
+  return (metadataJson as { version?: unknown }).version === 1
+    ? (metadataJson as unknown as TalkRunContextSnapshot)
+    : null;
 }
 
 function parseRunMetadataObject<T>(value: unknown): T | null {
@@ -230,21 +217,21 @@ function parseRunMetadataObject<T>(value: unknown): T | null {
 }
 
 function parseRunMetadata(
-  metadataJson: string | null | undefined,
+  metadataJson: Record<string, unknown> | null | undefined,
 ): Record<string, unknown> {
-  if (!metadataJson) return {};
-  try {
-    const parsed = JSON.parse(metadataJson) as unknown;
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
-    }
-  } catch {
-    // ignored
+  if (
+    !metadataJson ||
+    typeof metadataJson !== 'object' ||
+    Array.isArray(metadataJson)
+  ) {
+    return {};
   }
-  return {};
+  return metadataJson;
 }
 
-function parseRunResponseMetadata(metadataJson: string | null | undefined): {
+function parseRunResponseMetadata(
+  metadataJson: Record<string, unknown> | null | undefined,
+): {
   completionStatus: 'complete' | 'incomplete' | null;
   providerStopReason: string | null;
   incompleteReason: 'truncated' | 'empty' | 'unknown' | null;
@@ -277,30 +264,16 @@ function parseRunResponseMetadata(metadataJson: string | null | undefined): {
 }
 
 const DEFAULT_TALK_AGENTS = ['Claude'];
-const MAX_TALK_AGENT_BADGES = 6;
 const MAX_TALK_AGENTS = 12;
 const MAX_TALK_AGENT_NAME_CHARS = 80;
 
-function parseFallbackAgentBadges(llmPolicy: string | null): string[] {
-  const normalized = parsePolicyAgentsForUiBadges(
-    llmPolicy?.trim() || '',
-    MAX_TALK_AGENT_BADGES,
-  );
-  return normalized.length > 0 ? normalized : DEFAULT_TALK_AGENTS;
-}
-
-function parseFallbackPolicyAgents(llmPolicy: string | null): string[] {
-  return parsePolicyAgentsForExecution(llmPolicy);
-}
-
-function toTalkApiRecord(talk: TalkWithAccessRecord): TalkApiRecord {
-  const policyBadges = parseFallbackAgentBadges(talk.llm_policy);
-  const agents =
-    policyBadges.length > 0 && talk.llm_policy
-      ? policyBadges
-      : listEffectiveTalkAgents(talk.id).map((a) => a.nickname);
-  const canManageProjectPath =
-    talk.access_role === 'owner' || talk.access_role === 'admin';
+async function toTalkApiRecord(
+  talk: TalkWithAccessRecord,
+  ownerId: string,
+): Promise<TalkApiRecord> {
+  const effectiveAgents = await listEffectiveTalkAgents(talk.id, ownerId);
+  const agents = effectiveAgents.map((a) => a.nickname);
+  const canManageProjectPath = talk.access_role === 'owner';
   return {
     id: talk.id,
     ownerId: talk.owner_id,
@@ -363,10 +336,7 @@ function buildTalkAgentHealthLookup(): {
 }
 
 function parseTalkRunError(
-  run: Pick<
-    ReturnType<typeof listTalkRunsForTalk>[number],
-    'status' | 'cancel_reason'
-  >,
+  run: Pick<TalkRunRecord, 'status' | 'cancel_reason'>,
 ): { errorCode: string | null; errorMessage: string | null } {
   const raw = run.cancel_reason?.trim() || null;
   if (!raw) {
@@ -430,61 +400,54 @@ function toTalkAgentApiRecord(
   };
 }
 
-function toTalkMessageApiRecord(
+async function toTalkMessageApiRecord(
   message: TalkMessageRecord,
-): TalkMessageApiRecord {
+): Promise<TalkMessageApiRecord> {
   let agentId: string | null | undefined;
   let agentNickname: string | null | undefined;
   let metadata: Record<string, unknown> | null = null;
-  if (message.metadata_json) {
-    try {
-      const parsed = JSON.parse(message.metadata_json) as {
-        agentId?: unknown;
-        agentNickname?: unknown;
-        agentName?: unknown;
-      } & Record<string, unknown>;
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        metadata = parsed;
-        if (typeof parsed.agentId === 'string') agentId = parsed.agentId;
-        if (typeof parsed.agentNickname === 'string') {
-          agentNickname = parsed.agentNickname;
-        } else if (typeof parsed.agentName === 'string') {
-          agentNickname = parsed.agentName;
-        }
-      }
-    } catch {
-      // Ignore metadata parse failures for UI response shaping.
+  if (
+    message.metadata_json &&
+    typeof message.metadata_json === 'object' &&
+    !Array.isArray(message.metadata_json)
+  ) {
+    metadata = message.metadata_json;
+    const parsed = message.metadata_json as {
+      agentId?: unknown;
+      agentNickname?: unknown;
+      agentName?: unknown;
+    };
+    if (typeof parsed.agentId === 'string') agentId = parsed.agentId;
+    if (typeof parsed.agentNickname === 'string') {
+      agentNickname = parsed.agentNickname;
+    } else if (typeof parsed.agentName === 'string') {
+      agentNickname = parsed.agentName;
     }
   }
   if ((!agentId || !agentNickname) && message.run_id) {
-    const fallback = getDb()
-      .prepare(
-        `
-          SELECT
-            r.target_agent_id AS agent_id,
-            COALESCE(
-              (
-                SELECT ta.nickname
-                FROM talk_agents ta
-                WHERE ta.talk_id = r.talk_id
-                  AND ta.registered_agent_id = r.target_agent_id
-                ORDER BY ta.sort_order ASC, ta.created_at ASC
-                LIMIT 1
-              ),
-              ra.name
-            ) AS agent_nickname
-          FROM talk_runs r
-          LEFT JOIN registered_agents ra ON ra.id = r.target_agent_id
-          WHERE r.id = ?
-          LIMIT 1
-        `,
-      )
-      .get(message.run_id) as
-      | {
-          agent_id: string | null;
-          agent_nickname: string | null;
-        }
-      | undefined;
+    const db = getDbPg();
+    const fallbackRows = await db<
+      Array<{ agent_id: string | null; agent_nickname: string | null }>
+    >`
+      select
+        r.target_agent_id as agent_id,
+        coalesce(
+          (
+            select ta.nickname
+            from public.talk_agents ta
+            where ta.talk_id = r.talk_id
+              and ta.registered_agent_id = r.target_agent_id
+            order by ta.sort_order asc, ta.created_at asc
+            limit 1
+          ),
+          ra.name
+        ) as agent_nickname
+      from public.talk_runs r
+      left join public.registered_agents ra on ra.id = r.target_agent_id
+      where r.id = ${message.run_id}::uuid
+      limit 1
+    `;
+    const fallback = fallbackRows[0];
     if (fallback) {
       if (!agentId && typeof fallback.agent_id === 'string') {
         agentId = fallback.agent_id;
@@ -496,14 +459,14 @@ function toTalkMessageApiRecord(
   }
 
   // Load attachments for this message (lightweight — only metadata)
-  const attachmentRows = listMessageAttachments(message.id);
+  const attachmentRows = await listMessageAttachments(message.id);
   const attachments: TalkMessageAttachmentApi[] | undefined =
     attachmentRows.length > 0
       ? attachmentRows.map((a) => ({
           id: a.id,
           fileName: a.fileName,
-          fileSize: a.fileSize,
-          mimeType: a.mimeType,
+          fileSize: a.fileSize ?? 0,
+          mimeType: a.mimeType ?? 'application/octet-stream',
           extractionStatus: a.extractionStatus,
         }))
       : undefined;
@@ -584,20 +547,21 @@ function normalizeTalkBrowserExecutionMessage(message: string): string {
   return message;
 }
 
-function getBrowserPreflightErrorForAgent(
+async function getBrowserPreflightErrorForAgent(
   agentId: string,
   userId: string,
-): string | null {
-  const agent = getRegisteredAgent(agentId);
+): Promise<string | null> {
+  const agent = await getRegisteredAgent(agentId);
   if (!agent) return null;
 
-  const browserEnabled = getEffectiveToolsForAgent(agent.id, userId).some(
+  const effectiveTools = await getEffectiveToolsForAgent(agent.id);
+  const browserEnabled = effectiveTools.some(
     (tool) => tool.toolFamily === 'browser' && tool.enabled,
   );
   if (!browserEnabled) return null;
 
   try {
-    const plan = planExecution(agent, userId);
+    const plan = await planExecution(agent, userId);
     if (
       plan.backend === 'container' &&
       getContainerRuntimeStatus() !== 'ready'
@@ -642,7 +606,7 @@ function validateAgentInputs(input: unknown): {
     const id =
       typeof raw.id === 'string' && raw.id.trim()
         ? raw.id.trim()
-        : `agent_${randomUUID()}`;
+        : randomUUID();
     const isLead = raw.isPrimary === true || raw.isLead === true;
     const displayOrder =
       typeof raw.displayOrder === 'number'
@@ -718,9 +682,12 @@ function validateAgentInputs(input: unknown): {
   return { agents: normalized };
 }
 
-function listEffectiveTalkAgents(talkId: string): TalkAgentApiRecord[] {
-  ensureTalkUsesUsableDefaultAgent(talkId);
-  const rows = getTalkAgentRows(talkId);
+async function listEffectiveTalkAgents(
+  talkId: string,
+  ownerId: string,
+): Promise<TalkAgentApiRecord[]> {
+  await ensureTalkUsesUsableDefaultAgent(talkId, ownerId);
+  const rows = await getTalkAgentRows(talkId);
   return rows.map((row) => ({
     // Use registeredAgentId as the canonical id when available.
     // This keeps the id consistent with what execution paths (send route,
@@ -740,82 +707,90 @@ function listEffectiveTalkAgents(talkId: string): TalkAgentApiRecord[] {
   }));
 }
 
-export function listTalksRoute(input: {
+export async function listTalksRoute(input: {
   auth: AuthContext;
   limit?: number;
   offset?: number;
-}): {
+}): Promise<{
   statusCode: number;
   body: ApiEnvelope<{
     talks: TalkApiRecord[];
     page: { limit: number; offset: number; count: number };
   }>;
-} {
+}> {
   const page = normalizeTalkListPage({
     limit: input.limit,
     offset: input.offset,
   });
-  const talks = listTalksForUser({
-    userId: input.auth.userId,
-    limit: page.limit,
-    offset: page.offset,
-  });
+  return await withUserContext(input.auth.userId, async () => {
+    const talks = await listTalksForUser({
+      limit: page.limit,
+      offset: page.offset,
+    });
+    const apiRecords = await Promise.all(
+      talks.map((talk) => toTalkApiRecord(talk, input.auth.userId)),
+    );
 
-  return {
-    statusCode: 200,
-    body: {
-      ok: true,
-      data: {
-        talks: talks.map(toTalkApiRecord),
-        page: {
-          limit: page.limit,
-          offset: page.offset,
-          count: talks.length,
+    return {
+      statusCode: 200,
+      body: {
+        ok: true,
+        data: {
+          talks: apiRecords,
+          page: {
+            limit: page.limit,
+            offset: page.offset,
+            count: talks.length,
+          },
         },
       },
-    },
-  };
+    };
+  });
 }
 
-export function listTalkSidebarRoute(input: { auth: AuthContext }): {
+export async function listTalkSidebarRoute(input: {
+  auth: AuthContext;
+}): Promise<{
   statusCode: number;
   body: ApiEnvelope<{ items: TalkSidebarItemApiRecord[] }>;
-} {
-  const tree = listTalkSidebarTreeForUser(input.auth.userId);
-  const rootItems: TalkSidebarItemApiRecord[] = [
-    ...tree.rootTalks.map((talk) => ({
-      type: 'talk' as const,
-      ...toSidebarTalkApiRecord(talk),
-    })),
-    ...tree.folders.map((folder) => ({
-      type: 'folder' as const,
-      id: folder.id,
-      title: folder.title,
-      sortOrder: folder.sort_order,
-      talks: (tree.talksByFolderId[folder.id] || []).map((talk) =>
-        toSidebarTalkApiRecord(talk),
-      ),
-    })),
-  ].sort((a, b) => a.sortOrder - b.sortOrder || a.id.localeCompare(b.id));
+}> {
+  return await withUserContext(input.auth.userId, async () => {
+    const tree = await listTalkSidebarTreeForUser();
+    const rootItems: TalkSidebarItemApiRecord[] = [
+      ...tree.rootTalks.map((talk) => ({
+        type: 'talk' as const,
+        ...toSidebarTalkApiRecord(talk),
+      })),
+      ...tree.folders.map((folder) => ({
+        type: 'folder' as const,
+        id: folder.id,
+        title: folder.title,
+        sortOrder: folder.sort_order,
+        talks: (tree.talksByFolderId[folder.id] || []).map((talk) =>
+          toSidebarTalkApiRecord(talk),
+        ),
+      })),
+    ].sort((a, b) => a.sortOrder - b.sortOrder || a.id.localeCompare(b.id));
 
-  return {
-    statusCode: 200,
-    body: {
-      ok: true,
-      data: {
-        items: rootItems,
+    return {
+      statusCode: 200,
+      body: {
+        ok: true,
+        data: {
+          items: rootItems,
+        },
       },
-    },
-  };
+    };
+  });
 }
 
-export function createTalkFolderRoute(input: {
+export async function createTalkFolderRoute(input: {
   auth: AuthContext;
   title?: string;
-}): {
+}): Promise<{
   statusCode: number;
   body: ApiEnvelope<{ folder: TalkFolderApiRecord }>;
-} {
+}> {
   const rawTitle = input.title?.trim() || '';
   if (rawTitle.length > 160) {
     return {
@@ -830,36 +805,38 @@ export function createTalkFolderRoute(input: {
     };
   }
 
-  const folder = createTalkFolder({
-    id: `folder_${randomUUID()}`,
-    ownerId: input.auth.userId,
-    title: rawTitle || 'Untitled Folder',
-  });
+  return await withUserContext(input.auth.userId, async () => {
+    const folder = await createTalkFolder({
+      id: randomUUID(),
+      ownerId: input.auth.userId,
+      title: rawTitle || 'Untitled Folder',
+    });
 
-  return {
-    statusCode: 201,
-    body: {
-      ok: true,
-      data: {
-        folder: {
-          id: folder.id,
-          title: folder.title,
-          sortOrder: folder.sort_order,
-          talks: [],
+    return {
+      statusCode: 201,
+      body: {
+        ok: true,
+        data: {
+          folder: {
+            id: folder.id,
+            title: folder.title,
+            sortOrder: folder.sort_order,
+            talks: [],
+          },
         },
       },
-    },
-  };
+    };
+  });
 }
 
-export function patchTalkFolderRoute(input: {
+export async function patchTalkFolderRoute(input: {
   auth: AuthContext;
   folderId: string;
   title?: string;
-}): {
+}): Promise<{
   statusCode: number;
   body: ApiEnvelope<{ folder: TalkFolderApiRecord }>;
-} {
+}> {
   const rawTitle = input.title?.trim() || '';
   if (!rawTitle) {
     return {
@@ -886,73 +863,79 @@ export function patchTalkFolderRoute(input: {
     };
   }
 
-  const folder = renameTalkFolder({
-    id: input.folderId,
-    ownerId: input.auth.userId,
-    title: rawTitle,
-  });
-  if (!folder) {
+  return await withUserContext(input.auth.userId, async () => {
+    const folder = await renameTalkFolder({
+      id: input.folderId,
+      title: rawTitle,
+    });
+    if (!folder) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: {
+            code: 'folder_not_found',
+            message: 'Folder not found',
+          },
+        },
+      };
+    }
+
     return {
-      statusCode: 404,
+      statusCode: 200,
       body: {
-        ok: false,
-        error: {
-          code: 'folder_not_found',
-          message: 'Folder not found',
+        ok: true,
+        data: {
+          folder: {
+            id: folder.id,
+            title: folder.title,
+            sortOrder: folder.sort_order,
+            talks: [],
+          },
         },
       },
     };
-  }
-
-  return {
-    statusCode: 200,
-    body: {
-      ok: true,
-      data: {
-        folder: {
-          id: folder.id,
-          title: folder.title,
-          sortOrder: folder.sort_order,
-          talks: [],
-        },
-      },
-    },
-  };
+  });
 }
 
-export function deleteTalkFolderRoute(input: {
+export async function deleteTalkFolderRoute(input: {
   auth: AuthContext;
   folderId: string;
-}): {
+}): Promise<{
   statusCode: number;
   body: ApiEnvelope<{ deleted: true }>;
-} {
-  const deleted = deleteTalkFolderAndMoveTalksToTopLevel({
-    id: input.folderId,
-    ownerId: input.auth.userId,
-  });
-  if (!deleted) {
-    return {
-      statusCode: 404,
-      body: {
-        ok: false,
-        error: {
-          code: 'folder_not_found',
-          message: 'Folder not found',
+}> {
+  return await withUserContext(input.auth.userId, async () => {
+    const deleted = await deleteTalkFolderAndMoveTalksToTopLevel({
+      id: input.folderId,
+      ownerId: input.auth.userId,
+    });
+    if (!deleted) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: {
+            code: 'folder_not_found',
+            message: 'Folder not found',
+          },
         },
-      },
+      };
+    }
+    return {
+      statusCode: 200,
+      body: { ok: true, data: { deleted: true } },
     };
-  }
-  return {
-    statusCode: 200,
-    body: { ok: true, data: { deleted: true } },
-  };
+  });
 }
 
-export function createTalkRoute(input: { auth: AuthContext; title?: string }): {
+export async function createTalkRoute(input: {
+  auth: AuthContext;
+  title?: string;
+}): Promise<{
   statusCode: number;
   body: ApiEnvelope<{ talk: TalkApiRecord }>;
-} {
+}> {
   const rawTitle = input.title?.trim() || '';
   if (rawTitle.length > 160) {
     return {
@@ -967,92 +950,78 @@ export function createTalkRoute(input: { auth: AuthContext; title?: string }): {
     };
   }
 
-  const talkId = `talk_${randomUUID()}`;
+  const talkId = randomUUID();
   const title = rawTitle || 'Untitled Talk';
-  createTalk({
-    id: talkId,
-    ownerId: input.auth.userId,
-    topicTitle: title,
-    status: 'active',
-  });
+  return await withUserContext(input.auth.userId, async () => {
+    await createTalk({
+      id: talkId,
+      ownerId: input.auth.userId,
+      topicTitle: title,
+      status: 'active',
+    });
 
-  // Auto-assign the default Talk agent so the talk is immediately usable even
-  // on installs that do not have a registered container runtime yet.
-  try {
-    const defaultTalkAgentId = getDefaultTalkAgentId();
-    setTalkAgents(talkId, [
-      {
-        id: defaultTalkAgentId,
-        sourceKind: 'claude_default',
-        providerId: null,
-        modelId: 'default',
-        nickname: null,
-        nicknameMode: 'auto',
-        personaRole: 'assistant',
-        isPrimary: true,
-        sortOrder: 0,
-      },
-    ]);
-  } catch {
-    // If main agent isn't configured yet, create the talk without agents.
-    // The user can assign one later via the talk settings.
-  }
+    // Auto-assign the default Talk agent so the talk is immediately usable even
+    // on installs that do not have a registered container runtime yet.
+    try {
+      const defaultTalkAgentId = await getDefaultTalkAgentId();
+      await setTalkAgents({
+        talkId,
+        ownerId: input.auth.userId,
+        agents: [
+          {
+            id: defaultTalkAgentId,
+            sourceKind: 'claude_default',
+            providerId: null,
+            modelId: 'default',
+            nickname: null,
+            nicknameMode: 'auto',
+            personaRole: 'assistant',
+            isPrimary: true,
+            sortOrder: 0,
+          },
+        ],
+      });
+    } catch {
+      // If main agent isn't configured yet, create the talk without agents.
+      // The user can assign one later via the talk settings.
+    }
 
-  const talk = getTalkForUser(talkId, input.auth.userId);
-  if (!talk) {
+    const talk = await getTalkForUser(talkId);
+    if (!talk) {
+      return {
+        statusCode: 500,
+        body: {
+          ok: false,
+          error: {
+            code: 'talk_create_failed',
+            message: 'Talk created but failed to load persisted record',
+          },
+        },
+      };
+    }
+
     return {
-      statusCode: 500,
+      statusCode: 201,
       body: {
-        ok: false,
-        error: {
-          code: 'talk_create_failed',
-          message: 'Talk created but failed to load persisted record',
+        ok: true,
+        data: {
+          talk: await toTalkApiRecord(talk, input.auth.userId),
         },
       },
     };
-  }
-
-  return {
-    statusCode: 201,
-    body: {
-      ok: true,
-      data: {
-        talk: toTalkApiRecord(talk),
-      },
-    },
-  };
+  });
 }
 
-export function patchTalkRoute(input: {
+export async function patchTalkRoute(input: {
   auth: AuthContext;
   talkId: string;
   title?: string;
   folderId?: string | null;
   orchestrationMode?: 'ordered' | 'panel';
-}): {
+}): Promise<{
   statusCode: number;
   body: ApiEnvelope<{ talk: TalkApiRecord }>;
-} {
-  const talk = getTalkForUser(input.talkId, input.auth.userId);
-  if (!talk) {
-    return {
-      statusCode: 404,
-      body: {
-        ok: false,
-        error: { code: 'talk_not_found', message: 'Talk not found' },
-      },
-    };
-  }
-  if (!canEditTalk(input.talkId, input.auth.userId, input.auth.role)) {
-    return {
-      statusCode: 403,
-      body: {
-        ok: false,
-        error: { code: 'forbidden', message: 'Talk is read-only' },
-      },
-    };
-  }
-
+}> {
   const rawTitle = input.title?.trim();
   if (rawTitle !== undefined && rawTitle.length === 0) {
     return {
@@ -1095,152 +1064,154 @@ export function patchTalkRoute(input: {
     };
   }
 
-  const updated = patchTalkMetadata({
-    talkId: input.talkId,
-    ownerId: talk.owner_id,
-    title: rawTitle,
-    folderId: input.folderId,
-    orchestrationMode: input.orchestrationMode,
-  });
-  const reloaded = updated
-    ? getTalkForUser(updated.id, input.auth.userId)
-    : undefined;
-  if (!reloaded) {
-    return {
-      statusCode: 404,
-      body: {
-        ok: false,
-        error: { code: 'talk_not_found', message: 'Talk not found' },
-      },
-    };
-  }
-  return {
-    statusCode: 200,
-    body: {
-      ok: true,
-      data: {
-        talk: toTalkApiRecord(reloaded),
-      },
-    },
-  };
-}
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await getTalkForUser(input.talkId);
+    if (!talk) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: { code: 'talk_not_found', message: 'Talk not found' },
+        },
+      };
+    }
+    if (!(await canEditTalk(input.talkId))) {
+      return {
+        statusCode: 403,
+        body: {
+          ok: false,
+          error: { code: 'forbidden', message: 'Talk is read-only' },
+        },
+      };
+    }
 
-export function deleteTalkRoute(input: { auth: AuthContext; talkId: string }): {
-  statusCode: number;
-  body: ApiEnvelope<{ deleted: true }>;
-} {
-  const talk = getTalkForUser(input.talkId, input.auth.userId);
-  if (!talk) {
+    const updated = await patchTalkMetadata({
+      talkId: input.talkId,
+      ownerId: talk.owner_id,
+      title: rawTitle,
+      folderId: input.folderId,
+      orchestrationMode: input.orchestrationMode,
+    });
+    const reloaded = updated ? await getTalkForUser(updated.id) : undefined;
+    if (!reloaded) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: { code: 'talk_not_found', message: 'Talk not found' },
+        },
+      };
+    }
     return {
-      statusCode: 404,
+      statusCode: 200,
       body: {
-        ok: false,
-        error: { code: 'talk_not_found', message: 'Talk not found' },
-      },
-    };
-  }
-  if (!canEditTalk(input.talkId, input.auth.userId, input.auth.role)) {
-    return {
-      statusCode: 403,
-      body: {
-        ok: false,
-        error: { code: 'forbidden', message: 'Talk is read-only' },
-      },
-    };
-  }
-  const deleted = deleteTalkForOwner({
-    talkId: input.talkId,
-    ownerId: talk.owner_id,
-  });
-  if (!deleted) {
-    return {
-      statusCode: 404,
-      body: {
-        ok: false,
-        error: { code: 'talk_not_found', message: 'Talk not found' },
-      },
-    };
-  }
-  return {
-    statusCode: 200,
-    body: { ok: true, data: { deleted: true } },
-  };
-}
-
-export function getTalkProjectMountRoute(input: {
-  auth: AuthContext;
-  talkId: string;
-}): {
-  statusCode: number;
-  body: ApiEnvelope<{ talk: TalkApiRecord }>;
-} {
-  const talk = getTalkForUser(input.talkId, input.auth.userId);
-  if (!talk) {
-    return {
-      statusCode: 404,
-      body: {
-        ok: false,
-        error: { code: 'talk_not_found', message: 'Talk not found' },
-      },
-    };
-  }
-  if (!canManageTalkProjectMount(talk, input.auth)) {
-    return {
-      statusCode: 403,
-      body: {
-        ok: false,
-        error: {
-          code: 'forbidden',
-          message:
-            'Only the talk owner or an admin can manage the project mount',
+        ok: true,
+        data: {
+          talk: await toTalkApiRecord(reloaded, input.auth.userId),
         },
       },
     };
-  }
-
-  return {
-    statusCode: 200,
-    body: {
-      ok: true,
-      data: {
-        talk: toTalkApiRecord(talk),
-      },
-    },
-  };
+  });
 }
 
-export function updateTalkProjectMountRoute(input: {
+export async function deleteTalkRoute(input: {
+  auth: AuthContext;
+  talkId: string;
+}): Promise<{
+  statusCode: number;
+  body: ApiEnvelope<{ deleted: true }>;
+}> {
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await getTalkForUser(input.talkId);
+    if (!talk) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: { code: 'talk_not_found', message: 'Talk not found' },
+        },
+      };
+    }
+    if (!(await canEditTalk(input.talkId))) {
+      return {
+        statusCode: 403,
+        body: {
+          ok: false,
+          error: { code: 'forbidden', message: 'Talk is read-only' },
+        },
+      };
+    }
+    const deleted = await deleteTalkForOwner({
+      talkId: input.talkId,
+    });
+    if (!deleted) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: { code: 'talk_not_found', message: 'Talk not found' },
+        },
+      };
+    }
+    return {
+      statusCode: 200,
+      body: { ok: true, data: { deleted: true } },
+    };
+  });
+}
+
+export async function getTalkProjectMountRoute(input: {
+  auth: AuthContext;
+  talkId: string;
+}): Promise<{
+  statusCode: number;
+  body: ApiEnvelope<{ talk: TalkApiRecord }>;
+}> {
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await getTalkForUser(input.talkId);
+    if (!talk) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: { code: 'talk_not_found', message: 'Talk not found' },
+        },
+      };
+    }
+    if (!canManageTalkProjectMount(talk, input.auth)) {
+      return {
+        statusCode: 403,
+        body: {
+          ok: false,
+          error: {
+            code: 'forbidden',
+            message:
+              'Only the talk owner or an admin can manage the project mount',
+          },
+        },
+      };
+    }
+
+    return {
+      statusCode: 200,
+      body: {
+        ok: true,
+        data: {
+          talk: await toTalkApiRecord(talk, input.auth.userId),
+        },
+      },
+    };
+  });
+}
+
+export async function updateTalkProjectMountRoute(input: {
   auth: AuthContext;
   talkId: string;
   projectPath: string;
-}): {
+}): Promise<{
   statusCode: number;
   body: ApiEnvelope<{ talk: TalkApiRecord }>;
-} {
-  const talk = getTalkForUser(input.talkId, input.auth.userId);
-  if (!talk) {
-    return {
-      statusCode: 404,
-      body: {
-        ok: false,
-        error: { code: 'talk_not_found', message: 'Talk not found' },
-      },
-    };
-  }
-  if (!canManageTalkProjectMount(talk, input.auth)) {
-    return {
-      statusCode: 403,
-      body: {
-        ok: false,
-        error: {
-          code: 'forbidden',
-          message:
-            'Only the talk owner or an admin can manage the project mount',
-        },
-      },
-    };
-  }
-
+}> {
   const validated = validateTalkProjectPath(input.projectPath);
   if (!validated.projectPath) {
     return {
@@ -1255,109 +1226,8 @@ export function updateTalkProjectMountRoute(input: {
     };
   }
 
-  const updated = updateTalkProjectPath({
-    talkId: input.talkId,
-    ownerId: talk.owner_id,
-    projectPath: validated.projectPath,
-  });
-  const reloaded = updated
-    ? getTalkForUser(updated.id, input.auth.userId)
-    : undefined;
-  if (!reloaded) {
-    return {
-      statusCode: 404,
-      body: {
-        ok: false,
-        error: { code: 'talk_not_found', message: 'Talk not found' },
-      },
-    };
-  }
-
-  return {
-    statusCode: 200,
-    body: {
-      ok: true,
-      data: {
-        talk: toTalkApiRecord(reloaded),
-      },
-    },
-  };
-}
-
-export function clearTalkProjectMountRoute(input: {
-  auth: AuthContext;
-  talkId: string;
-}): {
-  statusCode: number;
-  body: ApiEnvelope<{ talk: TalkApiRecord }>;
-} {
-  const talk = getTalkForUser(input.talkId, input.auth.userId);
-  if (!talk) {
-    return {
-      statusCode: 404,
-      body: {
-        ok: false,
-        error: { code: 'talk_not_found', message: 'Talk not found' },
-      },
-    };
-  }
-  if (!canManageTalkProjectMount(talk, input.auth)) {
-    return {
-      statusCode: 403,
-      body: {
-        ok: false,
-        error: {
-          code: 'forbidden',
-          message:
-            'Only the talk owner or an admin can manage the project mount',
-        },
-      },
-    };
-  }
-
-  const updated = updateTalkProjectPath({
-    talkId: input.talkId,
-    ownerId: talk.owner_id,
-    projectPath: null,
-  });
-  const reloaded = updated
-    ? getTalkForUser(updated.id, input.auth.userId)
-    : undefined;
-  if (!reloaded) {
-    return {
-      statusCode: 404,
-      body: {
-        ok: false,
-        error: { code: 'talk_not_found', message: 'Talk not found' },
-      },
-    };
-  }
-
-  return {
-    statusCode: 200,
-    body: {
-      ok: true,
-      data: {
-        talk: toTalkApiRecord(reloaded),
-      },
-    },
-  };
-}
-
-export function reorderTalkSidebarRoute(input: {
-  auth: AuthContext;
-  itemType: 'talk' | 'folder';
-  itemId: string;
-  destinationFolderId: string | null;
-  destinationIndex: number;
-}): {
-  statusCode: number;
-  body: ApiEnvelope<{ reordered: true }>;
-} {
-  const destinationIndex = Math.max(0, Math.floor(input.destinationIndex));
-  let ownerId = input.auth.userId;
-  if (input.itemType === 'talk') {
-    const talk = getTalkForUser(input.itemId, input.auth.userId);
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await getTalkForUser(input.talkId);
     if (!talk) {
       return {
         statusCode: 404,
@@ -1367,166 +1237,266 @@ export function reorderTalkSidebarRoute(input: {
         },
       };
     }
-    if (!canEditTalk(talk.id, input.auth.userId, input.auth.role)) {
+    if (!canManageTalkProjectMount(talk, input.auth)) {
       return {
         statusCode: 403,
         body: {
           ok: false,
-          error: { code: 'forbidden', message: 'Talk is read-only' },
+          error: {
+            code: 'forbidden',
+            message:
+              'Only the talk owner or an admin can manage the project mount',
+          },
         },
       };
     }
-    ownerId = talk.owner_id;
-  }
 
-  if (
-    input.destinationFolderId !== null &&
-    !listTalkFoldersForOwner(ownerId).some(
-      (folder) => folder.id === input.destinationFolderId,
-    )
-  ) {
-    return {
-      statusCode: 404,
-      body: {
-        ok: false,
-        error: { code: 'folder_not_found', message: 'Folder not found' },
-      },
-    };
-  }
+    const updated = await updateTalkProjectPath({
+      talkId: input.talkId,
+      projectPath: validated.projectPath!,
+    });
+    const reloaded = updated ? await getTalkForUser(updated.id) : undefined;
+    if (!reloaded) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: { code: 'talk_not_found', message: 'Talk not found' },
+        },
+      };
+    }
 
-  const reordered = reorderTalkSidebarItem({
-    ownerId,
-    itemType: input.itemType,
-    itemId: input.itemId,
-    destinationFolderId: input.destinationFolderId,
-    destinationIndex,
-  });
-  if (!reordered) {
     return {
-      statusCode: 400,
+      statusCode: 200,
       body: {
-        ok: false,
-        error: {
-          code: 'invalid_reorder',
-          message: 'Reorder target is not valid',
+        ok: true,
+        data: {
+          talk: await toTalkApiRecord(reloaded, input.auth.userId),
         },
       },
     };
-  }
-
-  return {
-    statusCode: 200,
-    body: { ok: true, data: { reordered: true } },
-  };
+  });
 }
 
-export function getTalkRoute(input: { talkId: string; auth: AuthContext }): {
+export async function clearTalkProjectMountRoute(input: {
+  auth: AuthContext;
+  talkId: string;
+}): Promise<{
   statusCode: number;
   body: ApiEnvelope<{ talk: TalkApiRecord }>;
-} {
-  const talk = getTalkForUser(input.talkId, input.auth.userId);
-  if (!talk) {
+}> {
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await getTalkForUser(input.talkId);
+    if (!talk) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: { code: 'talk_not_found', message: 'Talk not found' },
+        },
+      };
+    }
+    if (!canManageTalkProjectMount(talk, input.auth)) {
+      return {
+        statusCode: 403,
+        body: {
+          ok: false,
+          error: {
+            code: 'forbidden',
+            message:
+              'Only the talk owner or an admin can manage the project mount',
+          },
+        },
+      };
+    }
+
+    const updated = await updateTalkProjectPath({
+      talkId: input.talkId,
+      projectPath: null,
+    });
+    const reloaded = updated ? await getTalkForUser(updated.id) : undefined;
+    if (!reloaded) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: { code: 'talk_not_found', message: 'Talk not found' },
+        },
+      };
+    }
+
     return {
-      statusCode: 404,
+      statusCode: 200,
       body: {
-        ok: false,
-        error: {
-          code: 'talk_not_found',
-          message: 'Talk not found',
+        ok: true,
+        data: {
+          talk: await toTalkApiRecord(reloaded, input.auth.userId),
         },
       },
     };
-  }
-
-  ensureTalkUsesUsableDefaultAgent(input.talkId);
-
-  return {
-    statusCode: 200,
-    body: {
-      ok: true,
-      data: {
-        talk: toTalkApiRecord(talk),
-      },
-    },
-  };
+  });
 }
 
-export function listTalkAgentsRoute(input: {
+export async function reorderTalkSidebarRoute(input: {
+  auth: AuthContext;
+  itemType: 'talk' | 'folder';
+  itemId: string;
+  destinationFolderId: string | null;
+  destinationIndex: number;
+}): Promise<{
+  statusCode: number;
+  body: ApiEnvelope<{ reordered: true }>;
+}> {
+  const destinationIndex = Math.max(0, Math.floor(input.destinationIndex));
+  return await withUserContext(input.auth.userId, async () => {
+    if (input.itemType === 'talk') {
+      const talk = await getTalkForUser(input.itemId);
+      if (!talk) {
+        return {
+          statusCode: 404,
+          body: {
+            ok: false,
+            error: { code: 'talk_not_found', message: 'Talk not found' },
+          },
+        };
+      }
+      if (!(await canEditTalk(talk.id))) {
+        return {
+          statusCode: 403,
+          body: {
+            ok: false,
+            error: { code: 'forbidden', message: 'Talk is read-only' },
+          },
+        };
+      }
+    }
+
+    if (input.destinationFolderId !== null) {
+      const folders = await listTalkFoldersForOwner();
+      if (!folders.some((folder) => folder.id === input.destinationFolderId)) {
+        return {
+          statusCode: 404,
+          body: {
+            ok: false,
+            error: { code: 'folder_not_found', message: 'Folder not found' },
+          },
+        };
+      }
+    }
+
+    const reordered = await reorderTalkSidebarItem({
+      itemType: input.itemType,
+      itemId: input.itemId,
+      destinationFolderId: input.destinationFolderId,
+      destinationIndex,
+    });
+    if (!reordered) {
+      return {
+        statusCode: 400,
+        body: {
+          ok: false,
+          error: {
+            code: 'invalid_reorder',
+            message: 'Reorder target is not valid',
+          },
+        },
+      };
+    }
+
+    return {
+      statusCode: 200,
+      body: { ok: true, data: { reordered: true } },
+    };
+  });
+}
+
+export async function getTalkRoute(input: {
   talkId: string;
   auth: AuthContext;
-}): {
+}): Promise<{
+  statusCode: number;
+  body: ApiEnvelope<{ talk: TalkApiRecord }>;
+}> {
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await getTalkForUser(input.talkId);
+    if (!talk) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: {
+            code: 'talk_not_found',
+            message: 'Talk not found',
+          },
+        },
+      };
+    }
+
+    await ensureTalkUsesUsableDefaultAgent(input.talkId, talk.owner_id);
+
+    return {
+      statusCode: 200,
+      body: {
+        ok: true,
+        data: {
+          talk: await toTalkApiRecord(talk, input.auth.userId),
+        },
+      },
+    };
+  });
+}
+
+export async function listTalkAgentsRoute(input: {
+  talkId: string;
+  auth: AuthContext;
+}): Promise<{
   statusCode: number;
   body: ApiEnvelope<{
     talkId: string;
     agents: TalkAgentApiRecord[];
   }>;
-} {
-  const talk = getTalkForUser(input.talkId, input.auth.userId);
-  if (!talk) {
+}> {
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await getTalkForUser(input.talkId);
+    if (!talk) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: {
+            code: 'talk_not_found',
+            message: 'Talk not found',
+          },
+        },
+      };
+    }
+
+    await ensureTalkUsesUsableDefaultAgent(input.talkId, talk.owner_id);
+
     return {
-      statusCode: 404,
+      statusCode: 200,
       body: {
-        ok: false,
-        error: {
-          code: 'talk_not_found',
-          message: 'Talk not found',
+        ok: true,
+        data: {
+          talkId: input.talkId,
+          agents: await listEffectiveTalkAgents(input.talkId, talk.owner_id),
         },
       },
     };
-  }
-
-  ensureTalkUsesUsableDefaultAgent(input.talkId);
-
-  return {
-    statusCode: 200,
-    body: {
-      ok: true,
-      data: {
-        talkId: input.talkId,
-        agents: listEffectiveTalkAgents(input.talkId),
-      },
-    },
-  };
+  });
 }
 
-export function updateTalkAgentsRoute(input: {
+export async function updateTalkAgentsRoute(input: {
   talkId: string;
   auth: AuthContext;
   agents: unknown;
-}): {
+}): Promise<{
   statusCode: number;
   body: ApiEnvelope<{
     talkId: string;
     agents: TalkAgentApiRecord[];
   }>;
-} {
-  const talk = getTalkForUser(input.talkId, input.auth.userId);
-  if (!talk) {
-    return {
-      statusCode: 404,
-      body: {
-        ok: false,
-        error: {
-          code: 'talk_not_found',
-          message: 'Talk not found',
-        },
-      },
-    };
-  }
-
-  if (!canEditTalk(input.talkId, input.auth.userId, input.auth.role)) {
-    return {
-      statusCode: 403,
-      body: {
-        ok: false,
-        error: {
-          code: 'forbidden',
-          message: 'You do not have permission to edit talk agents',
-        },
-      },
-    };
-  }
-
+}> {
   const normalized = validateAgentInputs(input.agents);
   if (!normalized.agents) {
     return {
@@ -1541,127 +1511,142 @@ export function updateTalkAgentsRoute(input: {
     };
   }
 
-  // Persist: full replace of talk_agents for this Talk.
-  const agentInputs: TalkAgentInput[] = normalized.agents!.map((a: any) => ({
-    id: a.id,
-    sourceKind: a.sourceKind,
-    providerId: a.providerId,
-    modelId: a.modelId,
-    nickname: a.nickname || null,
-    nicknameMode: a.nicknameMode || 'auto',
-    personaRole: a.role,
-    isPrimary: a.isLead,
-    sortOrder: a.displayOrder,
-  }));
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await getTalkForUser(input.talkId);
+    if (!talk) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: {
+            code: 'talk_not_found',
+            message: 'Talk not found',
+          },
+        },
+      };
+    }
 
-  try {
-    setTalkAgents(input.talkId, agentInputs);
-  } catch (err) {
+    if (!(await canEditTalk(input.talkId))) {
+      return {
+        statusCode: 403,
+        body: {
+          ok: false,
+          error: {
+            code: 'forbidden',
+            message: 'You do not have permission to edit talk agents',
+          },
+        },
+      };
+    }
+
+    // Persist: full replace of talk_agents for this Talk.
+    const agentInputs: TalkAgentInput[] = normalized.agents!.map((a: any) => ({
+      id: a.id,
+      sourceKind: a.sourceKind,
+      providerId: a.providerId,
+      modelId: a.modelId,
+      nickname: a.nickname || null,
+      nicknameMode: a.nicknameMode || 'auto',
+      personaRole: a.role,
+      isPrimary: a.isLead,
+      sortOrder: a.displayOrder,
+    }));
+
+    try {
+      await setTalkAgents({
+        talkId: input.talkId,
+        ownerId: talk.owner_id,
+        agents: agentInputs,
+      });
+    } catch (err) {
+      return {
+        statusCode: 500,
+        body: {
+          ok: false,
+          error: {
+            code: 'talk_agents_save_failed',
+            message:
+              err instanceof Error ? err.message : 'Failed to save talk agents',
+          },
+        },
+      };
+    }
+
     return {
-      statusCode: 500,
+      statusCode: 200,
       body: {
-        ok: false,
-        error: {
-          code: 'talk_agents_save_failed',
-          message:
-            err instanceof Error ? err.message : 'Failed to save talk agents',
+        ok: true,
+        data: {
+          talkId: input.talkId,
+          agents: await listEffectiveTalkAgents(input.talkId, talk.owner_id),
         },
       },
     };
-  }
-
-  return {
-    statusCode: 200,
-    body: {
-      ok: true,
-      data: {
-        talkId: input.talkId,
-        agents: listEffectiveTalkAgents(input.talkId),
-      },
-    },
-  };
+  });
 }
 
-export function getTalkPolicyRoute(input: {
+export async function getTalkPolicyRoute(input: {
   talkId: string;
   auth: AuthContext;
-}): {
+}): Promise<{
   statusCode: number;
   body: ApiEnvelope<{
     talkId: string;
     agents: string[];
     limits: { maxAgents: number; maxAgentChars: number };
   }>;
-} {
-  const talk = getTalkForUser(input.talkId, input.auth.userId);
-  if (!talk) {
+}> {
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await getTalkForUser(input.talkId);
+    if (!talk) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: {
+            code: 'talk_not_found',
+            message: 'Talk not found',
+          },
+        },
+      };
+    }
+
+    // talk_llm_policies is chassis-removed; derive the legacy agents list
+    // from the typed talk_agents assignment instead.
+    const effectiveAgents = await listEffectiveTalkAgents(
+      input.talkId,
+      talk.owner_id,
+    );
+
     return {
-      statusCode: 404,
+      statusCode: 200,
       body: {
-        ok: false,
-        error: {
-          code: 'talk_not_found',
-          message: 'Talk not found',
+        ok: true,
+        data: {
+          talkId: input.talkId,
+          agents: effectiveAgents.map((a) => a.nickname),
+          limits: {
+            maxAgents: MAX_TALK_AGENTS,
+            maxAgentChars: MAX_TALK_AGENT_NAME_CHARS,
+          },
         },
       },
     };
-  }
-
-  return {
-    statusCode: 200,
-    body: {
-      ok: true,
-      data: {
-        talkId: input.talkId,
-        agents: parseFallbackPolicyAgents(talk.llm_policy),
-        limits: {
-          maxAgents: MAX_TALK_AGENTS,
-          maxAgentChars: MAX_TALK_AGENT_NAME_CHARS,
-        },
-      },
-    },
-  };
+  });
 }
 
-export function updateTalkPolicyRoute(input: {
+export async function updateTalkPolicyRoute(input: {
   talkId: string;
   auth: AuthContext;
   agents: unknown;
-}): {
+}): Promise<{
   statusCode: number;
   body: ApiEnvelope<{
     talkId: string;
     agents: string[];
     limits: { maxAgents: number; maxAgentChars: number };
   }>;
-} {
-  const talk = getTalkForUser(input.talkId, input.auth.userId);
-  if (!talk) {
-    return {
-      statusCode: 404,
-      body: {
-        ok: false,
-        error: {
-          code: 'talk_not_found',
-          message: 'Talk not found',
-        },
-      },
-    };
-  }
-
-  if (!canEditTalk(input.talkId, input.auth.userId, input.auth.role)) {
-    return {
-      statusCode: 403,
-      body: {
-        ok: false,
-        error: {
-          code: 'forbidden',
-          message: 'You do not have permission to edit talk agents',
-        },
-      },
-    };
-  }
-
+}> {
   if (!Array.isArray(input.agents)) {
     return {
       statusCode: 400,
@@ -1683,25 +1668,6 @@ export function updateTalkPolicyRoute(input: {
     ),
   ];
 
-  if (normalizedNames.length === 0) {
-    deleteTalkLlmPolicy(input.talkId);
-    const effectiveAgents = listEffectiveTalkAgents(input.talkId);
-    return {
-      statusCode: 200,
-      body: {
-        ok: true,
-        data: {
-          talkId: input.talkId,
-          agents: effectiveAgents.map((a) => a.nickname),
-          limits: {
-            maxAgents: MAX_TALK_AGENTS,
-            maxAgentChars: MAX_TALK_AGENT_NAME_CHARS,
-          },
-        },
-      },
-    };
-  }
-
   if (normalizedNames.length > MAX_TALK_AGENTS) {
     return {
       statusCode: 400,
@@ -1715,142 +1681,173 @@ export function updateTalkPolicyRoute(input: {
     };
   }
 
-  // Legacy compatibility only: typed talk_agents are the execution source of truth,
-  // but we still mirror the simple names list for older policy readers.
-  upsertTalkLlmPolicy({
-    talkId: input.talkId,
-    llmPolicy: JSON.stringify({ agents: normalizedNames }),
-  });
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await getTalkForUser(input.talkId);
+    if (!talk) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: {
+            code: 'talk_not_found',
+            message: 'Talk not found',
+          },
+        },
+      };
+    }
 
-  return {
-    statusCode: 200,
-    body: {
-      ok: true,
-      data: {
-        talkId: input.talkId,
-        agents: normalizedNames,
-        limits: {
-          maxAgents: MAX_TALK_AGENTS,
-          maxAgentChars: MAX_TALK_AGENT_NAME_CHARS,
+    if (!(await canEditTalk(input.talkId))) {
+      return {
+        statusCode: 403,
+        body: {
+          ok: false,
+          error: {
+            code: 'forbidden',
+            message: 'You do not have permission to edit talk agents',
+          },
+        },
+      };
+    }
+
+    // talk_llm_policies is chassis-removed; the typed talk_agents table is
+    // the execution source of truth. This legacy endpoint now just echoes
+    // the normalized names back so older clients keep functioning, but no
+    // persistent policy mirror is written.
+    if (normalizedNames.length === 0) {
+      const effectiveAgents = await listEffectiveTalkAgents(
+        input.talkId,
+        talk.owner_id,
+      );
+      return {
+        statusCode: 200,
+        body: {
+          ok: true,
+          data: {
+            talkId: input.talkId,
+            agents: effectiveAgents.map((a) => a.nickname),
+            limits: {
+              maxAgents: MAX_TALK_AGENTS,
+              maxAgentChars: MAX_TALK_AGENT_NAME_CHARS,
+            },
+          },
+        },
+      };
+    }
+
+    return {
+      statusCode: 200,
+      body: {
+        ok: true,
+        data: {
+          talkId: input.talkId,
+          agents: normalizedNames,
+          limits: {
+            maxAgents: MAX_TALK_AGENTS,
+            maxAgentChars: MAX_TALK_AGENT_NAME_CHARS,
+          },
         },
       },
-    },
-  };
+    };
+  });
 }
 
-export function listTalkMessagesRoute(input: {
+export async function listTalkMessagesRoute(input: {
   talkId: string;
   auth: AuthContext;
   threadId?: string | null;
   limit?: number;
   beforeCreatedAt?: string;
-}): {
+}): Promise<{
   statusCode: number;
   body: ApiEnvelope<{
     talkId: string;
     messages: TalkMessageApiRecord[];
     page: { limit: number; count: number; beforeCreatedAt: string | null };
   }>;
-} {
-  const talk = getTalkForUser(input.talkId, input.auth.userId);
-  if (!talk) {
+}> {
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await getTalkForUser(input.talkId);
+    if (!talk) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: {
+            code: 'talk_not_found',
+            message: 'Talk not found',
+          },
+        },
+      };
+    }
+
+    const limit =
+      typeof input.limit === 'number'
+        ? Math.min(200, Math.max(1, Math.floor(input.limit)))
+        : 100;
+    const beforeCreatedAt = input.beforeCreatedAt || null;
+    let threadId: string | null = null;
+    if (input.threadId) {
+      try {
+        threadId = await resolveThreadIdForTalk({
+          talkId: input.talkId,
+          threadId: input.threadId,
+          ownerId: talk.owner_id,
+        });
+      } catch (error) {
+        if (error instanceof TalkThreadValidationError) {
+          return {
+            statusCode: 400,
+            body: {
+              ok: false,
+              error: {
+                code: error.code,
+                message: error.message,
+              },
+            },
+          };
+        }
+        throw error;
+      }
+    }
+    const messages = await listTalkMessages({
+      talkId: input.talkId,
+      threadId,
+      limit,
+      beforeCreatedAt: beforeCreatedAt || undefined,
+    });
+    const apiMessages = await Promise.all(messages.map(toTalkMessageApiRecord));
+
     return {
-      statusCode: 404,
+      statusCode: 200,
       body: {
-        ok: false,
-        error: {
-          code: 'talk_not_found',
-          message: 'Talk not found',
+        ok: true,
+        data: {
+          talkId: input.talkId,
+          messages: apiMessages,
+          page: {
+            limit,
+            count: messages.length,
+            beforeCreatedAt,
+          },
         },
       },
     };
-  }
-
-  const limit =
-    typeof input.limit === 'number'
-      ? Math.min(200, Math.max(1, Math.floor(input.limit)))
-      : 100;
-  const beforeCreatedAt = input.beforeCreatedAt || null;
-  let threadId: string | null = null;
-  if (input.threadId) {
-    try {
-      threadId = resolveThreadIdForTalk(input.talkId, input.threadId);
-    } catch (error) {
-      if (error instanceof TalkThreadValidationError) {
-        return {
-          statusCode: 400,
-          body: {
-            ok: false,
-            error: {
-              code: error.code,
-              message: error.message,
-            },
-          },
-        };
-      }
-      throw error;
-    }
-  }
-  const messages = listTalkMessages({
-    talkId: input.talkId,
-    threadId,
-    limit,
-    beforeCreatedAt: beforeCreatedAt || undefined,
   });
-
-  return {
-    statusCode: 200,
-    body: {
-      ok: true,
-      data: {
-        talkId: input.talkId,
-        messages: messages.map(toTalkMessageApiRecord),
-        page: {
-          limit,
-          count: messages.length,
-          beforeCreatedAt,
-        },
-      },
-    },
-  };
 }
 
-export function deleteTalkMessagesRoute(input: {
+export async function deleteTalkMessagesRoute(input: {
   talkId: string;
   auth: AuthContext;
   messageIds: string[];
   threadId: string | null;
-}): {
+}): Promise<{
   statusCode: number;
   body: ApiEnvelope<{
     talkId: string;
     deletedCount: number;
     deletedMessageIds: string[];
   }>;
-} {
-  const talk = getTalkForUser(input.talkId, input.auth.userId);
-  if (!talk) {
-    return {
-      statusCode: 404,
-      body: {
-        ok: false,
-        error: {
-          code: 'talk_not_found',
-          message: 'Talk not found',
-        },
-      },
-    };
-  }
-  if (!canEditTalk(input.talkId, input.auth.userId, input.auth.role)) {
-    return {
-      statusCode: 403,
-      body: {
-        ok: false,
-        error: { code: 'forbidden', message: 'Talk is read-only' },
-      },
-    };
-  }
-
+}> {
   const normalizedIds = Array.from(
     new Set(
       input.messageIds
@@ -1896,108 +1893,140 @@ export function deleteTalkMessagesRoute(input: {
     };
   }
 
-  let threadId: string;
-  try {
-    threadId = resolveThreadIdForTalk(input.talkId, input.threadId);
-  } catch (error) {
-    if (error instanceof TalkThreadValidationError) {
-      return {
-        statusCode: 400,
-        body: {
-          ok: false,
-          error: {
-            code: error.code,
-            message: error.message,
-          },
-        },
-      };
-    }
-    throw error;
-  }
-
-  try {
-    const deleted = deleteTalkMessagesAtomic({
-      talkId: input.talkId,
-      messageIds: normalizedIds,
-      threadId,
-    });
-    return {
-      statusCode: 200,
-      body: {
-        ok: true,
-        data: {
-          talkId: input.talkId,
-          deletedCount: deleted.deletedCount,
-          deletedMessageIds: deleted.deletedMessageIds,
-        },
-      },
-    };
-  } catch (error) {
-    if (error instanceof TalkActiveRoundError && error.scope === 'thread') {
-      return {
-        statusCode: 409,
-        body: {
-          ok: false,
-          error: {
-            code: 'thread_active_round',
-            message:
-              'Wait for the current round to finish or cancel it before editing history.',
-          },
-        },
-      };
-    }
-    const message =
-      error instanceof Error ? error.message : 'Unable to edit talk history';
-    if (message === 'one or more talk messages were not found') {
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await getTalkForUser(input.talkId);
+    if (!talk) {
       return {
         statusCode: 404,
         body: {
           ok: false,
           error: {
-            code: 'message_not_found',
-            message: 'One or more selected messages no longer exist.',
+            code: 'talk_not_found',
+            message: 'Talk not found',
           },
         },
       };
     }
-    if (message === 'system messages cannot be deleted') {
+    if (!(await canEditTalk(input.talkId))) {
       return {
-        statusCode: 400,
+        statusCode: 403,
+        body: {
+          ok: false,
+          error: { code: 'forbidden', message: 'Talk is read-only' },
+        },
+      };
+    }
+
+    let threadId: string;
+    try {
+      threadId = await resolveThreadIdForTalk({
+        talkId: input.talkId,
+        threadId: input.threadId,
+        ownerId: talk.owner_id,
+      });
+    } catch (error) {
+      if (error instanceof TalkThreadValidationError) {
+        return {
+          statusCode: 400,
+          body: {
+            ok: false,
+            error: {
+              code: error.code,
+              message: error.message,
+            },
+          },
+        };
+      }
+      throw error;
+    }
+
+    try {
+      const deleted = await deleteTalkMessagesAtomic({
+        talkId: input.talkId,
+        messageIds: normalizedIds,
+        threadId,
+      });
+      return {
+        statusCode: 200,
+        body: {
+          ok: true,
+          data: {
+            talkId: input.talkId,
+            deletedCount: deleted.deletedCount,
+            deletedMessageIds: deleted.deletedMessageIds,
+          },
+        },
+      };
+    } catch (error) {
+      if (error instanceof TalkActiveRoundError && error.scope === 'thread') {
+        return {
+          statusCode: 409,
+          body: {
+            ok: false,
+            error: {
+              code: 'thread_active_round',
+              message:
+                'Wait for the current round to finish or cancel it before editing history.',
+            },
+          },
+        };
+      }
+      const message =
+        error instanceof Error ? error.message : 'Unable to edit talk history';
+      if (message === 'one or more talk messages were not found') {
+        return {
+          statusCode: 404,
+          body: {
+            ok: false,
+            error: {
+              code: 'message_not_found',
+              message: 'One or more selected messages no longer exist.',
+            },
+          },
+        };
+      }
+      if (message === 'system messages cannot be deleted') {
+        return {
+          statusCode: 400,
+          body: {
+            ok: false,
+            error: {
+              code: 'invalid_message_role',
+              message: 'System messages cannot be deleted.',
+            },
+          },
+        };
+      }
+      if (
+        message === 'selected messages do not belong to the requested thread'
+      ) {
+        return {
+          statusCode: 400,
+          body: {
+            ok: false,
+            error: {
+              code: 'thread_mismatch',
+              message:
+                'Selected messages do not belong to the requested thread.',
+            },
+          },
+        };
+      }
+      return {
+        statusCode: 500,
         body: {
           ok: false,
           error: {
-            code: 'invalid_message_role',
-            message: 'System messages cannot be deleted.',
+            code: 'talk_history_edit_failed',
+            message,
           },
         },
       };
     }
-    if (message === 'selected messages do not belong to the requested thread') {
-      return {
-        statusCode: 400,
-        body: {
-          ok: false,
-          error: {
-            code: 'thread_mismatch',
-            message: 'Selected messages do not belong to the requested thread.',
-          },
-        },
-      };
-    }
-    return {
-      statusCode: 500,
-      body: {
-        ok: false,
-        error: {
-          code: 'talk_history_edit_failed',
-          message,
-        },
-      },
-    };
-  }
+  });
 }
 
-export function enqueueTalkChat(input: {
+export async function enqueueTalkChat(input: {
   talkId: string;
   threadId?: string | null;
   auth: AuthContext;
@@ -2005,7 +2034,7 @@ export function enqueueTalkChat(input: {
   targetAgentIds?: string[] | null;
   attachmentIds?: string[] | null;
   idempotencyKey?: string | null;
-}): {
+}): Promise<{
   statusCode: number;
   body: ApiEnvelope<{
     talkId: string;
@@ -2034,34 +2063,7 @@ export function enqueueTalkChat(input: {
       executorModel: string | null;
     }>;
   }>;
-} {
-  const talk = getTalkForUser(input.talkId, input.auth.userId);
-  if (!talk) {
-    return {
-      statusCode: 404,
-      body: {
-        ok: false,
-        error: {
-          code: 'talk_not_found',
-          message: 'Talk not found',
-        },
-      },
-    };
-  }
-
-  if (!canEditTalk(input.talkId, input.auth.userId, input.auth.role)) {
-    return {
-      statusCode: 403,
-      body: {
-        ok: false,
-        error: {
-          code: 'forbidden',
-          message: 'You do not have permission to post messages to this talk',
-        },
-      },
-    };
-  }
-
+}> {
   const content = input.content.trim();
   if (!content) {
     return {
@@ -2088,201 +2090,220 @@ export function enqueueTalkChat(input: {
     };
   }
 
-  const requestedTargetIds = Array.isArray(input.targetAgentIds)
-    ? [
-        ...new Set(
-          input.targetAgentIds.map((id: any) => id.trim()).filter(Boolean),
-        ),
-      ]
-    : [];
-  ensureTalkUsesUsableDefaultAgent(input.talkId);
-  const talkAgents = listTalkAgents(input.talkId);
-  const mentionedAgents = resolveTalkAgentMentions(input.talkId, content);
-  const selectedAgents: Array<{ id: string; nickname: string }> =
-    mentionedAgents.length > 0
-      ? mentionedAgents.map((agent) => ({
-          id: agent.agentId,
-          nickname: agent.nickname || agent.agentName,
-        }))
-      : requestedTargetIds.length > 0
-        ? talkAgents
-            .filter((a) => requestedTargetIds.includes(a.agentId))
-            .map((a) => ({
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await getTalkForUser(input.talkId);
+    if (!talk) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: {
+            code: 'talk_not_found',
+            message: 'Talk not found',
+          },
+        },
+      };
+    }
+
+    if (!(await canEditTalk(input.talkId))) {
+      return {
+        statusCode: 403,
+        body: {
+          ok: false,
+          error: {
+            code: 'forbidden',
+            message: 'You do not have permission to post messages to this talk',
+          },
+        },
+      };
+    }
+
+    const requestedTargetIds = Array.isArray(input.targetAgentIds)
+      ? [
+          ...new Set(
+            input.targetAgentIds.map((id: any) => id.trim()).filter(Boolean),
+          ),
+        ]
+      : [];
+    await ensureTalkUsesUsableDefaultAgent(input.talkId, talk.owner_id);
+    const talkAgents = await listTalkAgents(input.talkId);
+    const mentionedAgents = await resolveTalkAgentMentions(
+      input.talkId,
+      content,
+    );
+    const selectedAgents: Array<{ id: string; nickname: string }> =
+      mentionedAgents.length > 0
+        ? mentionedAgents.map((agent) => ({
+            id: agent.agentId,
+            nickname: agent.nickname || agent.agentName,
+          }))
+        : requestedTargetIds.length > 0
+          ? talkAgents
+              .filter((a) => requestedTargetIds.includes(a.agentId))
+              .map((a) => ({
+                id: a.agentId,
+                nickname: a.nickname || a.agentName,
+              }))
+          : talkAgents.map((a) => ({
               id: a.agentId,
               nickname: a.nickname || a.agentName,
-            }))
-        : talkAgents.map((a) => ({
-            id: a.agentId,
-            nickname: a.nickname || a.agentName,
-          }));
-  const orderedRunSet =
-    talk.orchestration_mode === 'ordered' && selectedAgents.length > 1;
+            }));
+    const orderedRunSet =
+      talk.orchestration_mode === 'ordered' && selectedAgents.length > 1;
 
-  if (selectedAgents.length === 0) {
+    if (selectedAgents.length === 0) {
+      return {
+        statusCode: 400,
+        body: {
+          ok: false,
+          error: {
+            code: 'talk_agent_not_found',
+            message: 'No valid talk agent is available for this talk',
+          },
+        },
+      };
+    }
+
+    for (const agent of selectedAgents) {
+      const browserPreflightError = await getBrowserPreflightErrorForAgent(
+        agent.id,
+        input.auth.userId,
+      );
+      if (browserPreflightError) {
+        return {
+          statusCode: 409,
+          body: {
+            ok: false,
+            error: {
+              code: 'browser_execution_not_configured',
+              message: browserPreflightError,
+            },
+          },
+        };
+      }
+    }
+
+    const messageId = randomUUID();
+    const runIds = selectedAgents.map(() => randomUUID());
+    const responseGroupId = randomUUID();
+    let persisted: Awaited<ReturnType<typeof enqueueTalkTurnAtomic>>;
+    try {
+      // Attachment validation and linking happen inside the same postgres
+      // transaction as message/run creation. If any attachment ID is invalid,
+      // already linked, or exceeds the cap, the transaction rolls back — no
+      // orphaned messages or runs are left behind.
+      persisted = await enqueueTalkTurnAtomic({
+        ownerId: talk.owner_id,
+        talkId: input.talkId,
+        threadId: input.threadId,
+        userId: input.auth.userId,
+        content,
+        messageId,
+        runIds,
+        targetAgentIds: selectedAgents.map((agent) => agent.id),
+        responseGroupId,
+        sequenceIndexes: orderedRunSet
+          ? selectedAgents.map((_, index) => index)
+          : selectedAgents.map(() => null),
+        attachmentIds:
+          Array.isArray(input.attachmentIds) && input.attachmentIds.length > 0
+            ? input.attachmentIds
+            : undefined,
+        maxAttachmentsPerMessage: MAX_ATTACHMENTS_PER_MESSAGE,
+        idempotencyKey: input.idempotencyKey,
+      });
+    } catch (error) {
+      if (error instanceof TalkActiveRoundError && error.scope === 'thread') {
+        return {
+          statusCode: 409,
+          body: {
+            ok: false,
+            error: {
+              code: 'talk_round_active',
+              message:
+                'Wait for the current round in this thread to finish or cancel it before sending another message',
+            },
+          },
+        };
+      }
+      if (error instanceof TalkThreadValidationError) {
+        return {
+          statusCode: 400,
+          body: {
+            ok: false,
+            error: {
+              code: error.code,
+              message: error.message,
+            },
+          },
+        };
+      }
+      if (error instanceof AttachmentValidationError) {
+        return {
+          statusCode: 400,
+          body: {
+            ok: false,
+            error: {
+              code: error.code,
+              message: error.message,
+            },
+          },
+        };
+      }
+      throw error;
+    }
+
+    const agentNicknameById = new Map(
+      selectedAgents.map((agent) => [agent.id, agent.nickname]),
+    );
+
     return {
-      statusCode: 400,
+      statusCode: 202,
       body: {
-        ok: false,
-        error: {
-          code: 'talk_agent_not_found',
-          message: 'No valid talk agent is available for this talk',
+        ok: true,
+        data: {
+          talkId: input.talkId,
+          message: await toTalkMessageApiRecord(persisted.message),
+          runs: persisted.runs.map((run) => ({
+            id: run.id,
+            threadId: run.thread_id,
+            responseGroupId: run.response_group_id || null,
+            sequenceIndex: run.sequence_index ?? null,
+            status: run.status,
+            createdAt: run.created_at,
+            startedAt: run.started_at,
+            completedAt: run.ended_at,
+            triggerMessageId: run.trigger_message_id,
+            targetAgentId: run.target_agent_id || null,
+            targetAgentNickname:
+              (run.target_agent_id &&
+                agentNicknameById.get(run.target_agent_id)) ||
+              null,
+            errorCode: null,
+            errorMessage: null,
+            cancelReason: run.cancel_reason,
+            executorAlias: run.executor_alias,
+            executorModel: run.executor_model,
+          })),
         },
       },
     };
-  }
-
-  for (const agent of selectedAgents) {
-    const browserPreflightError = getBrowserPreflightErrorForAgent(
-      agent.id,
-      input.auth.userId,
-    );
-    if (browserPreflightError) {
-      return {
-        statusCode: 409,
-        body: {
-          ok: false,
-          error: {
-            code: 'browser_execution_not_configured',
-            message: browserPreflightError,
-          },
-        },
-      };
-    }
-  }
-
-  const messageId = `msg_${randomUUID()}`;
-  const runIds = selectedAgents.map(() => `run_${randomUUID()}`);
-  const responseGroupId = `group_${randomUUID()}`;
-  let persisted: ReturnType<typeof enqueueTalkTurnAtomic>;
-  try {
-    // Attachment validation and linking happen inside the same SQLite
-    // transaction as message/run creation. If any attachment ID is invalid,
-    // already linked, or exceeds the cap, the transaction rolls back — no
-    // orphaned messages or runs are left behind.
-    persisted = enqueueTalkTurnAtomic({
-      talkId: input.talkId,
-      threadId: input.threadId,
-      userId: input.auth.userId,
-      content,
-      messageId,
-      runIds,
-      targetAgentIds: selectedAgents.map((agent) => agent.id),
-      responseGroupId,
-      sequenceIndexes: orderedRunSet
-        ? selectedAgents.map((_, index) => index)
-        : selectedAgents.map(() => null),
-      attachmentIds:
-        Array.isArray(input.attachmentIds) && input.attachmentIds.length > 0
-          ? input.attachmentIds
-          : undefined,
-      maxAttachmentsPerMessage: MAX_ATTACHMENTS_PER_MESSAGE,
-      idempotencyKey: input.idempotencyKey,
-    });
-  } catch (error) {
-    if (error instanceof TalkActiveRoundError && error.scope === 'thread') {
-      return {
-        statusCode: 409,
-        body: {
-          ok: false,
-          error: {
-            code: 'talk_round_active',
-            message:
-              'Wait for the current round in this thread to finish or cancel it before sending another message',
-          },
-        },
-      };
-    }
-    if (error instanceof TalkThreadValidationError) {
-      return {
-        statusCode: 400,
-        body: {
-          ok: false,
-          error: {
-            code: error.code,
-            message: error.message,
-          },
-        },
-      };
-    }
-    if (error instanceof AttachmentValidationError) {
-      return {
-        statusCode: 400,
-        body: {
-          ok: false,
-          error: {
-            code: error.code,
-            message: error.message,
-          },
-        },
-      };
-    }
-    throw error;
-  }
-
-  const agentNicknameById = new Map(
-    selectedAgents.map((agent) => [agent.id, agent.nickname]),
-  );
-
-  return {
-    statusCode: 202,
-    body: {
-      ok: true,
-      data: {
-        talkId: input.talkId,
-        message: toTalkMessageApiRecord(persisted.message),
-        runs: persisted.runs.map((run) => ({
-          id: run.id,
-          threadId: run.thread_id,
-          responseGroupId: run.response_group_id || null,
-          sequenceIndex: run.sequence_index ?? null,
-          status: run.status,
-          createdAt: run.created_at,
-          startedAt: run.started_at,
-          completedAt: run.ended_at,
-          triggerMessageId: run.trigger_message_id,
-          targetAgentId: run.target_agent_id || null,
-          targetAgentNickname:
-            (run.target_agent_id &&
-              agentNicknameById.get(run.target_agent_id)) ||
-            null,
-          errorCode: null,
-          errorMessage: null,
-          cancelReason: run.cancel_reason,
-          executorAlias: run.executor_alias,
-          executorModel: run.executor_model,
-        })),
-      },
-    },
-  };
+  });
 }
 
-export function searchTalkMessagesRoute(input: {
+export async function searchTalkMessagesRoute(input: {
   talkId: string;
   auth: AuthContext;
   query: string;
   limit?: number;
-}): {
+}): Promise<{
   statusCode: number;
   body: ApiEnvelope<{
     talkId: string;
     query: string;
     results: TalkMessageSearchResultApiRecord[];
   }>;
-} {
-  const talk = getTalkForUser(input.talkId, input.auth.userId);
-  if (!talk) {
-    return {
-      statusCode: 404,
-      body: {
-        ok: false,
-        error: {
-          code: 'talk_not_found',
-          message: 'Talk not found',
-        },
-      },
-    };
-  }
-
+}> {
   const query = input.query.trim();
   if (query.length === 0) {
     return {
@@ -2297,38 +2318,56 @@ export function searchTalkMessagesRoute(input: {
     };
   }
 
-  const limit =
-    typeof input.limit === 'number'
-      ? Math.min(50, Math.max(1, Math.floor(input.limit)))
-      : 20;
-  const results = searchTalkMessages({
-    talkId: input.talkId,
-    query,
-    limit,
-  }).map((row) => ({
-    messageId: row.id,
-    threadId: row.thread_id,
-    threadTitle: row.thread_title,
-    role: row.role,
-    createdAt: row.created_at,
-    preview: buildMessagePreview(row.content),
-  }));
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await getTalkForUser(input.talkId);
+    if (!talk) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: {
+            code: 'talk_not_found',
+            message: 'Talk not found',
+          },
+        },
+      };
+    }
 
-  return {
-    statusCode: 200,
-    body: {
-      ok: true,
-      data: {
-        talkId: input.talkId,
-        query,
-        results,
+    const limit =
+      typeof input.limit === 'number'
+        ? Math.min(50, Math.max(1, Math.floor(input.limit)))
+        : 20;
+    const rows = await searchTalkMessages({
+      talkId: input.talkId,
+      query,
+      limit,
+    });
+    const results = rows.map((row) => ({
+      messageId: row.id,
+      threadId: row.thread_id,
+      threadTitle: row.thread_title,
+      role: row.role,
+      createdAt: row.created_at,
+      preview: buildMessagePreview(row.content),
+    }));
+
+    return {
+      statusCode: 200,
+      body: {
+        ok: true,
+        data: {
+          talkId: input.talkId,
+          query,
+          results,
+        },
       },
-    },
-  };
+    };
+  });
 }
 
 function toTalkRunApiRecord(
-  run: ReturnType<typeof listTalkRunsForTalk>[number],
+  run: TalkRunRecord,
+  nicknameByAgentId: Map<string, string>,
 ): TalkRunApiRecord {
   const parsedError = parseTalkRunError(run);
   const metadata = parseRunMetadata(run.metadata_json);
@@ -2344,7 +2383,9 @@ function toTalkRunApiRecord(
     completedAt: run.ended_at,
     triggerMessageId: run.trigger_message_id,
     targetAgentId: run.target_agent_id || null,
-    targetAgentNickname: run.target_agent_nickname,
+    targetAgentNickname: run.target_agent_id
+      ? (nicknameByAgentId.get(run.target_agent_id) ?? null)
+      : null,
     errorCode: parsedError.errorCode,
     errorMessage: parsedError.errorMessage,
     cancelReason: run.cancel_reason,
@@ -2375,157 +2416,88 @@ function toTalkRunApiRecord(
   };
 }
 
-export function listTalkRunsRoute(input: {
+export async function listTalkRunsRoute(input: {
   talkId: string;
   auth: AuthContext;
-}): {
+}): Promise<{
   statusCode: number;
   body: ApiEnvelope<{
     talkId: string;
     runs: TalkRunApiRecord[];
   }>;
-} {
-  const talk = getTalkForUser(input.talkId, input.auth.userId);
-  if (!talk) {
+}> {
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await getTalkForUser(input.talkId);
+    if (!talk) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: {
+            code: 'talk_not_found',
+            message: 'Talk not found',
+          },
+        },
+      };
+    }
+
+    const runs = await listTalkRunsForTalk(input.talkId, 50);
+    const assignments = await listTalkAgents(input.talkId);
+    const nicknameByAgentId = new Map<string, string>(
+      assignments.map((a) => [a.agentId, a.nickname || a.agentName]),
+    );
+
     return {
-      statusCode: 404,
+      statusCode: 200,
       body: {
-        ok: false,
-        error: {
-          code: 'talk_not_found',
-          message: 'Talk not found',
+        ok: true,
+        data: {
+          talkId: input.talkId,
+          runs: runs.map((run) => toTalkRunApiRecord(run, nicknameByAgentId)),
         },
       },
     };
-  }
-
-  return {
-    statusCode: 200,
-    body: {
-      ok: true,
-      data: {
-        talkId: input.talkId,
-        runs: listTalkRunsForTalk(input.talkId, 50).map(toTalkRunApiRecord),
-      },
-    },
-  };
+  });
 }
 
-export function getTalkRunContextRoute(input: {
+export async function getTalkRunContextRoute(input: {
   talkId: string;
   runId: string;
   auth: AuthContext;
-}): {
+}): Promise<{
   statusCode: number;
   body: ApiEnvelope<{
     talkId: string;
     runId: string;
     contextSnapshot: TalkRunContextSnapshot | null;
   }>;
-} {
-  const talk = getTalkForUser(input.talkId, input.auth.userId);
-  if (!talk) {
-    return {
-      statusCode: 404,
-      body: {
-        ok: false,
-        error: {
-          code: 'talk_not_found',
-          message: 'Talk not found',
-        },
-      },
-    };
-  }
-
-  const run = getTalkRunById(input.runId);
-  if (!run || run.talk_id !== input.talkId) {
-    return {
-      statusCode: 404,
-      body: {
-        ok: false,
-        error: {
-          code: 'run_not_found',
-          message: 'Run not found',
-        },
-      },
-    };
-  }
-
-  return {
-    statusCode: 200,
-    body: {
-      ok: true,
-      data: {
-        talkId: input.talkId,
-        runId: input.runId,
-        contextSnapshot: parseTalkRunContextSnapshot(run.metadata_json),
-      },
-    },
-  };
-}
-
-export function cancelTalkChat(input: {
-  talkId: string;
-  threadId?: string | null;
-  auth: AuthContext;
-}): {
-  statusCode: number;
-  body: ApiEnvelope<{
-    talkId: string;
-    threadId?: string | null;
-    cancelledRuns: number;
-  }>;
-  cancelledRunning: boolean;
-} {
-  const talk = getTalkForUser(input.talkId, input.auth.userId);
-  if (!talk) {
-    return {
-      statusCode: 404,
-      body: {
-        ok: false,
-        error: {
-          code: 'talk_not_found',
-          message: 'Talk not found',
-        },
-      },
-      cancelledRunning: false,
-    };
-  }
-
-  if (!canEditTalk(input.talkId, input.auth.userId, input.auth.role)) {
-    return {
-      statusCode: 403,
-      body: {
-        ok: false,
-        error: {
-          code: 'forbidden',
-          message: 'You do not have permission to cancel runs for this talk',
-        },
-      },
-      cancelledRunning: false,
-    };
-  }
-
-  try {
-    const cancellation = cancelTalkRunsAtomic({
-      talkId: input.talkId,
-      threadId: input.threadId,
-      cancelledBy: input.auth.userId,
-    });
-
-    if (cancellation.cancelledRuns === 0) {
+}> {
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await getTalkForUser(input.talkId);
+    if (!talk) {
       return {
         statusCode: 404,
         body: {
           ok: false,
           error: {
-            code: 'no_active_run',
-            message: input.threadId
-              ? 'No running or queued chat exists for this thread'
-              : 'No running or queued chat exists for this talk',
+            code: 'talk_not_found',
+            message: 'Talk not found',
           },
         },
-        cancelledRunning: false,
+      };
+    }
+
+    const run = await getTalkRunById(input.runId);
+    if (!run || run.talk_id !== input.talkId) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: {
+            code: 'run_not_found',
+            message: 'Run not found',
+          },
+        },
       };
     }
 
@@ -2535,26 +2507,108 @@ export function cancelTalkChat(input: {
         ok: true,
         data: {
           talkId: input.talkId,
-          threadId: input.threadId ?? null,
-          cancelledRuns: cancellation.cancelledRuns,
+          runId: input.runId,
+          contextSnapshot: parseTalkRunContextSnapshot(run.metadata_json),
         },
       },
-      cancelledRunning: cancellation.cancelledRunning,
     };
-  } catch (error) {
-    if (error instanceof TalkThreadValidationError) {
+  });
+}
+
+export async function cancelTalkChat(input: {
+  talkId: string;
+  threadId?: string | null;
+  auth: AuthContext;
+}): Promise<{
+  statusCode: number;
+  body: ApiEnvelope<{
+    talkId: string;
+    threadId?: string | null;
+    cancelledRuns: number;
+  }>;
+  cancelledRunning: boolean;
+}> {
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await getTalkForUser(input.talkId);
+    if (!talk) {
       return {
-        statusCode: 400,
+        statusCode: 404,
         body: {
           ok: false,
           error: {
-            code: error.code,
-            message: error.message,
+            code: 'talk_not_found',
+            message: 'Talk not found',
           },
         },
         cancelledRunning: false,
       };
     }
-    throw error;
-  }
+
+    if (!(await canEditTalk(input.talkId))) {
+      return {
+        statusCode: 403,
+        body: {
+          ok: false,
+          error: {
+            code: 'forbidden',
+            message: 'You do not have permission to cancel runs for this talk',
+          },
+        },
+        cancelledRunning: false,
+      };
+    }
+
+    try {
+      const cancellation = await cancelTalkRunsAtomic({
+        talkId: input.talkId,
+        threadId: input.threadId,
+        cancelledBy: input.auth.userId,
+        ownerId: talk.owner_id,
+      });
+
+      if (cancellation.cancelledRuns === 0) {
+        return {
+          statusCode: 404,
+          body: {
+            ok: false,
+            error: {
+              code: 'no_active_run',
+              message: input.threadId
+                ? 'No running or queued chat exists for this thread'
+                : 'No running or queued chat exists for this talk',
+            },
+          },
+          cancelledRunning: false,
+        };
+      }
+
+      return {
+        statusCode: 200,
+        body: {
+          ok: true,
+          data: {
+            talkId: input.talkId,
+            threadId: input.threadId ?? null,
+            cancelledRuns: cancellation.cancelledRuns,
+          },
+        },
+        cancelledRunning: cancellation.cancelledRunning,
+      };
+    } catch (error) {
+      if (error instanceof TalkThreadValidationError) {
+        return {
+          statusCode: 400,
+          body: {
+            ok: false,
+            error: {
+              code: error.code,
+              message: error.message,
+            },
+          },
+          cancelledRunning: false,
+        };
+      }
+      throw error;
+    }
+  });
 }

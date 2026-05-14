@@ -1,8 +1,4 @@
-import {
-  getRegisteredAgent,
-  TOOL_FAMILY_MAP,
-  type RegisteredAgentRecord,
-} from '../db/agent-accessors.js';
+import { getRegisteredAgent, TOOL_FAMILY_MAP } from '../db/agent-accessors.js';
 import {
   resolveExecution,
   ExecutionResolverError,
@@ -233,7 +229,7 @@ export async function executeWithAgent(
   // -----------
   // Step 1: Load agent config
   // -----------
-  const agent = getRegisteredAgent(agentId);
+  const agent = await getRegisteredAgent(agentId);
   if (!agent) {
     const errorCode = 'AGENT_NOT_FOUND';
     const errorMessage = `Agent ${agentId} not found`;
@@ -241,7 +237,7 @@ export async function executeWithAgent(
     throw new Error(errorMessage);
   }
 
-  if (agent.enabled !== 1) {
+  if (!agent.enabled) {
     const errorCode = 'AGENT_DISABLED';
     const errorMessage = `Agent ${agentId} is disabled`;
     emit({ type: 'failed', errorCode, errorMessage });
@@ -260,7 +256,7 @@ export async function executeWithAgent(
   let defaultMaxOutputTokens: number | undefined;
 
   try {
-    const binding = resolveExecution(agent);
+    const binding = await resolveExecution(agent);
     providerConfig = binding.providerConfig;
     secret = binding.secret;
     defaultMaxOutputTokens = binding.defaultMaxOutputTokens;
@@ -280,15 +276,9 @@ export async function executeWithAgent(
   // -----------
   // Step 3: Filter tools by agent permissions
   // -----------
-  let agentPermissions: Record<string, boolean> = {};
-  try {
-    agentPermissions = JSON.parse(agent.tool_permissions_json);
-  } catch {
-    const errorCode = 'INVALID_TOOL_PERMISSIONS';
-    const errorMessage = `Failed to parse tool_permissions_json for agent ${agentId}`;
-    emit({ type: 'failed', errorCode, errorMessage });
-    throw new Error(errorMessage);
-  }
+  // tool_permissions_json is jsonb in postgres — round-trips as a parsed
+  // object, not a string. No JSON.parse needed in the cloud path.
+  const agentPermissions: Record<string, boolean> = agent.tool_permissions_json;
 
   // Resolve enabled tools from TOOL_FAMILY_MAP
   const enabledToolNames = new Set<string>();

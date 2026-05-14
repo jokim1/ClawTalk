@@ -1,13 +1,28 @@
-import { randomUUID } from 'crypto';
+// clawtalk Phase 5 (PR 2) — postgres port of job-accessors.ts.
+//
+// Behavior changes vs sqlite:
+//   - `talk_data_connectors` + `talk_channel_bindings` validation
+//     dropped (chassis removal). `validateScopedConnectorIds` +
+//     `validateScopedChannelBindingIds` gone. `getTalkJobDependencyIssue`
+//     no longer returns `connector_scope_invalid` /
+//     `channel_scope_invalid` codes. `sourceScope.connectorIds` and
+//     `sourceScope.channelBindingIds` continue to round-trip on the row
+//     for forward-compatibility but no longer validate against
+//     attachment tables.
+//   - IDs use bare uuid (no `job_`/`msg_`/`run_` string prefixes).
+//   - `schedule_json` + `source_scope_json` are jsonb columns; they
+//     round-trip as parsed objects rather than strings — no JSON.parse /
+//     JSON.stringify at accessor boundary.
+//   - Inserts/updates rely on RLS `owner_id = auth.uid()` instead of an
+//     explicit ownerId WHERE clause.
 
-import { getDb } from '../../db.js';
 import {
   appendOutboxEvent,
   createTalkMessage,
   createTalkRun,
   createTalkThread,
-  type TalkRunRecord,
 } from './accessors.js';
+import { getDbPg } from '../../db.js';
 
 export type TalkJobStatus = 'active' | 'paused' | 'blocked';
 export type TalkJobDeliverableKind = 'thread' | 'report';
@@ -21,10 +36,7 @@ export type TalkJobWeekday =
   | 'sat';
 
 export type TalkJobSchedule =
-  | {
-      kind: 'hourly_interval';
-      everyHours: number;
-    }
+  | { kind: 'hourly_interval'; everyHours: number }
   | {
       kind: 'weekly';
       weekdays: TalkJobWeekday[];
@@ -41,17 +53,18 @@ export interface TalkJobScope {
 interface TalkJobRow {
   id: string;
   talk_id: string;
+  owner_id: string;
   title: string;
   prompt: string;
   target_agent_id: string | null;
   target_agent_nickname: string | null;
   status: TalkJobStatus;
-  schedule_json: string;
+  schedule_json: TalkJobSchedule;
   timezone: string;
   deliverable_kind: TalkJobDeliverableKind;
   report_output_id: string | null;
   report_output_title: string | null;
-  source_scope_json: string;
+  source_scope_json: TalkJobScope;
   thread_id: string;
   last_run_at: string | null;
   last_run_status: string | null;
@@ -65,6 +78,7 @@ interface TalkJobRow {
 export interface TalkJob {
   id: string;
   talkId: string;
+  ownerId: string;
   title: string;
   prompt: string;
   targetAgentId: string | null;
@@ -109,14 +123,13 @@ export interface TalkJobRunSummary {
 }
 
 export interface TalkJobDependencyIssue {
-  code:
-    | 'target_agent_missing'
-    | 'report_output_missing'
-    | 'connector_scope_invalid'
-    | 'channel_scope_invalid'
-    | 'thread_missing';
+  code: 'target_agent_missing' | 'report_output_missing' | 'thread_missing';
   message: string;
 }
+
+// ---------------------------------------------------------------------------
+// Input normalizers (pure JS — identical to the sqlite-era validators).
+// ---------------------------------------------------------------------------
 
 function normalizePrompt(prompt: string): string {
   const normalized = prompt.trim();
@@ -199,7 +212,6 @@ export function normalizeTalkJobSchedule(raw: unknown): TalkJobSchedule {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     throw new Error('Schedule is required');
   }
-
   const candidate = raw as Record<string, unknown>;
   if (candidate.kind === 'hourly_interval') {
     return {
@@ -212,7 +224,6 @@ export function normalizeTalkJobSchedule(raw: unknown): TalkJobSchedule {
       ),
     };
   }
-
   if (candidate.kind === 'weekly') {
     return {
       kind: 'weekly',
@@ -221,7 +232,6 @@ export function normalizeTalkJobSchedule(raw: unknown): TalkJobSchedule {
       minute: normalizeIntegerInRange(candidate.minute, 0, 59, 'minute'),
     };
   }
-
   throw new Error('Schedule kind must be hourly_interval or weekly');
 }
 
@@ -248,30 +258,10 @@ export function normalizeTalkJobScope(raw: unknown): TalkJobScope {
   };
 }
 
-function serializeSchedule(schedule: TalkJobSchedule): string {
-  return JSON.stringify(schedule);
-}
-
-function serializeScope(scope: TalkJobScope): string {
-  return JSON.stringify(scope);
-}
-
-function parseSchedule(value: string): TalkJobSchedule {
-  return normalizeTalkJobSchedule(JSON.parse(value));
-}
-
-function parseScope(value: string | null): TalkJobScope {
-  return normalizeTalkJobScope(value ? JSON.parse(value) : null);
-}
-
 function getLocalDateParts(
   date: Date,
   timezone: string,
-): {
-  weekday: TalkJobWeekday;
-  hour: number;
-  minute: number;
-} {
+): { weekday: TalkJobWeekday; hour: number; minute: number } {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: timezone,
     weekday: 'short',
@@ -279,7 +269,6 @@ function getLocalDateParts(
     minute: '2-digit',
     hour12: false,
   }).formatToParts(date);
-
   const get = (type: string): string =>
     parts.find((part) => part.type === type)?.value || '';
   const weekdayRaw = get('weekday').toLowerCase();
@@ -292,7 +281,6 @@ function getLocalDateParts(
     fri: 'fri',
     sat: 'sat',
   };
-
   return {
     weekday: weekdayMap[weekdayRaw.slice(0, 3)] || 'sun',
     hour: Number.parseInt(get('hour'), 10),
@@ -311,13 +299,11 @@ export function computeNextTalkJobDueAt(input: {
       : input.from
         ? new Date(input.from)
         : new Date();
-
   if (input.schedule.kind === 'hourly_interval') {
     return new Date(
       fromDate.getTime() + input.schedule.everyHours * 60 * 60 * 1000,
     ).toISOString();
   }
-
   const startMs = fromDate.getTime() + 60_000;
   const weekdays = new Set(input.schedule.weekdays);
   const endMs = startMs + 8 * 24 * 60 * 60 * 1000;
@@ -331,25 +317,29 @@ export function computeNextTalkJobDueAt(input: {
       return new Date(ts).toISOString();
     }
   }
-
   throw new Error('Could not compute next due time for schedule');
 }
+
+// ---------------------------------------------------------------------------
+// Row → TalkJob mapping + load
+// ---------------------------------------------------------------------------
 
 function toTalkJob(row: TalkJobRow): TalkJob {
   return {
     id: row.id,
     talkId: row.talk_id,
+    ownerId: row.owner_id,
     title: row.title,
     prompt: row.prompt,
     targetAgentId: row.target_agent_id,
     targetAgentNickname: row.target_agent_nickname,
     status: row.status,
-    schedule: parseSchedule(row.schedule_json),
+    schedule: normalizeTalkJobSchedule(row.schedule_json),
     timezone: row.timezone,
     deliverableKind: row.deliverable_kind,
     reportOutputId: row.report_output_id,
     reportOutputTitle: row.report_output_title,
-    sourceScope: parseScope(row.source_scope_json),
+    sourceScope: normalizeTalkJobScope(row.source_scope_json),
     threadId: row.thread_id,
     lastRunAt: row.last_run_at,
     lastRunStatus: row.last_run_status,
@@ -361,207 +351,168 @@ function toTalkJob(row: TalkJobRow): TalkJob {
   };
 }
 
-function loadTalkJobRows(whereSql: string, ...params: unknown[]): TalkJobRow[] {
-  return getDb()
-    .prepare(
-      `
-      SELECT
-        j.id,
-        j.talk_id,
-        j.title,
-        j.prompt,
-        j.target_agent_id,
-        ra.name AS target_agent_nickname,
-        j.status,
-        j.schedule_json,
-        j.timezone,
-        j.deliverable_kind,
-        j.report_output_id,
-        o.title AS report_output_title,
-        j.source_scope_json,
-        j.thread_id,
-        j.last_run_at,
-        j.last_run_status,
-        j.next_due_at,
-        j.run_count,
-        j.created_at,
-        j.updated_at,
-        j.created_by
-      FROM talk_jobs j
-      LEFT JOIN registered_agents ra ON ra.id = j.target_agent_id
-      LEFT JOIN talk_outputs o ON o.id = j.report_output_id AND o.talk_id = j.talk_id
-      ${whereSql}
-    `,
-    )
-    .all(...params) as TalkJobRow[];
+const TALK_JOB_SELECT = `
+  j.id,
+  j.talk_id,
+  j.owner_id,
+  j.title,
+  j.prompt,
+  j.target_agent_id,
+  ra.name as target_agent_nickname,
+  j.status,
+  j.schedule_json,
+  j.timezone,
+  j.deliverable_kind,
+  j.report_output_id,
+  o.title as report_output_title,
+  j.source_scope_json,
+  j.thread_id,
+  j.last_run_at,
+  j.last_run_status,
+  j.next_due_at,
+  j.run_count,
+  j.created_at,
+  j.updated_at,
+  j.created_by
+`;
+
+export async function listTalkJobs(talkId: string): Promise<TalkJob[]> {
+  const db = getDbPg();
+  const rows = await db<TalkJobRow[]>`
+    select ${db.unsafe(TALK_JOB_SELECT)}
+    from public.talk_jobs j
+    left join public.registered_agents ra on ra.id = j.target_agent_id
+    left join public.talk_outputs o
+      on o.id = j.report_output_id and o.talk_id = j.talk_id
+    where j.talk_id = ${talkId}::uuid
+    order by
+      case j.status
+        when 'active' then 0
+        when 'paused' then 1
+        else 2
+      end asc,
+      coalesce(j.next_due_at, j.updated_at) asc,
+      j.created_at asc
+  `;
+  return rows.map(toTalkJob);
 }
 
-export function listTalkJobs(talkId: string): TalkJob[] {
-  return loadTalkJobRows(
-    `
-      WHERE j.talk_id = ?
-      ORDER BY
-        CASE j.status
-          WHEN 'active' THEN 0
-          WHEN 'paused' THEN 1
-          ELSE 2
-        END ASC,
-        COALESCE(j.next_due_at, j.updated_at) ASC,
-        j.created_at ASC
-    `,
-    talkId,
-  ).map(toTalkJob);
+export async function getTalkJob(
+  talkId: string,
+  jobId: string,
+): Promise<TalkJob | undefined> {
+  const db = getDbPg();
+  const rows = await db<TalkJobRow[]>`
+    select ${db.unsafe(TALK_JOB_SELECT)}
+    from public.talk_jobs j
+    left join public.registered_agents ra on ra.id = j.target_agent_id
+    left join public.talk_outputs o
+      on o.id = j.report_output_id and o.talk_id = j.talk_id
+    where j.talk_id = ${talkId}::uuid and j.id = ${jobId}::uuid
+    limit 1
+  `;
+  return rows[0] ? toTalkJob(rows[0]) : undefined;
 }
 
-export function getTalkJob(talkId: string, jobId: string): TalkJob | undefined {
-  const row = loadTalkJobRows(
-    'WHERE j.talk_id = ? AND j.id = ? LIMIT 1',
-    talkId,
-    jobId,
-  )[0];
-  return row ? toTalkJob(row) : undefined;
+export async function getTalkJobById(
+  jobId: string,
+): Promise<TalkJob | undefined> {
+  const db = getDbPg();
+  const rows = await db<TalkJobRow[]>`
+    select ${db.unsafe(TALK_JOB_SELECT)}
+    from public.talk_jobs j
+    left join public.registered_agents ra on ra.id = j.target_agent_id
+    left join public.talk_outputs o
+      on o.id = j.report_output_id and o.talk_id = j.talk_id
+    where j.id = ${jobId}::uuid
+    limit 1
+  `;
+  return rows[0] ? toTalkJob(rows[0]) : undefined;
 }
 
-export function getTalkJobById(jobId: string): TalkJob | undefined {
-  const row = loadTalkJobRows('WHERE j.id = ? LIMIT 1', jobId)[0];
-  return row ? toTalkJob(row) : undefined;
-}
+// ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
 
-function validateTargetAgentMembership(
+async function validateTargetAgentMembership(
   talkId: string,
   targetAgentId: string,
-): boolean {
-  const row = getDb()
-    .prepare(
-      `
-      SELECT 1
-      FROM talk_agents ta
-      JOIN registered_agents ra ON ra.id = ta.registered_agent_id
-      WHERE ta.talk_id = ? AND ra.id = ?
-      LIMIT 1
-    `,
-    )
-    .get(talkId, targetAgentId) as { 1: number } | undefined;
-  return Boolean(row);
+): Promise<boolean> {
+  const db = getDbPg();
+  const rows = await db<{ ok: number }[]>`
+    select 1 as ok
+    from public.talk_agents ta
+    join public.registered_agents ra on ra.id = ta.registered_agent_id
+    where ta.talk_id = ${talkId}::uuid and ra.id = ${targetAgentId}::uuid
+    limit 1
+  `;
+  return rows.length > 0;
 }
 
-function validateScopedConnectorIds(
-  talkId: string,
-  connectorIds: string[],
-): void {
-  if (connectorIds.length === 0) return;
-  const placeholders = connectorIds.map(() => '?').join(', ');
-  const row = getDb()
-    .prepare(
-      `
-      SELECT COUNT(*) AS count
-      FROM talk_data_connectors
-      WHERE talk_id = ?
-        AND connector_id IN (${placeholders})
-    `,
-    )
-    .get(talkId, ...connectorIds) as { count: number } | undefined;
-  if ((row?.count || 0) !== connectorIds.length) {
-    throw new Error(
-      'One or more scoped data connectors are not attached to this talk.',
-    );
-  }
-}
-
-function validateScopedChannelBindingIds(
-  talkId: string,
-  channelBindingIds: string[],
-): void {
-  if (channelBindingIds.length === 0) return;
-  const placeholders = channelBindingIds.map(() => '?').join(', ');
-  const row = getDb()
-    .prepare(
-      `
-      SELECT COUNT(*) AS count
-      FROM talk_channel_bindings
-      WHERE talk_id = ?
-        AND id IN (${placeholders})
-    `,
-    )
-    .get(talkId, ...channelBindingIds) as { count: number } | undefined;
-  if ((row?.count || 0) !== channelBindingIds.length) {
-    throw new Error(
-      'One or more scoped channel bindings are not attached to this talk.',
-    );
-  }
-}
-
-function validateReportOutput(
+async function validateReportOutput(
   talkId: string,
   deliverableKind: TalkJobDeliverableKind,
   reportOutputId: string | null | undefined,
-): void {
+): Promise<void> {
   if (deliverableKind !== 'report') return;
   if (!reportOutputId?.trim()) {
     throw new Error('Report jobs require a configured report output.');
   }
-  const row = getDb()
-    .prepare(
-      `
-      SELECT id
-      FROM talk_outputs
-      WHERE talk_id = ? AND id = ?
-      LIMIT 1
-    `,
-    )
-    .get(talkId, reportOutputId) as { id: string } | undefined;
-  if (!row) {
+  const db = getDbPg();
+  const rows = await db<{ id: string }[]>`
+    select id from public.talk_outputs
+    where talk_id = ${talkId}::uuid and id = ${reportOutputId}::uuid
+    limit 1
+  `;
+  if (rows.length === 0) {
     throw new Error('The selected report output was not found on this talk.');
   }
 }
 
-function validateTalkJobConfiguration(input: {
+async function validateTalkJobConfiguration(input: {
   talkId: string;
   targetAgentId: string;
   deliverableKind: TalkJobDeliverableKind;
   reportOutputId?: string | null;
-  sourceScope: TalkJobScope;
-}): void {
-  if (!validateTargetAgentMembership(input.talkId, input.targetAgentId)) {
+}): Promise<void> {
+  if (
+    !(await validateTargetAgentMembership(input.talkId, input.targetAgentId))
+  ) {
     throw new Error(
       'The selected Talk agent is not currently configured on this talk.',
     );
   }
-  validateReportOutput(
+  await validateReportOutput(
     input.talkId,
     input.deliverableKind,
     input.reportOutputId,
   );
-  validateScopedConnectorIds(input.talkId, input.sourceScope.connectorIds);
-  validateScopedChannelBindingIds(
-    input.talkId,
-    input.sourceScope.channelBindingIds,
-  );
 }
 
-export function getTalkJobDependencyIssue(
+export async function getTalkJobDependencyIssue(
   job: TalkJob,
-): TalkJobDependencyIssue | null {
-  const threadRow = getDb()
-    .prepare(`SELECT id FROM talk_threads WHERE id = ? AND talk_id = ? LIMIT 1`)
-    .get(job.threadId, job.talkId) as { id: string } | undefined;
-  if (!threadRow) {
+): Promise<TalkJobDependencyIssue | null> {
+  const db = getDbPg();
+  const threadRows = await db<{ id: string }[]>`
+    select id from public.talk_threads
+    where id = ${job.threadId}::uuid and talk_id = ${job.talkId}::uuid
+    limit 1
+  `;
+  if (threadRows.length === 0) {
     return {
       code: 'thread_missing',
       message: 'The job thread no longer exists.',
     };
   }
-
   if (
     !job.targetAgentId ||
-    !validateTargetAgentMembership(job.talkId, job.targetAgentId)
+    !(await validateTargetAgentMembership(job.talkId, job.targetAgentId))
   ) {
     return {
       code: 'target_agent_missing',
       message: 'The selected Talk agent is no longer available on this talk.',
     };
   }
-
   if (job.deliverableKind === 'report') {
     if (!job.reportOutputId) {
       return {
@@ -569,81 +520,39 @@ export function getTalkJobDependencyIssue(
         message: 'This report job no longer has a configured report output.',
       };
     }
-    const reportRow = getDb()
-      .prepare(
-        `SELECT id FROM talk_outputs WHERE talk_id = ? AND id = ? LIMIT 1`,
-      )
-      .get(job.talkId, job.reportOutputId) as { id: string } | undefined;
-    if (!reportRow) {
+    const outputRows = await db<{ id: string }[]>`
+      select id from public.talk_outputs
+      where talk_id = ${job.talkId}::uuid and id = ${job.reportOutputId}::uuid
+      limit 1
+    `;
+    if (outputRows.length === 0) {
       return {
         code: 'report_output_missing',
         message: 'The configured report output no longer exists.',
       };
     }
   }
-
-  if (job.sourceScope.connectorIds.length > 0) {
-    const placeholders = job.sourceScope.connectorIds.map(() => '?').join(', ');
-    const row = getDb()
-      .prepare(
-        `
-        SELECT COUNT(*) AS count
-        FROM talk_data_connectors
-        WHERE talk_id = ?
-          AND connector_id IN (${placeholders})
-      `,
-      )
-      .get(job.talkId, ...job.sourceScope.connectorIds) as { count: number };
-    if ((row?.count || 0) !== job.sourceScope.connectorIds.length) {
-      return {
-        code: 'connector_scope_invalid',
-        message:
-          'One or more scoped data connectors are no longer attached to this talk.',
-      };
-    }
-  }
-
-  if (job.sourceScope.channelBindingIds.length > 0) {
-    const placeholders = job.sourceScope.channelBindingIds
-      .map(() => '?')
-      .join(', ');
-    const row = getDb()
-      .prepare(
-        `
-        SELECT COUNT(*) AS count
-        FROM talk_channel_bindings
-        WHERE talk_id = ?
-          AND id IN (${placeholders})
-      `,
-      )
-      .get(job.talkId, ...job.sourceScope.channelBindingIds) as {
-      count: number;
-    };
-    if ((row?.count || 0) !== job.sourceScope.channelBindingIds.length) {
-      return {
-        code: 'channel_scope_invalid',
-        message:
-          'One or more scoped channel bindings are no longer attached to this talk.',
-      };
-    }
-  }
-
   return null;
 }
 
-function updateTalkUpdatedAt(talkId: string, now: string): void {
-  getDb()
-    .prepare(
-      `
-      UPDATE talks
-      SET updated_at = ?
-      WHERE id = ?
-    `,
-    )
-    .run(now, talkId);
+// ---------------------------------------------------------------------------
+// Mutations
+// ---------------------------------------------------------------------------
+
+async function touchTalkUpdatedAtForJob(
+  talkId: string,
+  now: string,
+): Promise<void> {
+  const db = getDbPg();
+  await db`
+    update public.talks
+    set updated_at = ${now}::timestamptz
+    where id = ${talkId}::uuid
+  `;
 }
 
-export function createTalkJob(input: {
+export async function createTalkJob(input: {
+  ownerId: string;
   talkId: string;
   title: string;
   prompt: string;
@@ -654,18 +563,17 @@ export function createTalkJob(input: {
   reportOutputId?: string | null;
   sourceScope?: TalkJobScope;
   createdBy: string;
-}): TalkJob {
+}): Promise<TalkJob> {
   const title = normalizeTitle(input.title);
   const prompt = normalizePrompt(input.prompt);
   const schedule = normalizeTalkJobSchedule(input.schedule);
   const timezone = validateTimezone(input.timezone);
   const sourceScope = normalizeTalkJobScope(input.sourceScope);
-  validateTalkJobConfiguration({
+  await validateTalkJobConfiguration({
     talkId: input.talkId,
     targetAgentId: input.targetAgentId,
     deliverableKind: input.deliverableKind,
     reportOutputId: input.reportOutputId,
-    sourceScope,
   });
   const now = new Date().toISOString();
   const nextDueAt = computeNextTalkJobDueAt({
@@ -673,63 +581,37 @@ export function createTalkJob(input: {
     timezone,
     from: now,
   });
-  const thread = createTalkThread({
+  const thread = await createTalkThread({
+    ownerId: input.ownerId,
     talkId: input.talkId,
     title,
     isInternal: input.deliverableKind === 'report',
   });
-  const id = `job_${randomUUID()}`;
 
-  getDb()
-    .prepare(
-      `
-      INSERT INTO talk_jobs (
-        id,
-        talk_id,
-        title,
-        prompt,
-        target_agent_id,
-        status,
-        schedule_json,
-        timezone,
-        deliverable_kind,
-        report_output_id,
-        source_scope_json,
-        thread_id,
-        last_run_at,
-        last_run_status,
-        next_due_at,
-        run_count,
-        created_at,
-        updated_at,
-        created_by
-      )
-      VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, NULL, NULL, ?, 0, ?, ?, ?)
-    `,
+  const db = getDbPg();
+  const inserted = await db<{ id: string }[]>`
+    insert into public.talk_jobs (
+      talk_id, owner_id, title, prompt, target_agent_id, status,
+      schedule_json, timezone, deliverable_kind, report_output_id,
+      source_scope_json, thread_id, next_due_at, created_by,
+      created_at, updated_at, run_count
     )
-    .run(
-      id,
-      input.talkId,
-      title,
-      prompt,
-      input.targetAgentId,
-      serializeSchedule(schedule),
-      timezone,
-      input.deliverableKind,
-      input.reportOutputId ?? null,
-      serializeScope(sourceScope),
-      thread.id,
-      nextDueAt,
-      now,
-      now,
-      input.createdBy,
-    );
-
-  updateTalkUpdatedAt(input.talkId, now);
-  return getTalkJob(input.talkId, id)!;
+    values (
+      ${input.talkId}::uuid, ${input.ownerId}::uuid, ${title}, ${prompt},
+      ${input.targetAgentId}::uuid, 'active',
+      ${db.json(schedule as never)}, ${timezone}, ${input.deliverableKind},
+      ${input.reportOutputId ?? null}::uuid,
+      ${db.json(sourceScope as never)}, ${thread.id}::uuid,
+      ${nextDueAt}::timestamptz, ${input.createdBy}::uuid,
+      ${now}::timestamptz, ${now}::timestamptz, 0
+    )
+    returning id
+  `;
+  await touchTalkUpdatedAtForJob(input.talkId, now);
+  return (await getTalkJob(input.talkId, inserted[0].id))!;
 }
 
-export function patchTalkJob(input: {
+export async function patchTalkJob(input: {
   talkId: string;
   jobId: string;
   title?: string;
@@ -740,8 +622,8 @@ export function patchTalkJob(input: {
   deliverableKind?: TalkJobDeliverableKind;
   reportOutputId?: string | null;
   sourceScope?: TalkJobScope;
-}): TalkJob | undefined {
-  const current = getTalkJob(input.talkId, input.jobId);
+}): Promise<TalkJob | undefined> {
+  const current = await getTalkJob(input.talkId, input.jobId);
   if (!current) return undefined;
 
   const title =
@@ -773,166 +655,134 @@ export function patchTalkJob(input: {
   if (!targetAgentId) {
     throw new Error('Job target agent is required');
   }
-  validateTalkJobConfiguration({
+  await validateTalkJobConfiguration({
     talkId: input.talkId,
     targetAgentId,
     deliverableKind,
     reportOutputId,
-    sourceScope,
   });
 
   const now = new Date().toISOString();
-  const threadId = current.threadId;
-
-  getDb()
-    .prepare(
-      `
-      UPDATE talk_threads
-      SET title = ?, is_internal = ?, updated_at = ?
-      WHERE id = ? AND talk_id = ?
-    `,
-    )
-    .run(
-      title,
-      deliverableKind === 'report' ? 1 : 0,
-      now,
-      current.threadId,
-      input.talkId,
-    );
-
   const nextDueAt =
     current.status === 'paused' || current.status === 'blocked'
       ? null
-      : computeNextTalkJobDueAt({
-          schedule,
-          timezone,
-          from: now,
-        });
+      : computeNextTalkJobDueAt({ schedule, timezone, from: now });
 
-  getDb()
-    .prepare(
-      `
-      UPDATE talk_jobs
-      SET title = ?,
-          prompt = ?,
-          target_agent_id = ?,
-          schedule_json = ?,
-          timezone = ?,
-          deliverable_kind = ?,
-          report_output_id = ?,
-          source_scope_json = ?,
-          thread_id = ?,
-          next_due_at = ?,
-          updated_at = ?
-      WHERE talk_id = ? AND id = ?
-    `,
-    )
-    .run(
-      title,
-      prompt,
-      targetAgentId,
-      serializeSchedule(schedule),
-      timezone,
-      deliverableKind,
-      reportOutputId ?? null,
-      serializeScope(sourceScope),
-      threadId,
-      nextDueAt,
-      now,
-      input.talkId,
-      input.jobId,
-    );
-
-  updateTalkUpdatedAt(input.talkId, now);
-  return getTalkJob(input.talkId, input.jobId);
+  const db = getDbPg();
+  await db`
+    update public.talk_threads
+    set title = ${title},
+        is_internal = ${deliverableKind === 'report'},
+        updated_at = ${now}::timestamptz
+    where id = ${current.threadId}::uuid and talk_id = ${input.talkId}::uuid
+  `;
+  await db`
+    update public.talk_jobs
+    set title = ${title},
+        prompt = ${prompt},
+        target_agent_id = ${targetAgentId}::uuid,
+        schedule_json = ${db.json(schedule as never)},
+        timezone = ${timezone},
+        deliverable_kind = ${deliverableKind},
+        report_output_id = ${reportOutputId ?? null}::uuid,
+        source_scope_json = ${db.json(sourceScope as never)},
+        next_due_at = ${nextDueAt}::timestamptz,
+        updated_at = ${now}::timestamptz
+    where talk_id = ${input.talkId}::uuid and id = ${input.jobId}::uuid
+  `;
+  await touchTalkUpdatedAtForJob(input.talkId, now);
+  return await getTalkJob(input.talkId, input.jobId);
 }
 
-export function deleteTalkJob(talkId: string, jobId: string): boolean {
-  const current = getTalkJob(talkId, jobId);
+export async function deleteTalkJob(
+  talkId: string,
+  jobId: string,
+): Promise<boolean> {
+  const current = await getTalkJob(talkId, jobId);
   if (!current) return false;
   const now = new Date().toISOString();
-  getDb()
-    .prepare(
-      `
-      UPDATE talk_threads
-      SET is_internal = 1, updated_at = ?
-      WHERE id = ? AND talk_id = ?
-    `,
-    )
-    .run(now, current.threadId, talkId);
-
-  const result = getDb()
-    .prepare(`DELETE FROM talk_jobs WHERE talk_id = ? AND id = ?`)
-    .run(talkId, jobId);
-  if (result.changes === 1) {
-    updateTalkUpdatedAt(talkId, now);
+  const db = getDbPg();
+  await db`
+    update public.talk_threads
+    set is_internal = true, updated_at = ${now}::timestamptz
+    where id = ${current.threadId}::uuid and talk_id = ${talkId}::uuid
+  `;
+  const result = await db<{ id: string }[]>`
+    delete from public.talk_jobs
+    where talk_id = ${talkId}::uuid and id = ${jobId}::uuid
+    returning id
+  `;
+  if (result.length === 1) {
+    await touchTalkUpdatedAtForJob(talkId, now);
   }
-  return result.changes === 1;
+  return result.length === 1;
 }
 
-function updateTalkJobStatus(
+async function updateTalkJobStatus(
   talkId: string,
   jobId: string,
   status: TalkJobStatus,
   nextDueAt: string | null,
-): TalkJob | undefined {
+): Promise<TalkJob | undefined> {
   const now = new Date().toISOString();
-  const result = getDb()
-    .prepare(
-      `
-      UPDATE talk_jobs
-      SET status = ?, next_due_at = ?, updated_at = ?
-      WHERE talk_id = ? AND id = ?
-    `,
-    )
-    .run(status, nextDueAt, now, talkId, jobId);
-  if (result.changes !== 1) return undefined;
-  updateTalkUpdatedAt(talkId, now);
-  return getTalkJob(talkId, jobId);
+  const db = getDbPg();
+  const result = await db<{ id: string }[]>`
+    update public.talk_jobs
+    set status = ${status},
+        next_due_at = ${nextDueAt}::timestamptz,
+        updated_at = ${now}::timestamptz
+    where talk_id = ${talkId}::uuid and id = ${jobId}::uuid
+    returning id
+  `;
+  if (result.length !== 1) return undefined;
+  await touchTalkUpdatedAtForJob(talkId, now);
+  return await getTalkJob(talkId, jobId);
 }
 
-export function pauseTalkJob(
+export async function pauseTalkJob(
   talkId: string,
   jobId: string,
-): TalkJob | undefined {
-  return updateTalkJobStatus(talkId, jobId, 'paused', null);
+): Promise<TalkJob | undefined> {
+  return await updateTalkJobStatus(talkId, jobId, 'paused', null);
 }
 
-export function resumeTalkJob(
+export async function resumeTalkJob(
   talkId: string,
   jobId: string,
-): TalkJob | undefined {
-  const current = getTalkJob(talkId, jobId);
+): Promise<TalkJob | undefined> {
+  const current = await getTalkJob(talkId, jobId);
   if (!current) return undefined;
   const nextDueAt = computeNextTalkJobDueAt({
     schedule: current.schedule,
     timezone: current.timezone,
   });
-  return updateTalkJobStatus(talkId, jobId, 'active', nextDueAt);
+  return await updateTalkJobStatus(talkId, jobId, 'active', nextDueAt);
 }
 
-export function blockTalkJob(
+export async function blockTalkJob(
   talkId: string,
   jobId: string,
   lastRunStatus = 'blocked',
-): TalkJob | undefined {
+): Promise<TalkJob | undefined> {
   const now = new Date().toISOString();
-  const result = getDb()
-    .prepare(
-      `
-      UPDATE talk_jobs
-      SET status = 'blocked',
-          next_due_at = NULL,
-          last_run_status = ?,
-          updated_at = ?
-      WHERE talk_id = ? AND id = ?
-    `,
-    )
-    .run(lastRunStatus, now, talkId, jobId);
-  if (result.changes !== 1) return undefined;
-  updateTalkUpdatedAt(talkId, now);
-  return getTalkJob(talkId, jobId);
+  const db = getDbPg();
+  const result = await db<{ id: string }[]>`
+    update public.talk_jobs
+    set status = 'blocked',
+        next_due_at = null,
+        last_run_status = ${lastRunStatus},
+        updated_at = ${now}::timestamptz
+    where talk_id = ${talkId}::uuid and id = ${jobId}::uuid
+    returning id
+  `;
+  if (result.length !== 1) return undefined;
+  await touchTalkUpdatedAtForJob(talkId, now);
+  return await getTalkJob(talkId, jobId);
 }
+
+// ---------------------------------------------------------------------------
+// Run summaries (job activity view)
+// ---------------------------------------------------------------------------
 
 function buildResponseExcerpt(content: string | null): string | null {
   if (!content) return null;
@@ -943,13 +793,11 @@ function buildResponseExcerpt(content: string | null): string | null {
 }
 
 function parseRunError(input: {
-  status: TalkRunSummaryRow['status'];
+  status: TalkJobRunSummary['status'];
   cancel_reason: string | null;
 }): { errorCode: string | null; errorMessage: string | null } {
   const raw = input.cancel_reason?.trim() || null;
-  if (!raw) {
-    return { errorCode: null, errorMessage: null };
-  }
+  if (!raw) return { errorCode: null, errorMessage: null };
   if (input.status === 'cancelled') {
     return { errorCode: 'cancelled', errorMessage: raw };
   }
@@ -963,13 +811,7 @@ function parseRunError(input: {
 interface TalkRunSummaryRow {
   id: string;
   thread_id: string;
-  status:
-    | 'queued'
-    | 'running'
-    | 'awaiting_confirmation'
-    | 'cancelled'
-    | 'completed'
-    | 'failed';
+  status: TalkJobRunSummary['status'];
   created_at: string;
   started_at: string | null;
   ended_at: string | null;
@@ -980,43 +822,34 @@ interface TalkRunSummaryRow {
   response_content: string | null;
 }
 
-export function listTalkJobRunSummaries(
+export async function listTalkJobRunSummaries(
   talkId: string,
   jobId: string,
   limit = 20,
-): TalkJobRunSummary[] {
+): Promise<TalkJobRunSummary[]> {
   const normalizedLimit = Math.max(1, Math.floor(limit));
-  const rows = getDb()
-    .prepare(
-      `
-      SELECT
-        r.id,
-        r.thread_id,
-        r.status,
-        r.created_at,
-        r.started_at,
-        r.ended_at,
-        r.trigger_message_id,
-        r.cancel_reason,
-        r.executor_alias,
-        r.executor_model,
-        (
-          SELECT tm.content
-          FROM talk_messages tm
-          WHERE tm.run_id = r.id AND tm.role = 'assistant'
-          ORDER BY tm.created_at DESC
-          LIMIT 1
-        ) AS response_content
-      FROM talk_runs r
-      WHERE r.talk_id = ? AND r.job_id = ?
-      ORDER BY r.created_at DESC, r.id DESC
-      LIMIT ?
-    `,
-    )
-    .all(talkId, jobId, normalizedLimit) as TalkRunSummaryRow[];
-
+  const db = getDbPg();
+  const rows = await db<TalkRunSummaryRow[]>`
+    select
+      r.id, r.thread_id, r.status, r.created_at, r.started_at, r.ended_at,
+      r.trigger_message_id, r.cancel_reason, r.executor_alias,
+      r.executor_model,
+      (
+        select tm.content from public.talk_messages tm
+        where tm.run_id = r.id and tm.role = 'assistant'
+        order by tm.created_at desc
+        limit 1
+      ) as response_content
+    from public.talk_runs r
+    where r.talk_id = ${talkId}::uuid and r.job_id = ${jobId}::uuid
+    order by r.created_at desc, r.id desc
+    limit ${normalizedLimit}
+  `;
   return rows.map((row) => {
-    const parsedError = parseRunError(row);
+    const parsedError = parseRunError({
+      status: row.status,
+      cancel_reason: row.cancel_reason,
+    });
     return {
       id: row.id,
       threadId: row.thread_id,
@@ -1035,91 +868,85 @@ export function listTalkJobRunSummaries(
   });
 }
 
-export function claimDueTalkJobs(limit: number, now?: string): TalkJob[] {
+// ---------------------------------------------------------------------------
+// Scheduler ticks
+// ---------------------------------------------------------------------------
+
+export async function claimDueTalkJobs(
+  limit: number,
+  now?: string,
+): Promise<TalkJob[]> {
   const normalizedLimit = Math.max(1, Math.floor(limit));
-  const currentNow = now || new Date().toISOString();
-  const tx = getDb().transaction(
-    (txLimit: number, txNow: string): TalkJob[] => {
-      const dueRows = loadTalkJobRows(
-        `
-        WHERE j.status = 'active'
-          AND j.next_due_at IS NOT NULL
-          AND j.next_due_at <= ?
-        ORDER BY j.next_due_at ASC, j.created_at ASC
-        LIMIT ?
-      `,
-        txNow,
-        txLimit,
-      );
-
-      const updateStmt = getDb().prepare(
-        `
-      UPDATE talk_jobs
-      SET next_due_at = ?,
-          updated_at = ?
-      WHERE id = ?
-    `,
-      );
-
-      const claimed: TalkJob[] = [];
-      for (const row of dueRows) {
-        const job = toTalkJob(row);
-        const nextDueAt = computeNextTalkJobDueAt({
-          schedule: job.schedule,
-          timezone: job.timezone,
-          from: txNow,
-        });
-        updateStmt.run(nextDueAt, txNow, job.id);
-        claimed.push({ ...job, nextDueAt });
-      }
-
-      return claimed;
-    },
-  );
-
-  return tx(normalizedLimit, currentNow);
+  const currentNow = now ?? new Date().toISOString();
+  const db = getDbPg();
+  const dueRows = await db<TalkJobRow[]>`
+    select ${db.unsafe(TALK_JOB_SELECT)}
+    from public.talk_jobs j
+    left join public.registered_agents ra on ra.id = j.target_agent_id
+    left join public.talk_outputs o
+      on o.id = j.report_output_id and o.talk_id = j.talk_id
+    where j.status = 'active'
+      and j.next_due_at is not null
+      and j.next_due_at <= ${currentNow}::timestamptz
+    order by j.next_due_at asc, j.created_at asc
+    limit ${normalizedLimit}
+  `;
+  const claimed: TalkJob[] = [];
+  for (const row of dueRows) {
+    const job = toTalkJob(row);
+    const nextDueAt = computeNextTalkJobDueAt({
+      schedule: job.schedule,
+      timezone: job.timezone,
+      from: currentNow,
+    });
+    await db`
+      update public.talk_jobs
+      set next_due_at = ${nextDueAt}::timestamptz,
+          updated_at = ${currentNow}::timestamptz
+      where id = ${job.id}::uuid
+    `;
+    claimed.push({ ...job, nextDueAt });
+  }
+  return claimed;
 }
 
-export function markTalkJobRunQueued(jobId: string, now?: string): void {
-  const currentNow = now || new Date().toISOString();
-  getDb()
-    .prepare(
-      `
-      UPDATE talk_jobs
-      SET last_run_status = 'queued',
-          updated_at = ?
-      WHERE id = ?
-    `,
-    )
-    .run(currentNow, jobId);
+export async function markTalkJobRunQueued(
+  jobId: string,
+  now?: string,
+): Promise<void> {
+  const currentNow = now ?? new Date().toISOString();
+  const db = getDbPg();
+  await db`
+    update public.talk_jobs
+    set last_run_status = 'queued', updated_at = ${currentNow}::timestamptz
+    where id = ${jobId}::uuid
+  `;
 }
 
-export function markTalkJobRunFinished(input: {
+export async function markTalkJobRunFinished(input: {
   jobId: string;
   status: string;
   finishedAt?: string;
-}): void {
-  const finishedAt = input.finishedAt || new Date().toISOString();
-  getDb()
-    .prepare(
-      `
-      UPDATE talk_jobs
-      SET last_run_at = ?,
-          last_run_status = ?,
-          run_count = run_count + 1,
-          updated_at = ?
-      WHERE id = ?
-    `,
-    )
-    .run(finishedAt, input.status, finishedAt, input.jobId);
+}): Promise<void> {
+  const finishedAt = input.finishedAt ?? new Date().toISOString();
+  const db = getDbPg();
+  await db`
+    update public.talk_jobs
+    set last_run_at = ${finishedAt}::timestamptz,
+        last_run_status = ${input.status},
+        run_count = run_count + 1,
+        updated_at = ${finishedAt}::timestamptz
+    where id = ${input.jobId}::uuid
+  `;
 }
 
-export function createJobTriggerRun(input: {
-  jobId: string;
-  triggerSource: 'scheduler' | 'manual';
-  allowPaused?: boolean;
-  now?: string;
-}):
+// ---------------------------------------------------------------------------
+// createJobTriggerRun — enqueue a single run from the scheduler or a
+// manual trigger. Returns a discriminated union so callers can branch on
+// status without reading the run record.
+// ---------------------------------------------------------------------------
+
+export type CreateJobTriggerRunResult =
   | {
       status: 'enqueued';
       talkId: string;
@@ -1128,142 +955,115 @@ export function createJobTriggerRun(input: {
       runId: string;
       job: TalkJob;
     }
-  | {
-      status: 'not_found';
-    }
-  | {
-      status: 'blocked';
-      job: TalkJob;
-      issue: TalkJobDependencyIssue;
-    }
-  | {
-      status: 'job_busy';
-      job: TalkJob;
-    }
-  | {
-      status: 'paused';
-      job: TalkJob;
-    } {
-  const currentNow = input.now || new Date().toISOString();
-  const tx = getDb().transaction(() => {
-    const job = getTalkJobById(input.jobId);
-    if (!job) return { status: 'not_found' as const };
-    if (job.status === 'paused' && !input.allowPaused) {
-      return { status: 'paused' as const, job };
-    }
-    if (job.status === 'blocked') {
-      return {
-        status: 'blocked' as const,
-        job,
-        issue: {
-          code: 'thread_missing',
-          message: 'The job is blocked and must be fixed before it can run.',
-        } satisfies TalkJobDependencyIssue,
-      };
-    }
+  | { status: 'not_found' }
+  | { status: 'blocked'; job: TalkJob; issue: TalkJobDependencyIssue }
+  | { status: 'job_busy'; job: TalkJob }
+  | { status: 'paused'; job: TalkJob };
 
-    const issue = getTalkJobDependencyIssue(job);
-    if (issue) {
-      getDb()
-        .prepare(
-          `
-          UPDATE talk_jobs
-          SET status = 'blocked',
-              next_due_at = NULL,
-              last_run_status = 'blocked',
-              updated_at = ?
-          WHERE id = ?
-        `,
-        )
-        .run(currentNow, job.id);
-      const blockedJob = getTalkJobById(job.id)!;
-      return { status: 'blocked' as const, job: blockedJob, issue };
-    }
-
-    const active = getDb()
-      .prepare(
-        `
-        SELECT COUNT(*) AS count
-        FROM talk_runs
-        WHERE job_id = ?
-          AND status IN ('queued', 'running', 'awaiting_confirmation')
-      `,
-      )
-      .get(job.id) as { count: number };
-    if ((active?.count || 0) > 0) {
-      return { status: 'job_busy' as const, job };
-    }
-
-    const messageId = `msg_${randomUUID()}`;
-    const runId = `run_${randomUUID()}`;
-    const metadataJson = JSON.stringify({
-      kind: 'job_trigger',
-      jobId: job.id,
-      triggerSource: input.triggerSource,
-      deliverableKind: job.deliverableKind,
-      scheduled: input.triggerSource === 'scheduler',
-    });
-
-    createTalkMessage({
-      id: messageId,
-      talkId: job.talkId,
-      threadId: job.threadId,
-      role: 'user',
-      content: job.prompt,
-      createdBy: null,
-      createdAt: currentNow,
-      metadataJson,
-    });
-    createTalkRun({
-      id: runId,
-      talk_id: job.talkId,
-      thread_id: job.threadId,
-      requested_by: job.createdBy,
-      status: 'queued',
-      trigger_message_id: messageId,
-      job_id: job.id,
-      target_agent_id: job.targetAgentId,
-      idempotency_key: null,
-      response_group_id: null,
-      sequence_index: null,
-      executor_alias: null,
-      executor_model: null,
-      source_binding_id: null,
-      source_external_message_id: null,
-      source_thread_key: null,
-      created_at: currentNow,
-      started_at: null,
-      ended_at: null,
-      cancel_reason: null,
-      metadata_json: null,
-    } satisfies TalkRunRecord);
-    updateTalkUpdatedAt(job.talkId, currentNow);
-    appendOutboxEvent({
-      topic: `talk:${job.talkId}`,
-      eventType: 'message_appended',
-      payload: JSON.stringify({
-        talkId: job.talkId,
-        threadId: job.threadId,
-        messageId,
-        runId: null,
-        role: 'user',
-        createdBy: null,
-        content: job.prompt,
-        createdAt: currentNow,
-        metadataJson,
-      }),
-    });
-    markTalkJobRunQueued(job.id, currentNow);
-
+export async function createJobTriggerRun(input: {
+  ownerId: string;
+  jobId: string;
+  triggerSource: 'scheduler' | 'manual';
+  allowPaused?: boolean;
+  now?: string;
+}): Promise<CreateJobTriggerRunResult> {
+  const currentNow = input.now ?? new Date().toISOString();
+  const job = await getTalkJobById(input.jobId);
+  if (!job) return { status: 'not_found' };
+  if (job.status === 'paused' && !input.allowPaused) {
+    return { status: 'paused', job };
+  }
+  if (job.status === 'blocked') {
     return {
-      status: 'enqueued' as const,
-      talkId: job.talkId,
-      threadId: job.threadId,
-      messageId,
-      runId,
+      status: 'blocked',
       job,
+      issue: {
+        code: 'thread_missing',
+        message: 'The job is blocked and must be fixed before it can run.',
+      },
     };
+  }
+
+  const issue = await getTalkJobDependencyIssue(job);
+  if (issue) {
+    const db = getDbPg();
+    await db`
+      update public.talk_jobs
+      set status = 'blocked',
+          next_due_at = null,
+          last_run_status = 'blocked',
+          updated_at = ${currentNow}::timestamptz
+      where id = ${job.id}::uuid
+    `;
+    const blockedJob = (await getTalkJobById(job.id))!;
+    return { status: 'blocked', job: blockedJob, issue };
+  }
+
+  const db = getDbPg();
+  const active = await db<{ count: number }[]>`
+    select count(*)::int as count
+    from public.talk_runs
+    where job_id = ${job.id}::uuid
+      and status in ('queued', 'running', 'awaiting_confirmation')
+  `;
+  if ((active[0]?.count ?? 0) > 0) {
+    return { status: 'job_busy', job };
+  }
+
+  const metadata = {
+    kind: 'job_trigger' as const,
+    jobId: job.id,
+    triggerSource: input.triggerSource,
+    deliverableKind: job.deliverableKind,
+    scheduled: input.triggerSource === 'scheduler',
+  };
+
+  const message = await createTalkMessage({
+    ownerId: input.ownerId,
+    talkId: job.talkId,
+    threadId: job.threadId,
+    role: 'user',
+    content: job.prompt,
+    createdBy: null,
+    metadata,
+    createdAt: currentNow,
   });
 
-  return tx();
+  const run = await createTalkRun({
+    ownerId: input.ownerId,
+    talkId: job.talkId,
+    threadId: job.threadId,
+    requestedBy: job.createdBy,
+    status: 'queued',
+    triggerMessageId: message.id,
+    jobId: job.id,
+    targetAgentId: job.targetAgentId,
+  });
+
+  await touchTalkUpdatedAtForJob(job.talkId, currentNow);
+  await appendOutboxEvent({
+    topic: `talk:${job.talkId}`,
+    eventType: 'message_appended',
+    payload: {
+      talkId: job.talkId,
+      threadId: job.threadId,
+      messageId: message.id,
+      runId: null,
+      role: 'user',
+      createdBy: null,
+      content: job.prompt,
+      createdAt: currentNow,
+      metadata,
+    },
+  });
+  await markTalkJobRunQueued(job.id, currentNow);
+
+  return {
+    status: 'enqueued',
+    talkId: job.talkId,
+    threadId: job.threadId,
+    messageId: message.id,
+    runId: run.id,
+    job,
+  };
 }

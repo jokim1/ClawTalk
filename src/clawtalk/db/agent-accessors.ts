@@ -1,21 +1,39 @@
-import { randomUUID } from 'crypto';
+// clawtalk Phase 5 (PR 2) — postgres agent-accessors.
+//
+// Every function is async and runs against postgres.js via `getDbPg()`. Per
+// supabase/migrations/0002_rls_policies.sql, every per-user table here has
+// RLS `using/with check (owner_id = auth.uid())` — so callers MUST wrap
+// each call in `withUserContext(userId, async () => ...)`. Outside that
+// scope `getDbPg()` returns the BYPASSRLS pooled connection and silently
+// short-circuits ownership checks (gotcha #2 from the editorialroom port
+// — see project_phase5_pr2_plan.md).
+//
+// Signature changes vs the sqlite version:
+//   - Writes that need owner_id / user_id in their INSERT VALUES take an
+//     explicit ownerId / userId param (RLS WITH CHECK enforces it equals
+//     auth.uid(); the parameter makes the call site explicit rather than
+//     hidden behind a SQL subquery).
+//   - Reads, UPDATEs, and DELETEs filtered by RLS USING drop the
+//     redundant userId param the old API carried (sqlite single-tenant
+//     era).
+//   - tool_permissions_json is now jsonb — postgres.js returns it as a
+//     parsed object, so the record shape carries Record<string, boolean>
+//     instead of a JSON string.
+//   - `enabled` is boolean (not 0/1).
+//
+// This file is the proof-of-concept landing in the first commit of PR 2.
+// Callers (route handlers, agent-registry, agent-router, executors) still
+// import the sqlite agent-accessors.ts; the swap happens in the fan-out
+// commits after this pattern is verified end-to-end against `supabase
+// start`.
 
-import { getDb } from '../../db.js';
+import { getDbPg, type Sql } from '../../db.js';
 
 // ---------------------------------------------------------------------------
-// Tool Capability Mapping
+// Tool Capability Mapping (carried over verbatim from agent-accessors.ts —
+// the catalog is independent of the persistence layer)
 // ---------------------------------------------------------------------------
 
-/**
- * Canonical mapping from tool family names to runtime tool names.
- * Used for:
- * - Write-time validation of tool_permissions_json
- * - Resolving effective tools at execution time
- * - UI toggle definitions
- *
- * Tool families map to concrete tool names the agent can invoke.
- * The 'connectors' family is dynamically populated at startup.
- */
 export const TOOL_FAMILY_MAP: Record<string, string[]> = {
   shell: ['Bash'],
   filesystem: ['Read', 'Write', 'Edit', 'Glob'],
@@ -28,7 +46,7 @@ export const TOOL_FAMILY_MAP: Record<string, string[]> = {
     'browser_screenshot',
     'browser_close',
   ],
-  connectors: [], // matched dynamically: any tool starting with 'connector_'
+  connectors: [],
   google_read: [
     'GoogleDriveRead',
     'GoogleDocsRead',
@@ -45,7 +63,7 @@ export const TOOL_FAMILY_MAP: Record<string, string[]> = {
     'google_sheets_batch_update',
   ],
   gmail_read: ['GmailRead', 'GmailSearch', 'gmail_read'],
-  gmail_send: ['GmailSend', 'gmail_send'], // also triggers approval gate
+  gmail_send: ['GmailSend', 'gmail_send'],
   messaging: ['DiscordSend', 'SlackSend'],
 };
 
@@ -61,123 +79,70 @@ export function buildDefaultTalkToolPermissions(): Record<string, boolean> {
   };
 }
 
-/**
- * Hard dependency rules enforced at write time and reflected in UI.
- * Turning ON the left side auto-enables the right side.
- * Turning OFF the right side auto-disables the left side.
- */
 export const AUTO_IMPLIED_DEPENDENCIES: Array<[string, string]> = [
   ['shell', 'filesystem'],
   ['gmail_send', 'gmail_read'],
 ];
 
-// ---------------------------------------------------------------------------
-// Validation
-// ---------------------------------------------------------------------------
-
-/**
- * Validates tool permissions JSON at write time.
- * - Parses JSON
- * - Checks all keys are valid tool families
- * - Checks all values are boolean
- * - Applies auto-implied dependencies
- * - Rejects unknown keys
- */
-export function validateToolPermissionsJson(json: string): {
+export function validateToolPermissions(value: unknown): {
   valid: boolean;
   error?: string;
 } {
-  try {
-    const parsed = JSON.parse(json);
-
-    // Check that parsed is an object
-    if (
-      typeof parsed !== 'object' ||
-      parsed === null ||
-      Array.isArray(parsed)
-    ) {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return {
+      valid: false,
+      error: 'tool_permissions must be a JSON object',
+    };
+  }
+  const obj = value as Record<string, unknown>;
+  const knownFamilies = Object.keys(TOOL_FAMILY_MAP);
+  for (const key of Object.keys(obj)) {
+    if (!knownFamilies.includes(key)) {
       return {
         valid: false,
-        error: 'tool_permissions_json must be a JSON object',
+        error: `Unknown tool family: ${key}. Valid families are: ${knownFamilies.join(', ')}`,
       };
     }
-
-    const knownFamilies = Object.keys(TOOL_FAMILY_MAP);
-    const providedKeys = Object.keys(parsed);
-
-    // Check for unknown keys
-    for (const key of providedKeys) {
-      if (!knownFamilies.includes(key)) {
-        return {
-          valid: false,
-          error: `Unknown tool family: ${key}. Valid families are: ${knownFamilies.join(', ')}`,
-        };
-      }
+    if (typeof obj[key] !== 'boolean') {
+      return {
+        valid: false,
+        error: `Value for ${key} must be boolean, got ${typeof obj[key]}`,
+      };
     }
-
-    // Check that all values are boolean
-    for (const key of providedKeys) {
-      const value = parsed[key];
-      if (typeof value !== 'boolean') {
-        return {
-          valid: false,
-          error: `Value for ${key} must be boolean, got ${typeof value}`,
-        };
-      }
-    }
-
-    // Apply auto-implied dependencies: ensure that if a family is true,
-    // all its right-side dependencies are also true.
-    const normalized = { ...parsed };
-    for (const [left, right] of AUTO_IMPLIED_DEPENDENCIES) {
-      if (normalized[left] === true && normalized[right] !== true) {
-        normalized[right] = true;
-      }
-    }
-
-    return { valid: true };
-  } catch (err) {
-    return { valid: false, error: `Invalid JSON: ${String(err)}` };
   }
+  return { valid: true };
 }
 
-/**
- * Applies auto-implied dependencies to a tool permissions object.
- * Returns a new object with dependencies resolved.
- */
 export function applyToolDependencies(
   permissions: Record<string, boolean>,
 ): Record<string, boolean> {
   const result = { ...permissions };
-
   for (const [left, right] of AUTO_IMPLIED_DEPENDENCIES) {
-    // If left is true, right must be true
     if (result[left] === true && result[right] !== true) {
       result[right] = true;
     }
-    // If right is false, left must be false
     if (result[right] === false && result[left] !== false) {
       result[left] = false;
     }
   }
-
   return result;
 }
 
 // ---------------------------------------------------------------------------
-// Record Types (snake_case, database layer)
+// Record + snapshot types
 // ---------------------------------------------------------------------------
 
 export interface RegisteredAgentRecord {
   id: string;
+  owner_id: string;
   name: string;
   provider_id: string;
   model_id: string;
-  tool_permissions_json: string;
+  tool_permissions_json: Record<string, boolean>;
   persona_role: string | null;
   system_prompt: string | null;
   description: string | null;
-  enabled: number;
+  enabled: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -187,19 +152,16 @@ export interface AgentFallbackStepRecord {
   position: number;
   provider_id: string;
   model_id: string;
+  owner_id: string;
 }
 
 export interface UserToolPermissionRecord {
   user_id: string;
   tool_id: string;
-  allowed: number;
-  requires_approval: number;
+  allowed: boolean;
+  requires_approval: boolean;
   updated_at: string;
 }
-
-// ---------------------------------------------------------------------------
-// Snapshot Types (camelCase, API layer)
-// ---------------------------------------------------------------------------
 
 export interface RegisteredAgentSnapshot {
   id: string;
@@ -227,31 +189,19 @@ export interface UserToolPermission {
   requiresApproval: boolean;
 }
 
-// ---------------------------------------------------------------------------
-// Conversions
-// ---------------------------------------------------------------------------
-
 export function toAgentSnapshot(
   record: RegisteredAgentRecord,
 ): RegisteredAgentSnapshot {
-  let toolPermissions: Record<string, boolean> = {};
-  try {
-    toolPermissions = JSON.parse(record.tool_permissions_json);
-  } catch {
-    // If parsing fails, return empty object (should not happen if validation worked)
-    toolPermissions = {};
-  }
-
   return {
     id: record.id,
     name: record.name,
     providerId: record.provider_id,
     modelId: record.model_id,
-    toolPermissions,
+    toolPermissions: record.tool_permissions_json,
     personaRole: record.persona_role,
     systemPrompt: record.system_prompt,
     description: record.description,
-    enabled: record.enabled === 1,
+    enabled: record.enabled,
     createdAt: record.created_at,
     updatedAt: record.updated_at,
   };
@@ -262,8 +212,8 @@ function toUserToolPermission(
 ): UserToolPermission {
   return {
     toolId: record.tool_id,
-    allowed: record.allowed === 1,
-    requiresApproval: record.requires_approval === 1,
+    allowed: record.allowed,
+    requiresApproval: record.requires_approval,
   };
 }
 
@@ -271,240 +221,183 @@ function toUserToolPermission(
 // Registered Agents CRUD
 // ---------------------------------------------------------------------------
 
-/**
- * Get a single registered agent by ID.
- */
-export function getRegisteredAgent(
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export async function getRegisteredAgent(
   agentId: string,
-): RegisteredAgentRecord | undefined {
-  return getDb()
-    .prepare('SELECT * FROM registered_agents WHERE id = ?')
-    .get(agentId) as RegisteredAgentRecord | undefined;
+): Promise<RegisteredAgentRecord | undefined> {
+  // Short-circuit non-UUID input so legacy slug-style identifiers
+  // (e.g. the sqlite-era 'agent.talk' fallback ID) don't pollute the
+  // current transaction with a postgres 22P02 cast error.
+  if (!UUID_REGEX.test(agentId)) return undefined;
+  const db: Sql = getDbPg();
+  const rows = await db<RegisteredAgentRecord[]>`
+    select id, owner_id, name, provider_id, model_id,
+           tool_permissions_json, persona_role, system_prompt,
+           description, enabled, created_at, updated_at
+    from public.registered_agents
+    where id = ${agentId}::uuid
+    limit 1
+  `;
+  return rows[0];
 }
 
-/**
- * Get a registered agent as a snapshot (API-facing format).
- */
-export function getRegisteredAgentSnapshot(
+export async function getRegisteredAgentSnapshot(
   agentId: string,
-): RegisteredAgentSnapshot | undefined {
-  const record = getRegisteredAgent(agentId);
+): Promise<RegisteredAgentSnapshot | undefined> {
+  const record = await getRegisteredAgent(agentId);
   return record ? toAgentSnapshot(record) : undefined;
 }
 
-/**
- * List all registered agents.
- */
-export function listRegisteredAgents(): RegisteredAgentRecord[] {
-  return getDb()
-    .prepare('SELECT * FROM registered_agents ORDER BY created_at ASC')
-    .all() as RegisteredAgentRecord[];
+export async function listRegisteredAgents(): Promise<RegisteredAgentRecord[]> {
+  const db = getDbPg();
+  return await db<RegisteredAgentRecord[]>`
+    select id, owner_id, name, provider_id, model_id,
+           tool_permissions_json, persona_role, system_prompt,
+           description, enabled, created_at, updated_at
+    from public.registered_agents
+    order by created_at asc
+  `;
 }
 
-/**
- * List all enabled registered agents.
- */
-export function listEnabledAgents(): RegisteredAgentRecord[] {
-  return getDb()
-    .prepare(
-      'SELECT * FROM registered_agents WHERE enabled = 1 ORDER BY created_at ASC',
-    )
-    .all() as RegisteredAgentRecord[];
+export async function listEnabledAgents(): Promise<RegisteredAgentRecord[]> {
+  const db = getDbPg();
+  return await db<RegisteredAgentRecord[]>`
+    select id, owner_id, name, provider_id, model_id,
+           tool_permissions_json, persona_role, system_prompt,
+           description, enabled, created_at, updated_at
+    from public.registered_agents
+    where enabled = true
+    order by created_at asc
+  `;
 }
 
-/**
- * Create a new registered agent.
- * Validates tool_permissions_json and applies auto-implied dependencies.
- * Defaults to the direct-safe Talk profile if not provided.
- */
-export function createRegisteredAgent(params: {
+export async function createRegisteredAgent(params: {
+  ownerId: string;
   name: string;
   providerId: string;
   modelId: string;
-  toolPermissionsJson?: string;
-  personaRole?: string;
-  systemPrompt?: string;
-  description?: string;
-}): RegisteredAgentRecord {
-  const now = new Date().toISOString();
-  const agentId = randomUUID();
-
-  // Default to the same Talk-safe tool profile as the seeded Claude agent:
-  // web/google/connectors on, heavy container tools off.
-  let toolPermissionsJson = params.toolPermissionsJson;
-  if (!toolPermissionsJson) {
-    toolPermissionsJson = JSON.stringify(buildDefaultTalkToolPermissions());
-  }
-
-  // Validate
-  const validation = validateToolPermissionsJson(toolPermissionsJson);
+  toolPermissions?: Record<string, boolean>;
+  personaRole?: string | null;
+  systemPrompt?: string | null;
+  description?: string | null;
+}): Promise<RegisteredAgentRecord> {
+  const toolPermissions =
+    params.toolPermissions ?? buildDefaultTalkToolPermissions();
+  const validation = validateToolPermissions(toolPermissions);
   if (!validation.valid) {
     throw new Error(`Invalid tool permissions: ${validation.error}`);
   }
+  const normalized = applyToolDependencies(toolPermissions);
 
-  // Parse, apply dependencies, and re-stringify
-  const parsed = JSON.parse(toolPermissionsJson);
-  const normalized = applyToolDependencies(parsed);
-  const normalizedJson = JSON.stringify(normalized);
-
-  getDb()
-    .prepare(
-      `
-    INSERT INTO registered_agents (
-      id, name, provider_id, model_id, tool_permissions_json,
-      persona_role, system_prompt, description,
-      enabled, created_at, updated_at
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `,
-    )
-    .run(
-      agentId,
-      params.name,
-      params.providerId,
-      params.modelId,
-      normalizedJson,
-      params.personaRole || null,
-      params.systemPrompt || null,
-      params.description || null,
-      1,
-      now,
-      now,
-    );
-
-  const created = getRegisteredAgent(agentId);
-  if (!created) {
+  const db = getDbPg();
+  const rows = await db<RegisteredAgentRecord[]>`
+    insert into public.registered_agents
+      (owner_id, name, provider_id, model_id, tool_permissions_json,
+       persona_role, system_prompt, description, enabled)
+    values
+      (${params.ownerId}::uuid, ${params.name}, ${params.providerId},
+       ${params.modelId}, ${db.json(normalized as never)},
+       ${params.personaRole ?? null}, ${params.systemPrompt ?? null},
+       ${params.description ?? null}, true)
+    returning id, owner_id, name, provider_id, model_id,
+              tool_permissions_json, persona_role, system_prompt,
+              description, enabled, created_at, updated_at
+  `;
+  if (!rows[0]) {
     throw new Error('Failed to create agent');
   }
-
-  return created;
+  return rows[0];
 }
 
-/**
- * Update a registered agent.
- * Validates tool_permissions_json if provided and applies auto-implied dependencies.
- */
-export function updateRegisteredAgent(
+export async function updateRegisteredAgent(
   agentId: string,
   updates: Partial<{
     name: string;
     providerId: string;
     modelId: string;
-    toolPermissionsJson: string;
+    toolPermissions: Record<string, boolean>;
     personaRole: string | null;
     systemPrompt: string | null;
     description: string | null;
     enabled: boolean;
   }>,
-): RegisteredAgentRecord | undefined {
-  const existing = getRegisteredAgent(agentId);
-  if (!existing) {
-    return undefined;
-  }
-
-  const now = new Date().toISOString();
-
-  // Validate tool_permissions_json if provided
-  let normalizedToolJson = existing.tool_permissions_json;
-  if (updates.toolPermissionsJson !== undefined) {
-    const validation = validateToolPermissionsJson(updates.toolPermissionsJson);
+): Promise<RegisteredAgentRecord | undefined> {
+  let normalizedToolPermissions: Record<string, boolean> | undefined;
+  if (updates.toolPermissions !== undefined) {
+    const validation = validateToolPermissions(updates.toolPermissions);
     if (!validation.valid) {
       throw new Error(`Invalid tool permissions: ${validation.error}`);
     }
-    const parsed = JSON.parse(updates.toolPermissionsJson);
-    const normalized = applyToolDependencies(parsed);
-    normalizedToolJson = JSON.stringify(normalized);
+    normalizedToolPermissions = applyToolDependencies(updates.toolPermissions);
   }
 
-  // Build update SQL dynamically
-  const setClauses: string[] = ['updated_at = ?'];
-  const values: any[] = [now];
-
-  if (updates.name !== undefined) {
-    setClauses.push('name = ?');
-    values.push(updates.name);
-  }
-  if (updates.providerId !== undefined) {
-    setClauses.push('provider_id = ?');
-    values.push(updates.providerId);
-  }
-  if (updates.modelId !== undefined) {
-    setClauses.push('model_id = ?');
-    values.push(updates.modelId);
-  }
-  if (updates.toolPermissionsJson !== undefined) {
-    setClauses.push('tool_permissions_json = ?');
-    values.push(normalizedToolJson);
-  }
-  if (updates.personaRole !== undefined) {
-    setClauses.push('persona_role = ?');
-    values.push(updates.personaRole);
-  }
-  if (updates.systemPrompt !== undefined) {
-    setClauses.push('system_prompt = ?');
-    values.push(updates.systemPrompt);
-  }
-  if (updates.description !== undefined) {
-    setClauses.push('description = ?');
-    values.push(updates.description);
-  }
-  if (updates.enabled !== undefined) {
-    setClauses.push('enabled = ?');
-    values.push(updates.enabled ? 1 : 0);
-  }
-
-  values.push(agentId);
-
-  getDb()
-    .prepare(
-      `
-    UPDATE registered_agents
-    SET ${setClauses.join(', ')}
-    WHERE id = ?
-  `,
-    )
-    .run(...values);
-
-  return getRegisteredAgent(agentId);
+  // postgres.js doesn't have an Edit-clauses-as-array builder, so each
+  // optional update is its own COALESCE column expression. Passing
+  // `null`-tagged placeholder values means "leave unchanged" — the
+  // sentinel is the explicit { name: 'name' | null } shape from the
+  // updates object. Approach lifted from editorialroom's
+  // editorial-piece-meta updater.
+  const db = getDbPg();
+  const rows = await db<RegisteredAgentRecord[]>`
+    update public.registered_agents set
+      name = coalesce(${updates.name ?? null}, name),
+      provider_id = coalesce(${updates.providerId ?? null}, provider_id),
+      model_id = coalesce(${updates.modelId ?? null}, model_id),
+      tool_permissions_json = coalesce(
+        ${
+          normalizedToolPermissions !== undefined
+            ? db.json(normalizedToolPermissions as never)
+            : null
+        },
+        tool_permissions_json
+      ),
+      persona_role = case when ${updates.personaRole !== undefined}::boolean
+        then ${updates.personaRole ?? null} else persona_role end,
+      system_prompt = case when ${updates.systemPrompt !== undefined}::boolean
+        then ${updates.systemPrompt ?? null} else system_prompt end,
+      description = case when ${updates.description !== undefined}::boolean
+        then ${updates.description ?? null} else description end,
+      enabled = coalesce(${updates.enabled ?? null}, enabled),
+      updated_at = now()
+    where id = ${agentId}::uuid
+    returning id, owner_id, name, provider_id, model_id,
+              tool_permissions_json, persona_role, system_prompt,
+              description, enabled, created_at, updated_at
+  `;
+  return rows[0];
 }
 
 /**
- * Delete a registered agent.
- * Returns true if the agent existed and was deleted.
+ * Delete a registered agent. The talk_agents → registered_agents FK has
+ * `on delete set null` in 0001_init_clawtalk_schema.sql, so we don't need
+ * an explicit detach step — the FK cascade handles it.
  */
-export function deleteRegisteredAgent(agentId: string): boolean {
-  const db = getDb();
-  const tx = db.transaction((targetAgentId: string): boolean => {
-    db.prepare('DELETE FROM talk_agents WHERE registered_agent_id = ?').run(
-      targetAgentId,
-    );
-    const result = db
-      .prepare('DELETE FROM registered_agents WHERE id = ?')
-      .run(targetAgentId);
-    return (result.changes ?? 0) > 0;
-  });
-  return tx(agentId);
+export async function deleteRegisteredAgent(agentId: string): Promise<boolean> {
+  const db = getDbPg();
+  const rows = await db<{ id: string }[]>`
+    delete from public.registered_agents
+    where id = ${agentId}::uuid
+    returning id
+  `;
+  return rows.length > 0;
 }
 
 // ---------------------------------------------------------------------------
-// Agent Fallback Steps
+// Agent fallback steps
 // ---------------------------------------------------------------------------
 
-/**
- * Get all fallback steps for an agent, ordered by position.
- */
-export function getFallbackSteps(agentId: string): AgentFallbackStep[] {
-  const rows = getDb()
-    .prepare(
-      `
-    SELECT position, provider_id, model_id
-    FROM agent_fallback_steps
-    WHERE agent_id = ?
-    ORDER BY position ASC
-  `,
-    )
-    .all(agentId) as AgentFallbackStepRecord[];
-
+export async function getFallbackSteps(
+  agentId: string,
+): Promise<AgentFallbackStep[]> {
+  const db = getDbPg();
+  const rows = await db<AgentFallbackStepRecord[]>`
+    select agent_id, position, provider_id, model_id, owner_id
+    from public.agent_fallback_steps
+    where agent_id = ${agentId}::uuid
+    order by position asc
+  `;
   return rows.map((r) => ({
     position: r.position,
     providerId: r.provider_id,
@@ -512,112 +405,79 @@ export function getFallbackSteps(agentId: string): AgentFallbackStep[] {
   }));
 }
 
-/**
- * Set fallback steps for an agent.
- * Deletes existing steps and inserts new ones with sequential positions starting at 1.
- */
-export function setFallbackSteps(
-  agentId: string,
-  steps: Array<{ providerId: string; modelId: string }>,
-): void {
-  const db = getDb();
-
-  // Delete existing steps
-  db.prepare('DELETE FROM agent_fallback_steps WHERE agent_id = ?').run(
-    agentId,
-  );
-
-  // Insert new steps with sequential positions
-  if (steps.length > 0) {
-    const insertStmt = db.prepare(
-      `
-      INSERT INTO agent_fallback_steps (agent_id, position, provider_id, model_id)
-      VALUES (?, ?, ?, ?)
-    `,
-    );
-
-    for (let i = 0; i < steps.length; i++) {
-      const step = steps[i];
-      insertStmt.run(agentId, i + 1, step.providerId, step.modelId);
-    }
+export async function setFallbackSteps(params: {
+  ownerId: string;
+  agentId: string;
+  steps: Array<{ providerId: string; modelId: string }>;
+}): Promise<void> {
+  const db = getDbPg();
+  await db`
+    delete from public.agent_fallback_steps
+    where agent_id = ${params.agentId}::uuid
+  `;
+  for (let i = 0; i < params.steps.length; i++) {
+    const step = params.steps[i];
+    await db`
+      insert into public.agent_fallback_steps
+        (agent_id, position, provider_id, model_id, owner_id)
+      values
+        (${params.agentId}::uuid, ${i + 1}, ${step.providerId},
+         ${step.modelId}, ${params.ownerId}::uuid)
+    `;
   }
 }
 
 // ---------------------------------------------------------------------------
-// User Tool Permissions
+// User tool permissions
 // ---------------------------------------------------------------------------
 
-/**
- * Get a single user tool permission.
- */
-export function getUserToolPermission(
-  userId: string,
+export async function getUserToolPermission(
   toolId: string,
-): UserToolPermission | undefined {
-  const record = getDb()
-    .prepare(
-      `
-    SELECT user_id, tool_id, allowed, requires_approval, updated_at
-    FROM user_tool_permissions
-    WHERE user_id = ? AND tool_id = ?
-  `,
-    )
-    .get(userId, toolId) as UserToolPermissionRecord | undefined;
-
-  return record ? toUserToolPermission(record) : undefined;
+): Promise<UserToolPermission | undefined> {
+  const db = getDbPg();
+  const rows = await db<UserToolPermissionRecord[]>`
+    select user_id, tool_id, allowed, requires_approval, updated_at
+    from public.user_tool_permissions
+    where tool_id = ${toolId}
+    limit 1
+  `;
+  return rows[0] ? toUserToolPermission(rows[0]) : undefined;
 }
 
-/**
- * List all tool permissions for a user.
- */
-export function listUserToolPermissions(userId: string): UserToolPermission[] {
-  const records = getDb()
-    .prepare(
-      `
-    SELECT user_id, tool_id, allowed, requires_approval, updated_at
-    FROM user_tool_permissions
-    WHERE user_id = ?
-    ORDER BY tool_id ASC
-  `,
-    )
-    .all(userId) as UserToolPermissionRecord[];
-
-  return records.map(toUserToolPermission);
+export async function listUserToolPermissions(): Promise<UserToolPermission[]> {
+  const db = getDbPg();
+  const rows = await db<UserToolPermissionRecord[]>`
+    select user_id, tool_id, allowed, requires_approval, updated_at
+    from public.user_tool_permissions
+    order by tool_id asc
+  `;
+  return rows.map(toUserToolPermission);
 }
 
-/**
- * Upsert a user tool permission.
- * Creates or updates the permission for a user/tool pair.
- */
-export function upsertUserToolPermission(
-  userId: string,
-  toolId: string,
-  allowed: boolean,
-  requiresApproval: boolean,
-): void {
-  const now = new Date().toISOString();
-
-  getDb()
-    .prepare(
-      `
-    INSERT INTO user_tool_permissions (user_id, tool_id, allowed, requires_approval, updated_at)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(user_id, tool_id) DO UPDATE SET
+export async function upsertUserToolPermission(params: {
+  userId: string;
+  toolId: string;
+  allowed: boolean;
+  requiresApproval: boolean;
+}): Promise<void> {
+  const db = getDbPg();
+  await db`
+    insert into public.user_tool_permissions
+      (user_id, tool_id, allowed, requires_approval)
+    values
+      (${params.userId}::uuid, ${params.toolId}, ${params.allowed},
+       ${params.requiresApproval})
+    on conflict (user_id, tool_id) do update set
       allowed = excluded.allowed,
       requires_approval = excluded.requires_approval,
-      updated_at = excluded.updated_at
-  `,
-    )
-    .run(userId, toolId, allowed ? 1 : 0, requiresApproval ? 1 : 0, now);
+      updated_at = now()
+  `;
 }
 
 // ---------------------------------------------------------------------------
-// Effective Tools Computation
+// Effective tools computation
 // ---------------------------------------------------------------------------
 
-/**
- * Represents the effective tool access for an agent+user combination.
- */
 export interface EffectiveToolAccess {
   toolFamily: string;
   runtimeTools: string[];
@@ -626,54 +486,28 @@ export interface EffectiveToolAccess {
 }
 
 /**
- * Compute effective tools for an agent given a user's permissions.
- *
- * Algorithm:
- * 1. Look up agent's tool_permissions_json
- * 2. Parse and resolve each enabled family to runtime tool names via TOOL_FAMILY_MAP
- * 3. Filter by user's tool permissions: a tool is enabled only if:
- *    - The agent permits the tool family (via tool_permissions_json)
- *    - The user allows the tool (or no user permission exists, defaulting to allowed)
- * 4. requiresApproval is set to true if the user requires approval for that tool
- *
- * Returns an array of tool families with their resolved runtime tools and approval status.
+ * Compute effective tools for an agent given the *caller's* permissions.
+ * Inside withUserContext the auth.uid() bound to the tx is implicitly the
+ * permissions owner — no userId param needed.
  */
-export function getEffectiveToolsForAgent(
+export async function getEffectiveToolsForAgent(
   agentId: string,
-  userId: string,
-): EffectiveToolAccess[] {
-  const agent = getRegisteredAgent(agentId);
-  if (!agent) {
-    return [];
-  }
+): Promise<EffectiveToolAccess[]> {
+  const agent = await getRegisteredAgent(agentId);
+  if (!agent) return [];
 
-  let agentPermissions: Record<string, boolean> = {};
-  try {
-    agentPermissions = JSON.parse(agent.tool_permissions_json);
-  } catch {
-    // If parsing fails, return empty
-    return [];
-  }
-
-  const userPermissions = listUserToolPermissions(userId);
+  const agentPermissions = agent.tool_permissions_json;
+  const userPermissions = await listUserToolPermissions();
   const userPermissionMap = new Map(userPermissions.map((p) => [p.toolId, p]));
 
   const result: EffectiveToolAccess[] = [];
-
   for (const [family, tools] of Object.entries(TOOL_FAMILY_MAP)) {
     const agentEnabled = agentPermissions[family] === true;
-
-    // Resolve runtime tools for this family
     const runtimeTools = tools.length > 0 ? [...tools] : [];
 
-    // Determine overall enable status: both agent and user must allow
-    // If no user permission exists, default to allowed
     let enabled = agentEnabled;
     let requiresApproval = false;
-
     if (enabled && runtimeTools.length > 0) {
-      // Check user permissions for each runtime tool
-      // If any user permission denies it, the family is disabled
       for (const tool of runtimeTools) {
         const userPerm = userPermissionMap.get(tool);
         if (userPerm && !userPerm.allowed) {
@@ -685,7 +519,6 @@ export function getEffectiveToolsForAgent(
         }
       }
     }
-
     result.push({
       toolFamily: family,
       runtimeTools,
@@ -693,62 +526,64 @@ export function getEffectiveToolsForAgent(
       requiresApproval,
     });
   }
-
   return result;
 }
 
 // ---------------------------------------------------------------------------
-// Message Persistence (unified messages table)
+// Message persistence (unified talk_messages table)
 // ---------------------------------------------------------------------------
 
 export type MessageRole = 'user' | 'assistant' | 'system' | 'tool';
 
-/**
- * Insert a message into the unified messages table.
- * Works for both Talk messages (talk_id set) and Main channel (talk_id null, thread_id set).
- */
-export function createMessage(input: {
-  id: string;
+export async function createMessage(input: {
+  ownerId: string;
+  id?: string;
   talkId?: string | null;
   threadId: string;
   role: MessageRole;
   content: string;
   agentId?: string | null;
   createdBy?: string | null;
-  createdAt?: string;
-  metadataJson?: string | null;
-}): void {
-  getDb()
-    .prepare(
-      `
-    INSERT INTO talk_messages (
-      id, talk_id, thread_id, role, content, agent_id, created_by, created_at, metadata_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `,
-    )
-    .run(
-      input.id,
-      input.talkId || null,
-      input.threadId,
-      input.role,
-      input.content,
-      input.agentId || null,
-      input.createdBy || null,
-      input.createdAt || new Date().toISOString(),
-      input.metadataJson || null,
-    );
+  metadata?: Record<string, unknown> | null;
+}): Promise<void> {
+  const db = getDbPg();
+  // id defaults to gen_random_uuid() server-side when caller doesn't pass
+  // one. Some callers (executor streaming) pre-generate the id to thread
+  // through events before insert — preserve that capability.
+  if (input.id) {
+    await db`
+      insert into public.talk_messages
+        (id, talk_id, thread_id, owner_id, role, content, agent_id,
+         created_by, metadata_json)
+      values
+        (${input.id}::uuid, ${input.talkId ?? null}::uuid,
+         ${input.threadId}::uuid, ${input.ownerId}::uuid, ${input.role},
+         ${input.content}, ${input.agentId ?? null}::uuid,
+         ${input.createdBy ?? null}::uuid,
+         ${input.metadata ? db.json(input.metadata as never) : null})
+    `;
+  } else {
+    await db`
+      insert into public.talk_messages
+        (talk_id, thread_id, owner_id, role, content, agent_id,
+         created_by, metadata_json)
+      values
+        (${input.talkId ?? null}::uuid, ${input.threadId}::uuid,
+         ${input.ownerId}::uuid, ${input.role}, ${input.content},
+         ${input.agentId ?? null}::uuid, ${input.createdBy ?? null}::uuid,
+         ${input.metadata ? db.json(input.metadata as never) : null})
+    `;
+  }
 }
 
 // ---------------------------------------------------------------------------
-// LLM Attempt Tracking
+// LLM attempt tracking
 // ---------------------------------------------------------------------------
 
 export type LlmAttemptStatus = 'success' | 'failed' | 'skipped' | 'cancelled';
 
-/**
- * Record an LLM attempt for a run. Used for cost tracking and debugging.
- */
-export function createLlmAttempt(input: {
+export async function createLlmAttempt(input: {
+  ownerId: string;
   runId: string;
   talkId?: string | null;
   agentId?: string | null;
@@ -761,33 +596,21 @@ export function createLlmAttempt(input: {
   cachedInputTokens?: number | null;
   outputTokens?: number | null;
   estimatedCostUsd?: number | null;
-  createdAt?: string;
-}): number {
-  const result = getDb()
-    .prepare(
-      `
-    INSERT INTO llm_attempts (
-      run_id, talk_id, agent_id,
-      provider_id, model_id, status, failure_class, latency_ms,
-      input_tokens, cached_input_tokens, output_tokens,
-      estimated_cost_usd, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `,
-    )
-    .run(
-      input.runId,
-      input.talkId || null,
-      input.agentId || null,
-      input.providerId || null,
-      input.modelId,
-      input.status,
-      input.failureClass || null,
-      input.latencyMs ?? null,
-      input.inputTokens ?? null,
-      input.cachedInputTokens ?? null,
-      input.outputTokens ?? null,
-      input.estimatedCostUsd ?? null,
-      input.createdAt || new Date().toISOString(),
-    );
-  return Number(result.lastInsertRowid);
+}): Promise<number> {
+  const db = getDbPg();
+  const rows = await db<{ id: number }[]>`
+    insert into public.llm_attempts
+      (run_id, talk_id, owner_id, agent_id, provider_id, model_id, status,
+       failure_class, latency_ms, input_tokens, cached_input_tokens,
+       output_tokens, estimated_cost_usd)
+    values
+      (${input.runId}::uuid, ${input.talkId ?? null}::uuid,
+       ${input.ownerId}::uuid, ${input.agentId ?? null}::uuid,
+       ${input.providerId ?? null}, ${input.modelId}, ${input.status},
+       ${input.failureClass ?? null}, ${input.latencyMs ?? null},
+       ${input.inputTokens ?? null}, ${input.cachedInputTokens ?? null},
+       ${input.outputTokens ?? null}, ${input.estimatedCostUsd ?? null})
+    returning id
+  `;
+  return rows[0].id;
 }

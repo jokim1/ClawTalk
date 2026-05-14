@@ -1,3 +1,4 @@
+import { withUserContext } from '../../../db.js';
 import {
   blockTalkJob,
   createJobTriggerRun,
@@ -65,18 +66,14 @@ function conflict(
   };
 }
 
-function requireTalk(
-  talkId: string,
-  auth: AuthContext,
-): ReturnType<typeof getTalkForUser> {
-  return getTalkForUser(talkId, auth.userId);
+async function requireTalk(talkId: string) {
+  return await getTalkForUser(talkId);
 }
 
-function requireEditAccess(
+async function requireEditAccess(
   talkId: string,
-  auth: AuthContext,
-): ReturnType<typeof forbidden> | null {
-  if (!canEditTalk(talkId, auth.userId, auth.role)) {
+): Promise<ReturnType<typeof forbidden> | null> {
+  if (!(await canEditTalk(talkId))) {
     return forbidden('You do not have permission to edit jobs for this talk.');
   }
   return null;
@@ -103,13 +100,13 @@ function normalizeCreateReportPayload(value: unknown): {
   return { title, contentMarkdown };
 }
 
-function resolveReportTarget(input: {
+async function resolveReportTarget(input: {
   talkId: string;
   deliverableKind: 'thread' | 'report';
   reportOutputId?: string | null;
   createReport?: unknown;
   auth: AuthContext;
-}): string | null | undefined {
+}): Promise<string | null | undefined> {
   if (input.deliverableKind !== 'report') {
     return null;
   }
@@ -120,7 +117,8 @@ function resolveReportTarget(input: {
   if (!createReport) {
     return undefined;
   }
-  const output = createTalkOutput({
+  const output = await createTalkOutput({
+    ownerId: input.auth.userId,
     talkId: input.talkId,
     title: createReport.title,
     contentMarkdown: createReport.contentMarkdown,
@@ -129,43 +127,47 @@ function resolveReportTarget(input: {
   return output.id;
 }
 
-export function listTalkJobsRoute(input: {
+export async function listTalkJobsRoute(input: {
   auth: AuthContext;
   talkId: string;
-}): {
+}): Promise<{
   statusCode: number;
   body: ApiEnvelope<{ jobs: TalkJob[] }>;
-} {
-  const talk = requireTalk(input.talkId, input.auth);
-  if (!talk) return notFound('Talk not found.');
+}> {
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await requireTalk(input.talkId);
+    if (!talk) return notFound('Talk not found.');
 
-  return {
-    statusCode: 200,
-    body: { ok: true, data: { jobs: listTalkJobs(input.talkId) } },
-  };
+    return {
+      statusCode: 200,
+      body: { ok: true, data: { jobs: await listTalkJobs(input.talkId) } },
+    };
+  });
 }
 
-export function getTalkJobRoute(input: {
+export async function getTalkJobRoute(input: {
   auth: AuthContext;
   talkId: string;
   jobId: string;
-}): {
+}): Promise<{
   statusCode: number;
   body: ApiEnvelope<{ job: TalkJob }>;
-} {
-  const talk = requireTalk(input.talkId, input.auth);
-  if (!talk) return notFound('Talk not found.');
+}> {
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await requireTalk(input.talkId);
+    if (!talk) return notFound('Talk not found.');
 
-  const job = getTalkJob(input.talkId, input.jobId);
-  if (!job) return notFound('Job not found.');
+    const job = await getTalkJob(input.talkId, input.jobId);
+    if (!job) return notFound('Job not found.');
 
-  return {
-    statusCode: 200,
-    body: { ok: true, data: { job } },
-  };
+    return {
+      statusCode: 200,
+      body: { ok: true, data: { job } },
+    };
+  });
 }
 
-export function createTalkJobRoute(input: {
+export async function createTalkJobRoute(input: {
   auth: AuthContext;
   talkId: string;
   title: string;
@@ -177,55 +179,58 @@ export function createTalkJobRoute(input: {
   reportOutputId?: string | null;
   createReport?: unknown;
   sourceScope?: TalkJobScope;
-}): {
+}): Promise<{
   statusCode: number;
   body: ApiEnvelope<{ job: TalkJob }>;
-} {
-  const talk = requireTalk(input.talkId, input.auth);
-  if (!talk) return notFound('Talk not found.');
-  const denied = requireEditAccess(input.talkId, input.auth);
-  if (denied) return denied;
+}> {
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await requireTalk(input.talkId);
+    if (!talk) return notFound('Talk not found.');
+    const denied = await requireEditAccess(input.talkId);
+    if (denied) return denied;
 
-  try {
-    const reportOutputId = resolveReportTarget({
-      talkId: input.talkId,
-      deliverableKind: input.deliverableKind,
-      reportOutputId: input.reportOutputId,
-      createReport: input.createReport,
-      auth: input.auth,
-    });
-    if (input.deliverableKind === 'report' && !reportOutputId) {
+    try {
+      const reportOutputId = await resolveReportTarget({
+        talkId: input.talkId,
+        deliverableKind: input.deliverableKind,
+        reportOutputId: input.reportOutputId,
+        createReport: input.createReport,
+        auth: input.auth,
+      });
+      if (input.deliverableKind === 'report' && !reportOutputId) {
+        return badRequest(
+          'report_target_required',
+          'Report jobs require an existing reportOutputId or createReport payload.',
+        );
+      }
+
+      const job = await createTalkJob({
+        ownerId: input.auth.userId,
+        talkId: input.talkId,
+        title: input.title,
+        prompt: input.prompt,
+        targetAgentId: input.targetAgentId,
+        schedule: input.schedule,
+        timezone: input.timezone,
+        deliverableKind: input.deliverableKind,
+        reportOutputId,
+        sourceScope: input.sourceScope,
+        createdBy: input.auth.userId,
+      });
+      return {
+        statusCode: 201,
+        body: { ok: true, data: { job } },
+      };
+    } catch (error) {
       return badRequest(
-        'report_target_required',
-        'Report jobs require an existing reportOutputId or createReport payload.',
+        'invalid_job',
+        error instanceof Error ? error.message : 'Failed to create job.',
       );
     }
-
-    const job = createTalkJob({
-      talkId: input.talkId,
-      title: input.title,
-      prompt: input.prompt,
-      targetAgentId: input.targetAgentId,
-      schedule: input.schedule,
-      timezone: input.timezone,
-      deliverableKind: input.deliverableKind,
-      reportOutputId,
-      sourceScope: input.sourceScope,
-      createdBy: input.auth.userId,
-    });
-    return {
-      statusCode: 201,
-      body: { ok: true, data: { job } },
-    };
-  } catch (error) {
-    return badRequest(
-      'invalid_job',
-      error instanceof Error ? error.message : 'Failed to create job.',
-    );
-  }
+  });
 }
 
-export function patchTalkJobRoute(input: {
+export async function patchTalkJobRoute(input: {
   auth: AuthContext;
   talkId: string;
   jobId: string;
@@ -238,133 +243,137 @@ export function patchTalkJobRoute(input: {
   reportOutputId?: string | null;
   createReport?: unknown;
   sourceScope?: TalkJobScope;
-}): {
+}): Promise<{
   statusCode: number;
   body: ApiEnvelope<{ job: TalkJob }>;
-} {
-  const talk = requireTalk(input.talkId, input.auth);
-  if (!talk) return notFound('Talk not found.');
-  const denied = requireEditAccess(input.talkId, input.auth);
-  if (denied) return denied;
+}> {
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await requireTalk(input.talkId);
+    if (!talk) return notFound('Talk not found.');
+    const denied = await requireEditAccess(input.talkId);
+    if (denied) return denied;
 
-  const current = getTalkJob(input.talkId, input.jobId);
-  if (!current) return notFound('Job not found.');
+    const current = await getTalkJob(input.talkId, input.jobId);
+    if (!current) return notFound('Job not found.');
 
-  try {
-    const deliverableKind = input.deliverableKind ?? current.deliverableKind;
-    const reportOutputId = resolveReportTarget({
-      talkId: input.talkId,
-      deliverableKind,
-      reportOutputId:
-        input.reportOutputId !== undefined
-          ? input.reportOutputId
-          : current.reportOutputId,
-      createReport: input.createReport,
-      auth: input.auth,
-    });
-    if (deliverableKind === 'report' && !reportOutputId) {
+    try {
+      const deliverableKind = input.deliverableKind ?? current.deliverableKind;
+      const reportOutputId = await resolveReportTarget({
+        talkId: input.talkId,
+        deliverableKind,
+        reportOutputId:
+          input.reportOutputId !== undefined
+            ? input.reportOutputId
+            : current.reportOutputId,
+        createReport: input.createReport,
+        auth: input.auth,
+      });
+      if (deliverableKind === 'report' && !reportOutputId) {
+        return badRequest(
+          'report_target_required',
+          'Report jobs require an existing reportOutputId or createReport payload.',
+        );
+      }
+
+      const job = await patchTalkJob({
+        talkId: input.talkId,
+        jobId: input.jobId,
+        title: input.title,
+        prompt: input.prompt,
+        targetAgentId: input.targetAgentId,
+        schedule: input.schedule,
+        timezone: input.timezone,
+        deliverableKind,
+        reportOutputId,
+        sourceScope: input.sourceScope,
+      });
+      if (!job) return notFound('Job not found.');
+      return {
+        statusCode: 200,
+        body: { ok: true, data: { job } },
+      };
+    } catch (error) {
       return badRequest(
-        'report_target_required',
-        'Report jobs require an existing reportOutputId or createReport payload.',
+        'invalid_job',
+        error instanceof Error ? error.message : 'Failed to update job.',
       );
     }
+  });
+}
 
-    const job = patchTalkJob({
-      talkId: input.talkId,
-      jobId: input.jobId,
-      title: input.title,
-      prompt: input.prompt,
-      targetAgentId: input.targetAgentId,
-      schedule: input.schedule,
-      timezone: input.timezone,
-      deliverableKind,
-      reportOutputId,
-      sourceScope: input.sourceScope,
-    });
+export async function deleteTalkJobRoute(input: {
+  auth: AuthContext;
+  talkId: string;
+  jobId: string;
+}): Promise<{
+  statusCode: number;
+  body: ApiEnvelope<{ deleted: true }>;
+}> {
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await requireTalk(input.talkId);
+    if (!talk) return notFound('Talk not found.');
+    const denied = await requireEditAccess(input.talkId);
+    if (denied) return denied;
+
+    const deleted = await deleteTalkJob(input.talkId, input.jobId);
+    if (!deleted) return notFound('Job not found.');
+
+    return {
+      statusCode: 200,
+      body: { ok: true, data: { deleted: true } },
+    };
+  });
+}
+
+export async function pauseTalkJobRoute(input: {
+  auth: AuthContext;
+  talkId: string;
+  jobId: string;
+}): Promise<{
+  statusCode: number;
+  body: ApiEnvelope<{ job: TalkJob }>;
+}> {
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await requireTalk(input.talkId);
+    if (!talk) return notFound('Talk not found.');
+    const denied = await requireEditAccess(input.talkId);
+    if (denied) return denied;
+
+    const job = await pauseTalkJob(input.talkId, input.jobId);
     if (!job) return notFound('Job not found.');
+
     return {
       statusCode: 200,
       body: { ok: true, data: { job } },
     };
-  } catch (error) {
-    return badRequest(
-      'invalid_job',
-      error instanceof Error ? error.message : 'Failed to update job.',
-    );
-  }
+  });
 }
 
-export function deleteTalkJobRoute(input: {
+export async function resumeTalkJobRoute(input: {
   auth: AuthContext;
   talkId: string;
   jobId: string;
-}): {
-  statusCode: number;
-  body: ApiEnvelope<{ deleted: true }>;
-} {
-  const talk = requireTalk(input.talkId, input.auth);
-  if (!talk) return notFound('Talk not found.');
-  const denied = requireEditAccess(input.talkId, input.auth);
-  if (denied) return denied;
-
-  const deleted = deleteTalkJob(input.talkId, input.jobId);
-  if (!deleted) return notFound('Job not found.');
-
-  return {
-    statusCode: 200,
-    body: { ok: true, data: { deleted: true } },
-  };
-}
-
-export function pauseTalkJobRoute(input: {
-  auth: AuthContext;
-  talkId: string;
-  jobId: string;
-}): {
+}): Promise<{
   statusCode: number;
   body: ApiEnvelope<{ job: TalkJob }>;
-} {
-  const talk = requireTalk(input.talkId, input.auth);
-  if (!talk) return notFound('Talk not found.');
-  const denied = requireEditAccess(input.talkId, input.auth);
-  if (denied) return denied;
+}> {
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await requireTalk(input.talkId);
+    if (!talk) return notFound('Talk not found.');
+    const denied = await requireEditAccess(input.talkId);
+    if (denied) return denied;
 
-  const job = pauseTalkJob(input.talkId, input.jobId);
-  if (!job) return notFound('Job not found.');
+    const job = await resumeTalkJob(input.talkId, input.jobId);
+    if (!job) return notFound('Job not found.');
 
-  return {
-    statusCode: 200,
-    body: { ok: true, data: { job } },
-  };
+    return {
+      statusCode: 200,
+      body: { ok: true, data: { job } },
+    };
+  });
 }
 
-export function resumeTalkJobRoute(input: {
-  auth: AuthContext;
-  talkId: string;
-  jobId: string;
-}): {
-  statusCode: number;
-  body: ApiEnvelope<{ job: TalkJob }>;
-} {
-  const talk = requireTalk(input.talkId, input.auth);
-  if (!talk) return notFound('Talk not found.');
-  const denied = requireEditAccess(input.talkId, input.auth);
-  if (denied) return denied;
-
-  const job = resumeTalkJob(input.talkId, input.jobId);
-  if (!job) return notFound('Job not found.');
-
-  return {
-    statusCode: 200,
-    body: { ok: true, data: { job } },
-  };
-}
-
-export function runTalkJobNowRoute(input: {
-  auth: AuthContext;
-  talkId: string;
-  jobId: string;
-}):
+type RunTalkJobNowResult =
   | {
       statusCode: number;
       body: ApiEnvelope<{
@@ -376,91 +385,111 @@ export function runTalkJobNowRoute(input: {
   | {
       statusCode: number;
       body: ApiEnvelope<never>;
-    } {
-  const talk = requireTalk(input.talkId, input.auth);
-  if (!talk) return notFound('Talk not found.');
-  const denied = requireEditAccess(input.talkId, input.auth);
-  if (denied) return denied;
+    };
 
-  const result = createJobTriggerRun({
-    jobId: input.jobId,
-    triggerSource: 'manual',
-    allowPaused: true,
-  });
+export async function runTalkJobNowRoute(input: {
+  auth: AuthContext;
+  talkId: string;
+  jobId: string;
+}): Promise<RunTalkJobNowResult> {
+  return await withUserContext<RunTalkJobNowResult>(
+    input.auth.userId,
+    async (): Promise<RunTalkJobNowResult> => {
+      const talk = await requireTalk(input.talkId);
+      if (!talk) return notFound('Talk not found.');
+      const denied = await requireEditAccess(input.talkId);
+      if (denied) return denied;
 
-  switch (result.status) {
-    case 'not_found':
-      return notFound('Job not found.');
-    case 'blocked':
-      return conflict('job_blocked', result.issue.message);
-    case 'job_busy':
-      return conflict(
-        'job_busy',
-        'This job already has an active queued or running run.',
-      );
-    case 'paused':
-      return badRequest(
-        'job_paused',
-        'Paused jobs must be resumed before they can run now.',
-      );
-    case 'enqueued':
-      return {
-        statusCode: 202,
-        body: {
-          ok: true,
-          data: {
-            job: result.job,
-            runId: result.runId,
-            triggerMessageId: result.messageId,
-          },
-        },
-      };
-  }
+      const result = await createJobTriggerRun({
+        ownerId: input.auth.userId,
+        jobId: input.jobId,
+        triggerSource: 'manual',
+        allowPaused: true,
+      });
+
+      switch (result.status) {
+        case 'not_found':
+          return notFound('Job not found.');
+        case 'blocked':
+          return conflict('job_blocked', result.issue.message);
+        case 'job_busy':
+          return conflict(
+            'job_busy',
+            'This job already has an active queued or running run.',
+          );
+        case 'paused':
+          return badRequest(
+            'job_paused',
+            'Paused jobs must be resumed before they can run now.',
+          );
+        case 'enqueued':
+          return {
+            statusCode: 202,
+            body: {
+              ok: true,
+              data: {
+                job: result.job,
+                runId: result.runId,
+                triggerMessageId: result.messageId,
+              },
+            },
+          };
+      }
+    },
+  );
 }
 
-export function listTalkJobRunsRoute(input: {
+export async function listTalkJobRunsRoute(input: {
   auth: AuthContext;
   talkId: string;
   jobId: string;
   limit?: number;
-}): {
+}): Promise<{
   statusCode: number;
   body: ApiEnvelope<{ runs: TalkJobRunSummary[] }>;
-} {
-  const talk = requireTalk(input.talkId, input.auth);
-  if (!talk) return notFound('Talk not found.');
-  const job = getTalkJob(input.talkId, input.jobId);
-  if (!job) return notFound('Job not found.');
+}> {
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await requireTalk(input.talkId);
+    if (!talk) return notFound('Talk not found.');
+    const job = await getTalkJob(input.talkId, input.jobId);
+    if (!job) return notFound('Job not found.');
 
-  return {
-    statusCode: 200,
-    body: {
-      ok: true,
-      data: {
-        runs: listTalkJobRunSummaries(input.talkId, input.jobId, input.limit),
+    return {
+      statusCode: 200,
+      body: {
+        ok: true,
+        data: {
+          runs: await listTalkJobRunSummaries(
+            input.talkId,
+            input.jobId,
+            input.limit,
+          ),
+        },
       },
-    },
-  };
+    };
+  });
 }
 
-export function blockTalkJobRoute(input: {
+export async function blockTalkJobRoute(input: {
   auth: AuthContext;
   talkId: string;
   jobId: string;
   lastRunStatus?: string;
-}): {
+}): Promise<{
   statusCode: number;
   body: ApiEnvelope<{ job: TalkJob }>;
-} {
-  const talk = requireTalk(input.talkId, input.auth);
-  if (!talk) return notFound('Talk not found.');
-  const denied = requireEditAccess(input.talkId, input.auth);
-  if (denied) return denied;
-  const job = blockTalkJob(
-    input.talkId,
-    input.jobId,
-    input.lastRunStatus ?? 'blocked',
-  );
-  if (!job) return notFound('Job not found.');
-  return { statusCode: 200, body: { ok: true, data: { job } } };
+}> {
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await requireTalk(input.talkId);
+    if (!talk) return notFound('Talk not found.');
+    const denied = await requireEditAccess(input.talkId);
+    if (denied) return denied;
+    const job = await blockTalkJob(
+      input.talkId,
+      input.jobId,
+      input.lastRunStatus ?? 'blocked',
+    );
+    if (!job) return notFound('Job not found.');
+    return { statusCode: 200, body: { ok: true, data: { job } } };
+  });
 }

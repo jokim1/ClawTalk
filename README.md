@@ -2,14 +2,15 @@
 
 ClawTalk is a web product where users invite different LLM personas into "Talks" — context-bound rooms — and watch them discuss together.
 
-**Status:** Phase 1 (chassis purge complete). Talk runtime is live; persona, context, and projects layers are next. Cloud deploy target: clawtalk.app on Cloudflare + Supabase Postgres (not yet wired).
+**Status:** Phase 5 PR 2 (sqlite → Postgres cutover in flight). Talk runtime is live on the cloud target (Cloudflare Workers + Supabase). Persona, context, and projects layers shipped. Deploy: clawtalk.app on Cloudflare + Supabase Postgres.
 
 ## What's inside
 
 ```
 src/
-  server.ts                  Bootstrap (init DB → start Hono web server)
-  db.ts, config.ts           SQLite connection + global config
+  worker.ts                  Cloudflare Worker entry (cloud deploy target)
+  server.ts                  Node entry (deferred retirement; see CLAUDE.md)
+  db.ts, config.ts           postgres.js connection + global config
 
   clawtalk/
     talks/                   Multi-agent Talk runtime (executor, run-worker,
@@ -17,25 +18,29 @@ src/
     agents/                  Agent registry, router, execution resolver
     llm/                     Provider catalog, secret store, direct-HTTP
                              streaming dispatcher
-    db/                      SQLite schema + accessors
+    db/                      Postgres schema + RLS-scoped accessors
     identity/                Auth + sessions
-    web/                     Hono server + route modules
+    web/                     Hono worker-app + route modules
     secrets/, security/      Keychain bridge, hashing
 
 webapp/
   src/pages/                 TalkList, TalkDetail, AiAgents, Settings,
                              Profile (React + Vite)
+
+supabase/
+  migrations/                Postgres schema + RLS + grants
 ```
 
 ## Quick start
 
 ```bash
 npm run install:all          # root + webapp deps
-npm run dev                  # tsx src/server.ts on :3210
-npm run dev:web              # vite on :5173, proxies /api/* to :3210
+npm run db:start             # supabase local stack (ports 54430–54439)
+npm run dev:worker           # wrangler dev on :8788 against local supabase
+npm run dev:web              # vite on :5173, proxies /api/* to wrangler
 ```
 
-Then open `http://localhost:5173`. For local dev, use the dev-login form on the sign-in page.
+Then open `http://localhost:5173`. Sign in via Google OAuth (configured in the local Supabase project).
 
 ## Development commands
 

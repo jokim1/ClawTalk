@@ -38,7 +38,6 @@ import {
 const ensureSystemManagedTelegramConnection = (): { id: string } => ({
   id: '_chassis_removed_',
 });
-import { getDb } from '../../db.js';
 import {
   completeDeviceAuthFlow,
   completeGoogleOAuthCallback,
@@ -1031,7 +1030,7 @@ function buildApp(opts: WebServerOptions): Hono {
     const limit = parsePositiveInt(c.req.query('limit'));
     const offset = parseNonNegativeInt(c.req.query('offset'));
 
-    const result = listTalksRoute({
+    const result = await listTalksRoute({
       auth,
       limit: limit ?? undefined,
       offset: offset ?? undefined,
@@ -1051,7 +1050,7 @@ function buildApp(opts: WebServerOptions): Hono {
       return rateLimitedResponse(c, rateResult);
     }
 
-    const result = listTalkSidebarRoute({ auth });
+    const result = await listTalkSidebarRoute({ auth });
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -1065,7 +1064,7 @@ function buildApp(opts: WebServerOptions): Hono {
   app.get('/api/v1/agents', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
-    const result = await getAiAgentsRoute();
+    const result = await getAiAgentsRoute(auth);
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -1186,7 +1185,7 @@ function buildApp(opts: WebServerOptions): Hono {
       bucket: 'read',
     });
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
-    const result = listRegisteredAgentsRoute(auth);
+    const result = await listRegisteredAgentsRoute(auth);
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -1201,7 +1200,7 @@ function buildApp(opts: WebServerOptions): Hono {
       bucket: 'read',
     });
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
-    const result = getMainAgentRoute(auth);
+    const result = await getMainAgentRoute(auth);
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -1217,7 +1216,7 @@ function buildApp(opts: WebServerOptions): Hono {
     });
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
     const body = await c.req.json().catch(() => null);
-    const result = updateMainAgentRoute(auth, body);
+    const result = await updateMainAgentRoute(auth, body);
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -1232,7 +1231,7 @@ function buildApp(opts: WebServerOptions): Hono {
       bucket: 'read',
     });
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
-    const result = getAgentRoute(auth, c.req.param('agentId'));
+    const result = await getAgentRoute(auth, c.req.param('agentId'));
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -1265,7 +1264,7 @@ function buildApp(opts: WebServerOptions): Hono {
         { ok: false, error: { code: 'invalid_json', message: payload.error } },
         400,
       );
-    const result = createAgentRoute(auth, payload.data as any);
+    const result = await createAgentRoute(auth, payload.data as any);
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -1298,7 +1297,7 @@ function buildApp(opts: WebServerOptions): Hono {
         { ok: false, error: { code: 'invalid_json', message: payload.error } },
         400,
       );
-    const result = updateAgentRoute(
+    const result = await updateAgentRoute(
       auth,
       c.req.param('agentId'),
       payload.data as any,
@@ -1328,7 +1327,7 @@ function buildApp(opts: WebServerOptions): Hono {
         { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
         403,
       );
-    const result = deleteAgentRoute(auth, c.req.param('agentId'));
+    const result = await deleteAgentRoute(auth, c.req.param('agentId'));
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -1343,7 +1342,7 @@ function buildApp(opts: WebServerOptions): Hono {
       bucket: 'read',
     });
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
-    const result = getAgentFallbackRoute(auth, c.req.param('agentId'));
+    const result = await getAgentFallbackRoute(auth, c.req.param('agentId'));
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -1376,7 +1375,7 @@ function buildApp(opts: WebServerOptions): Hono {
         { ok: false, error: { code: 'invalid_json', message: payload.error } },
         400,
       );
-    const result = setAgentFallbackRoute(
+    const result = await setAgentFallbackRoute(
       auth,
       c.req.param('agentId'),
       payload.data as any,
@@ -1395,7 +1394,7 @@ function buildApp(opts: WebServerOptions): Hono {
       bucket: 'read',
     });
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
-    const result = getEffectiveToolsRoute(auth, c.req.param('agentId'));
+    const result = await getEffectiveToolsRoute(auth, c.req.param('agentId'));
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -1414,7 +1413,7 @@ function buildApp(opts: WebServerOptions): Hono {
       bucket: 'read',
     });
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
-    const result = listUserToolPermissionsRoute(auth);
+    const result = await listUserToolPermissionsRoute(auth);
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -1447,7 +1446,10 @@ function buildApp(opts: WebServerOptions): Hono {
         { ok: false, error: { code: 'invalid_json', message: payload.error } },
         400,
       );
-    const result = updateUserToolPermissionRoute(auth, payload.data as any);
+    const result = await updateUserToolPermissionRoute(
+      auth,
+      payload.data as any,
+    );
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -2587,7 +2589,7 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
-    const result = createTalkRoute({
+    const result = await createTalkRoute({
       auth,
       title: payload.data.title,
     });
@@ -2652,7 +2654,7 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
-    const result = createTalkFolderRoute({
+    const result = await createTalkFolderRoute({
       auth,
       title: payload.data.title,
     });
@@ -2687,7 +2689,7 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
-    const result = getTalkRoute({
+    const result = await getTalkRoute({
       talkId,
       auth,
     });
@@ -2759,7 +2761,7 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
-    const result = patchTalkRoute({
+    const result = await patchTalkRoute({
       talkId,
       auth,
       title:
@@ -2804,7 +2806,7 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
-    const result = getTalkProjectMountRoute({ auth, talkId });
+    const result = await getTalkProjectMountRoute({ auth, talkId });
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -2869,7 +2871,7 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
-    const result = updateTalkProjectMountRoute({
+    const result = await updateTalkProjectMountRoute({
       auth,
       talkId,
       projectPath: payload.data.projectPath,
@@ -2916,7 +2918,7 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
-    const result = clearTalkProjectMountRoute({ auth, talkId });
+    const result = await clearTalkProjectMountRoute({ auth, talkId });
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -2966,7 +2968,7 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
-    const result = deleteTalkRoute({
+    const result = await deleteTalkRoute({
       talkId,
       auth,
     });
@@ -3034,7 +3036,7 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
-    const result = patchTalkFolderRoute({
+    const result = await patchTalkFolderRoute({
       folderId,
       auth,
       title:
@@ -3089,7 +3091,7 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
-    const result = deleteTalkFolderRoute({
+    const result = await deleteTalkFolderRoute({
       folderId,
       auth,
     });
@@ -3210,7 +3212,7 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
-    const result = reorderTalkSidebarRoute({
+    const result = await reorderTalkSidebarRoute({
       auth,
       itemType: payload.data.itemType,
       itemId: payload.data.itemId,
@@ -3250,7 +3252,7 @@ function buildApp(opts: WebServerOptions): Hono {
     const limit = parsePositiveInt(c.req.query('limit'));
     const beforeCreatedAt = c.req.query('before') || undefined;
     const threadId = (c.req.query('threadId') || '').trim() || undefined;
-    const result = listTalkMessagesRoute({
+    const result = await listTalkMessagesRoute({
       talkId,
       auth,
       threadId,
@@ -3313,7 +3315,7 @@ function buildApp(opts: WebServerOptions): Hono {
       : [];
     const threadId =
       typeof payload.data.threadId === 'string' ? payload.data.threadId : null;
-    const result = deleteTalkMessagesRoute({
+    const result = await deleteTalkMessagesRoute({
       talkId: c.req.param('talkId'),
       auth,
       messageIds,
@@ -3350,7 +3352,7 @@ function buildApp(opts: WebServerOptions): Hono {
 
     const query = c.req.query('q') || '';
     const limit = parsePositiveInt(c.req.query('limit'));
-    const result = searchTalkMessagesRoute({
+    const result = await searchTalkMessagesRoute({
       talkId,
       auth,
       query,
@@ -3610,7 +3612,7 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
-    const result = listTalkAgentsRoute({
+    const result = await listTalkAgentsRoute({
       talkId,
       auth,
     });
@@ -6494,7 +6496,7 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
-    const result = updateTalkAgentsRoute({
+    const result = await updateTalkAgentsRoute({
       talkId,
       auth,
       agents: payload.data.agents,
@@ -6540,7 +6542,7 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
-    const result = listTalkRunsRoute({ talkId, auth });
+    const result = await listTalkRunsRoute({ talkId, auth });
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -6573,7 +6575,7 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
-    const result = getTalkRunContextRoute({ talkId, runId, auth });
+    const result = await getTalkRunContextRoute({ talkId, runId, auth });
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -6604,7 +6606,7 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
-    const result = getTalkPolicyRoute({
+    const result = await getTalkPolicyRoute({
       talkId,
       auth,
     });
@@ -6702,7 +6704,7 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
-    const result = updateTalkPolicyRoute({
+    const result = await updateTalkPolicyRoute({
       talkId,
       auth,
       agents: payload.data.agents,
@@ -6820,7 +6822,7 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
-    const result = enqueueTalkChat({
+    const result = await enqueueTalkChat({
       talkId,
       threadId:
         typeof payload.data.threadId === 'string'
@@ -7097,7 +7099,7 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
-    const result = cancelTalkChat({
+    const result = await cancelTalkChat({
       talkId,
       threadId:
         typeof payload.data.threadId === 'string'

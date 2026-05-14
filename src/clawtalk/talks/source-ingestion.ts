@@ -23,7 +23,7 @@ import {
 import {
   type ContextSourceFetchStrategy,
   updateSourceExtraction,
-} from '../db/index.js';
+} from '../db/context-accessors.js';
 import { logger } from '../../logger.js';
 
 // ---------------------------------------------------------------------------
@@ -604,7 +604,7 @@ export async function ingestUrlSourceWithBrowser(
     );
   }
 
-  updateExtractionFn({
+  await updateExtractionFn({
     sourceId,
     extractedText: result.extractedText,
     extractionError: null,
@@ -664,7 +664,7 @@ export async function ingestUrlSource(
     });
 
     if (!shouldPreferBrowser) {
-      updateExtractionFn({
+      await updateExtractionFn({
         sourceId,
         extractedText: extracted,
         extractionError: null,
@@ -715,7 +715,7 @@ export async function ingestUrlSource(
         url,
         timeoutMs: TALK_CONTEXT_MANAGED_FETCH_TIMEOUT_MS,
       });
-      updateExtractionFn({
+      await updateExtractionFn({
         sourceId,
         extractedText: managedResult.extractedText,
         extractionError: null,
@@ -741,7 +741,7 @@ export async function ingestUrlSource(
     ) &&
     httpFallback.extractedText.trim().length >= MIN_USEFUL_EXTRACTED_TEXT
   ) {
-    updateExtractionFn({
+    await updateExtractionFn({
       sourceId,
       extractedText: httpFallback.extractedText,
       extractionError: null,
@@ -762,7 +762,7 @@ export async function ingestUrlSource(
   ].filter(Boolean);
   const message = messageParts.join(' | ') || 'Unknown URL ingestion failure.';
 
-  updateExtractionFn({
+  await updateExtractionFn({
     sourceId,
     extractedText: null,
     extractionError: message,
@@ -782,12 +782,12 @@ export async function ingestUrlSource(
  * Processes an uploaded file's content and stores extracted text.
  * For v1, we handle text-based formats directly. PDF extraction is deferred.
  */
-export function ingestFileSource(
+export async function ingestFileSource(
   sourceId: string,
   fileContent: string | Buffer,
   mimeType: string,
   fileName: string,
-): void {
+): Promise<void> {
   try {
     const textContent =
       typeof fileContent === 'string'
@@ -814,7 +814,7 @@ export function ingestFileSource(
         break;
     }
 
-    updateSourceExtraction({
+    await updateSourceExtraction({
       sourceId,
       extractedText: extracted,
       extractionError: null,
@@ -828,7 +828,7 @@ export function ingestFileSource(
   } catch (err) {
     const message = String(err);
 
-    updateSourceExtraction({
+    await updateSourceExtraction({
       sourceId,
       extractedText: null,
       extractionError: message,

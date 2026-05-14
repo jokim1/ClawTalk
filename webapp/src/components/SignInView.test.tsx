@@ -8,11 +8,16 @@ import {
   getAuthConfig,
   startGoogleAuth,
 } from '../lib/api';
+import { signInWithGoogle } from '../lib/supabase-cookie-shim';
 
 vi.mock('../lib/api', () => ({
   getAuthConfig: vi.fn(),
   startGoogleAuth: vi.fn(),
   completeDevCallback: vi.fn(),
+}));
+
+vi.mock('../lib/supabase-cookie-shim', () => ({
+  signInWithGoogle: vi.fn(),
 }));
 
 describe('SignInView', () => {
@@ -23,13 +28,14 @@ describe('SignInView', () => {
       new Error('stop after startGoogleAuth'),
     );
     vi.mocked(completeDevCallback).mockResolvedValue();
+    vi.mocked(signInWithGoogle).mockResolvedValue();
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it('passes current route as returnTo when starting Google sign-in', async () => {
+  it('hands off to supabase OAuth when the Google sign-in button is clicked', async () => {
     render(
       <MemoryRouter initialEntries={['/app/talks/talk-123?view=full#latest']}>
         <SignInView onSignedIn={vi.fn()} />
@@ -41,10 +47,6 @@ describe('SignInView', () => {
     });
     fireEvent.click(signInButton);
 
-    await waitFor(() =>
-      expect(startGoogleAuth).toHaveBeenCalledWith({
-        returnTo: '/app/talks/talk-123?view=full#latest',
-      }),
-    );
+    await waitFor(() => expect(signInWithGoogle).toHaveBeenCalled());
   });
 });

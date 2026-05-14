@@ -21,5 +21,21 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit
 
+      # Phase 5 PR 2 — pg-side tests talk to a real Postgres + Supabase
+      # Auth schema (migrations under `supabase/migrations/` apply
+      # automatically on `supabase start`, including the
+      # `on_auth_user_created` trigger that tests depend on).
+      # Tests using `_initTestDatabase` (sqlite:memory) run in this
+      # same job — they don't depend on the Supabase stack, just on
+      # the runner having Node + the lockfile installed.
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Start Supabase
+        run: supabase start --workdir .
+
       - name: Tests
+        env:
+          CLAWTALK_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:54432/postgres
         run: npx vitest run
