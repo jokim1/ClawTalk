@@ -73,13 +73,13 @@ import {
   type RateLimitResult,
 } from './middleware/rate-limit.js';
 import {
-  buildTalkThreadEventFilter,
   buildTalkScopedSseStream,
   buildUserScopedSseStream,
   formatOutboxEventAsSse,
   getTalkScopedEventTopics,
   getUserScopedEventTopics,
 } from './routes/events.js';
+import { buildTalkThreadEventFilter } from '../talks/event-filters.js';
 import { healthResponse, statusResponse } from './routes/system.js';
 import {
   createTalkFolderRoute,
