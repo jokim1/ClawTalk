@@ -1,9 +1,12 @@
 import { randomUUID } from 'crypto';
 
-import { withUserContext } from '../../db.js';
+import {
+  getRequestScopeEnvAndCtx,
+  withNotifyQueueScope,
+  withUserContext,
+} from '../../db.js';
 import { TALK_RUN_MAX_CONCURRENCY, TALK_RUN_POLL_MS } from '../config.js';
 import {
-  appendOutboxEvent,
   claimQueuedTalkRuns,
   completeRunAndPromoteNextAtomic,
   failInterruptedRunsOnStartup,
@@ -12,6 +15,7 @@ import {
   getTalkRunById,
   type TalkRunRecord,
 } from '../db/accessors.js';
+import { emitOutboxEventOutsideTx } from './outbox-emit.js';
 import {
   blockTalkJob,
   getTalkJobById,
@@ -91,6 +95,11 @@ export class TalkRunWorker implements TalkRunWorkerControl {
 
   private readonly activeRunsById = new Map<string, ActiveRun>();
   private readonly activeRunTasks = new Map<string, Promise<void>>();
+  // G1: runId → ownerId. emitExecutionEvent looks up ownerId here when
+  // routing streaming-event notifies to the per-user DO. Populated by
+  // startRun before withUserContext begins; cleared in the finally
+  // block once the run task settles.
+  private readonly runOwnerByRunId = new Map<string, string>();
   private readonly responseSanitizersByRunId = new Map<
     string,
     TalkResponseStreamSanitizer
@@ -197,18 +206,30 @@ export class TalkRunWorker implements TalkRunWorkerControl {
     const availableSlots = this.maxConcurrency - this.activeRunsById.size;
     if (availableSlots <= 0) return;
 
-    // Scheduler claim runs against the BYPASSRLS pool — cross-user
-    // queue inspection. Per-run work below enters withUserContext.
-    const claimedRuns = await claimQueuedTalkRuns(availableSlots);
-    for (const run of claimedRuns) {
-      if (this.activeRunsById.size >= this.maxConcurrency) break;
-      this.startRun(run);
-    }
+    // G3: cross-user scheduler tick. claimQueuedTalkRuns emits one
+    // talk_run_started outbox row per claim; without an owning notify
+    // queue scope those emits would orphan (no withUserContext
+    // wraps the scheduler — it runs against the pool/BYPASSRLS path).
+    // The scope flushes once at exit via ctx.waitUntil. In Node mode
+    // env+ctx are null and the scope's flush is a no-op.
+    const { env, ctx } = getRequestScopeEnvAndCtx();
+    await withNotifyQueueScope(env, ctx, async () => {
+      const claimedRuns = await claimQueuedTalkRuns(availableSlots);
+      for (const run of claimedRuns) {
+        if (this.activeRunsById.size >= this.maxConcurrency) break;
+        this.startRun(run);
+      }
+    });
   }
 
   private startRun(run: TalkRunRecord): void {
     const controller = new AbortController();
     this.activeRunsById.set(run.id, { run, controller });
+    // G1: stash ownerId so emitExecutionEvent can resolve per-event
+    // ownerIds at streaming-emit time (the executor's onEvent runs
+    // inside this run's withUserContext, but the event payload doesn't
+    // carry ownerId — only runId).
+    this.runOwnerByRunId.set(run.id, run.owner_id);
 
     // Every per-run operation (message lookups, completion atomics, job
     // followups, failure paths) runs as the run's owner so RLS sees the
@@ -229,6 +250,7 @@ export class TalkRunWorker implements TalkRunWorkerControl {
       .finally(() => {
         this.activeRunsById.delete(run.id);
         this.activeRunTasks.delete(run.id);
+        this.runOwnerByRunId.delete(run.id);
         this.wake();
       });
     this.activeRunTasks.set(run.id, task);
@@ -404,16 +426,19 @@ export class TalkRunWorker implements TalkRunWorkerControl {
       this.responseSanitizersByRunId.delete(event.runId);
     }
 
-    // event_outbox is RLS-off (per 0003 migration) so this insert works
-    // whether or not we're inside withUserContext. Fire-and-forget keeps
-    // the streaming pipeline from blocking on outbox latency. Payload
-    // is the parsed event object — appendOutboxEvent json-encodes it.
-    appendOutboxEvent({
+    // G1: streaming events emit via the out-of-band path so the INSERT
+    // commits on a fresh auto-commit connection — sibling to the run's
+    // surrounding withUserContext tx, which only commits when the run
+    // ends. Without the out-of-band path streaming rows would be
+    // invisible to the DO until run completion.
+    const ownerId = this.runOwnerByRunId.get(event.runId);
+    emitOutboxEventOutsideTx({
       topic: `talk:${event.talkId}`,
       eventType: event.type,
       payload: event as unknown as Record<string, unknown>,
+      ownerIds: ownerId ? [ownerId] : [],
     }).catch((err) => {
-      logger.warn({ err, eventType: event.type }, 'Outbox append failed');
+      logger.warn({ err, eventType: event.type }, 'Outbox emit failed');
     });
   }
 

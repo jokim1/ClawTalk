@@ -4,10 +4,13 @@ import postgres from 'postgres';
 import {
   closePgDatabase,
   type DbScopeEnvBindings,
+  flushNotifyQueue,
+  flushNotifyQueueForOwner,
   getCurrentNotifyQueue,
   getDbPg,
   getOutOfBandSql,
   initPgDatabase,
+  type NotifyQueueEntry,
   type RequestExecutionContext,
   type Sql,
   withDurableObjectScopedDb,
@@ -25,31 +28,63 @@ afterAll(async () => {
   await closePgDatabase();
 });
 
+function makeMockEventHub(): {
+  env: DbScopeEnvBindings;
+  fetchCalls: Array<{ url: string; body: string; ownerId: string }>;
+  responses: Array<Response | Error>;
+} {
+  const fetchCalls: Array<{ url: string; body: string; ownerId: string }> = [];
+  const responses: Array<Response | Error> = [];
+  const namespace = {
+    idFromName: (name: string) =>
+      ({ __brand: 'UserEventHubId' as const, __name: name }) as never,
+    get: (id: never) => ({
+      fetch: async (input: Request | URL | string) => {
+        const url =
+          typeof input === 'string'
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url;
+        const body =
+          input instanceof Request ? await input.text() : '<no body>';
+        fetchCalls.push({
+          url,
+          body,
+          ownerId: (id as unknown as { __name: string }).__name,
+        });
+        const next = responses.shift();
+        if (next instanceof Error) throw next;
+        return next ?? new Response(null, { status: 200 });
+      },
+    }),
+  };
+  return { env: { USER_EVENT_HUB: namespace }, fetchCalls, responses };
+}
+
 describe('requestScopedDbStorage shape', () => {
   it('carries { sql, ctx, env } through getDbPg() correctly', async () => {
     const env: DbScopeEnvBindings = { DB_EVENT_HUB_URL: 'env-marker-url' };
-    let captured: { sql: Sql; envInside: DbScopeEnvBindings | null } | null =
-      null;
-
     await withRequestScopedDb(TEST_DB_URL, null, env, async (sql) => {
-      const inside = getDbPg();
-      // Same reference as the sql passed into the fn callback.
-      expect(inside).toBe(sql);
-      // OOB sql is opened sibling to main sql; both should be queryable.
+      expect(getDbPg()).toBe(sql);
       const oob = getOutOfBandSql();
-      expect(oob).not.toBeNull();
       expect(oob).not.toBe(sql);
-      captured = { sql, envInside: env };
     });
-
-    expect(captured).not.toBeNull();
-    expect(captured!.envInside?.DB_EVENT_HUB_URL).toBe('env-marker-url');
   });
 });
 
 describe('getCurrentNotifyQueue', () => {
   it('returns null outside any scope', () => {
     expect(getCurrentNotifyQueue()).toBeNull();
+  });
+
+  it('returns a bare NotifyQueueEntry[] inside withNotifyQueueScope', async () => {
+    let inside: unknown = null;
+    await withNotifyQueueScope(null, null, async () => {
+      inside = getCurrentNotifyQueue();
+    });
+    expect(Array.isArray(inside)).toBe(true);
+    expect((inside as unknown[]).length).toBe(0);
   });
 });
 
@@ -86,64 +121,140 @@ describe('withNotifyQueueScope', () => {
         waitUntilCalls.push(p);
       },
     };
-    let observedQueueInside: unknown = 'unset';
-    await withNotifyQueueScope({}, ctx, async () => {
-      observedQueueInside = getCurrentNotifyQueue();
+    const { env, fetchCalls } = makeMockEventHub();
+    let observedQueue: unknown = 'unset';
+    await withNotifyQueueScope(env, ctx, async () => {
+      observedQueue = getCurrentNotifyQueue();
+      (observedQueue as NotifyQueueEntry[]).push({
+        topic: 'talk:t1',
+        eventId: 7,
+        ownerIds: ['user-A'],
+      });
     });
-    // Queue was non-null inside the scope.
-    expect(observedQueueInside).not.toBeNull();
-    expect(observedQueueInside).toHaveProperty('enqueue');
-    // The scope cleared the queue from the surrounding context.
+    expect(Array.isArray(observedQueue)).toBe(true);
     expect(getCurrentNotifyQueue()).toBeNull();
-    // The flush was forwarded to ctx.waitUntil exactly once.
     expect(waitUntilCalls).toHaveLength(1);
     await waitUntilCalls[0];
+    expect(fetchCalls).toHaveLength(1);
+    expect(fetchCalls[0]!.ownerId).toBe('user-A');
+    expect(JSON.parse(fetchCalls[0]!.body)).toEqual({
+      entries: [{ topic: 'talk:t1', eventId: 7 }],
+    });
   });
 
   it('treats nested scopes as pass-through (F7 — outermost owns the queue)', async () => {
-    const waitUntilCalls: Promise<unknown>[] = [];
-    const ctx: RequestExecutionContext = {
-      waitUntil: (p) => {
-        waitUntilCalls.push(p);
-      },
-    };
+    const { env, fetchCalls } = makeMockEventHub();
     let outerQueue: unknown = null;
     let innerQueue: unknown = null;
-    await withNotifyQueueScope({}, ctx, async () => {
+    await withNotifyQueueScope(env, null, async () => {
       outerQueue = getCurrentNotifyQueue();
-      await withNotifyQueueScope({}, ctx, async () => {
+      (outerQueue as NotifyQueueEntry[]).push({
+        topic: 'talk:t1',
+        eventId: 1,
+        ownerIds: ['user-A'],
+      });
+      await withNotifyQueueScope(env, null, async () => {
         innerQueue = getCurrentNotifyQueue();
+        (innerQueue as NotifyQueueEntry[]).push({
+          topic: 'talk:t1',
+          eventId: 2,
+          ownerIds: ['user-A'],
+        });
       });
     });
-    expect(outerQueue).not.toBeNull();
     expect(innerQueue).toBe(outerQueue);
-    // Outer owns the queue; flush ran exactly once.
-    expect(waitUntilCalls).toHaveLength(1);
-    await waitUntilCalls[0];
+    expect(fetchCalls).toHaveLength(1);
+    expect(JSON.parse(fetchCalls[0]!.body)).toEqual({
+      entries: [
+        { topic: 'talk:t1', eventId: 1 },
+        { topic: 'talk:t1', eventId: 2 },
+      ],
+    });
   });
 });
 
 describe('getOutOfBandSql', () => {
   it('returns a separate sql from getDbPg() inside withRequestScopedDb (G1)', async () => {
-    let mainRefInside: Sql | null = null;
-    let oobRefInside: Sql | null = null;
-    let mainRows: unknown = null;
-    let oobRows: unknown = null;
     await withRequestScopedDb(TEST_DB_URL, null, null, async (sql) => {
-      mainRefInside = getDbPg();
-      oobRefInside = getOutOfBandSql();
-      expect(mainRefInside).toBe(sql);
-      expect(oobRefInside).not.toBeNull();
-      expect(oobRefInside).not.toBe(mainRefInside);
-      // Both clients can independently issue queries.
-      mainRows = await sql<{ tag: string }[]>`select 'main' as tag`;
-      oobRows = await oobRefInside!<{ tag: string }[]>`select 'oob' as tag`;
+      const oob = getOutOfBandSql();
+      expect(oob).not.toBe(sql);
+      const mainRows = await sql<{ tag: string }[]>`select 'main' as tag`;
+      const oobRows = await oob<{ tag: string }[]>`select 'oob' as tag`;
+      expect(mainRows).toEqual([{ tag: 'main' }]);
+      expect(oobRows).toEqual([{ tag: 'oob' }]);
     });
-    expect(mainRows).toEqual([{ tag: 'main' }]);
-    expect(oobRows).toEqual([{ tag: 'oob' }]);
   });
 
-  it('returns null outside any withRequestScopedDb scope', () => {
-    expect(getOutOfBandSql()).toBeNull();
+  it('falls back to nodeScopedDb outside any scope (Node mode)', async () => {
+    const oob = getOutOfBandSql();
+    const rows = await oob<{ ok: number }[]>`select 1 as ok`;
+    expect(rows).toEqual([{ ok: 1 }]);
+  });
+});
+
+describe('flushNotifyQueue', () => {
+  it('groups by ownerId; one POST per owner', async () => {
+    const { env, fetchCalls } = makeMockEventHub();
+    const queue: NotifyQueueEntry[] = [
+      { topic: 'talk:t1', eventId: 1, ownerIds: ['user-A'] },
+      { topic: 'talk:t1', eventId: 2, ownerIds: ['user-A', 'user-B'] },
+      { topic: 'user:user-B', eventId: 3, ownerIds: ['user-B'] },
+    ];
+    await flushNotifyQueue(queue, env);
+    expect(fetchCalls).toHaveLength(2);
+    const ownerToBody = new Map(
+      fetchCalls.map((c) => [c.ownerId, JSON.parse(c.body)]),
+    );
+    expect(ownerToBody.get('user-A')).toEqual({
+      entries: [
+        { topic: 'talk:t1', eventId: 1 },
+        { topic: 'talk:t1', eventId: 2 },
+      ],
+    });
+    expect(ownerToBody.get('user-B')).toEqual({
+      entries: [
+        { topic: 'talk:t1', eventId: 2 },
+        { topic: 'user:user-B', eventId: 3 },
+      ],
+    });
+  });
+
+  it('retries on 500 then succeeds (D1)', async () => {
+    const { env, fetchCalls, responses } = makeMockEventHub();
+    responses.push(new Response(null, { status: 500 }));
+    responses.push(new Response(null, { status: 200 }));
+    const t0 = Date.now();
+    await flushNotifyQueueForOwner(
+      'user-X',
+      [{ topic: 'talk:t1', eventId: 1, ownerIds: ['user-X'] }],
+      env,
+    );
+    const elapsed = Date.now() - t0;
+    expect(fetchCalls).toHaveLength(2);
+    expect(elapsed).toBeGreaterThanOrEqual(80);
+  });
+
+  it('429 is terminal-success (no retry)', async () => {
+    const { env, fetchCalls, responses } = makeMockEventHub();
+    responses.push(new Response(null, { status: 429 }));
+    await flushNotifyQueueForOwner(
+      'user-X',
+      [{ topic: 'talk:t1', eventId: 1, ownerIds: ['user-X'] }],
+      env,
+    );
+    expect(fetchCalls).toHaveLength(1);
+  });
+
+  it('no-ops when env.USER_EVENT_HUB is missing', async () => {
+    await flushNotifyQueue(
+      [{ topic: 'talk:t1', eventId: 1, ownerIds: ['user-A'] }],
+      null,
+    );
+  });
+
+  it('no-ops when the queue is empty', async () => {
+    const { env, fetchCalls } = makeMockEventHub();
+    await flushNotifyQueue([], env);
+    expect(fetchCalls).toHaveLength(0);
   });
 });

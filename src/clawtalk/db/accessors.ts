@@ -27,8 +27,8 @@
 
 import { randomUUID } from 'node:crypto';
 
-import { getDbPg } from '../../db.js';
-import { notifyOutboxEvent } from '../talks/outbox-notifier.js';
+import { getCurrentUserId, getDbPg, getOutOfBandSql } from '../../db.js';
+import { emitOutboxEvent } from '../talks/outbox-emit.js';
 import {
   inferThreadTitleFromContent,
   isLegacyPlaceholderTalkThreadTitle,
@@ -1285,7 +1285,10 @@ export async function deleteTalkMessagesAtomic(input: {
       and id in ${db(normalizedIds)}
   `;
   await touchTalkUpdatedAt(input.talkId, now);
-  await appendOutboxEvent({
+  // Owner = current withUserContext user (single-owner-per-talk model).
+  // Sharing will require a talk_members lookup here.
+  const ownerId = getCurrentUserId();
+  await emitOutboxEvent({
     topic: `talk:${input.talkId}`,
     eventType: 'talk_history_edited',
     payload: {
@@ -1295,6 +1298,7 @@ export async function deleteTalkMessagesAtomic(input: {
       deletedMessageIds: normalizedIds,
       editedAt: now,
     },
+    ownerIds: ownerId ? [ownerId] : [],
   });
   return {
     deletedCount: normalizedIds.length,
@@ -1728,6 +1732,15 @@ export interface OutboxEvent {
   created_at: string;
 }
 
+/**
+ * Insert one outbox row on the current `getDbPg()` connection (which
+ * may be a withUserContext tx or a node-mode pooled connection).
+ *
+ * This is a low-level accessor. Most callers should use
+ * `emitOutboxEvent` from `talks/outbox-emit.ts`, which also queues
+ * the post-commit notify entry for `flushNotifyQueue`. Direct calls
+ * to this function skip the W7 notify path entirely.
+ */
 export async function appendOutboxEvent(input: {
   topic: string;
   eventType: string;
@@ -1744,15 +1757,30 @@ export async function appendOutboxEvent(input: {
             ${db.json(input.payload as never)})
     returning event_id::int as event_id
   `;
-  const eventId = rows[0].event_id;
-  // Process-local wakeup for in-process SSE consumers. Cloudflare Workers
-  // doesn't share processes across requests, so this is a no-op there;
-  // the Workers cutover (task #18) will replace this with a polling-based
-  // streaming endpoint backed by getOutboxEventsForTopics.
-  queueMicrotask(() => {
-    notifyOutboxEvent({ topic: input.topic, eventId });
-  });
-  return eventId;
+  return rows[0].event_id;
+}
+
+/**
+ * Insert one outbox row on the request scope's out-of-band sql (fresh
+ * auto-commit connection sibling to any surrounding tx). Used by the
+ * G1 streaming-emit path so streaming events become visible to the
+ * UserEventHub DO immediately, not when the run's surrounding tx
+ * resolves. In Node mode, `getOutOfBandSql()` returns the module-
+ * scoped client (no surrounding tx to escape there).
+ */
+export async function appendOutboxEventOutsideTx(input: {
+  topic: string;
+  eventType: string;
+  payload: Record<string, unknown>;
+}): Promise<number> {
+  const db = getOutOfBandSql();
+  const rows = await db<{ event_id: number }[]>`
+    insert into public.event_outbox (topic, event_type, payload)
+    values (${input.topic}, ${input.eventType},
+            ${db.json(input.payload as never)})
+    returning event_id::int as event_id
+  `;
+  return rows[0].event_id;
 }
 
 export async function getOutboxEventsForTopics(
@@ -1962,7 +1990,7 @@ export async function appendAssistantMessageWithOutbox(input: {
     createdAt,
   });
   await touchTalkUpdatedAt(input.talkId, createdAt);
-  await appendOutboxEvent({
+  await emitOutboxEvent({
     topic: `talk:${input.talkId}`,
     eventType: 'message_appended',
     payload: {
@@ -1978,6 +2006,7 @@ export async function appendAssistantMessageWithOutbox(input: {
       agentNickname: input.agentNickname ?? null,
       metadata: Object.keys(merged).length > 0 ? merged : null,
     },
+    ownerIds: [input.ownerId],
   });
   return message;
 }
@@ -2200,7 +2229,7 @@ export async function enqueueTalkTurnAtomic(input: {
   }
 
   await touchTalkUpdatedAt(input.talkId);
-  await appendOutboxEvent({
+  await emitOutboxEvent({
     topic: `talk:${input.talkId}`,
     eventType: 'message_appended',
     payload: {
@@ -2213,9 +2242,10 @@ export async function enqueueTalkTurnAtomic(input: {
       content: input.content,
       createdAt: message.created_at,
     },
+    ownerIds: [input.ownerId],
   });
   for (const run of runs) {
-    await appendOutboxEvent({
+    await emitOutboxEvent({
       topic: `talk:${input.talkId}`,
       eventType: 'talk_run_queued',
       payload: {
@@ -2231,6 +2261,7 @@ export async function enqueueTalkTurnAtomic(input: {
         executorAlias: run.executor_alias,
         executorModel: run.executor_model,
       },
+      ownerIds: [input.ownerId],
     });
   }
 
@@ -2318,7 +2349,7 @@ export async function claimQueuedTalkRuns(
     `;
     if (updated.length !== 1) continue;
     claimed.push(updated[0]);
-    await appendOutboxEvent({
+    await emitOutboxEvent({
       topic: `talk:${run.talk_id}`,
       eventType: 'talk_run_started',
       payload: {
@@ -2334,6 +2365,7 @@ export async function claimQueuedTalkRuns(
         executorAlias: run.executor_alias,
         executorModel: run.executor_model,
       },
+      ownerIds: [run.owner_id],
     });
   }
   return claimed;
@@ -2453,7 +2485,7 @@ export async function completeRunAndPromoteNextAtomic(input: {
     `;
   }
 
-  await appendOutboxEvent({
+  await emitOutboxEvent({
     topic: `talk:${run.talk_id}`,
     eventType: 'talk_run_completed',
     payload: {
@@ -2468,6 +2500,7 @@ export async function completeRunAndPromoteNextAtomic(input: {
       executorAlias: run.executor_alias,
       executorModel: run.executor_model,
     },
+    ownerIds: [input.ownerId],
   });
   return { applied: true, talkId: run.talk_id };
 }
@@ -2492,6 +2525,7 @@ export async function failRunAndPromoteNextAtomic(input: {
     Pick<
       TalkRunRecord,
       | 'id'
+      | 'owner_id'
       | 'talk_id'
       | 'thread_id'
       | 'trigger_message_id'
@@ -2503,9 +2537,9 @@ export async function failRunAndPromoteNextAtomic(input: {
       | 'sequence_index'
     >[]
   >`
-    select id, talk_id, thread_id, trigger_message_id, target_agent_id,
-           executor_alias, executor_model, run_kind, response_group_id,
-           sequence_index
+    select id, owner_id, talk_id, thread_id, trigger_message_id,
+           target_agent_id, executor_alias, executor_model, run_kind,
+           response_group_id, sequence_index
     from public.talk_runs
     where id = ${input.runId}::uuid and status = 'running'
     limit 1
@@ -2532,7 +2566,7 @@ export async function failRunAndPromoteNextAtomic(input: {
     });
   }
 
-  await appendOutboxEvent({
+  await emitOutboxEvent({
     topic: `talk:${run.talk_id}`,
     eventType: 'talk_run_failed',
     payload: {
@@ -2548,6 +2582,7 @@ export async function failRunAndPromoteNextAtomic(input: {
       executorAlias: run.executor_alias,
       executorModel: run.executor_model,
     },
+    ownerIds: [run.owner_id],
   });
   return { applied: true, talkId: run.talk_id };
 }
@@ -2613,7 +2648,7 @@ export async function cancelTalkRunsAtomic(input: {
     cancelledRunIds.push(run.id);
     if (run.status === 'running') {
       cancelledRunning = true;
-      await appendOutboxEvent({
+      await emitOutboxEvent({
         topic: `talk:${input.talkId}`,
         eventType: 'talk_response_cancelled',
         payload: {
@@ -2624,6 +2659,7 @@ export async function cancelTalkRunsAtomic(input: {
           responseGroupId: run.response_group_id,
           sequenceIndex: run.sequence_index,
         },
+        ownerIds: [input.ownerId],
       });
     }
   }
@@ -2635,7 +2671,7 @@ export async function cancelTalkRunsAtomic(input: {
           .map((r) => r.thread_id),
       ),
     );
-    await appendOutboxEvent({
+    await emitOutboxEvent({
       topic: `talk:${input.talkId}`,
       eventType: 'talk_run_cancelled',
       payload: {
@@ -2644,6 +2680,7 @@ export async function cancelTalkRunsAtomic(input: {
         runIds: cancelledRunIds,
         threadIds,
       },
+      ownerIds: [input.ownerId],
     });
   }
   return {
@@ -2755,7 +2792,7 @@ export async function appendRuntimeTalkMessage(input: {
     createdAt,
   });
   await touchTalkUpdatedAt(input.talkId, createdAt);
-  await appendOutboxEvent({
+  await emitOutboxEvent({
     topic: `talk:${input.talkId}`,
     eventType: 'message_appended',
     payload: {
@@ -2771,6 +2808,7 @@ export async function appendRuntimeTalkMessage(input: {
       agentNickname,
       metadata: meta,
     },
+    ownerIds: [input.ownerId],
   });
   return message;
 }

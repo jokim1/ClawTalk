@@ -21,13 +21,20 @@
 // block, every accessor MUST use the tx — anything else silently bypasses
 // RLS via the BYPASSRLS pooled connection.
 //
-// W7-evtsse U1 adds three sibling ALS scopes opened inside
+// W7-evtsse adds three sibling ALS scopes opened inside
 // `withRequestScopedDb`:
-//   - `notifyQueueStorage` — drains DO RPC notifies once per request (U2).
-//   - `outOfBandDbStorage` — auto-commit sql for the G1 streaming-emit
-//     path (U2 writes `talk_response_delta` rows outside the run's tx).
-//   - `streamingCoalesceStorage` — debounce window for G7 (U2).
-// U1 declares the scopes + shapes; U2 wires producers + consumers.
+//   - `notifyQueueStorage` — bare `NotifyQueueEntry[]`. Producers push
+//     entries via `emitOutboxEvent`; the scope owner (outermost
+//     `withUserContext` or `withNotifyQueueScope`) flushes via
+//     `flushNotifyQueue` after `db.begin` resolves.
+//   - `outOfBandDbStorage` — lazy `OutOfBandSlot`. Streaming-emit
+//     producers (G1) read it via `getOutOfBandSql()` to INSERT outbox
+//     rows on a fresh auto-commit connection, sibling to the run's
+//     surrounding tx.
+//   - `streamingCoalesceStorage` — `Map<ownerId, PendingDrain>`.
+//     Out-of-band notifies coalesce per (owner, ~50ms window). Owned
+//     by `withRequestScopedDb`'s finally block (pending timers fired
+//     synchronously on scope exit).
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 
@@ -42,10 +49,6 @@ let nodeScopedDb: postgres.Sql | null = null;
 export type Sql = postgres.Sql;
 
 // ─── DB-scope env bindings (minimal subset of Env) ──────────────────────
-//
-// Modules running under `withRequestScopedDb` can reach Worker bindings
-// via `requestScopedDbStorage.getStore()?.env`. Kept minimal so node-mode
-// tests can pass `null` without faking the whole Env shape.
 export interface DbScopeEnvBindings {
   DB_EVENT_HUB_URL?: string;
   USER_EVENT_HUB?: UserEventHubNamespace;
@@ -62,45 +65,23 @@ interface UserEventHubStub {
   fetch(input: Request | URL | string, init?: RequestInit): Promise<Response>;
 }
 
-// ─── Notify queue (U1 placeholder; U2 implements .flush) ────────────────
-export interface NotifyEntry {
-  ownerId: string;
+// ─── Notify queue entry (bare array on ALS) ─────────────────────────────
+export interface NotifyQueueEntry {
   topic: string;
   eventId: number;
+  ownerIds: string[];
 }
 
-export interface NotifyQueue {
-  enqueue(entry: NotifyEntry): void;
-  flush(env: DbScopeEnvBindings | null): Promise<void>;
+// ─── Out-of-band sql slot (lazy) ────────────────────────────────────────
+interface OutOfBandSlot {
+  url: string;
+  sql: postgres.Sql | null;
 }
 
-class NotifyQueueImpl implements NotifyQueue {
-  private entries: NotifyEntry[] = [];
-
-  enqueue(entry: NotifyEntry): void {
-    this.entries.push(entry);
-  }
-
-  async flush(_env: DbScopeEnvBindings | null): Promise<void> {
-    // U1 placeholder. U2 batches entries by ownerId and POSTs to the
-    // UserEventHub DO via env.USER_EVENT_HUB.idFromName(ownerId).fetch().
-    this.entries = [];
-  }
-}
-
-// ─── Streaming coalescer (U1 placeholder; U2 implements .flush) ─────────
-//
-// U2 will replace this with the debounced coalescer described in V4 §3c
-// (G7). U1 just declares the ALS scope so U2 doesn't have to revisit
-// withRequestScopedDb's plumbing.
-export interface StreamingCoalescer {
-  enqueue(entry: NotifyEntry): void;
-  flush(env: DbScopeEnvBindings | null): Promise<void>;
-}
-
-class StreamingCoalescerImpl implements StreamingCoalescer {
-  enqueue(_entry: NotifyEntry): void {}
-  async flush(_env: DbScopeEnvBindings | null): Promise<void> {}
+// ─── Streaming-coalesce per-owner pending drain ─────────────────────────
+export interface PendingDrain {
+  timer: ReturnType<typeof setTimeout> | null;
+  entries: NotifyQueueEntry[];
 }
 
 // ─── ALS scopes ─────────────────────────────────────────────────────────
@@ -118,9 +99,11 @@ interface UserContextStore {
 }
 const userContextStorage = new AsyncLocalStorage<UserContextStore>();
 
-const notifyQueueStorage = new AsyncLocalStorage<NotifyQueue>();
-const outOfBandDbStorage = new AsyncLocalStorage<postgres.Sql>();
-const streamingCoalesceStorage = new AsyncLocalStorage<StreamingCoalescer>();
+const notifyQueueStorage = new AsyncLocalStorage<NotifyQueueEntry[]>();
+const outOfBandDbStorage = new AsyncLocalStorage<OutOfBandSlot>();
+const streamingCoalesceStorage = new AsyncLocalStorage<
+  Map<string, PendingDrain>
+>();
 
 function resolveDatabaseUrl(override?: string): string {
   return (
@@ -143,16 +126,61 @@ export function getDbPg(): Sql {
   return nodeScopedDb;
 }
 
-export function getCurrentNotifyQueue(): NotifyQueue | null {
+export function getCurrentNotifyQueue(): NotifyQueueEntry[] | null {
   return notifyQueueStorage.getStore() ?? null;
 }
 
-export function getOutOfBandSql(): Sql | null {
-  return outOfBandDbStorage.getStore() ?? null;
+/**
+ * Out-of-band sql for the G1 streaming-emit path. Opens a fresh
+ * auto-commit connection on first call within a request scope so
+ * streaming events can INSERT outbox rows without joining the run's
+ * surrounding tx. In Node mode (no request scope), falls back to the
+ * module-scoped client — there's no surrounding tx to escape there.
+ */
+export function getOutOfBandSql(): Sql {
+  const slot = outOfBandDbStorage.getStore();
+  if (!slot) {
+    if (!nodeScopedDb) throw new Error('Postgres database not initialized');
+    return nodeScopedDb;
+  }
+  if (!slot.sql) {
+    slot.sql = postgres(slot.url, {
+      max: 1,
+      idle_timeout: 5,
+      connect_timeout: 10,
+      prepare: false,
+    });
+  }
+  return slot.sql;
 }
 
-export function getStreamingCoalescer(): StreamingCoalescer | null {
+export function getStreamingCoalesceMap(): Map<string, PendingDrain> | null {
   return streamingCoalesceStorage.getStore() ?? null;
+}
+
+/**
+ * Current user's id from the surrounding `withUserContext` scope.
+ * Returns null outside a user context. Producers use this to fill
+ * `ownerIds` on `emitOutboxEvent` for operations where the talk's
+ * owner is by construction the requesting user (single-user-per-talk
+ * model). Sharing will require a `talk_members` lookup instead.
+ */
+export function getCurrentUserId(): string | null {
+  return userContextStorage.getStore()?.userId ?? null;
+}
+
+/**
+ * Snapshot the current request scope's env + ctx. Used by the streaming
+ * notify coalescer to schedule flushes via the same ctx.waitUntil()
+ * the request handler will await on. Returns `{ env: null, ctx: null }`
+ * outside any request scope.
+ */
+export function getRequestScopeEnvAndCtx(): {
+  env: DbScopeEnvBindings | null;
+  ctx: RequestExecutionContext | null;
+} {
+  const store = requestScopedDbStorage.getStore();
+  return { env: store?.env ?? null, ctx: store?.ctx ?? null };
 }
 
 /**
@@ -163,6 +191,13 @@ export function getStreamingCoalescer(): StreamingCoalescer | null {
  * Re-entrancy with the same userId reuses the outer transaction. Nested
  * calls with a different userId are a caller bug and throw synchronously
  * — cross-user nesting would silently leak data via the outer tx's claims.
+ *
+ * F7 outermost-owns-queue: when no outer notify queue exists (no
+ * surrounding `withNotifyQueueScope` or `withUserContext`), this
+ * function opens a fresh `NotifyQueueEntry[]` and flushes it after
+ * `db.begin` resolves. The flush is forwarded to `ctx.waitUntil()`
+ * when available so the HTTP response can return before notifies
+ * complete.
  */
 export async function withUserContext<T>(
   userId: string,
@@ -177,14 +212,49 @@ export async function withUserContext<T>(
     }
     return fn();
   }
-  const db = requestScopedDbStorage.getStore()?.sql ?? nodeScopedDb;
+  const requestScope = requestScopedDbStorage.getStore();
+  const db = requestScope?.sql ?? nodeScopedDb;
   if (!db) throw new Error('Postgres database not initialized');
   const claims = JSON.stringify({ sub: userId, role: 'authenticated' });
-  return db.begin(async (tx) => {
-    await tx`set local role authenticated`;
-    await tx`select set_config('request.jwt.claims', ${claims}, true)`;
-    return userContextStorage.run({ tx, userId }, fn);
-  }) as Promise<T>;
+
+  // F7: an outer queue (scheduler scope or wrapping request handler)
+  // owns the flush. We just run inside the outer.
+  const outerQueue = notifyQueueStorage.getStore();
+  if (outerQueue) {
+    return db.begin(async (tx) => {
+      await tx`set local role authenticated`;
+      await tx`select set_config('request.jwt.claims', ${claims}, true)`;
+      return userContextStorage.run({ tx, userId }, fn);
+    }) as Promise<T>;
+  }
+
+  // Outermost — open a fresh queue and arrange post-commit flush.
+  const queue: NotifyQueueEntry[] = [];
+  return notifyQueueStorage.run(queue, () =>
+    (
+      db.begin(async (tx) => {
+        await tx`set local role authenticated`;
+        await tx`select set_config('request.jwt.claims', ${claims}, true)`;
+        return userContextStorage.run({ tx, userId }, fn);
+      }) as Promise<T>
+    ).then((result) => {
+      if (queue.length > 0) {
+        const env = requestScope?.env ?? null;
+        const ctx = requestScope?.ctx ?? null;
+        const flush = flushNotifyQueue(queue, env).catch((err) => {
+          console.error('[notify-queue] post-commit flush failed', err);
+        });
+        if (ctx) {
+          ctx.waitUntil(flush);
+        } else {
+          flush.catch(() => {
+            /* unhandled-rejection guard for Node fallback */
+          });
+        }
+      }
+      return result;
+    }),
+  );
 }
 
 // Node mode — call once at process boot. Idempotent.
@@ -213,39 +283,26 @@ export interface RequestExecutionContext {
 
 function buildRequestPgClient(url: string): postgres.Sql {
   return postgres(url, {
-    // Hyperdrive owns the upstream pool — one client connection per
-    // request is enough. fetch_types: true is required for text[]
-    // column decoding (gotcha #2 in editorialroom's port: without it,
-    // text[] columns return raw `'{a,b,c}'` strings instead of JS
-    // arrays). +1 round-trip per cold isolate, amortized vs LLM calls.
     max: 1,
     fetch_types: true,
     idle_timeout: 5,
     connect_timeout: 10,
-    // Use simple query protocol. With the extended protocol (default),
-    // postgres errors mid-transaction surface as opaque "write
-    // CONNECTION_CLOSED" instead of the real SQLSTATE — Hyperdrive's
-    // proxy seems to reset the socket on protocol-level error
-    // responses. Simple protocol returns clean ErrorResponse messages
-    // with full context (22P02, 23505, etc.). Query throughput cost is
-    // negligible relative to the LLM call that dominates every Talk
-    // run.
     prepare: false,
   });
 }
 
 /**
  * Workers mode — wrap a per-request unit of work. Creates a fresh
- * postgres.js client (bound to this request's I/O context), opens the
- * three sibling ALS scopes (notify queue, out-of-band sql for the G1
- * streaming path, streaming coalescer for G7), runs `fn` inside the
- * full scope chain, and best-effort closes the clients after `fn`
- * resolves. If `ctx` is provided, the close is forwarded via
+ * postgres.js client, opens the three sibling ALS scopes (out-of-band
+ * sql for G1, streaming coalescer map for G7), runs `fn` inside the
+ * full scope chain, and best-effort closes everything after `fn`
+ * resolves. If `ctx` is provided, closes are forwarded via
  * `ctx.waitUntil()`.
  *
- * `env` carries the minimal Worker-binding subset that modules under
- * this scope need (DB_EVENT_HUB_URL for the DO RPC URL, USER_EVENT_HUB
- * for the DO namespace). May be null in node-mode tests.
+ * Streaming-coalesce drains with pending timers at scope exit are
+ * flushed synchronously. The notify-queue scope is NOT opened here —
+ * `withUserContext` and `withNotifyQueueScope` own that lifecycle so
+ * the queue closes around the surrounding tx commit window.
  */
 export async function withRequestScopedDb<T>(
   url: string,
@@ -254,34 +311,50 @@ export async function withRequestScopedDb<T>(
   fn: (sql: Sql) => Promise<T>,
 ): Promise<T> {
   const sql = buildRequestPgClient(url);
-  const outOfBandSql = buildRequestPgClient(url);
-  const coalescer = new StreamingCoalescerImpl();
+  const outOfBand: OutOfBandSlot = { url, sql: null };
+  const streamingCoalesce = new Map<string, PendingDrain>();
   try {
     return await requestScopedDbStorage.run({ sql, ctx, env }, () =>
-      outOfBandDbStorage.run(outOfBandSql, () =>
-        streamingCoalesceStorage.run(coalescer, () => fn(sql)),
+      outOfBandDbStorage.run(outOfBand, () =>
+        streamingCoalesceStorage.run(streamingCoalesce, () => fn(sql)),
       ),
     );
   } catch (err) {
     console.error('[withRequestScopedDb] fn threw', describeError(err));
     throw err;
   } finally {
+    const pendingFlushes: Promise<unknown>[] = [];
+    for (const [ownerId, slot] of streamingCoalesce) {
+      if (slot.timer) clearTimeout(slot.timer);
+      if (slot.entries.length > 0) {
+        const entries = slot.entries;
+        slot.entries = [];
+        slot.timer = null;
+        const flush = flushNotifyQueueForOwner(ownerId, entries, env).catch(
+          (err) => {
+            console.error(
+              '[withRequestScopedDb] streaming-coalesce exit-flush failed',
+              describeError(err),
+            );
+          },
+        );
+        pendingFlushes.push(flush);
+      }
+    }
     const closeMain = sql.end({ timeout: 5 }).catch((err) => {
       console.error('[withRequestScopedDb] sql.end failed', describeError(err));
     });
-    const closeOob = outOfBandSql.end({ timeout: 5 }).catch((err) => {
-      console.error(
-        '[withRequestScopedDb] out-of-band sql.end failed',
-        describeError(err),
-      );
-    });
-    const flushCoalescer = coalescer.flush(env).catch((err) => {
-      console.error(
-        '[withRequestScopedDb] streaming coalescer flush failed',
-        describeError(err),
-      );
-    });
-    const close = Promise.all([closeMain, closeOob, flushCoalescer]);
+    pendingFlushes.push(closeMain);
+    if (outOfBand.sql) {
+      const closeOob = outOfBand.sql.end({ timeout: 5 }).catch((err) => {
+        console.error(
+          '[withRequestScopedDb] out-of-band sql.end failed',
+          describeError(err),
+        );
+      });
+      pendingFlushes.push(closeOob);
+    }
+    const close = Promise.all(pendingFlushes);
     if (ctx) {
       ctx.waitUntil(close);
     } else {
@@ -292,9 +365,7 @@ export async function withRequestScopedDb<T>(
 
 /**
  * Durable-Object mode — accessors invoked from inside a DO see the
- * caller-supplied `sql` via `getDbPg()`. Used by the UserEventHub DO
- * for outbox SELECTs against `DB_EVENT_HUB_URL` without standing up a
- * full request scope.
+ * caller-supplied `sql` via `getDbPg()`.
  */
 export async function withDurableObjectScopedDb<T>(
   sql: postgres.Sql,
@@ -304,43 +375,107 @@ export async function withDurableObjectScopedDb<T>(
 }
 
 /**
- * Open a per-request `NotifyQueue` for the duration of `fn`, then flush
- * it exactly once. Producers inside `fn` reach the queue via
- * `getCurrentNotifyQueue()`. The flush is forwarded to
- * `ctx.waitUntil()` when available so the HTTP response can return
- * before notifies complete; in node mode it's awaited synchronously.
+ * Open a per-scheduler-tick `NotifyQueueEntry[]` for the duration of
+ * `fn`, then flush exactly once via `ctx.waitUntil()`. Producers
+ * inside `fn` push to the queue via `emitOutboxEvent`. Used by
+ * `run-worker.processCycle` (G3) so cross-user scheduler emits don't
+ * orphan when no surrounding `withUserContext` exists.
  *
- * G3: the scheduler (`run-worker.processCycle`) wraps its
- * `claimQueuedTalkRuns` call in this scope so cross-user notifies
- * emitted during scheduling are batched + flushed at scope exit
- * instead of orphaning.
+ * Nested calls (e.g., a `withUserContext` opened inside this scope)
+ * reuse the outer queue — outermost-owns-flush (F7).
  */
 export async function withNotifyQueueScope<T>(
-  env: DbScopeEnvBindings,
+  env: DbScopeEnvBindings | null,
   ctx: RequestExecutionContext | null,
   fn: () => Promise<T>,
 ): Promise<T> {
   if (notifyQueueStorage.getStore()) {
-    // Re-entry: an outer scope already owns the queue. Treat this call
-    // as a pass-through so nested wrappers don't double-flush (F7).
     return fn();
   }
-  const queue = new NotifyQueueImpl();
+  const queue: NotifyQueueEntry[] = [];
   try {
     return await notifyQueueStorage.run(queue, fn);
   } finally {
-    const flush = queue.flush(env).catch((err) => {
-      console.error(
-        '[withNotifyQueueScope] queue.flush failed',
-        describeError(err),
-      );
-    });
-    if (ctx) {
-      ctx.waitUntil(flush);
-    } else {
-      await flush;
+    if (queue.length > 0) {
+      const flush = flushNotifyQueue(queue, env).catch((err) => {
+        console.error('[notify-queue] scope flush failed', err);
+      });
+      if (ctx) {
+        ctx.waitUntil(flush);
+      } else {
+        await flush;
+      }
     }
   }
+}
+
+/**
+ * Group `queue` entries by ownerId, then POST one batched notify per
+ * owner to the UserEventHub DO. Each fan-out retries up to 3 times
+ * on transient failure (D1: 100ms / 500ms / 2s backoff).
+ *
+ * No-ops when `env.USER_EVENT_HUB` is missing or the queue is empty.
+ */
+export async function flushNotifyQueue(
+  queue: NotifyQueueEntry[],
+  env: DbScopeEnvBindings | null,
+): Promise<void> {
+  if (!env?.USER_EVENT_HUB || queue.length === 0) return;
+  const byOwner = new Map<string, NotifyQueueEntry[]>();
+  for (const entry of queue) {
+    for (const ownerId of entry.ownerIds) {
+      const list = byOwner.get(ownerId) ?? [];
+      list.push(entry);
+      byOwner.set(ownerId, list);
+    }
+  }
+  await Promise.all(
+    [...byOwner.entries()].map(([ownerId, entries]) =>
+      flushNotifyQueueForOwner(ownerId, entries, env),
+    ),
+  );
+}
+
+/**
+ * Send one batched notify to the DO for `ownerId` containing
+ * `entries`. 3x retry with 100ms / 500ms / 2s backoff per D1.
+ * 200-class and 429 responses are terminal-success (429 = DO is full
+ * for this owner; the producer can't help). Other 5xx + network
+ * errors retry; if all attempts fail, the failure is logged and the
+ * function resolves — the outbox row is durable, so a later DO
+ * `alarm()` will catch up.
+ */
+export async function flushNotifyQueueForOwner(
+  ownerId: string,
+  entries: NotifyQueueEntry[],
+  env: DbScopeEnvBindings | null,
+): Promise<void> {
+  if (!env?.USER_EVENT_HUB || entries.length === 0) return;
+  const id = env.USER_EVENT_HUB.idFromName(ownerId);
+  const stub = env.USER_EVENT_HUB.get(id);
+  const body = JSON.stringify({
+    entries: entries.map(({ topic, eventId }) => ({ topic, eventId })),
+  });
+  const delays = [100, 500, 2_000];
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      const req = new Request('http://hub/notify', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body,
+      });
+      const res = await stub.fetch(req);
+      if (res.ok || res.status === 429) return;
+      lastErr = new Error(`notify ${res.status}`);
+    } catch (err) {
+      lastErr = err;
+    }
+    if (attempt < delays.length) {
+      await new Promise((r) => setTimeout(r, delays[attempt]));
+    }
+  }
+  console.error('[notify-queue] gave up after retries', { ownerId, lastErr });
 }
 
 function describeError(err: unknown): Record<string, unknown> {

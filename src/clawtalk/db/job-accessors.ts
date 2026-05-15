@@ -17,12 +17,12 @@
 //     explicit ownerId WHERE clause.
 
 import {
-  appendOutboxEvent,
   createTalkMessage,
   createTalkRun,
   createTalkThread,
 } from './accessors.js';
 import { getDbPg } from '../../db.js';
+import { emitOutboxEvent } from '../talks/outbox-emit.js';
 
 export type TalkJobStatus = 'active' | 'paused' | 'blocked';
 export type TalkJobDeliverableKind = 'thread' | 'report';
@@ -1041,7 +1041,7 @@ export async function createJobTriggerRun(input: {
   });
 
   await touchTalkUpdatedAtForJob(job.talkId, currentNow);
-  await appendOutboxEvent({
+  await emitOutboxEvent({
     topic: `talk:${job.talkId}`,
     eventType: 'message_appended',
     payload: {
@@ -1055,6 +1055,7 @@ export async function createJobTriggerRun(input: {
       createdAt: currentNow,
       metadata,
     },
+    ownerIds: [input.ownerId],
   });
   await markTalkJobRunQueued(job.id, currentNow);
 
