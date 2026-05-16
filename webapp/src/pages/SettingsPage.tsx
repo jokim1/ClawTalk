@@ -6,6 +6,8 @@ import {
   type AgentProviderCard,
   type AiAgentsPageData,
   type ExecutorSettings,
+  type ProviderCredentialScope,
+  type ProviderVerificationStatus,
   type RegisteredAgent,
   type SessionUser,
   getAiAgents,
@@ -78,8 +80,8 @@ function formatDateTime(value: string | null): string {
   return Number.isNaN(parsed.valueOf()) ? value : parsed.toLocaleString();
 }
 
-function formatVerification(provider: AgentProviderCard): string {
-  switch (provider.verificationStatus) {
+function formatVerification(status: ProviderVerificationStatus): string {
+  switch (status) {
     case 'verified':
       return 'Verified';
     case 'invalid':
@@ -98,8 +100,8 @@ function formatVerification(provider: AgentProviderCard): string {
   }
 }
 
-function verificationChipClass(provider: AgentProviderCard): string {
-  switch (provider.verificationStatus) {
+function verificationChipClass(status: ProviderVerificationStatus): string {
+  switch (status) {
     case 'verified':
       return 'talk-agent-chip talk-agent-chip-success';
     case 'invalid':
@@ -110,6 +112,36 @@ function verificationChipClass(provider: AgentProviderCard): string {
     default:
       return 'talk-agent-chip';
   }
+}
+
+type ProviderScopeView = {
+  hasCredential: boolean;
+  credentialHint: string | null;
+  verificationStatus: ProviderVerificationStatus;
+  lastVerifiedAt: string | null;
+  lastVerificationError: string | null;
+};
+
+function projectProvider(
+  provider: AgentProviderCard,
+  scope: ProviderCredentialScope,
+): ProviderScopeView {
+  if (scope === 'workspace') {
+    return {
+      hasCredential: provider.workspaceHasCredential,
+      credentialHint: provider.workspaceCredentialHint,
+      verificationStatus: provider.workspaceVerificationStatus,
+      lastVerifiedAt: provider.workspaceLastVerifiedAt,
+      lastVerificationError: provider.workspaceLastVerificationError,
+    };
+  }
+  return {
+    hasCredential: provider.hasCredential,
+    credentialHint: provider.credentialHint,
+    verificationStatus: provider.verificationStatus,
+    lastVerifiedAt: provider.lastVerifiedAt,
+    lastVerificationError: provider.lastVerificationError,
+  };
 }
 
 // The new cloud Worker has no Anthropic-container runtime, so the
@@ -226,7 +258,7 @@ export function SettingsPage({
       ) : null}
 
       {tab === 'api-keys' && canManage ? (
-        <ApiKeysTab onUnauthorized={onUnauthorized} canManage={canManage} />
+        <ApiKeysTab onUnauthorized={onUnauthorized} userRole={userRole} />
       ) : null}
 
       {tab === 'agents' && canManage ? (
@@ -379,13 +411,18 @@ const PROVIDER_SAVE_POLL_DELAYS_MS = [
   1_500, 1_500, 2_500, 3_500, 5_000, 5_000, 5_000,
 ];
 
+function draftKey(scope: ProviderCredentialScope, providerId: string): string {
+  return `${scope}:${providerId}`;
+}
+
 function ApiKeysTab({
   onUnauthorized,
-  canManage,
+  userRole,
 }: {
   onUnauthorized: () => void;
-  canManage: boolean;
+  userRole: string;
 }): JSX.Element {
+  const isAdmin = userRole === 'owner' || userRole === 'admin';
   const [data, setData] = useState<AiAgentsPageData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -424,23 +461,30 @@ function ApiKeysTab({
   }, [onUnauthorized]);
 
   const updateDraft = (
+    scope: ProviderCredentialScope,
     providerId: string,
     patch: Partial<ProviderDraft>,
   ): void => {
-    setDrafts((current) => ({
-      ...current,
-      [providerId]: {
-        ...(current[providerId] || {
-          apiKey: '',
-          showApiKey: false,
-          expanded: false,
-        }),
-        ...patch,
-      },
-    }));
+    setDrafts((current) => {
+      const key = draftKey(scope, providerId);
+      return {
+        ...current,
+        [key]: {
+          ...(current[key] || {
+            apiKey: '',
+            showApiKey: false,
+            expanded: false,
+          }),
+          ...patch,
+        },
+      };
+    });
   };
 
-  const refreshProvider = (next: AgentProviderCard): void => {
+  const refreshProvider = (
+    next: AgentProviderCard,
+    scope: ProviderCredentialScope,
+  ): void => {
     setData((current) =>
       current
         ? {
@@ -451,13 +495,17 @@ function ApiKeysTab({
           }
         : current,
     );
-    updateDraft(next.id, {
+    const view = projectProvider(next, scope);
+    updateDraft(scope, next.id, {
       apiKey: '',
-      expanded: !next.hasCredential,
+      expanded: !view.hasCredential,
     });
   };
 
-  const pollAfterSave = async (providerId: string): Promise<void> => {
+  const pollAfterSave = async (
+    providerId: string,
+    scope: ProviderCredentialScope,
+  ): Promise<void> => {
     for (const delayMs of PROVIDER_SAVE_POLL_DELAYS_MS) {
       await new Promise((resolve) => setTimeout(resolve, delayMs));
       try {
@@ -466,14 +514,15 @@ function ApiKeysTab({
           (entry) => entry.id === providerId,
         );
         if (!provider) return;
-        refreshProvider(provider);
+        refreshProvider(provider, scope);
+        const view = projectProvider(provider, scope);
         if (
-          provider.verificationStatus === 'verifying' ||
-          provider.verificationStatus === 'not_verified'
+          view.verificationStatus === 'verifying' ||
+          view.verificationStatus === 'not_verified'
         ) {
           continue;
         }
-        if (provider.verificationStatus === 'verified') {
+        if (view.verificationStatus === 'verified') {
           setNotice(`${provider.name} verified.`);
         }
         return;
@@ -494,29 +543,38 @@ function ApiKeysTab({
     setError(err instanceof ApiError ? err.message : fallback);
   };
 
-  const handleSave = async (providerId: string): Promise<void> => {
-    const draft = drafts[providerId];
+  const handleSave = async (
+    providerId: string,
+    scope: ProviderCredentialScope,
+  ): Promise<void> => {
+    const draft = drafts[draftKey(scope, providerId)];
     if (!draft) return;
     const apiKey = draft.apiKey.trim();
     if (!apiKey) {
       setError('Enter an API key before saving.');
       return;
     }
-    setBusyKey(`save:${providerId}`);
+    setBusyKey(`save:${scope}:${providerId}`);
     setNotice(null);
     setError(null);
     try {
       const updated = await saveAiProviderCredential({
         providerId,
         apiKey,
+        scope,
       });
-      refreshProvider(updated);
-      setNotice(`${updated.name} credential saved.`);
+      refreshProvider(updated, scope);
+      const view = projectProvider(updated, scope);
+      setNotice(
+        scope === 'workspace'
+          ? `${updated.name} workspace credential saved.`
+          : `${updated.name} credential saved.`,
+      );
       if (
-        updated.verificationStatus === 'verifying' ||
-        updated.verificationStatus === 'not_verified'
+        view.verificationStatus === 'verifying' ||
+        view.verificationStatus === 'not_verified'
       ) {
-        void pollAfterSave(providerId);
+        void pollAfterSave(providerId, scope);
       }
     } catch (err) {
       handleFailure(err, 'Failed to save provider credential.');
@@ -525,17 +583,25 @@ function ApiKeysTab({
     }
   };
 
-  const handleClear = async (providerId: string): Promise<void> => {
-    setBusyKey(`save:${providerId}`);
+  const handleClear = async (
+    providerId: string,
+    scope: ProviderCredentialScope,
+  ): Promise<void> => {
+    setBusyKey(`save:${scope}:${providerId}`);
     setNotice(null);
     setError(null);
     try {
       const updated = await saveAiProviderCredential({
         providerId,
         apiKey: null,
+        scope,
       });
-      refreshProvider(updated);
-      setNotice(`${updated.name} credential cleared.`);
+      refreshProvider(updated, scope);
+      setNotice(
+        scope === 'workspace'
+          ? `${updated.name} workspace credential cleared.`
+          : `${updated.name} credential cleared.`,
+      );
     } catch (err) {
       handleFailure(err, 'Failed to clear provider credential.');
     } finally {
@@ -543,13 +609,16 @@ function ApiKeysTab({
     }
   };
 
-  const handleVerify = async (providerId: string): Promise<void> => {
-    setBusyKey(`verify:${providerId}`);
+  const handleVerify = async (
+    providerId: string,
+    scope: ProviderCredentialScope,
+  ): Promise<void> => {
+    setBusyKey(`verify:${scope}:${providerId}`);
     setNotice(null);
     setError(null);
     try {
-      const updated = await verifyAiProviderCredential(providerId);
-      refreshProvider(updated);
+      const updated = await verifyAiProviderCredential(providerId, scope);
+      refreshProvider(updated, scope);
       setNotice(`${updated.name} verification updated.`);
     } catch (err) {
       handleFailure(err, 'Failed to verify provider credential.');
@@ -586,10 +655,13 @@ function ApiKeysTab({
       ) : null}
 
       <section className="settings-card">
-        <h2>Provider API Keys</h2>
+        <h2>Workspace API Keys</h2>
         <p className="settings-copy">
-          Add API keys for the providers you want to use in talks. Keys are
-          encrypted at rest and verified against the provider on save.
+          Workspace-shared keys are visible to every member and used when a
+          member hasn't supplied a personal key of their own.{' '}
+          {isAdmin
+            ? 'Set them here as the workspace admin.'
+            : 'Only workspace admins can change these.'}
         </p>
 
         {providers.length === 0 ? (
@@ -600,16 +672,59 @@ function ApiKeysTab({
           <div className="talk-llm-card-list">
             {providers.map((provider) => (
               <ProviderCredentialCard
-                key={provider.id}
+                key={`workspace:${provider.id}`}
+                scope="workspace"
                 provider={provider}
-                draft={drafts[provider.id] || emptyDraft(provider)}
-                canManage={canManage}
-                busySave={busyKey === `save:${provider.id}`}
-                busyVerify={busyKey === `verify:${provider.id}`}
-                onDraftChange={(patch) => updateDraft(provider.id, patch)}
-                onSave={() => void handleSave(provider.id)}
-                onClear={() => void handleClear(provider.id)}
-                onVerify={() => void handleVerify(provider.id)}
+                draft={
+                  drafts[draftKey('workspace', provider.id)] ||
+                  emptyDraft(provider, 'workspace')
+                }
+                canManage={isAdmin}
+                busySave={busyKey === `save:workspace:${provider.id}`}
+                busyVerify={busyKey === `verify:workspace:${provider.id}`}
+                onDraftChange={(patch) =>
+                  updateDraft('workspace', provider.id, patch)
+                }
+                onSave={() => void handleSave(provider.id, 'workspace')}
+                onClear={() => void handleClear(provider.id, 'workspace')}
+                onVerify={() => void handleVerify(provider.id, 'workspace')}
+              />
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section className="settings-card">
+        <h2>Personal API Keys</h2>
+        <p className="settings-copy">
+          Personal keys override the workspace key when set. Use these when you
+          want to bill against your own provider account.
+        </p>
+
+        {providers.length === 0 ? (
+          <p className="settings-copy">
+            No providers are enabled for this workspace.
+          </p>
+        ) : (
+          <div className="talk-llm-card-list">
+            {providers.map((provider) => (
+              <ProviderCredentialCard
+                key={`user:${provider.id}`}
+                scope="user"
+                provider={provider}
+                draft={
+                  drafts[draftKey('user', provider.id)] ||
+                  emptyDraft(provider, 'user')
+                }
+                canManage
+                busySave={busyKey === `save:user:${provider.id}`}
+                busyVerify={busyKey === `verify:user:${provider.id}`}
+                onDraftChange={(patch) =>
+                  updateDraft('user', provider.id, patch)
+                }
+                onSave={() => void handleSave(provider.id, 'user')}
+                onClear={() => void handleClear(provider.id, 'user')}
+                onVerify={() => void handleVerify(provider.id, 'user')}
               />
             ))}
           </div>
@@ -624,20 +739,29 @@ function initDrafts(
 ): Record<string, ProviderDraft> {
   const drafts: Record<string, ProviderDraft> = {};
   for (const provider of providers) {
-    drafts[provider.id] = emptyDraft(provider);
+    drafts[draftKey('user', provider.id)] = emptyDraft(provider, 'user');
+    drafts[draftKey('workspace', provider.id)] = emptyDraft(
+      provider,
+      'workspace',
+    );
   }
   return drafts;
 }
 
-function emptyDraft(provider: AgentProviderCard): ProviderDraft {
+function emptyDraft(
+  provider: AgentProviderCard,
+  scope: ProviderCredentialScope,
+): ProviderDraft {
+  const view = projectProvider(provider, scope);
   return {
     apiKey: '',
     showApiKey: false,
-    expanded: !provider.hasCredential,
+    expanded: !view.hasCredential,
   };
 }
 
 function ProviderCredentialCard({
+  scope,
   provider,
   draft,
   canManage,
@@ -648,6 +772,7 @@ function ProviderCredentialCard({
   onClear,
   onVerify,
 }: {
+  scope: ProviderCredentialScope;
   provider: AgentProviderCard;
   draft: ProviderDraft;
   canManage: boolean;
@@ -658,9 +783,11 @@ function ProviderCredentialCard({
   onClear: () => void;
   onVerify: () => void;
 }): JSX.Element {
+  const view = projectProvider(provider, scope);
   const docs = PROVIDER_DOCS[provider.id];
   const placeholder = PROVIDER_KEY_PLACEHOLDER[provider.id] || 'sk-...';
   const disabled = !canManage || busySave;
+  const scopeLabel = scope === 'workspace' ? 'workspace' : 'personal';
 
   if (provider.credentialMode === 'host_login') {
     return (
@@ -672,8 +799,8 @@ function ProviderCredentialCard({
               Host-login providers are not configurable in the cloud workspace.
             </p>
           </div>
-          <span className={verificationChipClass(provider)}>
-            {formatVerification(provider)}
+          <span className={verificationChipClass(view.verificationStatus)}>
+            {formatVerification(view.verificationStatus)}
           </span>
         </div>
       </article>
@@ -695,98 +822,106 @@ function ProviderCredentialCard({
             )}
           </p>
         </div>
-        <span className={verificationChipClass(provider)}>
-          {formatVerification(provider)}
+        <span className={verificationChipClass(view.verificationStatus)}>
+          {formatVerification(view.verificationStatus)}
         </span>
       </div>
 
-      {provider.hasCredential ? (
+      {view.hasCredential ? (
         <div className="talk-llm-stored-key">
           <div>
-            <strong>{provider.credentialHint || 'Stored in settings'}</strong>
+            <strong>{view.credentialHint || 'Stored in settings'}</strong>
             <p className="talk-llm-meta">
-              Last verified {formatDateTime(provider.lastVerifiedAt)}
+              Last verified {formatDateTime(view.lastVerifiedAt)}
             </p>
-            {provider.lastVerificationError ? (
-              <p className="talk-llm-meta">{provider.lastVerificationError}</p>
+            {view.lastVerificationError ? (
+              <p className="talk-llm-meta">{view.lastVerificationError}</p>
             ) : null}
           </div>
-          <button
-            type="button"
-            className="icon-btn danger-btn"
-            onClick={onClear}
-            disabled={disabled}
-            aria-label={`Delete ${provider.name} credential`}
-          >
-            ×
-          </button>
+          {canManage ? (
+            <button
+              type="button"
+              className="icon-btn danger-btn"
+              onClick={onClear}
+              disabled={disabled}
+              aria-label={`Delete ${provider.name} ${scopeLabel} credential`}
+            >
+              ×
+            </button>
+          ) : null}
         </div>
       ) : null}
 
-      <details
-        className="talk-llm-update-disclosure"
-        open={draft.expanded}
-        onToggle={(event) =>
-          onDraftChange({
-            expanded: (event.currentTarget as HTMLDetailsElement).open,
-          })
-        }
-      >
-        <summary>{provider.hasCredential ? 'Update key' : 'Configure'}</summary>
-        <div className="talk-llm-grid">
-          <label className="talk-llm-field-span">
-            <span>API key</span>
-            <div className="talk-llm-secret-input">
-              <input
-                type={draft.showApiKey ? 'text' : 'password'}
-                value={draft.apiKey}
-                placeholder={placeholder}
-                onChange={(event) =>
-                  onDraftChange({ apiKey: event.target.value })
-                }
-                disabled={disabled}
-              />
+      {canManage ? (
+        <details
+          className="talk-llm-update-disclosure"
+          open={draft.expanded}
+          onToggle={(event) =>
+            onDraftChange({
+              expanded: (event.currentTarget as HTMLDetailsElement).open,
+            })
+          }
+        >
+          <summary>
+            {view.hasCredential ? 'Update key' : 'Configure'}
+          </summary>
+          <div className="talk-llm-grid">
+            <label className="talk-llm-field-span">
+              <span>API key</span>
+              <div className="talk-llm-secret-input">
+                <input
+                  type={draft.showApiKey ? 'text' : 'password'}
+                  value={draft.apiKey}
+                  placeholder={placeholder}
+                  onChange={(event) =>
+                    onDraftChange({ apiKey: event.target.value })
+                  }
+                  disabled={disabled}
+                />
+                <button
+                  type="button"
+                  className="talk-llm-eye-toggle"
+                  onClick={() =>
+                    onDraftChange({ showApiKey: !draft.showApiKey })
+                  }
+                  disabled={disabled}
+                  aria-label={
+                    draft.showApiKey
+                      ? `Hide ${provider.name} API key`
+                      : `Show ${provider.name} API key`
+                  }
+                >
+                  {draft.showApiKey ? 'Hide' : 'Show'}
+                </button>
+              </div>
+            </label>
+            <div className="talk-llm-inline-actions">
               <button
                 type="button"
-                className="talk-llm-eye-toggle"
-                onClick={() => onDraftChange({ showApiKey: !draft.showApiKey })}
-                disabled={disabled}
-                aria-label={
-                  draft.showApiKey
-                    ? `Hide ${provider.name} API key`
-                    : `Show ${provider.name} API key`
-                }
+                className="primary-btn"
+                onClick={onSave}
+                disabled={disabled || !draft.apiKey.trim()}
               >
-                {draft.showApiKey ? 'Hide' : 'Show'}
+                {busySave
+                  ? 'Saving…'
+                  : view.hasCredential
+                    ? 'Update'
+                    : 'Save'}
               </button>
+              {view.hasCredential ? (
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  onClick={onVerify}
+                  disabled={busyVerify}
+                >
+                  {busyVerify ? 'Verifying…' : 'Re-verify'}
+                </button>
+              ) : null}
             </div>
-          </label>
-          <div className="talk-llm-inline-actions">
-            <button
-              type="button"
-              className="primary-btn"
-              onClick={onSave}
-              disabled={disabled || !draft.apiKey.trim()}
-            >
-              {busySave
-                ? 'Saving…'
-                : provider.hasCredential
-                  ? 'Update'
-                  : 'Save'}
-            </button>
-            {provider.hasCredential ? (
-              <button
-                type="button"
-                className="secondary-btn"
-                onClick={onVerify}
-                disabled={!canManage || busyVerify}
-              >
-                {busyVerify ? 'Verifying…' : 'Re-verify'}
-              </button>
-            ) : null}
           </div>
-        </div>
-      </details>
+        </details>
+      ) : null}
     </article>
   );
 }

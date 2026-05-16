@@ -164,17 +164,34 @@ export async function getProviderVerificationStatus(
 
 export async function getAnthropicApiKeyFromDb(): Promise<string | null> {
   const db = getDbPg();
-  const rows = await db<{ ciphertext: string }[]>`
+  // Precedence: caller's personal key first, then the workspace-shared
+  // key set by an admin. Inside `withUserContext` the first query is
+  // RLS-scoped to the caller's row; the second hits the workspace table
+  // whose RLS allows any authenticated reader.
+  const personalRows = await db<{ ciphertext: string }[]>`
     select ciphertext from public.llm_provider_secrets
     where provider_id = 'provider.anthropic' limit 1
   `;
-  const row = rows[0];
-  if (!row?.ciphertext) {
+  const personalCiphertext = personalRows[0]?.ciphertext ?? null;
+  if (personalCiphertext) {
+    try {
+      return (await decryptProviderSecret(personalCiphertext)).apiKey.trim();
+    } catch {
+      // fall through to workspace key
+    }
+  }
+
+  const workspaceRows = await db<{ ciphertext: string }[]>`
+    select ciphertext from public.workspace_provider_secrets
+    where provider_id = 'provider.anthropic' limit 1
+  `;
+  const workspaceCiphertext = workspaceRows[0]?.ciphertext ?? null;
+  if (!workspaceCiphertext) {
     return null;
   }
 
   try {
-    return (await decryptProviderSecret(row.ciphertext)).apiKey.trim();
+    return (await decryptProviderSecret(workspaceCiphertext)).apiKey.trim();
   } catch {
     return null;
   }

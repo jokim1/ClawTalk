@@ -164,13 +164,21 @@ export async function isAnthropicDirectHttpReady(): Promise<boolean> {
   if (TALK_EXECUTOR_ANTHROPIC_API_KEY) return true;
 
   const db: Sql = getDbPg();
-  const rows = await db`
+  const personalRows = await db`
     select 1 as one
     from public.llm_provider_secrets
     where provider_id = ${'provider.anthropic'}
     limit 1
   `;
-  return rows.length > 0;
+  if (personalRows.length > 0) return true;
+
+  const workspaceRows = await db`
+    select 1 as one
+    from public.workspace_provider_secrets
+    where provider_id = ${'provider.anthropic'}
+    limit 1
+  `;
+  return workspaceRows.length > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -190,23 +198,43 @@ async function resolveSecret(
   agent: RegisteredAgentRecord,
   db: Sql,
 ): Promise<LlmSecret> {
-  // Try llm_provider_secrets first (all providers).
+  // Precedence: caller's personal key, then the workspace-shared key
+  // set by an admin, then (Anthropic only) the env-var fallback.
   // Per-user RLS: this call must be inside withUserContext, which downgrades
   // the connection to `authenticated` and binds auth.uid() to the caller.
-  const secretRows = await db<LlmProviderSecretRow[]>`
+  const personalRows = await db<LlmProviderSecretRow[]>`
     select ciphertext
     from public.llm_provider_secrets
     where provider_id = ${agent.provider_id}
     limit 1
   `;
-  const secretRecord = secretRows[0];
+  const personalRecord = personalRows[0];
 
-  if (secretRecord) {
+  if (personalRecord) {
     try {
-      return await decryptProviderSecret(secretRecord.ciphertext);
+      return await decryptProviderSecret(personalRecord.ciphertext);
     } catch {
       throw new ExecutionResolverError(
         `Failed to decrypt provider secret for ${agent.provider_id}`,
+        'SECRET_DECRYPTION_FAILED',
+      );
+    }
+  }
+
+  const workspaceRows = await db<LlmProviderSecretRow[]>`
+    select ciphertext
+    from public.workspace_provider_secrets
+    where provider_id = ${agent.provider_id}
+    limit 1
+  `;
+  const workspaceRecord = workspaceRows[0];
+
+  if (workspaceRecord) {
+    try {
+      return await decryptProviderSecret(workspaceRecord.ciphertext);
+    } catch {
+      throw new ExecutionResolverError(
+        `Failed to decrypt workspace provider secret for ${agent.provider_id}`,
         'SECRET_DECRYPTION_FAILED',
       );
     }

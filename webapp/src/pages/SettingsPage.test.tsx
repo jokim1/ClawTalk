@@ -61,7 +61,7 @@ describe('SettingsPage', () => {
     expect(screen.queryByRole('tab', { name: 'Agents' })).toBeNull();
   });
 
-  it('opens the API Keys tab via ?tab=api-keys and renders provider cards', async () => {
+  it('opens the API Keys tab via ?tab=api-keys and renders both Workspace and Personal sections', async () => {
     installSettingsFetch();
 
     render(
@@ -75,33 +75,32 @@ describe('SettingsPage', () => {
       </MemoryRouter>,
     );
 
-    await screen.findByRole('heading', { name: 'Provider API Keys' });
+    await screen.findByRole('heading', { name: 'Workspace API Keys' });
     expect(
-      screen.getByRole('heading', { name: 'Claude (Anthropic)' }),
+      screen.getByRole('heading', { name: 'Personal API Keys' }),
     ).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'OpenAI' })).toBeTruthy();
+    // One card per provider in each section, so four providers means
+    // eight cards total.
     expect(
-      screen.getByRole('heading', { name: 'Google / Gemini' }),
-    ).toBeTruthy();
-    expect(
-      screen.getByRole('heading', { name: 'NVIDIA Kimi2.5' }),
-    ).toBeTruthy();
+      screen.getAllByRole('heading', { name: 'Claude (Anthropic)' }),
+    ).toHaveLength(2);
 
-    const anthropicCard = screen
-      .getByRole('heading', { name: 'Claude (Anthropic)' })
-      .closest('article');
-    if (!anthropicCard) throw new Error('Anthropic card not found');
-    expect(
-      within(anthropicCard).getByPlaceholderText('sk-ant-...'),
-    ).toBeTruthy();
-    expect(
-      within(anthropicCard).getByRole('link', {
-        name: /Get key from Anthropic Console/i,
-      }),
-    ).toBeTruthy();
+    const anthropicCards = screen
+      .getAllByRole('heading', { name: 'Claude (Anthropic)' })
+      .map((heading) => heading.closest('article'))
+      .filter((node): node is HTMLElement => node !== null);
+    expect(anthropicCards).toHaveLength(2);
+    for (const card of anthropicCards) {
+      expect(within(card).getByPlaceholderText('sk-ant-...')).toBeTruthy();
+      expect(
+        within(card).getByRole('link', {
+          name: /Get key from Anthropic Console/i,
+        }),
+      ).toBeTruthy();
+    }
   });
 
-  it('saves an API key by calling PUT /api/v1/agents/providers/:id', async () => {
+  it('saves a Personal API key with scope=user', async () => {
     const user = userEvent.setup();
     const helpers = installSettingsFetch();
 
@@ -116,8 +115,12 @@ describe('SettingsPage', () => {
       </MemoryRouter>,
     );
 
-    await screen.findByRole('heading', { name: 'Claude (Anthropic)' });
-    const anthropicCard = screen
+    await screen.findByRole('heading', { name: 'Personal API Keys' });
+    const personalSection = screen
+      .getByRole('heading', { name: 'Personal API Keys' })
+      .closest('section');
+    if (!personalSection) throw new Error('Personal section not found');
+    const anthropicCard = within(personalSection)
       .getByRole('heading', { name: 'Claude (Anthropic)' })
       .closest('article');
     if (!anthropicCard) throw new Error('Anthropic card not found');
@@ -136,6 +139,52 @@ describe('SettingsPage', () => {
     expect(calls[0]).toEqual({
       providerId: 'provider.anthropic',
       apiKey: 'sk-ant-test-key',
+      scope: 'user',
+    });
+  });
+
+  it('saves a Workspace API key with scope=workspace as an admin', async () => {
+    const user = userEvent.setup();
+    const helpers = installSettingsFetch();
+
+    render(
+      <MemoryRouter initialEntries={['/app/settings?tab=api-keys']}>
+        <SettingsPage
+          user={buildSessionUser()}
+          userRole="owner"
+          onUnauthorized={vi.fn()}
+          onUserUpdated={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+
+    await screen.findByRole('heading', { name: 'Workspace API Keys' });
+    const workspaceSection = screen
+      .getByRole('heading', { name: 'Workspace API Keys' })
+      .closest('section');
+    if (!workspaceSection) throw new Error('Workspace section not found');
+    const anthropicCard = within(workspaceSection)
+      .getByRole('heading', { name: 'Claude (Anthropic)' })
+      .closest('article');
+    if (!anthropicCard) throw new Error('Anthropic card not found');
+
+    const input = within(anthropicCard).getByPlaceholderText('sk-ant-...');
+    await user.type(input, 'sk-ant-workspace-key');
+    await user.click(
+      within(anthropicCard).getByRole('button', { name: 'Save' }),
+    );
+
+    expect(
+      await screen.findByText(
+        /Claude \(Anthropic\) workspace credential saved\./,
+      ),
+    ).toBeTruthy();
+    const calls = helpers.getProviderSaveCalls('provider.anthropic');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual({
+      providerId: 'provider.anthropic',
+      apiKey: 'sk-ant-workspace-key',
+      scope: 'workspace',
     });
   });
 
@@ -165,7 +214,11 @@ function installSettingsFetch() {
   let mainAgent: RegisteredAgent | null = registeredAgents[0] ?? null;
   const providerSaveCalls: Record<
     string,
-    Array<{ providerId: string; apiKey: string | null }>
+    Array<{
+      providerId: string;
+      apiKey: string | null;
+      scope: 'user' | 'workspace';
+    }>
   > = {};
 
   vi.stubGlobal(
@@ -207,11 +260,14 @@ function installSettingsFetch() {
         const body = JSON.parse(String(init?.body || '{}')) as {
           providerId: string;
           apiKey: string | null;
+          scope?: 'user' | 'workspace';
         };
+        const scope = body.scope ?? 'user';
         providerSaveCalls[providerId] = providerSaveCalls[providerId] || [];
         providerSaveCalls[providerId].push({
           providerId: body.providerId,
           apiKey: body.apiKey,
+          scope,
         });
 
         let next: AgentProviderCard | null = null;
@@ -219,14 +275,31 @@ function installSettingsFetch() {
           ...snapshot,
           additionalProviders: snapshot.additionalProviders.map((entry) => {
             if (entry.id !== providerId) return entry;
-            next = {
-              ...entry,
-              hasCredential: body.apiKey !== null,
-              credentialHint: body.apiKey ? '••••test' : null,
-              verificationStatus: body.apiKey ? 'verified' : 'missing',
-              lastVerifiedAt: body.apiKey ? '2026-05-16T12:00:00.000Z' : null,
-              lastVerificationError: null,
-            };
+            if (scope === 'workspace') {
+              next = {
+                ...entry,
+                workspaceHasCredential: body.apiKey !== null,
+                workspaceCredentialHint: body.apiKey ? '••••test' : null,
+                workspaceVerificationStatus: body.apiKey
+                  ? 'verified'
+                  : 'missing',
+                workspaceLastVerifiedAt: body.apiKey
+                  ? '2026-05-16T12:00:00.000Z'
+                  : null,
+                workspaceLastVerificationError: null,
+              };
+            } else {
+              next = {
+                ...entry,
+                hasCredential: body.apiKey !== null,
+                credentialHint: body.apiKey ? '••••test' : null,
+                verificationStatus: body.apiKey ? 'verified' : 'missing',
+                lastVerifiedAt: body.apiKey
+                  ? '2026-05-16T12:00:00.000Z'
+                  : null,
+                lastVerificationError: null,
+              };
+            }
             return next;
           }),
         };
@@ -280,6 +353,11 @@ function buildAiAgentsData(): AiAgentsPageData {
         verificationStatus: 'missing',
         lastVerifiedAt: null,
         lastVerificationError: null,
+        workspaceHasCredential: false,
+        workspaceCredentialHint: null,
+        workspaceVerificationStatus: 'missing',
+        workspaceLastVerifiedAt: null,
+        workspaceLastVerificationError: null,
         modelSuggestions: [
           {
             modelId: 'claude-sonnet-4-6',
@@ -303,6 +381,11 @@ function buildAiAgentsData(): AiAgentsPageData {
         verificationStatus: 'missing',
         lastVerifiedAt: null,
         lastVerificationError: null,
+        workspaceHasCredential: false,
+        workspaceCredentialHint: null,
+        workspaceVerificationStatus: 'missing',
+        workspaceLastVerifiedAt: null,
+        workspaceLastVerificationError: null,
         modelSuggestions: [
           {
             modelId: 'gpt-5-mini',
@@ -326,6 +409,11 @@ function buildAiAgentsData(): AiAgentsPageData {
         verificationStatus: 'missing',
         lastVerifiedAt: null,
         lastVerificationError: null,
+        workspaceHasCredential: false,
+        workspaceCredentialHint: null,
+        workspaceVerificationStatus: 'missing',
+        workspaceLastVerifiedAt: null,
+        workspaceLastVerificationError: null,
         modelSuggestions: [
           {
             modelId: 'gemini-2.5-flash',
@@ -349,6 +437,11 @@ function buildAiAgentsData(): AiAgentsPageData {
         verificationStatus: 'missing',
         lastVerifiedAt: null,
         lastVerificationError: null,
+        workspaceHasCredential: false,
+        workspaceCredentialHint: null,
+        workspaceVerificationStatus: 'missing',
+        workspaceLastVerifiedAt: null,
+        workspaceLastVerificationError: null,
         modelSuggestions: [
           {
             modelId: 'moonshotai/kimi-k2.5',

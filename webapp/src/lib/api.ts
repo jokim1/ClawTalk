@@ -927,6 +927,17 @@ export type TalkAgent = {
   modelDisplayName: string | null;
 };
 
+export type ProviderCredentialScope = 'user' | 'workspace';
+
+export type ProviderVerificationStatus =
+  | 'missing'
+  | 'not_verified'
+  | 'verifying'
+  | 'verified'
+  | 'invalid'
+  | 'unavailable'
+  | 'rate_limited';
+
 export type AgentProviderCard = {
   id: string;
   name: string;
@@ -945,16 +956,14 @@ export type AgentProviderCard = {
   credentialMode: 'api_key' | 'host_login';
   hasCredential: boolean;
   credentialHint: string | null;
-  verificationStatus:
-    | 'missing'
-    | 'not_verified'
-    | 'verifying'
-    | 'verified'
-    | 'invalid'
-    | 'unavailable'
-    | 'rate_limited';
+  verificationStatus: ProviderVerificationStatus;
   lastVerifiedAt: string | null;
   lastVerificationError: string | null;
+  workspaceHasCredential: boolean;
+  workspaceCredentialHint: string | null;
+  workspaceVerificationStatus: ProviderVerificationStatus;
+  workspaceLastVerifiedAt: string | null;
+  workspaceLastVerificationError: string | null;
   hostStatus?: {
     cliInstalled: boolean;
     authenticated: boolean;
@@ -3233,6 +3242,7 @@ export async function saveAiProviderCredential(input: {
   organizationId?: string | null;
   baseUrl?: string | null;
   authScheme?: 'x_api_key' | 'bearer';
+  scope?: ProviderCredentialScope;
 }): Promise<AgentProviderCard> {
   const envelope = await apiMutationRequest<{ provider: AgentProviderCard }>(
     `/api/v1/agents/providers/${encodeURIComponent(input.providerId)}`,
@@ -3247,9 +3257,11 @@ export async function saveAiProviderCredential(input: {
 
 export async function verifyAiProviderCredential(
   providerId: string,
+  scope: ProviderCredentialScope = 'user',
 ): Promise<AgentProviderCard> {
+  const query = scope === 'workspace' ? '?scope=workspace' : '';
   const envelope = await apiMutationRequest<{ provider: AgentProviderCard }>(
-    `/api/v1/agents/providers/${encodeURIComponent(providerId)}/verify`,
+    `/api/v1/agents/providers/${encodeURIComponent(providerId)}/verify${query}`,
     {
       method: 'POST',
     },
