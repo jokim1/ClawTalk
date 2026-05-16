@@ -22,7 +22,10 @@
 
 import { type RequestExecutionContext, withRequestScopedDb } from './db.js';
 import { getWorkerApp } from './clawtalk/web/worker-app.js';
-import { processTalkRunMessage } from './clawtalk/talks/queue-consumer.js';
+import {
+  BlockedBySiblingError,
+  processTalkRunMessage,
+} from './clawtalk/talks/queue-consumer.js';
 
 export { UserEventHub } from './clawtalk/talks/user-event-hub.js';
 
@@ -141,12 +144,22 @@ export default {
   },
 
   // Queue consumer — wired up in wrangler.toml [[queues.consumers]].
-  // U1 dispatches each message through the processTalkRunMessage stub
-  // (logs + acks). U3 replaces the stub with the real run executor.
+  // Each message is wrapped in its own withRequestScopedDb scope so
+  // processTalkRunMessage's withUserContext, the streaming-coalesce
+  // notifier, and the cooperative cancel poller all have working DB
+  // access.
+  //
+  // Retry strategy:
+  //   - BlockedBySiblingError: ordered sibling still active. Retry
+  //     in 60s so the sibling has time to complete. Cloudflare Queues
+  //     caps total retries via wrangler.toml [[queues.consumers]]
+  //     max_retries=3 before DLQ.
+  //   - Unexpected throw: retry in 30s.
+  //   - Returned normally: ack.
   async queue(
     batch: MessageBatch,
-    _env: Env,
-    _ctx: RequestExecutionContext,
+    env: Env,
+    ctx: RequestExecutionContext,
   ): Promise<void> {
     for (const message of batch.messages) {
       const body = message.body;
@@ -159,9 +172,22 @@ export default {
         continue;
       }
       try {
-        await processTalkRunMessage({ runId: body.runId });
+        await withRequestScopedDb(
+          env.DB.connectionString,
+          ctx,
+          {
+            DB_EVENT_HUB_URL: env.DB_EVENT_HUB_URL,
+            USER_EVENT_HUB: env.USER_EVENT_HUB,
+            TALK_RUN_QUEUE: env.TALK_RUN_QUEUE,
+          },
+          async () => processTalkRunMessage({ runId: body.runId }),
+        );
         message.ack();
       } catch (err) {
+        if (err instanceof BlockedBySiblingError) {
+          message.retry({ delaySeconds: 60 });
+          continue;
+        }
         console.error(
           'queue message: processTalkRunMessage threw',
           message.id,

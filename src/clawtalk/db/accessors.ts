@@ -2372,6 +2372,98 @@ export async function claimQueuedTalkRuns(
 }
 
 // ---------------------------------------------------------------------------
+// markRunRunning — Queues-port single-row claim.
+//
+// Replaces claimQueuedTalkRuns's batch-poll for the queue-consumer
+// path. The caller is invoked once per message with a specific runId;
+// markRunRunning does the atomic queued→running flip for that one
+// row. Accepts 'running' as a from-state so a retried message after a
+// consumer crash can re-claim and restart execution.
+//
+// Sequence-index fairness: if the row is part of an ordered response
+// group and a lower-sequence sibling is still active (queued, running,
+// or awaiting_confirmation), returns 'blocked_by_sibling' so the
+// consumer can retry the message later. The cron-trigger sweep (U4)
+// or the queue's own retry backoff are the wake signals.
+//
+// Emits talk_run_started ONLY on transition from queued → running.
+// Re-claims of an already-running row are silent (the original claim
+// already emitted the start event).
+// ---------------------------------------------------------------------------
+
+export type MarkRunRunningResult =
+  | { status: 'claimed'; run: TalkRunRecord }
+  | { status: 'blocked_by_sibling' }
+  | { status: 'terminal' }
+  | { status: 'not_found' };
+
+export async function markRunRunning(
+  runId: string,
+): Promise<MarkRunRunningResult> {
+  const db = getDbPg();
+
+  const rows = await db<TalkRunRecord[]>`
+    select ${db.unsafe(TALK_RUN_COLUMNS)}
+    from public.talk_runs
+    where id = ${runId}::uuid
+    limit 1
+  `;
+  if (rows.length === 0) return { status: 'not_found' };
+  const existing = rows[0];
+  if (existing.status !== 'queued' && existing.status !== 'running') {
+    return { status: 'terminal' };
+  }
+
+  if (existing.sequence_index !== null && existing.response_group_id) {
+    const blocking = await db<{ id: string }[]>`
+      select id from public.talk_runs prior
+      where prior.response_group_id = ${existing.response_group_id}
+        and prior.sequence_index is not null
+        and prior.sequence_index < ${existing.sequence_index}
+        and prior.status not in ('completed', 'failed', 'cancelled')
+      limit 1
+    `;
+    if (blocking.length > 0) return { status: 'blocked_by_sibling' };
+  }
+
+  const startedAt = new Date().toISOString();
+  const updated = await db<TalkRunRecord[]>`
+    update public.talk_runs
+    set status = 'running',
+        timeout_phase = null,
+        started_at = ${startedAt}::timestamptz,
+        ended_at = null,
+        cancel_reason = null
+    where id = ${runId}::uuid and status in ('queued', 'running')
+    returning ${db.unsafe(TALK_RUN_COLUMNS)}
+  `;
+  if (updated.length !== 1) return { status: 'terminal' };
+  const claimed = updated[0];
+
+  if (existing.status === 'queued') {
+    await emitOutboxEvent({
+      topic: `talk:${claimed.talk_id}`,
+      eventType: 'talk_run_started',
+      payload: {
+        talkId: claimed.talk_id,
+        threadId: claimed.thread_id,
+        runId: claimed.id,
+        runKind: claimed.run_kind,
+        triggerMessageId: claimed.trigger_message_id,
+        targetAgentId: claimed.target_agent_id ?? null,
+        responseGroupId: claimed.response_group_id ?? null,
+        sequenceIndex: claimed.sequence_index ?? null,
+        status: 'running',
+        executorAlias: claimed.executor_alias,
+        executorModel: claimed.executor_model,
+      },
+      ownerIds: [claimed.owner_id],
+    });
+  }
+  return { status: 'claimed', run: claimed };
+}
+
+// ---------------------------------------------------------------------------
 // completeRunAndPromoteNextAtomic — finalize a run, append the assistant
 // message, record the LLM attempt, emit completed event.
 //
