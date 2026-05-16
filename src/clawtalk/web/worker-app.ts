@@ -48,15 +48,18 @@
 //                                         WebSocket forwarded to the
 //                                         UserEventHub DO)
 //   /api/v1/talks/:talkId/events    — events-upgrade.ts (talk-scope WS)
+//   /api/v1/talks/:talkId/chat      — talks.ts:enqueueTalkChat;
+//                                         dispatches one queue
+//                                         message per run (U2).
+//   /api/v1/talks/:talkId/chat/cancel — talks.ts:cancelTalkChat;
+//                                         cooperative cancel via DB
+//                                         status flip — U3 consumer
+//                                         polls and bails.
 //
-// NOT mounted (needs Workers Queue plumbing or other follow-ups):
-//   /api/v1/talks/:talkId/chat[/cancel] — needs run-worker wake; will
-//                                          land alongside the Queue
-//                                          producer in a future unit.
+// NOT mounted (chassis-removed; will not return):
 //   /api/v1/main/*, /api/v1/browser/*, /api/v1/data-connectors/*,
 //   /api/v1/channel-connectors/*, /api/v1/channel-connections/*,
 //   /api/v1/talks/:talkId/{tools,resources,channels,data-connectors}
-//                                       — chassis-removed surfaces.
 //
 // The 501 catch-all at the bottom of buildApp() now only fires for
 // routes in the not-yet-mounted bucket (above) plus genuinely
@@ -143,9 +146,11 @@ import {
   listTalkThreadsRoute,
   patchTalkThreadRoute,
 } from './routes/talk-threads.js';
+import { dispatchRun } from '../talks/queue-producer.js';
 import {
   cancelTalkChat,
   clearTalkProjectMountRoute,
+  enqueueTalkChat,
   createTalkFolderRoute,
   createTalkRoute,
   deleteTalkFolderRoute,
@@ -174,12 +179,6 @@ import {
   updateUserToolPermissionRoute,
 } from './routes/user-settings.js';
 import { AuthContext } from './types.js';
-
-// Suppress unused-import warnings for the cancelTalkChat handler;
-// see the "NOT mounted" note in the file header. Kept in the import
-// list so the next session that wires Queues only has to add the
-// closure, not the import.
-void cancelTalkChat;
 
 export interface WorkerAppEnv {
   SUPABASE_PROJECT_URL?: string;
@@ -1607,6 +1606,90 @@ function buildApp(): Hono<{ Variables: Variables }> {
       auth,
       talkId: c.req.param('talkId'),
       jobId: c.req.param('jobId'),
+    });
+    if (
+      result.statusCode === 202 &&
+      result.body.ok &&
+      'runId' in result.body.data
+    ) {
+      await dispatchRun({ runId: result.body.data.runId });
+    }
+    return jsonResponse(result);
+  });
+
+  // ── talks.ts: chat enqueue + cancel (Queues port U2) ───────────
+  app.post('/api/v1/talks/:talkId/chat', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const csrfFail = checkCsrf(c, auth);
+    if (csrfFail) return csrfFail;
+    const parsed = await readJsonBody<{
+      content?: unknown;
+      threadId?: unknown;
+      targetAgentIds?: unknown;
+      attachmentIds?: unknown;
+    }>(c);
+    if (!parsed.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: parsed.error } },
+        400,
+      );
+    }
+    const idempotencyKey = c.req.header('idempotency-key') || null;
+    const result = await enqueueTalkChat({
+      talkId: c.req.param('talkId'),
+      threadId:
+        typeof parsed.data.threadId === 'string'
+          ? parsed.data.threadId.trim() || null
+          : null,
+      auth,
+      content:
+        typeof parsed.data.content === 'string' ? parsed.data.content : '',
+      targetAgentIds: Array.isArray(parsed.data.targetAgentIds)
+        ? parsed.data.targetAgentIds.filter(
+            (entry): entry is string => typeof entry === 'string',
+          )
+        : null,
+      attachmentIds: Array.isArray(parsed.data.attachmentIds)
+        ? parsed.data.attachmentIds.filter(
+            (entry): entry is string => typeof entry === 'string',
+          )
+        : null,
+      idempotencyKey,
+    });
+    if (result.statusCode === 202 && result.body.ok) {
+      for (const run of result.body.data.runs) {
+        await dispatchRun({ runId: run.id });
+      }
+    }
+    return jsonResponse(result);
+  });
+
+  app.post('/api/v1/talks/:talkId/chat/cancel', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const csrfFail = checkCsrf(c, auth);
+    if (csrfFail) return csrfFail;
+    const parsed = await readJsonBody<{ threadId?: unknown }>(c);
+    if (!parsed.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: parsed.error } },
+        400,
+      );
+    }
+    // Cooperative cancellation: the route just flips the DB status.
+    // The queue consumer (U3) polls run.status during execution and
+    // bails when it sees 'cancelled'. No in-process AbortController
+    // wake needed — the cancelledRunning flag is discarded.
+    const result = await cancelTalkChat({
+      talkId: c.req.param('talkId'),
+      threadId:
+        typeof parsed.data.threadId === 'string'
+          ? parsed.data.threadId.trim() || null
+          : null,
+      auth,
     });
     return jsonResponse(result);
   });

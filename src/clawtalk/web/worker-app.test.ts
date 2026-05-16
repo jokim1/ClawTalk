@@ -232,3 +232,71 @@ describe('worker-app — auth-protected routes', () => {
     expect(res.headers.get('www-authenticate')).toMatch(/invalid_token/);
   });
 });
+
+describe('worker-app — chat enqueue mount (Queues port U2)', () => {
+  it('POST /api/v1/talks/:talkId/chat is mounted (no longer 501)', async () => {
+    const app = getWorkerApp();
+    const jwt = await mintJwt();
+    const res = await app.request(
+      new Request(
+        'https://app.test/api/v1/talks/00000000-0000-0000-0000-000000000aaa/chat',
+        {
+          method: 'POST',
+          headers: {
+            cookie: `${ACCESS_TOKEN_COOKIE}=${jwt}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({ content: 'hi' }),
+        },
+      ),
+      undefined,
+      envForWorker(),
+    );
+    // Route is mounted: response is from enqueueTalkChat (404
+    // talk_not_found because the test DB has no fixture), not the
+    // 501 catch-all.
+    expect(res.status).not.toBe(501);
+    const body = (await res.json()) as { error?: { code?: string } };
+    expect(body.error?.code).not.toBe('not_implemented_in_worker');
+  });
+
+  it('POST /api/v1/talks/:talkId/chat returns 401 without auth', async () => {
+    const app = getWorkerApp();
+    const res = await app.request(
+      new Request(
+        'https://app.test/api/v1/talks/00000000-0000-0000-0000-000000000aaa/chat',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ content: 'hi' }),
+        },
+      ),
+      undefined,
+      envForWorker(),
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it('POST /api/v1/talks/:talkId/chat/cancel is mounted (no longer 501)', async () => {
+    const app = getWorkerApp();
+    const jwt = await mintJwt();
+    const res = await app.request(
+      new Request(
+        'https://app.test/api/v1/talks/00000000-0000-0000-0000-000000000aaa/chat/cancel',
+        {
+          method: 'POST',
+          headers: {
+            cookie: `${ACCESS_TOKEN_COOKIE}=${jwt}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({}),
+        },
+      ),
+      undefined,
+      envForWorker(),
+    );
+    expect(res.status).not.toBe(501);
+    const body = (await res.json()) as { error?: { code?: string } };
+    expect(body.error?.code).not.toBe('not_implemented_in_worker');
+  });
+});
