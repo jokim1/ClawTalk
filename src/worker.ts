@@ -26,6 +26,7 @@ import {
   BlockedBySiblingError,
   processTalkRunMessage,
 } from './clawtalk/talks/queue-consumer.js';
+import { runScheduledTick } from './clawtalk/talks/scheduler.js';
 
 export { UserEventHub } from './clawtalk/talks/user-event-hub.js';
 
@@ -200,18 +201,22 @@ export default {
   },
 
   // Cron trigger — fires every minute per wrangler.toml [triggers].
-  // U1 stubs the handler (logs the tick). U4 replaces with the real
-  // claimDueTalkJobs → createJobTriggerRun → dispatchRun loop plus the
-  // stuck-run sweep.
+  // The tick claims due jobs, dispatches each to TALK_RUN_QUEUE, and
+  // sweeps stuck running runs (status='running' AND started_at older
+  // than 1h). Wrapped in ctx.waitUntil so the handler isn't capped at
+  // the 30s default budget.
   async scheduled(
-    event: ScheduledEvent,
-    _env: Env,
-    _ctx: RequestExecutionContext,
+    _event: ScheduledEvent,
+    env: Env,
+    ctx: RequestExecutionContext,
   ): Promise<void> {
-    console.log(
-      'scheduled trigger (U1 stub)',
-      event.cron,
-      new Date(event.scheduledTime).toISOString(),
+    ctx.waitUntil(
+      runScheduledTick(env, ctx).catch((err) => {
+        console.error(
+          'scheduled tick failed',
+          err instanceof Error ? err.message : String(err),
+        );
+      }),
     );
   },
 };
