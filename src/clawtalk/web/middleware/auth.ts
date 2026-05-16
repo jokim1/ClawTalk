@@ -11,10 +11,10 @@
 //   `eb_at` cookie. Cookie-less, expired, or bad-signature requests
 //   resolve to `unauthorized`. There is NO dev-stub path in this mode.
 //
-//   Node mode (`tsx src/server.ts`, vitest): the runtime has no JWKS
-//   surface. We honor the `CLAWTALK_DEV_STUB_ENABLED` opt-in so
-//   existing tests + local tsx bootstrap work without crafting real
-//   ES256-signed JWTs. The gate is intentionally Node-only.
+//   Vitest mode (no env bindings): the runtime has no JWKS surface.
+//   We honor the `CLAWTALK_DEV_STUB_ENABLED` opt-in so existing tests
+//   work without crafting real ES256-signed JWTs. The gate is
+//   intentionally test-only.
 //
 // Mirrors editorialroom's same-named module.
 
@@ -68,7 +68,7 @@ export async function authenticateRequestPg(
     };
   }
 
-  // Node mode — no JWKS, no cryptographic verification.
+  // Vitest mode — no JWKS, no cryptographic verification.
   if (devStubEnabled()) {
     return {
       kind: 'authenticated',
@@ -125,7 +125,7 @@ export function _resetWorkerDevStubWarningForTests(): void {
 
 /**
  * Read JwksEnv off Hono's request context (`c.env`). Returns null in
- * Node mode where the bindings aren't present. Callers downgrade to
+ * test mode where the bindings aren't present. Callers downgrade to
  * dev-stub when this returns null.
  */
 export function extractJwksEnv(envIn: unknown): JwksEnv | null {

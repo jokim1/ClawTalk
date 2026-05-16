@@ -3,11 +3,9 @@
   "version": "1.2.7",
   "description": "ClawTalk — multi-agent LLM Talks, a web product.",
   "type": "module",
-  "main": "dist/server.js",
   "scripts": {
     "build": "tsc",
-    "start": "node dist/server.js",
-    "dev": "tsx src/server.ts",
+    "dev": "wrangler dev",
     "check:webapp": "node scripts/ensure-webapp-installed.mjs",
     "install:webapp": "node scripts/install-webapp.mjs",
     "install:all": "npm install && npm run install:webapp",

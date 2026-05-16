@@ -2,9 +2,9 @@
 //
 // Two execution modes share this code:
 //
-//   Node (`tsx src/server.ts`, local dev): single module-scoped
-//   postgres.js client. Connections pooled in-client. tsx is a
-//   long-lived process so this is fine.
+//   Vitest (test suites): single module-scoped postgres.js client.
+//   Connections pooled in-client. The Node test process is long-lived
+//   so this is fine.
 //
 //   Cloudflare Workers (`src/worker.ts`): per-request client via
 //   `withRequestScopedDb`. Workers' I/O isolation rejects cross-request
@@ -17,7 +17,7 @@
 // through these claims.
 //
 // Lookup chain in `getDbPg()`: userContext (inside withUserContext) →
-// requestScoped (Worker) → nodeScoped (Node). Once inside a wrapped
+// requestScoped (Worker) → nodeScoped (test process). Once inside a wrapped
 // block, every accessor MUST use the tx — anything else silently bypasses
 // RLS via the BYPASSRLS pooled connection.
 //
@@ -134,7 +134,7 @@ export function getCurrentNotifyQueue(): NotifyQueueEntry[] | null {
  * Out-of-band sql for the G1 streaming-emit path. Opens a fresh
  * auto-commit connection on first call within a request scope so
  * streaming events can INSERT outbox rows without joining the run's
- * surrounding tx. In Node mode (no request scope), falls back to the
+ * surrounding tx. In test mode (no request scope), falls back to the
  * module-scoped client — there's no surrounding tx to escape there.
  */
 export function getOutOfBandSql(): Sql {
@@ -257,7 +257,7 @@ export async function withUserContext<T>(
   );
 }
 
-// Node mode — call once at process boot. Idempotent.
+// Test-mode init — call once at suite setup. Idempotent.
 export async function initPgDatabase(input?: { url?: string }): Promise<void> {
   if (nodeScopedDb) return;
   nodeScopedDb = postgres(resolveDatabaseUrl(input?.url), {

@@ -19,10 +19,10 @@
 //   talk_response_completed/failed/cancelled from the executor)
 //   that must surface to subscribers DURING the run, not at run end.
 //
-// Both wrappers no-op the notify side in Node mode (no
-// notifyQueueStorage / streamingCoalesceStorage scope active) — the
-// in-process SSE notifier still fires via the legacy outbox-notifier
-// path until U6 retires Node-mode SSE.
+// Both wrappers expect to run inside a request scope that has opened
+// the notify queue / streaming coalescer (withRequestScopedDb opens
+// both). Callers without a scope still get a durable outbox row but
+// no notify — there are no in-process SSE consumers left to wake.
 
 import {
   appendOutboxEvent,
@@ -33,7 +33,6 @@ import {
   getStreamingCoalesceMap,
   type NotifyQueueEntry,
 } from '../../db.js';
-import { notifyOutboxEvent } from './outbox-notifier.js';
 import { enqueueStreamingNotify } from './streaming-notify.js';
 
 export interface EmitOutboxEventInput {
@@ -64,15 +63,6 @@ export async function emitOutboxEvent(
       ownerIds: input.ownerIds,
     };
     queue.push(entry);
-  } else {
-    // Node-mode fallback: no queue scope is active (Node startup
-    // recovery path, or any in-process caller that hasn't wrapped
-    // its work in withUserContext / withNotifyQueueScope). Wake up
-    // in-process SSE waiters directly. Cloud mode never lands here
-    // because the request scope opens the queue.
-    queueMicrotask(() => {
-      notifyOutboxEvent({ topic: input.topic, eventId });
-    });
   }
   return eventId;
 }
@@ -95,11 +85,6 @@ export async function emitOutboxEventOutsideTx(
     for (const ownerId of input.ownerIds) {
       enqueueStreamingNotify({ eventId, topic: input.topic, ownerId });
     }
-  } else {
-    // Node-mode fallback — wake in-process SSE waiters directly.
-    queueMicrotask(() => {
-      notifyOutboxEvent({ topic: input.topic, eventId });
-    });
   }
   return eventId;
 }

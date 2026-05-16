@@ -1,50 +1,45 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { openMainStream } from './mainStream';
+import type {
+  WebSocketEventSourceFrame,
+  WebSocketEventSourceOptions,
+} from './websocketEventSource';
 
-class FakeEventSource {
-  static instances: FakeEventSource[] = [];
+class FakeTransport {
+  static instances: FakeTransport[] = [];
 
   readonly url: string;
-  onopen: ((event: Event) => void) | null = null;
-  onerror: ((event: Event) => void) | null = null;
-  private listeners = new Map<
-    string,
-    Array<(event: MessageEvent<string>) => void>
-  >();
+  readonly options: WebSocketEventSourceOptions;
   close = vi.fn();
 
-  constructor(url: string) {
+  constructor(url: string, options: WebSocketEventSourceOptions) {
     this.url = url;
-    FakeEventSource.instances.push(this);
+    this.options = options;
+    FakeTransport.instances.push(this);
   }
 
-  addEventListener(
-    type: string,
-    listener: (event: MessageEvent<string>) => void,
-  ): void {
-    const existing = this.listeners.get(type) || [];
-    existing.push(listener);
-    this.listeners.set(type, existing);
-  }
-
-  emitEvent(type: string, payload: unknown): void {
-    const serialized = JSON.stringify(payload);
-    const event = { data: serialized } as MessageEvent<string>;
-    const listeners = this.listeners.get(type) || [];
-    for (const listener of listeners) {
-      listener(event);
-    }
+  emitOpen(): void {
+    this.options.onOpen?.();
   }
 
   emitError(): void {
-    this.onerror?.(new Event('error'));
+    this.options.onError?.(new Event('error'));
+  }
+
+  emitFrame(event: string, payload: unknown, id = 1): void {
+    const frame: WebSocketEventSourceFrame = {
+      event,
+      data: JSON.stringify(payload),
+      id,
+    };
+    this.options.onMessage(frame);
   }
 }
 
 describe('openMainStream', () => {
   beforeEach(() => {
-    FakeEventSource.instances = [];
+    FakeTransport.instances = [];
     vi.useFakeTimers();
   });
 
@@ -53,55 +48,45 @@ describe('openMainStream', () => {
     vi.restoreAllMocks();
   });
 
-  it('ignores talk message_appended events that leak into the user-scoped stream', () => {
-    const onMessageAppended = vi.fn();
-
+  it('opens a transport at /api/v1/events?stream=1', () => {
     openMainStream({
-      onMessageAppended,
+      onMessageAppended: vi.fn(),
       onReplayGap: vi.fn(),
       onUnauthorized: vi.fn(),
-      createEventSource: (url) => new FakeEventSource(url),
+      createTransport: (url, options) => new FakeTransport(url, options),
       probeSession: vi.fn(async () => true),
       jitterMs: () => 0,
     });
 
-    expect(FakeEventSource.instances).toHaveLength(1);
-    FakeEventSource.instances[0].emitEvent('message_appended', {
-      talkId: 'talk-cal',
-      threadId: 'thread_123',
-      messageId: 'msg_1',
-      runId: null,
-      role: 'user',
-      createdBy: 'user-1',
-      content: 'hello',
-      createdAt: '2026-03-18T12:00:00.000Z',
-    });
-
-    expect(onMessageAppended).not.toHaveBeenCalled();
+    expect(FakeTransport.instances).toHaveLength(1);
+    expect(FakeTransport.instances[0]!.url).toBe('/api/v1/events?stream=1');
   });
 
-  it('forwards real Main message_appended events', () => {
+  it('forwards Main message_appended events', () => {
     const onMessageAppended = vi.fn();
 
     openMainStream({
       onMessageAppended,
       onReplayGap: vi.fn(),
       onUnauthorized: vi.fn(),
-      createEventSource: (url) => new FakeEventSource(url),
+      createTransport: (url, options) => new FakeTransport(url, options),
       probeSession: vi.fn(async () => true),
       jitterMs: () => 0,
     });
 
-    expect(FakeEventSource.instances).toHaveLength(1);
-    FakeEventSource.instances[0].emitEvent('message_appended', {
-      threadId: '78fc5d1e-e7e9-4d65-a82d-352c89eba992',
-      messageId: 'msg_1',
-      runId: null,
-      role: 'user',
-      createdBy: 'user-1',
-      content: 'hello',
-      createdAt: '2026-03-18T12:00:00.000Z',
-    });
+    FakeTransport.instances[0]!.emitFrame(
+      'message_appended',
+      {
+        threadId: '78fc5d1e-e7e9-4d65-a82d-352c89eba992',
+        messageId: 'msg_1',
+        runId: null,
+        role: 'user',
+        createdBy: 'user-1',
+        content: 'hello',
+        createdAt: '2026-03-18T12:00:00.000Z',
+      },
+      1,
+    );
 
     expect(onMessageAppended).toHaveBeenCalledTimes(1);
     expect(onMessageAppended).toHaveBeenCalledWith(
@@ -118,19 +103,19 @@ describe('openMainStream', () => {
       onMessageAppended: vi.fn(),
       onReplayGap: vi.fn(),
       onUnauthorized,
-      createEventSource: (url) => new FakeEventSource(url),
+      createTransport: (url, options) => new FakeTransport(url, options),
       probeSession: vi.fn(async () => false),
       jitterMs: () => 0,
     });
 
-    expect(FakeEventSource.instances).toHaveLength(1);
-    FakeEventSource.instances[0].emitError();
+    expect(FakeTransport.instances).toHaveLength(1);
+    FakeTransport.instances[0]!.emitError();
 
     await vi.runAllTicks();
     await vi.advanceTimersByTimeAsync(10_000);
 
     expect(onUnauthorized).toHaveBeenCalledTimes(1);
-    expect(FakeEventSource.instances).toHaveLength(1);
+    expect(FakeTransport.instances).toHaveLength(1);
   });
 
   it('forwards main_heartbeat events', () => {
@@ -141,17 +126,20 @@ describe('openMainStream', () => {
       onHeartbeat,
       onReplayGap: vi.fn(),
       onUnauthorized: vi.fn(),
-      createEventSource: (url) => new FakeEventSource(url),
+      createTransport: (url, options) => new FakeTransport(url, options),
       probeSession: vi.fn(async () => true),
       jitterMs: () => 0,
     });
 
-    expect(FakeEventSource.instances).toHaveLength(1);
-    FakeEventSource.instances[0].emitEvent('main_heartbeat', {
-      runId: 'run_1',
-      threadId: 'thread_1',
-      at: '2026-03-21T22:40:00.000Z',
-    });
+    FakeTransport.instances[0]!.emitFrame(
+      'main_heartbeat',
+      {
+        runId: 'run_1',
+        threadId: 'thread_1',
+        at: '2026-03-21T22:40:00.000Z',
+      },
+      1,
+    );
 
     expect(onHeartbeat).toHaveBeenCalledTimes(1);
     expect(onHeartbeat).toHaveBeenCalledWith({

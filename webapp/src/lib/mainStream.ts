@@ -1,16 +1,21 @@
 /**
- * mainStream.ts — SSE streaming client for the Main (Nanoclaw) channel.
+ * mainStream.ts — WebSocket streaming client for the Main (Nanoclaw)
+ * channel.
  *
- * Same reconnect/backoff/replay-gap patterns as talkStream.ts, but connects
- * to the user-scoped event endpoint (`/api/v1/events?stream=1`) and filters
- * for Main-channel event types:
- *   - message_appended  (shared with Talks — filtered by threadId / talkId===null)
- *   - main_response_started
- *   - main_response_delta
- *   - main_heartbeat
- *   - main_response_completed
- *   - main_response_failed
+ * Subscribes to the user-scoped stream (`user:${userId}`) over
+ * WebSocket via /api/v1/events?stream=1. After W7-evtsse F2 the
+ * user-scope topic carries only user-scoped events (Main responses,
+ * cross-talk sidebar notifications); per-talk events arrive on the
+ * separate per-talk socket opened by TalkDetailPage. Reconnect /
+ * backoff / replay-gap mechanics mirror talkStream.ts.
  */
+
+import {
+  WebSocketEventSource,
+  type WebSocketEventSourceFrame,
+  type WebSocketEventSourceLike,
+  type WebSocketEventSourceOptions,
+} from './websocketEventSource';
 
 export type MainStreamState =
   | 'connecting'
@@ -114,16 +119,6 @@ export type MainBrowserUnblockedEvent = {
   } | null;
 };
 
-interface EventSourceLike {
-  onopen: ((event: Event) => void) | null;
-  onerror: ((event: Event) => void) | null;
-  addEventListener: (
-    type: string,
-    listener: (event: MessageEvent<string>) => void,
-  ) => void;
-  close: () => void;
-}
-
 interface MainStreamCallbacks {
   onMessageAppended: (event: MainMessageAppendedEvent) => void;
   onRunQueued?: (event: MainRunEvent) => void;
@@ -146,8 +141,13 @@ interface MainStreamCallbacks {
   onUnauthorized: () => void;
 }
 
+export type MainStreamTransportFactory = (
+  url: string,
+  options: WebSocketEventSourceOptions,
+) => WebSocketEventSourceLike;
+
 interface OpenMainStreamInput extends MainStreamCallbacks {
-  createEventSource?: (url: string) => EventSourceLike;
+  createTransport?: MainStreamTransportFactory;
   probeSession?: () => Promise<boolean>;
   jitterMs?: (baseMs: number) => number;
 }
@@ -159,15 +159,17 @@ export interface MainStreamHandle {
 const BACKOFF_STEPS_MS = [500, 1000, 2000, 4000, 8000] as const;
 
 export function openMainStream(input: OpenMainStreamInput): MainStreamHandle {
-  let source: EventSourceLike | null = null;
+  let source: WebSocketEventSourceLike | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let reconnectAttempt = 0;
   let stopped = false;
   let handlingReplayGap = false;
+  let lastEventId = 0;
 
-  const createEventSource =
-    input.createEventSource ||
-    ((url: string) => new EventSource(url) as unknown as EventSourceLike);
+  const createTransport =
+    input.createTransport ??
+    ((url: string, options: WebSocketEventSourceOptions) =>
+      new WebSocketEventSource(url, options));
   const probeSession = input.probeSession || defaultSessionProbe;
   const jitterMs = input.jitterMs || defaultJitterMs;
 
@@ -235,14 +237,6 @@ export function openMainStream(input: OpenMainStreamInput): MainStreamHandle {
       });
   };
 
-  const parse = <T>(event: MessageEvent<string>): T | null => {
-    try {
-      return JSON.parse(event.data) as T;
-    } catch {
-      return null;
-    }
-  };
-
   const handleReplayGap = () => {
     if (stopped || handlingReplayGap) return;
     handlingReplayGap = true;
@@ -255,6 +249,7 @@ export function openMainStream(input: OpenMainStreamInput): MainStreamHandle {
         if (stopped) return;
         reconnectAttempt = 0;
         handlingReplayGap = false;
+        lastEventId = 0;
         openConnection('connecting');
       })
       .catch(() => {
@@ -265,148 +260,131 @@ export function openMainStream(input: OpenMainStreamInput): MainStreamHandle {
       });
   };
 
+  const parseFrame = <T>(frame: WebSocketEventSourceFrame): T | null => {
+    try {
+      return JSON.parse(frame.data) as T;
+    } catch {
+      return null;
+    }
+  };
+
+  const dispatch = (frame: WebSocketEventSourceFrame): void => {
+    switch (frame.event) {
+      case 'message_appended': {
+        const payload = parseFrame<MainMessageAppendedEvent>(frame);
+        if (payload) input.onMessageAppended(payload);
+        return;
+      }
+      case 'main_response_started': {
+        const payload = parseFrame<MainResponseStartedEvent>(frame);
+        if (payload) input.onResponseStarted?.(payload);
+        return;
+      }
+      case 'main_response_delta': {
+        const payload = parseFrame<MainResponseDeltaEvent>(frame);
+        if (payload) input.onResponseDelta?.(payload);
+        return;
+      }
+      case 'main_progress_update': {
+        const payload = parseFrame<MainProgressUpdateEvent>(frame);
+        if (payload) input.onProgressUpdate?.(payload);
+        return;
+      }
+      case 'main_heartbeat': {
+        const payload = parseFrame<MainHeartbeatEvent>(frame);
+        if (payload) input.onHeartbeat?.(payload);
+        return;
+      }
+      case 'main_response_completed': {
+        const payload = parseFrame<MainResponseCompletedEvent>(frame);
+        if (payload) input.onResponseCompleted?.(payload);
+        return;
+      }
+      case 'main_response_failed': {
+        const payload = parseFrame<MainResponseFailedEvent>(frame);
+        if (payload) input.onResponseFailed?.(payload);
+        return;
+      }
+      case 'main_run_queued': {
+        const payload = parseFrame<MainRunEvent>(frame);
+        if (payload) input.onRunQueued?.(payload);
+        return;
+      }
+      case 'main_run_started': {
+        const payload = parseFrame<MainRunEvent>(frame);
+        if (payload) input.onRunStarted?.(payload);
+        return;
+      }
+      case 'main_run_waiting_approval': {
+        const payload = parseFrame<MainRunEvent>(frame);
+        if (payload) input.onRunWaitingApproval?.(payload);
+        return;
+      }
+      case 'main_run_completed': {
+        const payload = parseFrame<MainRunEvent>(frame);
+        if (payload) input.onRunCompleted?.(payload);
+        return;
+      }
+      case 'main_run_failed': {
+        const payload = parseFrame<MainRunEvent>(frame);
+        if (payload) input.onRunFailed?.(payload);
+        return;
+      }
+      case 'main_run_cancelled': {
+        const payload = parseFrame<MainRunEvent>(frame);
+        if (payload) input.onRunCancelled?.(payload);
+        return;
+      }
+      case 'main_promotion_pending': {
+        const payload = parseFrame<MainPromotionPendingEvent>(frame);
+        if (payload) input.onPromotionPending?.(payload);
+        return;
+      }
+      case 'browser_blocked': {
+        const payload = parseFrame<MainBrowserBlockedEvent>(frame);
+        if (payload) input.onBrowserBlocked?.(payload);
+        return;
+      }
+      case 'browser_unblocked': {
+        const payload = parseFrame<MainBrowserUnblockedEvent>(frame);
+        if (payload) input.onBrowserUnblocked?.(payload);
+        return;
+      }
+      case 'replay_gap': {
+        handleReplayGap();
+        return;
+      }
+      default:
+        return;
+    }
+  };
+
   const openConnection = (state: 'connecting' | 'reconnecting') => {
     if (stopped) return;
     clearReconnectTimer();
     closeSource();
     emitState(state);
 
-    // Use the user-scoped event endpoint — Main events publish to user:${userId}
     const url = '/api/v1/events?stream=1';
-    const next = createEventSource(url);
+    let next: WebSocketEventSourceLike | null = null;
+    next = createTransport(url, {
+      getLastEventId: () => lastEventId,
+      onOpen: () => {
+        if (next !== source) return;
+        reconnectAttempt = 0;
+        emitState('live');
+      },
+      onError: () => {
+        if (next !== source) return;
+        handleTransportError();
+      },
+      onMessage: (frame) => {
+        if (next !== source || stopped) return;
+        if (frame.id > lastEventId) lastEventId = frame.id;
+        dispatch(frame);
+      },
+    });
     source = next;
-
-    next.onopen = () => {
-      reconnectAttempt = 0;
-      emitState('live');
-    };
-
-    next.onerror = () => {
-      if (next !== source) return;
-      handleTransportError();
-    };
-
-    // Main channel events
-    next.addEventListener('message_appended', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<MainMessageAppendedEvent>(event);
-      if (!payload) return;
-      // Main subscribes to the user-scoped stream, which also includes Talk
-      // events for accessible talks. Only forward true Main-channel messages.
-      if (payload.threadId && !payload.talkId) {
-        input.onMessageAppended(payload);
-      }
-    });
-
-    next.addEventListener('main_response_started', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<MainResponseStartedEvent>(event);
-      if (!payload) return;
-      input.onResponseStarted?.(payload);
-    });
-
-    next.addEventListener('main_response_delta', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<MainResponseDeltaEvent>(event);
-      if (!payload) return;
-      input.onResponseDelta?.(payload);
-    });
-
-    next.addEventListener('main_progress_update', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<MainProgressUpdateEvent>(event);
-      if (!payload) return;
-      input.onProgressUpdate?.(payload);
-    });
-
-    next.addEventListener('main_heartbeat', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<MainHeartbeatEvent>(event);
-      if (!payload) return;
-      input.onHeartbeat?.(payload);
-    });
-
-    next.addEventListener('main_response_completed', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<MainResponseCompletedEvent>(event);
-      if (!payload) return;
-      input.onResponseCompleted?.(payload);
-    });
-
-    next.addEventListener('main_response_failed', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<MainResponseFailedEvent>(event);
-      if (!payload) return;
-      input.onResponseFailed?.(payload);
-    });
-
-    next.addEventListener('main_run_queued', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<MainRunEvent>(event);
-      if (!payload) return;
-      input.onRunQueued?.(payload);
-    });
-
-    next.addEventListener('main_run_started', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<MainRunEvent>(event);
-      if (!payload) return;
-      input.onRunStarted?.(payload);
-    });
-
-    next.addEventListener('main_run_waiting_approval', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<MainRunEvent>(event);
-      if (!payload) return;
-      input.onRunWaitingApproval?.(payload);
-    });
-
-    next.addEventListener('main_run_completed', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<MainRunEvent>(event);
-      if (!payload) return;
-      input.onRunCompleted?.(payload);
-    });
-
-    next.addEventListener('main_run_failed', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<MainRunEvent>(event);
-      if (!payload) return;
-      input.onRunFailed?.(payload);
-    });
-
-    next.addEventListener('main_run_cancelled', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<MainRunEvent>(event);
-      if (!payload) return;
-      input.onRunCancelled?.(payload);
-    });
-
-    next.addEventListener('main_promotion_pending', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<MainPromotionPendingEvent>(event);
-      if (!payload) return;
-      input.onPromotionPending?.(payload);
-    });
-
-    next.addEventListener('browser_blocked', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<MainBrowserBlockedEvent>(event);
-      if (!payload) return;
-      input.onBrowserBlocked?.(payload);
-    });
-
-    next.addEventListener('browser_unblocked', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<MainBrowserUnblockedEvent>(event);
-      if (!payload) return;
-      input.onBrowserUnblocked?.(payload);
-    });
-
-    next.addEventListener('replay_gap', () => {
-      if (next !== source || stopped) return;
-      handleReplayGap();
-    });
   };
 
   openConnection('connecting');

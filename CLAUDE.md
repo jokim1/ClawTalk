@@ -23,38 +23,29 @@ ClawTalk is a web product where users invite different LLM personas into context
 
 | File                                                                                          | Purpose                                                            |
 | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| `src/server.ts`                                                                               | Top-level entry: init DB → start web server → SIGINT/SIGTERM       |
-| `src/db.ts`                                                                                   | postgres.js connection + `withUserContext` (cloud) / Hyperdrive on Workers |
-| `src/clawtalk/config.ts`                                                                      | Server + auth + provider env config                                |
+| `src/worker.ts`                                                                               | Cloudflare Worker entry — boots `getWorkerApp(env)`                |
+| `src/db.ts`                                                                                   | postgres.js connection + `withUserContext` / Hyperdrive on Workers |
+| `src/clawtalk/config.ts`                                                                      | Auth + provider env config                                         |
 | `supabase/migrations/*.sql`                                                                   | Postgres schema + RLS policies + grants                            |
 | `src/clawtalk/db/accessors.ts`, `agent-accessors.ts`, etc.                                    | Typed async pg accessors (tagged-template SQL, RLS-scoped)         |
-| `src/clawtalk/identity/auth-service.ts`                                                       | Google OAuth + device-code + session lifecycle                     |
 | `src/clawtalk/talks/new-executor.ts`                                                          | CleanTalkExecutor — orchestrates a single Talk run                 |
 | `src/clawtalk/talks/run-worker.ts`, `job-worker.ts`                                           | Talk run + job dispatch                                            |
+| `src/clawtalk/talks/user-event-hub.ts`                                                        | Per-user Durable Object — WebSocket Hibernation event hub          |
 | `src/clawtalk/agents/agent-registry.ts`, `agent-router.ts`                                    | Multi-agent registry + per-Talk routing                            |
 | `src/clawtalk/llm/`                                                                           | Provider catalog, secret store, LLM client                         |
-| `src/clawtalk/web/server.ts`                                                                  | Hono app + route registration (monolithic; carve in a future PR)   |
+| `src/clawtalk/web/worker-app.ts`                                                              | Hono app + route registration for the Worker bundle                |
 | `webapp/src/pages/TalkDetailPage.tsx`                                                         | Talk UI (agent targeting + streaming)                              |
 
-## Chassis-removed shims (transient)
+## Chassis-removal stubs (transient)
 
-`src/clawtalk/web/routes/{executor-settings,main-channel,browser,data-connectors,talk-tools,channels}.ts` and `_chassis-removed.ts` are tiny stub modules whose route handlers return HTTP 410 Gone. They exist only so `web/server.ts` still compiles after the chassis purge without ripping out hundreds of route registrations in one PR. Delete them and their referencing route registrations in `web/server.ts` as a follow-up cleanup PR. (`agent-management.ts` was restored to real persona CRUD by Phase 2 / PR #310.)
-
-Similarly, `new-executor.ts`, `context-loader.ts`, `agents/agent-router.ts`, and `db/accessors.ts` have inline `// Chassis-removal stubs` blocks near the imports. Same deal — they keep the type-checker green; remove them when the rest of the chassis surface comes out.
-
-## Node-path deferred retirement (Phase 5 PR 2)
-
-After the U5-del sqlite-delete unit, `src/server.ts → web/index.ts → web/server.ts` and everything only consumed by that chain (`identity/auth-service.ts`, `identity/google-tools-service.ts`, `web/middleware/idempotency.ts`, `web/routes/{events,talk-context,talk-jobs,talk-attachments,talk-outputs,talk-threads}.ts`, plus their sqlite-era tests) are transient typecheck-broken zombies. The cloud-deploy surface (`src/worker.ts → web/worker-app.ts` and its mounted routes) typechecks clean. Local dev moves to `npm run dev:worker` (wrangler) + `npm run db:start` (supabase); the Node path retires entirely in a follow-up session.
-
-## Cloud foundation (Phase 5 PR 1, parallel)
-
-`supabase/` + `wrangler.toml` + `src/worker.ts` + `src/db-pg.ts` landed in PR #311 as additive surface alongside the SQLite path. The running app still serves from `tsx src/server.ts` against SQLite; PR 2 flips the entry. Local dev for the cloud foundation: `npm run db:start` (supabase on ports 54430–54439) + `npm run dev:worker` (wrangler dev on :8788). See `~/.claude/projects/-Users-josephkim-dev-clawtalk/memory/project_phase5_pr2_plan.md` for the PR 2 cutover plan.
+`new-executor.ts`, `context-loader.ts`, `agents/agent-router.ts`, and `db/accessors.ts` have inline `// Chassis-removal stubs` blocks near the imports. They keep the type-checker green; remove them when the rest of the chassis surface comes out. (The web-route 410 stubs and the Node-mode entry were both retired in W7-evtsse U6.)
 
 ## Development Commands
 
 ```bash
-npm run dev                   # backend on :3210 (tsx src/server.ts)
-npm run dev:web               # webapp on :5173 (proxies /api/* to :3210)
+npm run db:start              # supabase local stack on ports 54430–54439
+npm run dev:worker            # wrangler dev on :8788 (Worker + DO + Hyperdrive)
+npm run dev:web               # webapp on :5173 (proxies /api/* to :8788)
 npm run typecheck             # backend tsc --noEmit
 npm run test                  # backend vitest run
 npm --prefix webapp run typecheck

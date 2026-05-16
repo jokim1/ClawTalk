@@ -65,7 +65,6 @@ type SidebarItemView = SidebarTalkView | SidebarFolderView;
 
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'clawtalk.sidebarCollapsed';
 const TALK_READ_MARKERS_STORAGE_KEY = 'clawtalk.talkReadMarkers';
-const SIDEBAR_REFRESH_INTERVAL_MS = 5_000;
 
 function readTalkReadMarkers(): Record<string, TalkReadMarker> {
   if (typeof window === 'undefined') return {};
@@ -474,7 +473,6 @@ export function App() {
   useEffect(() => {
     if (auth.status !== 'authenticated') return;
     const refresh = () => void refreshSidebar();
-    const intervalId = window.setInterval(refresh, SIDEBAR_REFRESH_INTERVAL_MS);
     const handleFocus = () => refresh();
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
@@ -484,7 +482,6 @@ export function App() {
     window.addEventListener('focus', handleFocus);
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => {
-      window.clearInterval(intervalId);
       window.removeEventListener('focus', handleFocus);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };

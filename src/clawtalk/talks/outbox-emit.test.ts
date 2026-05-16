@@ -192,10 +192,10 @@ describe('emitOutboxEvent (in-tx path)', () => {
     expect(rows[0].event_id).toBe(eventId);
   });
 
-  it('falls back to inline in-process notify when no queue scope is active (Node startup recovery)', async () => {
-    // No withRequestScopedDb / withUserContext / withNotifyQueueScope.
-    // emitOutboxEvent's fallback path uses queueMicrotask + the legacy
-    // outbox-notifier. We just assert the INSERT lands and no throw.
+  it('without a queue scope: INSERT still lands (no notify path remaining)', async () => {
+    // After U6 the Node-mode in-process SSE notifier is gone; there is
+    // no scope-less notify path. The outbox INSERT must still succeed
+    // — a missing scope is a caller bug, not a data-loss bug.
     const topic = uniqueTopic('startup');
     const eventId = await emitOutboxEvent({
       topic,

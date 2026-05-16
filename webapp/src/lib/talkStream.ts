@@ -1,4 +1,10 @@
 import type { BrowserBlock, BrowserResume } from './api';
+import {
+  WebSocketEventSource,
+  type WebSocketEventSourceFrame,
+  type WebSocketEventSourceLike,
+  type WebSocketEventSourceOptions,
+} from './websocketEventSource';
 
 export type TalkStreamState =
   | 'connecting'
@@ -163,16 +169,6 @@ export type TalkBrowserUnblockedEvent = {
   browserResume?: BrowserResume | null;
 };
 
-interface EventSourceLike {
-  onopen: ((event: Event) => void) | null;
-  onerror: ((event: Event) => void) | null;
-  addEventListener: (
-    type: string,
-    listener: (event: MessageEvent<string>) => void,
-  ) => void;
-  close: () => void;
-}
-
 interface TalkStreamCallbacks {
   onMessageAppended: (event: MessageAppendedEvent) => void;
   onRunStarted: (event: TalkRunStartedEvent) => void;
@@ -195,9 +191,14 @@ interface TalkStreamCallbacks {
   onUnauthorized: () => void;
 }
 
+export type TalkStreamTransportFactory = (
+  url: string,
+  options: WebSocketEventSourceOptions,
+) => WebSocketEventSourceLike;
+
 interface OpenTalkStreamInput extends TalkStreamCallbacks {
   talkId: string;
-  createEventSource?: (url: string) => EventSourceLike;
+  createTransport?: TalkStreamTransportFactory;
   probeSession?: () => Promise<boolean>;
   jitterMs?: (baseMs: number) => number;
 }
@@ -209,15 +210,17 @@ export interface TalkStreamHandle {
 const BACKOFF_STEPS_MS = [500, 1000, 2000, 4000, 8000] as const;
 
 export function openTalkStream(input: OpenTalkStreamInput): TalkStreamHandle {
-  let source: EventSourceLike | null = null;
+  let source: WebSocketEventSourceLike | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let reconnectAttempt = 0;
   let stopped = false;
   let handlingReplayGap = false;
+  let lastEventId = 0;
 
-  const createEventSource =
-    input.createEventSource ||
-    ((url: string) => new EventSource(url) as unknown as EventSourceLike);
+  const createTransport =
+    input.createTransport ??
+    ((url: string, options: WebSocketEventSourceOptions) =>
+      new WebSocketEventSource(url, options));
   const probeSession = input.probeSession || defaultSessionProbe;
   const jitterMs = input.jitterMs || defaultJitterMs;
 
@@ -285,14 +288,6 @@ export function openTalkStream(input: OpenTalkStreamInput): TalkStreamHandle {
       });
   };
 
-  const parse = <T>(event: MessageEvent<string>): T | null => {
-    try {
-      return JSON.parse(event.data) as T;
-    } catch {
-      return null;
-    }
-  };
-
   const handleReplayGap = () => {
     if (stopped || handlingReplayGap) return;
     handlingReplayGap = true;
@@ -305,6 +300,7 @@ export function openTalkStream(input: OpenTalkStreamInput): TalkStreamHandle {
         if (stopped) return;
         reconnectAttempt = 0;
         handlingReplayGap = false;
+        lastEventId = 0;
         openConnection('connecting');
       })
       .catch(() => {
@@ -315,6 +311,105 @@ export function openTalkStream(input: OpenTalkStreamInput): TalkStreamHandle {
       });
   };
 
+  const parseFrame = <T>(frame: WebSocketEventSourceFrame): T | null => {
+    try {
+      return JSON.parse(frame.data) as T;
+    } catch {
+      return null;
+    }
+  };
+
+  const dispatch = (frame: WebSocketEventSourceFrame): void => {
+    switch (frame.event) {
+      case 'message_appended': {
+        const payload = parseFrame<MessageAppendedEvent>(frame);
+        if (payload) input.onMessageAppended(payload);
+        return;
+      }
+      case 'talk_run_started': {
+        const payload = parseFrame<TalkRunStartedEvent>(frame);
+        if (payload) input.onRunStarted(payload);
+        return;
+      }
+      case 'talk_run_queued': {
+        const payload = parseFrame<TalkRunStartedEvent>(frame);
+        if (payload) input.onRunQueued(payload);
+        return;
+      }
+      case 'talk_run_completed': {
+        const payload = parseFrame<TalkRunCompletedEvent>(frame);
+        if (payload) input.onRunCompleted(payload);
+        return;
+      }
+      case 'talk_response_started': {
+        const payload = parseFrame<TalkResponseStartedEvent>(frame);
+        if (payload) input.onResponseStarted?.(payload);
+        return;
+      }
+      case 'talk_response_delta': {
+        const payload = parseFrame<TalkResponseDeltaEvent>(frame);
+        if (payload) input.onResponseDelta?.(payload);
+        return;
+      }
+      case 'talk_progress_update': {
+        const payload = parseFrame<TalkProgressUpdateEvent>(frame);
+        if (payload) input.onProgressUpdate?.(payload);
+        return;
+      }
+      case 'talk_response_usage': {
+        const payload = parseFrame<TalkResponseUsageEvent>(frame);
+        if (payload) input.onResponseUsage?.(payload);
+        return;
+      }
+      case 'talk_response_completed': {
+        const payload = parseFrame<TalkResponseTerminalEvent>(frame);
+        if (payload) input.onResponseCompleted?.(payload);
+        return;
+      }
+      case 'talk_response_failed': {
+        const payload = parseFrame<TalkResponseTerminalEvent>(frame);
+        if (payload) input.onResponseFailed?.(payload);
+        return;
+      }
+      case 'talk_response_cancelled': {
+        const payload = parseFrame<TalkResponseTerminalEvent>(frame);
+        if (payload) input.onResponseCancelled?.(payload);
+        return;
+      }
+      case 'talk_run_failed': {
+        const payload = parseFrame<TalkRunFailedEvent>(frame);
+        if (payload) input.onRunFailed(payload);
+        return;
+      }
+      case 'talk_run_cancelled': {
+        const payload = parseFrame<TalkRunCancelledEvent>(frame);
+        if (payload) input.onRunCancelled(payload);
+        return;
+      }
+      case 'talk_history_edited': {
+        const payload = parseFrame<TalkHistoryEditedEvent>(frame);
+        if (payload) input.onHistoryEdited?.(payload);
+        return;
+      }
+      case 'browser_blocked': {
+        const payload = parseFrame<TalkBrowserBlockedEvent>(frame);
+        if (payload) input.onBrowserBlocked?.(payload);
+        return;
+      }
+      case 'browser_unblocked': {
+        const payload = parseFrame<TalkBrowserUnblockedEvent>(frame);
+        if (payload) input.onBrowserUnblocked?.(payload);
+        return;
+      }
+      case 'replay_gap': {
+        handleReplayGap();
+        return;
+      }
+      default:
+        return;
+    }
+  };
+
   const openConnection = (state: 'connecting' | 'reconnecting') => {
     if (stopped) return;
     clearReconnectTimer();
@@ -322,135 +417,25 @@ export function openTalkStream(input: OpenTalkStreamInput): TalkStreamHandle {
     emitState(state);
 
     const url = `/api/v1/talks/${encodeURIComponent(input.talkId)}/events?stream=1`;
-    const next = createEventSource(url);
+    let next: WebSocketEventSourceLike | null = null;
+    next = createTransport(url, {
+      getLastEventId: () => lastEventId,
+      onOpen: () => {
+        if (next !== source) return;
+        reconnectAttempt = 0;
+        emitState('live');
+      },
+      onError: () => {
+        if (next !== source) return;
+        handleTransportError();
+      },
+      onMessage: (frame) => {
+        if (next !== source || stopped) return;
+        if (frame.id > lastEventId) lastEventId = frame.id;
+        dispatch(frame);
+      },
+    });
     source = next;
-
-    next.onopen = () => {
-      reconnectAttempt = 0;
-      emitState('live');
-    };
-
-    next.onerror = () => {
-      if (next !== source) return;
-      handleTransportError();
-    };
-
-    next.addEventListener('message_appended', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<MessageAppendedEvent>(event);
-      if (!payload) return;
-      input.onMessageAppended(payload);
-    });
-
-    next.addEventListener('talk_run_started', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<TalkRunStartedEvent>(event);
-      if (!payload) return;
-      input.onRunStarted(payload);
-    });
-
-    next.addEventListener('talk_run_queued', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<TalkRunStartedEvent>(event);
-      if (!payload) return;
-      input.onRunQueued(payload);
-    });
-
-    next.addEventListener('talk_run_completed', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<TalkRunCompletedEvent>(event);
-      if (!payload) return;
-      input.onRunCompleted(payload);
-    });
-
-    next.addEventListener('talk_response_started', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<TalkResponseStartedEvent>(event);
-      if (!payload) return;
-      input.onResponseStarted?.(payload);
-    });
-
-    next.addEventListener('talk_response_delta', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<TalkResponseDeltaEvent>(event);
-      if (!payload) return;
-      input.onResponseDelta?.(payload);
-    });
-
-    next.addEventListener('talk_progress_update', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<TalkProgressUpdateEvent>(event);
-      if (!payload) return;
-      input.onProgressUpdate?.(payload);
-    });
-
-    next.addEventListener('talk_response_usage', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<TalkResponseUsageEvent>(event);
-      if (!payload) return;
-      input.onResponseUsage?.(payload);
-    });
-
-    next.addEventListener('talk_response_completed', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<TalkResponseTerminalEvent>(event);
-      if (!payload) return;
-      input.onResponseCompleted?.(payload);
-    });
-
-    next.addEventListener('talk_response_failed', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<TalkResponseTerminalEvent>(event);
-      if (!payload) return;
-      input.onResponseFailed?.(payload);
-    });
-
-    next.addEventListener('talk_response_cancelled', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<TalkResponseTerminalEvent>(event);
-      if (!payload) return;
-      input.onResponseCancelled?.(payload);
-    });
-
-    next.addEventListener('talk_run_failed', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<TalkRunFailedEvent>(event);
-      if (!payload) return;
-      input.onRunFailed(payload);
-    });
-
-    next.addEventListener('talk_run_cancelled', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<TalkRunCancelledEvent>(event);
-      if (!payload) return;
-      input.onRunCancelled(payload);
-    });
-
-    next.addEventListener('talk_history_edited', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<TalkHistoryEditedEvent>(event);
-      if (!payload) return;
-      input.onHistoryEdited?.(payload);
-    });
-
-    next.addEventListener('browser_blocked', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<TalkBrowserBlockedEvent>(event);
-      if (!payload) return;
-      input.onBrowserBlocked?.(payload);
-    });
-
-    next.addEventListener('browser_unblocked', (event) => {
-      if (next !== source || stopped) return;
-      const payload = parse<TalkBrowserUnblockedEvent>(event);
-      if (!payload) return;
-      input.onBrowserUnblocked?.(payload);
-    });
-
-    next.addEventListener('replay_gap', () => {
-      if (next !== source || stopped) return;
-      handleReplayGap();
-    });
   };
 
   openConnection('connecting');
@@ -477,7 +462,6 @@ async function defaultSessionProbe(): Promise<boolean> {
     });
     return response.status !== 401;
   } catch {
-    // Treat transport errors as transient and let reconnect backoff handle it.
     return true;
   }
 }
