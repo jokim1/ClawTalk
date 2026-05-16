@@ -1,0 +1,27 @@
+-- clawtalk W7-evtsse — revoke event_outbox SELECT from `authenticated`.
+--
+-- PREDEPLOY GATE: this migration is safe to apply ONLY after:
+--   1. Migration 0005 has run (creates clawtalk_event_hub role).
+--   2. The role's password is set via Supabase dashboard or
+--      `ALTER ROLE clawtalk_event_hub PASSWORD '<secret>'`.
+--   3. The wrangler secret `DB_EVENT_HUB_URL` is set to the full
+--      connection string for that role.
+--   4. The UserEventHub DO is verified reading the outbox via
+--      `DB_EVENT_HUB_URL` in production canary.
+--
+-- The predeploy gate (`scripts/verify-deploy-secrets.sh`) checks
+-- step 3 automatically on every deploy. Steps 1–2 + 4 are manual.
+--
+-- After this migration applies, ONLY the `clawtalk_event_hub` role
+-- can SELECT from `public.event_outbox`. The cloud Worker still
+-- INSERTs via `authenticated` (which retains INSERT from 0003); the
+-- DO reads via its own role.
+--
+-- Node-mode SSE consumers reading via `authenticated` would break
+-- here — but Node-mode SSE is dead in production (see CLAUDE.md
+-- "Node-path deferred retirement"), so this is safe.
+--
+-- Rollback: `supabase/migrations/9999_rollback_outbox_authenticated.sql`
+-- restores the grant. Apply out-of-band (not in normal deploys).
+
+revoke select on public.event_outbox from authenticated;
