@@ -102,6 +102,12 @@ import {
   verifyAiProviderCredentialRoute,
 } from './routes/ai-agents.js';
 import {
+  completeAnthropicOauthRoute,
+  initiateAnthropicOauthRoute,
+  initiateOpenAiCodexOauthRoute,
+  pollOpenAiCodexOauthRoute,
+} from './routes/agent-oauth.js';
+import {
   getTalkAttachmentContentRoute,
   listTalkAttachmentsRoute,
   uploadTalkAttachmentRoute,
@@ -408,6 +414,63 @@ function buildApp(): Hono<{ Variables: Variables }> {
     );
     return jsonResponse(result);
   });
+
+  // ── OAuth subscription flows ─────────────────────────────────
+  app.post(
+    '/api/v1/agents/providers/provider.anthropic/oauth/initiate',
+    async (c) => {
+      const auth = c.get('auth');
+      const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+      if (!rl.allowed) return rateLimitedResponse(c, rl);
+      const csrfFail = checkCsrf(c, auth);
+      if (csrfFail) return csrfFail;
+      const body = await c.req.json().catch(() => ({}));
+      const result = await initiateAnthropicOauthRoute(auth, body);
+      return jsonResponse(result);
+    },
+  );
+
+  app.post(
+    '/api/v1/agents/providers/provider.anthropic/oauth/complete',
+    async (c) => {
+      const auth = c.get('auth');
+      const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+      if (!rl.allowed) return rateLimitedResponse(c, rl);
+      const csrfFail = checkCsrf(c, auth);
+      if (csrfFail) return csrfFail;
+      const body = await c.req.json().catch(() => ({}));
+      const result = await completeAnthropicOauthRoute(auth, body);
+      return jsonResponse(result);
+    },
+  );
+
+  app.post(
+    '/api/v1/agents/providers/provider.openai_codex/oauth/initiate',
+    async (c) => {
+      const auth = c.get('auth');
+      const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+      if (!rl.allowed) return rateLimitedResponse(c, rl);
+      const csrfFail = checkCsrf(c, auth);
+      if (csrfFail) return csrfFail;
+      const body = await c.req.json().catch(() => ({}));
+      const result = await initiateOpenAiCodexOauthRoute(auth, body);
+      return jsonResponse(result);
+    },
+  );
+
+  app.post(
+    '/api/v1/agents/providers/provider.openai_codex/oauth/poll',
+    async (c) => {
+      const auth = c.get('auth');
+      const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+      if (!rl.allowed) return rateLimitedResponse(c, rl);
+      const csrfFail = checkCsrf(c, auth);
+      if (csrfFail) return csrfFail;
+      const body = await c.req.json().catch(() => ({}));
+      const result = await pollOpenAiCodexOauthRoute(auth, body);
+      return jsonResponse(result);
+    },
+  );
 
   // ── agent-management.ts: registered-agents CRUD ──────────────
   app.get('/api/v1/registered-agents', async (c) => {
