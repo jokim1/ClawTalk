@@ -201,7 +201,10 @@ export function ClawTalkSidebar({
   onReorder,
   renameDraft,
 }: Props): JSX.Element {
-  const canManageAgents = userRole === 'owner' || userRole === 'admin';
+  // All authenticated users can register their own agents (per-user RLS).
+  // Admin-only gating now lives inside the API Keys tab for workspace
+  // credentials specifically.
+  const canManageAgents = true;
   const [expandedFolderIds, setExpandedFolderIds] = useState<
     Record<string, boolean>
   >({});
@@ -849,6 +852,17 @@ export function ClawTalkSidebar({
             </DndContext>
           )}
         </div>
+      </div>
+
+      <div className="clawtalk-sidebar-footer">
+        <NavLink
+          to="/app/settings"
+          className={({ isActive }) =>
+            `clawtalk-sidebar-link${isActive ? ' active' : ''}`
+          }
+        >
+          ⚙ Settings
+        </NavLink>
       </div>
     </aside>
   );

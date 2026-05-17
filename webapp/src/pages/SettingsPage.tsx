@@ -225,28 +225,24 @@ export function SettingsPage({
         >
           Profile
         </button>
-        {canManage ? (
-          <>
-            <button
-              type="button"
-              role="tab"
-              className={`talk-tab${tab === 'api-keys' ? ' talk-tab-active' : ''}`}
-              aria-selected={tab === 'api-keys'}
-              onClick={() => setTab('api-keys')}
-            >
-              API Keys
-            </button>
-            <button
-              type="button"
-              role="tab"
-              className={`talk-tab${tab === 'agents' ? ' talk-tab-active' : ''}`}
-              aria-selected={tab === 'agents'}
-              onClick={() => setTab('agents')}
-            >
-              Agents
-            </button>
-          </>
-        ) : null}
+        <button
+          type="button"
+          role="tab"
+          className={`talk-tab${tab === 'api-keys' ? ' talk-tab-active' : ''}`}
+          aria-selected={tab === 'api-keys'}
+          onClick={() => setTab('api-keys')}
+        >
+          API Keys
+        </button>
+        <button
+          type="button"
+          role="tab"
+          className={`talk-tab${tab === 'agents' ? ' talk-tab-active' : ''}`}
+          aria-selected={tab === 'agents'}
+          onClick={() => setTab('agents')}
+        >
+          Agents
+        </button>
       </div>
 
       {tab === 'profile' ? (
@@ -257,12 +253,12 @@ export function SettingsPage({
         />
       ) : null}
 
-      {tab === 'api-keys' && canManage ? (
+      {tab === 'api-keys' ? (
         <ApiKeysTab onUnauthorized={onUnauthorized} userRole={userRole} />
       ) : null}
 
-      {tab === 'agents' && canManage ? (
-        <AgentsTab onUnauthorized={onUnauthorized} canManage={canManage} />
+      {tab === 'agents' ? (
+        <AgentsTab onUnauthorized={onUnauthorized} />
       ) : null}
     </section>
   );
@@ -930,11 +926,12 @@ function ProviderCredentialCard({
 
 function AgentsTab({
   onUnauthorized,
-  canManage,
 }: {
   onUnauthorized: () => void;
-  canManage: boolean;
 }): JSX.Element {
+  // `registered_agents` is per-user via RLS, so every authenticated
+  // user manages their own list — no admin gate here.
+  const canManage = true;
   const [data, setData] = useState<AiAgentsPageData | null>(null);
   const [agents, setAgents] = useState<RegisteredAgent[]>([]);
   const [mainAgentId, setMainAgentId] = useState<string | null>(null);

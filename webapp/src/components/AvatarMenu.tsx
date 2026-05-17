@@ -4,7 +4,6 @@ import type { SessionUser } from '../lib/api';
 
 type Props = {
   user: SessionUser;
-  canManageSettings: boolean;
   onSignOut: () => void;
   signOutBusy: boolean;
 };
@@ -36,12 +35,7 @@ function getAvatarGradient(userId: string): string {
   return AVATAR_GRADIENTS[Math.abs(hash) % AVATAR_GRADIENTS.length];
 }
 
-export function AvatarMenu({
-  user,
-  canManageSettings,
-  onSignOut,
-  signOutBusy,
-}: Props) {
+export function AvatarMenu({ user, onSignOut, signOutBusy }: Props) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
@@ -108,19 +102,17 @@ export function AvatarMenu({
           >
             Profile
           </button>
-          {canManageSettings ? (
-            <button
-              type="button"
-              className="app-avatar-menu-item"
-              role="menuitem"
-              onClick={() => {
-                setOpen(false);
-                navigate('/app/settings');
-              }}
-            >
-              Settings
-            </button>
-          ) : null}
+          <button
+            type="button"
+            className="app-avatar-menu-item"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              navigate('/app/settings');
+            }}
+          >
+            Settings
+          </button>
           <div className="app-avatar-dropdown-divider" />
           <button
             type="button"

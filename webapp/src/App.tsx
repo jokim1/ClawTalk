@@ -615,12 +615,7 @@ export function App() {
     [sidebarItems],
   );
 
-  const canManageSettings =
-    auth.status === 'authenticated' &&
-    (auth.user.role === 'owner' || auth.user.role === 'admin');
-  const canManageAgents =
-    auth.status === 'authenticated' &&
-    (auth.user.role === 'owner' || auth.user.role === 'admin');
+  const canManageAgents = auth.status === 'authenticated';
 
   const handleUserUpdated = useCallback((user: SessionUser) => {
     setAuth({ status: 'authenticated', user });
@@ -719,7 +714,6 @@ export function App() {
           </a>
           <AvatarMenu
             user={auth.user}
-            canManageSettings={canManageSettings}
             onSignOut={handleSignOut}
             signOutBusy={signOutBusy}
           />

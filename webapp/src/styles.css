@@ -206,6 +206,14 @@ a {
   gap: 0.35rem;
 }
 
+.clawtalk-sidebar-footer {
+  margin-top: auto;
+  padding-top: 0.75rem;
+  border-top: 1px solid #e3eaf5;
+  display: grid;
+  gap: 0.35rem;
+}
+
 .clawtalk-sidebar-link,
 .clawtalk-talk-link {
   display: flex;
