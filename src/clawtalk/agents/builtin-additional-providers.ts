@@ -3,7 +3,9 @@ export type BuiltinAdditionalProviderKind =
   | 'openai'
   | 'gemini'
   | 'nvidia';
-export type BuiltinAdditionalProviderCredentialMode = 'api_key' | 'host_login';
+export type BuiltinAdditionalProviderCredentialMode =
+  | 'api_key'
+  | 'subscription_only';
 export type BuiltinAdditionalProviderApiFormat =
   | 'anthropic_messages'
   | 'openai_chat_completions';
@@ -95,11 +97,11 @@ export const BUILTIN_ADDITIONAL_PROVIDERS: BuiltinAdditionalProvider[] = [
   },
   {
     id: 'provider.openai_codex',
-    name: 'OpenAI Codex (Host)',
+    name: 'ChatGPT Codex (Subscription)',
     providerKind: 'openai',
-    credentialMode: 'host_login',
+    credentialMode: 'subscription_only',
     apiFormat: 'openai_chat_completions',
-    baseUrl: 'codex://host-runtime',
+    baseUrl: 'https://chatgpt.com/backend-api/codex',
     authScheme: 'bearer',
     responseStartTimeoutMs: 120_000,
     streamIdleTimeoutMs: 60_000,

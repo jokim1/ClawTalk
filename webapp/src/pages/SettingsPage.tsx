@@ -788,24 +788,10 @@ function ProviderCredentialCard({
   const placeholder = PROVIDER_KEY_PLACEHOLDER[provider.id] || 'sk-...';
   const disabled = !canManage || busySave;
   const scopeLabel = scope === 'workspace' ? 'workspace' : 'personal';
-
-  if (provider.credentialMode === 'host_login') {
-    return (
-      <article className="talk-llm-card">
-        <div className="talk-llm-card-header">
-          <div>
-            <h4>{provider.name}</h4>
-            <p className="talk-llm-meta">
-              Host-login providers are not configurable in the cloud workspace.
-            </p>
-          </div>
-          <span className={verificationChipClass(view.verificationStatus)}>
-            {formatVerification(view.verificationStatus)}
-          </span>
-        </div>
-      </article>
-    );
-  }
+  // Subscription-only providers (e.g. ChatGPT Codex) hide the API key
+  // section entirely — credentials live in the OAuth subscription
+  // section rendered below.
+  const showApiKeySection = provider.credentialMode !== 'subscription_only';
 
   return (
     <article className="talk-llm-card">
@@ -822,12 +808,14 @@ function ProviderCredentialCard({
             )}
           </p>
         </div>
-        <span className={verificationChipClass(view.verificationStatus)}>
-          {formatVerification(view.verificationStatus)}
-        </span>
+        {showApiKeySection ? (
+          <span className={verificationChipClass(view.verificationStatus)}>
+            {formatVerification(view.verificationStatus)}
+          </span>
+        ) : null}
       </div>
 
-      {view.hasCredential ? (
+      {showApiKeySection && view.hasCredential ? (
         <div className="talk-llm-stored-key">
           <div>
             <strong>{view.credentialHint || 'Stored in settings'}</strong>
@@ -852,7 +840,7 @@ function ProviderCredentialCard({
         </div>
       ) : null}
 
-      {canManage ? (
+      {showApiKeySection && canManage ? (
         <details
           className="talk-llm-update-disclosure"
           open={draft.expanded}

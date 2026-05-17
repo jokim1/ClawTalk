@@ -953,7 +953,7 @@ export type AgentProviderCard = {
   baseUrl: string;
   authScheme: 'x_api_key' | 'bearer';
   enabled: boolean;
-  credentialMode: 'api_key' | 'host_login';
+  credentialMode: 'api_key' | 'subscription_only';
   hasCredential: boolean;
   credentialHint: string | null;
   verificationStatus: ProviderVerificationStatus;
@@ -968,15 +968,6 @@ export type AgentProviderCard = {
   personalSubscriptionExpiresAt: string | null;
   hasWorkspaceSubscription: boolean;
   workspaceSubscriptionExpiresAt: string | null;
-  hostStatus?: {
-    cliInstalled: boolean;
-    authenticated: boolean;
-    authMode: 'chatgpt' | 'apikey' | null;
-    sandboxAvailable: boolean;
-    managedHomePath: string;
-    message: string;
-    recommendedCommands: string[];
-  };
   modelSuggestions: Array<{
     modelId: string;
     displayName: string;

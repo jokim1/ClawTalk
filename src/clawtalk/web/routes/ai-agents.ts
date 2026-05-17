@@ -3,26 +3,6 @@ import {
   BUILTIN_ADDITIONAL_PROVIDER_IDS,
   BUILTIN_ADDITIONAL_PROVIDERS,
 } from '../../agents/builtin-additional-providers.js';
-type CodexHostStatusView = {
-  status: 'unsupported';
-  authenticated: false;
-  cliInstalled: false;
-  sandboxAvailable: false;
-  authMode: 'unsupported' | 'apikey' | 'chatgpt';
-  message: string;
-};
-class CodexHostStatusService {
-  async getStatusView(): Promise<CodexHostStatusView> {
-    return {
-      status: 'unsupported',
-      authenticated: false,
-      cliInstalled: false,
-      sandboxAvailable: false,
-      authMode: 'unsupported',
-      message: 'Codex host runtime is disabled (chassis removed).',
-    };
-  }
-}
 import {
   LlmClientError,
   callLlm,
@@ -63,7 +43,7 @@ export type AgentProviderCard = {
   baseUrl: string;
   authScheme: 'x_api_key' | 'bearer';
   enabled: boolean;
-  credentialMode: 'api_key' | 'host_login';
+  credentialMode: 'api_key' | 'subscription_only';
   hasCredential: boolean;
   credentialHint: string | null;
   verificationStatus: AdditionalProviderVerificationStatus;
@@ -84,7 +64,6 @@ export type AgentProviderCard = {
   personalSubscriptionExpiresAt: string | null;
   hasWorkspaceSubscription: boolean;
   workspaceSubscriptionExpiresAt: string | null;
-  hostStatus?: CodexHostStatusView;
   modelSuggestions: Array<{
     modelId: string;
     displayName: string;
@@ -401,49 +380,35 @@ async function buildAdditionalProviderCards(): Promise<AgentProviderCard[]> {
     await listPersonalSubscriptionMetadata();
   const workspaceSubscriptionsByProvider =
     await listWorkspaceSubscriptionMetadata();
-  const codexHostStatus = providerRows.some(
-    (provider) => provider.id === CODEX_PROVIDER_ID,
-  )
-    ? await new CodexHostStatusService().getStatusView()
-    : null;
 
   return providerRows.map((provider) => {
     const builtinProvider = BUILTIN_ADDITIONAL_PROVIDERS.find(
       (entry) => entry.id === provider.id,
     );
     const credentialMode = builtinProvider?.credentialMode ?? 'api_key';
-    const secret = secretsByProvider.get(provider.id) ?? null;
-    const verification = verificationsByProvider.get(provider.id);
-    const workspaceSecret = workspaceSecretsByProvider.get(provider.id) ?? null;
-    const workspaceVerification = workspaceVerificationsByProvider.get(
-      provider.id,
-    );
-    const hostStatus =
-      provider.id === CODEX_PROVIDER_ID
-        ? (codexHostStatus ?? undefined)
+    // Subscription-only providers (e.g. ChatGPT Codex) have no API
+    // key surface — the card hides the api-key field, and credential
+    // state is carried entirely by the subscription metadata below.
+    const secret =
+      credentialMode === 'api_key'
+        ? (secretsByProvider.get(provider.id) ?? null)
+        : null;
+    const verification =
+      credentialMode === 'api_key'
+        ? verificationsByProvider.get(provider.id)
         : undefined;
-    const hasCredential =
-      credentialMode === 'host_login' ? !!hostStatus?.authenticated : !!secret;
+    const workspaceSecret =
+      credentialMode === 'api_key'
+        ? (workspaceSecretsByProvider.get(provider.id) ?? null)
+        : null;
+    const workspaceVerification =
+      credentialMode === 'api_key'
+        ? workspaceVerificationsByProvider.get(provider.id)
+        : undefined;
+    const hasCredential = !!secret;
     const verificationStatus: AdditionalProviderVerificationStatus =
-      credentialMode === 'host_login'
-        ? !hostStatus?.cliInstalled || !hostStatus?.sandboxAvailable
-          ? 'unavailable'
-          : !hostStatus.authenticated
-            ? 'missing'
-            : (verification?.status ?? 'not_verified')
-        : !hasCredential
-          ? 'missing'
-          : (verification?.status ?? 'not_verified');
-    const credentialHint =
-      credentialMode === 'host_login'
-        ? hostStatus?.authMode === 'chatgpt'
-          ? 'ChatGPT login'
-          : hostStatus?.authMode === 'apikey'
-            ? 'API key login'
-            : null
-        : secret
-          ? maskApiKey(secret.apiKey)
-          : null;
+      !hasCredential ? 'missing' : (verification?.status ?? 'not_verified');
+    const credentialHint = secret ? maskApiKey(secret.apiKey) : null;
 
     const personalSubscription = personalSubscriptionsByProvider.get(
       provider.id,
@@ -452,14 +417,11 @@ async function buildAdditionalProviderCards(): Promise<AgentProviderCard[]> {
       provider.id,
     );
 
-    const workspaceHasCredential =
-      credentialMode === 'host_login' ? false : !!workspaceSecret;
+    const workspaceHasCredential = !!workspaceSecret;
     const workspaceVerificationStatus: AdditionalProviderVerificationStatus =
-      credentialMode === 'host_login'
+      !workspaceHasCredential
         ? 'missing'
-        : !workspaceHasCredential
-          ? 'missing'
-          : (workspaceVerification?.status ?? 'not_verified');
+        : (workspaceVerification?.status ?? 'not_verified');
     const workspaceCredentialHint = workspaceSecret
       ? maskApiKey(workspaceSecret.apiKey)
       : null;
@@ -483,9 +445,7 @@ async function buildAdditionalProviderCards(): Promise<AgentProviderCard[]> {
       lastVerificationError:
         verificationStatus === 'invalid' || verificationStatus === 'unavailable'
           ? (verification?.last_error ?? null)
-          : credentialMode === 'host_login'
-            ? (hostStatus?.message ?? null)
-            : null,
+          : null,
       workspaceHasCredential,
       workspaceCredentialHint,
       workspaceVerificationStatus,
@@ -502,7 +462,6 @@ async function buildAdditionalProviderCards(): Promise<AgentProviderCard[]> {
       personalSubscriptionExpiresAt: personalSubscription?.expiresAt ?? null,
       hasWorkspaceSubscription: !!workspaceSubscription,
       workspaceSubscriptionExpiresAt: workspaceSubscription?.expiresAt ?? null,
-      hostStatus,
       modelSuggestions: (modelsByProvider.get(provider.id) ?? []).map(
         (model) => {
           const capabilities = resolveModelCapabilities({
@@ -704,25 +663,10 @@ async function verifyProviderSecret(
     }
   };
 
+  // Subscription-only providers (Codex) skip the API-key verification
+  // path entirely — the OAuth flow handles connect/refresh separately.
   if (providerId === CODEX_PROVIDER_ID) {
-    const hostStatus = await new CodexHostStatusService().getStatusView();
-    if (!hostStatus.cliInstalled || !hostStatus.sandboxAvailable) {
-      await writeVerification({
-        status: 'unavailable',
-        lastVerifiedAt: null,
-        lastError: hostStatus.message,
-      });
-      return;
-    }
-    if (!hostStatus.authenticated) {
-      await dropVerification();
-      return;
-    }
-    await writeVerification({
-      status: 'verified',
-      lastVerifiedAt: new Date().toISOString(),
-      lastError: null,
-    });
+    await dropVerification();
     return;
   }
 
@@ -932,7 +876,7 @@ export async function putAiProviderCredentialRoute(
           error: {
             code: 'invalid_input',
             message:
-              'Host-login providers do not accept API keys here. Use Verify after running the managed Codex login command.',
+              'ChatGPT Codex does not accept API keys. Use "Connect with ChatGPT" to authorize a subscription instead.',
           },
         },
       };
