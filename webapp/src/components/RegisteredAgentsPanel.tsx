@@ -622,16 +622,28 @@ function AgentForm({
           }}
           disabled={!canManage}
         >
-          {providers.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-              {!p.hasCredential
-                ? ' (no credential)'
-                : !p.enabled
-                  ? ' (disabled)'
-                  : ''}
-            </option>
-          ))}
+          {providers.map((p) => {
+            // A credential is anything the execution-resolver will
+            // accept: personal/workspace api_key OR personal/workspace
+            // OAuth subscription. ChatGPT Codex is subscription-only,
+            // so checking hasCredential alone would always mark it as
+            // missing — see execution-resolver.ts:resolveSecret.
+            const providerHasUsableCredential =
+              p.hasCredential ||
+              p.workspaceHasCredential ||
+              p.hasPersonalSubscription ||
+              p.hasWorkspaceSubscription;
+            return (
+              <option key={p.id} value={p.id}>
+                {p.name}
+                {!providerHasUsableCredential
+                  ? ' (no credential)'
+                  : !p.enabled
+                    ? ' (disabled)'
+                    : ''}
+              </option>
+            );
+          })}
         </select>
       </label>
 

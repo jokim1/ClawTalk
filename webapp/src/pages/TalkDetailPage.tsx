@@ -2208,7 +2208,17 @@ function getConfiguredProviders(
   data: AiAgentsPageData | null,
 ): AgentProviderCard[] {
   if (!data) return [];
-  return data.additionalProviders.filter((provider) => provider.hasCredential);
+  // Any credential surface the execution-resolver will accept: personal
+  // or workspace api_key, personal or workspace OAuth subscription. The
+  // ChatGPT Codex provider is subscription_only — gating on
+  // hasCredential alone would hide it after a user connected ChatGPT.
+  return data.additionalProviders.filter(
+    (provider) =>
+      provider.hasCredential ||
+      provider.workspaceHasCredential ||
+      provider.hasPersonalSubscription ||
+      provider.hasWorkspaceSubscription,
+  );
 }
 
 function buildTalkAgentSourceOptions(input: {

@@ -803,8 +803,10 @@ function ProviderCredentialCard({
               <a href={docs.url} target="_blank" rel="noreferrer">
                 Get key from {docs.label}
               </a>
-            ) : (
+            ) : showApiKeySection ? (
               'Configure an API key to use this provider in talks.'
+            ) : (
+              'Subscription-only provider — connect via OAuth below.'
             )}
           </p>
         </div>
