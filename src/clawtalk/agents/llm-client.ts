@@ -20,6 +20,14 @@ import {
   buildClaudeCodeSystemBlocks,
 } from '../llm/anthropic-oauth.js';
 import {
+  buildCodexCloudflareHeaders,
+  buildCodexRequestBody,
+  createCodexStreamState,
+  finalizeCodexStream,
+  handleCodexSseEvent,
+  preflightCodexRequestBody,
+} from './codex-responses-adapter.js';
+import {
   computeAdaptiveResponseStartTimeout,
   recordTtftObservation,
 } from './llm-timeout-stats.js';
@@ -28,7 +36,10 @@ import {
 // TYPE DEFINITIONS
 // =============================================================================
 
-export type LlmApiFormat = 'anthropic_messages' | 'openai_chat_completions';
+export type LlmApiFormat =
+  | 'anthropic_messages'
+  | 'openai_chat_completions'
+  | 'codex_responses';
 export type LlmAuthScheme = 'x_api_key' | 'bearer';
 
 export interface LlmProviderConfig {
@@ -62,6 +73,20 @@ export interface LlmMessage {
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string | LlmContentBlock[];
   toolCallId?: string;
+  /**
+   * Provider-specific data attached to an assistant message that must
+   * be replayed verbatim on the next request to preserve the
+   * provider's reasoning/cache state.
+   *
+   * For the codex_responses path: encrypted reasoning items and
+   * message items captured from the prior turn's `response.output`,
+   * stashed in `talk_messages.metadata_json` and re-threaded into
+   * subsequent requests. See agents/codex-responses-adapter.ts.
+   */
+  providerData?: {
+    codexReasoningItems?: Array<Record<string, unknown>>;
+    codexMessageItems?: Array<Record<string, unknown>>;
+  };
 }
 
 export type LlmContentBlock =
@@ -87,7 +112,8 @@ export interface LlmStreamEvent {
     | 'tool_call_delta'
     | 'usage'
     | 'done'
-    | 'error';
+    | 'error'
+    | 'provider_data';
   text?: string;
   toolCall?: {
     id: string;
@@ -98,6 +124,17 @@ export interface LlmStreamEvent {
   usage?: { inputTokens: number; outputTokens: number };
   stopReason?: string;
   error?: string;
+  /**
+   * Provider-specific blobs the executor should persist on the
+   * assistant message (talk_messages.metadata_json) so the next turn
+   * can replay them. Currently used by the codex_responses path to
+   * carry forward encrypted reasoning items + assistant message
+   * items for prefix-cache + chain-of-thought continuity.
+   */
+  providerData?: {
+    codexReasoningItems?: Array<Record<string, unknown>>;
+    codexMessageItems?: Array<Record<string, unknown>>;
+  };
 }
 
 export interface LlmResponse {
@@ -962,6 +999,101 @@ async function* parseOpenAiStream(
   }
 }
 
+/**
+ * Parse the Codex Responses streaming SSE and yield events.
+ *
+ * Unlike Anthropic/OpenAI streams, Codex's SSE frames are typed JSON
+ * objects with a `type` discriminator (`response.output_text.delta`,
+ * `response.function_call_arguments.delta`, `response.output_item.done`,
+ * `response.completed`, …). The shape work happens in
+ * `codex-responses-adapter.ts`; this function owns the buffer + queue.
+ *
+ * After the stream terminates the final accumulator is converted into
+ * (a) per-tool-call `tool_call_start`/`tool_call_delta` events, so the
+ * agent-router can collect tool calls in the same shape as the other
+ * providers, (b) a `usage` event, (c) a `provider_data` event carrying
+ * the encrypted reasoning + message items for persistence, and (d) a
+ * `done` event with a stop reason mapped onto the agent-router's
+ * clean-completion vocabulary (`stop` / `tool_calls` / `length` /
+ * `incomplete`).
+ */
+async function* parseCodexResponsesStream(
+  response: Response,
+  controller: AbortController,
+  signal: AbortSignal,
+  timeouts: TimeoutConfig,
+  onFirstChunk?: (elapsedMs: number) => void,
+): AsyncGenerator<LlmStreamEvent> {
+  const state = createCodexStreamState();
+  const eventQueue: LlmStreamEvent[] = [];
+
+  await readSseResponse(
+    response,
+    controller,
+    signal,
+    timeouts,
+    (event) => {
+      if (!event.data || event.data === '[DONE]') return;
+      let payload: Record<string, unknown>;
+      try {
+        payload = JSON.parse(event.data) as Record<string, unknown>;
+      } catch {
+        return;
+      }
+      const emitted = handleCodexSseEvent(state, payload);
+      for (const evt of emitted) eventQueue.push(evt);
+    },
+    onFirstChunk,
+  );
+
+  const result = finalizeCodexStream(state);
+
+  // Emit the resolved tool calls (with full arguments) so agent-router
+  // can rebuild them. The Codex backend already streamed text deltas as
+  // they arrived above, so we don't re-emit text.
+  for (const tc of result.toolCalls) {
+    eventQueue.push({
+      type: 'tool_call_start',
+      toolCall: { id: tc.id, name: tc.name },
+    });
+    eventQueue.push({
+      type: 'tool_call_delta',
+      toolCall: { id: tc.id, name: tc.name, arguments: tc.arguments },
+    });
+  }
+
+  if (result.usage) {
+    eventQueue.push({ type: 'usage', usage: result.usage });
+  }
+
+  if (
+    result.codexReasoningItems.length > 0 ||
+    result.codexMessageItems.length > 0
+  ) {
+    eventQueue.push({
+      type: 'provider_data',
+      providerData: {
+        codexReasoningItems: result.codexReasoningItems,
+        codexMessageItems: result.codexMessageItems,
+      },
+    });
+  }
+
+  let stopReason: string;
+  if (result.finishReason === 'tool_calls') {
+    stopReason = 'tool_calls';
+  } else if (result.finishReason === 'incomplete') {
+    const incompleteReason = state.incompleteDetails?.reason;
+    stopReason =
+      incompleteReason === 'max_output_tokens' ? 'length' : 'incomplete';
+  } else {
+    stopReason = 'stop';
+  }
+  eventQueue.push({ type: 'done', stopReason });
+
+  for (const evt of eventQueue) yield evt;
+}
+
 // =============================================================================
 // MAIN STREAMING FUNCTION
 // =============================================================================
@@ -1095,6 +1227,62 @@ export async function* streamLlmResponse(
       }
 
       yield* parseOpenAiStream(
+        response,
+        controller,
+        parentSignal,
+        timeouts,
+        onFirstChunk,
+      );
+    } else if (provider.apiFormat === 'codex_responses') {
+      // System message → top-level `instructions`; everything else
+      // flows through llmMessagesToResponsesInput as input items.
+      let instructions = '';
+      const nonSystemMessages: LlmMessage[] = [];
+      for (const msg of messages) {
+        if (msg.role === 'system') {
+          const text = contentToPlainText(msg.content);
+          instructions += (instructions ? '\n\n' : '') + text;
+        } else {
+          nonSystemMessages.push(msg);
+        }
+      }
+
+      const requestBody = preflightCodexRequestBody(
+        buildCodexRequestBody({
+          model: modelId,
+          systemPrompt: instructions,
+          messages: nonSystemMessages,
+          tools: options?.tools,
+          maxOutputTokens: options?.maxOutputTokens,
+          stream: true,
+        }),
+      );
+
+      const codexHeaders = buildCodexCloudflareHeaders(secret?.apiKey || '');
+
+      const response = await fetch(`${provider.baseUrl}/responses`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'text/event-stream',
+          ...codexHeaders,
+          ...authHeaders,
+        },
+        body: JSON.stringify(requestBody),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        const failureClass = classifyHttpFailure(response.status, errorText);
+        throw new LlmClientError(
+          `Codex Responses API error: ${response.statusText}`,
+          failureClass,
+          response.status,
+        );
+      }
+
+      yield* parseCodexResponsesStream(
         response,
         controller,
         parentSignal,

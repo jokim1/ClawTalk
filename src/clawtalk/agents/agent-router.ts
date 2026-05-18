@@ -121,6 +121,17 @@ export interface AgentExecutionResult {
     providerStopReason?: string | null;
     incompleteReason?: 'truncated' | 'empty' | 'unknown' | null;
   };
+  /**
+   * Provider-specific blobs to persist on the assistant message
+   * (talk_messages.metadata_json) so the next turn can replay them.
+   * Currently used by the codex_responses path to carry forward
+   * encrypted reasoning items + assistant message items for
+   * prefix-cache + chain-of-thought continuity.
+   */
+  providerData?: {
+    codexReasoningItems?: Array<Record<string, unknown>>;
+    codexMessageItems?: Array<Record<string, unknown>>;
+  };
 }
 
 export const ALWAYS_ALLOWED_CONTEXT_TOOLS = new Set([
@@ -135,6 +146,16 @@ const CLEAN_PROVIDER_STOP_REASONS = new Set([
   'end_turn',
   'stop_sequence',
 ]);
+
+/**
+ * Max number of times we'll silently retry an incomplete Codex
+ * response before surfacing it as `incomplete_response`. Mirrors
+ * hermes' 3-retry continuation budget. A Codex "incomplete" usually
+ * means the model produced commentary or reasoning-only output and
+ * needs one more turn to land on a final answer — feeding back the
+ * encrypted reasoning items lets the backend keep its chain coherent.
+ */
+const MAX_CODEX_CONTINUATIONS = 3;
 
 function normalizeProviderStopReason(value: string): string | null {
   const normalized = value.trim();
@@ -383,8 +404,14 @@ export async function executeWithAgent(
   };
   let lastProviderStopReason: string | null = null;
   let usedToolIterationFallback = false;
+  // Track the most recent turn's provider_data so the executor can
+  // persist it on the assistant talk_message. Only the FINAL turn's
+  // codex items are kept (mid-loop tool-call turns get their reasoning
+  // replaced on the next iteration anyway).
+  let latestProviderData: AgentExecutionResult['providerData'] | undefined;
 
   const maxToolIterations = Math.max(1, options.maxToolIterations ?? 10);
+  let codexContinuationCount = 0;
 
   try {
     for (let iteration = 0; iteration < maxToolIterations; iteration++) {
@@ -458,6 +485,10 @@ export async function executeWithAgent(
             outputTokens: event.usage?.outputTokens || 0,
             estimatedCostUsd: 0,
           });
+        } else if (event.type === 'provider_data') {
+          if (event.providerData) {
+            latestProviderData = event.providerData;
+          }
         }
       }
 
@@ -474,6 +505,31 @@ export async function executeWithAgent(
         !options.executeToolCall ||
         !isToolUseStop
       ) {
+        // Codex continuation retry: an `incomplete` response with
+        // captured encrypted reasoning means the model produced
+        // commentary or thinking-only output and needs one more turn.
+        // Feed the partial assistant message + reasoning blob back in
+        // so the backend continues from where it left off. Bounded by
+        // MAX_CODEX_CONTINUATIONS; the iteration counter is rewound so
+        // the continuation doesn't burn the tool-iteration budget.
+        const codexShouldContinue =
+          providerConfig.apiFormat === 'codex_responses' &&
+          stopReason === 'incomplete' &&
+          Boolean(
+            latestProviderData?.codexReasoningItems?.length ||
+            latestProviderData?.codexMessageItems?.length,
+          ) &&
+          codexContinuationCount < MAX_CODEX_CONTINUATIONS;
+        if (codexShouldContinue) {
+          codexContinuationCount += 1;
+          messages.push({
+            role: 'assistant',
+            content: turnTextContent || '',
+            providerData: latestProviderData,
+          });
+          iteration -= 1;
+          continue;
+        }
         break;
       }
 
@@ -658,5 +714,6 @@ export async function executeWithAgent(
     modelId: agent.model_id,
     usage: accumulatedTokens,
     completion,
+    providerData: latestProviderData,
   };
 }

@@ -64,18 +64,12 @@ function getDecisionSummary(
 ): string | null {
   if (!executionDecision) return null;
   const backend =
-    executionDecision.backend === 'container'
-      ? 'container'
-      : executionDecision.backend === 'host_codex'
-        ? 'codex host'
-        : 'direct';
+    executionDecision.backend === 'container' ? 'container' : 'direct';
   const auth =
     executionDecision.authPath === 'subscription'
       ? 'subscription'
       : executionDecision.authPath === 'api_key'
         ? 'API key'
-        : executionDecision.authPath === 'host_login'
-          ? 'host login'
         : 'no auth';
   return `${backend} via ${auth}`;
 }

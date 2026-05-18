@@ -8,7 +8,8 @@ export type BuiltinAdditionalProviderCredentialMode =
   | 'subscription_only';
 export type BuiltinAdditionalProviderApiFormat =
   | 'anthropic_messages'
-  | 'openai_chat_completions';
+  | 'openai_chat_completions'
+  | 'codex_responses';
 export type BuiltinAdditionalProviderAuthScheme = 'x_api_key' | 'bearer';
 
 export interface BuiltinAdditionalProviderModel {
@@ -100,7 +101,7 @@ export const BUILTIN_ADDITIONAL_PROVIDERS: BuiltinAdditionalProvider[] = [
     name: 'ChatGPT Codex (Subscription)',
     providerKind: 'openai',
     credentialMode: 'subscription_only',
-    apiFormat: 'openai_chat_completions',
+    apiFormat: 'codex_responses',
     baseUrl: 'https://chatgpt.com/backend-api/codex',
     authScheme: 'bearer',
     responseStartTimeoutMs: 120_000,

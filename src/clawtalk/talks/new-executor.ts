@@ -149,11 +149,6 @@ async function executeContainerAgentTurn(
 ): Promise<ContainerTurnResultStub> {
   throw new Error('Container agent execution is disabled (chassis removed).');
 }
-async function executeCodexAgentTurn(
-  ..._args: unknown[]
-): Promise<ContainerTurnResultStub> {
-  throw new Error('Codex agent execution is disabled (chassis removed).');
-}
 import { loadAttachmentFile } from './attachment-storage.js';
 import {
   TalkExecutorError,
@@ -528,17 +523,6 @@ function buildExecutionDecision(
       modelId: agent.model_id,
     };
   }
-  if (plan.backend === 'host_codex') {
-    return {
-      backend: 'host_codex',
-      authPath: plan.authPath,
-      credentialSource: plan.credentialSource,
-      routeReason: plan.routeReason,
-      plannerReason: plan.routeReason,
-      providerId: agent.provider_id,
-      modelId: agent.model_id,
-    };
-  }
   return {
     backend: 'direct_http',
     authPath: plan.authPath,
@@ -548,47 +532,6 @@ function buildExecutionDecision(
     providerId: agent.provider_id,
     modelId: agent.model_id,
   };
-}
-
-async function talkUsesUnsupportedCodexExecution(talkId: string): Promise<{
-  supported: boolean;
-  message?: string;
-}> {
-  const talk = await getTalkById(talkId);
-  if (talk?.orchestration_mode === 'panel') {
-    return {
-      supported: false,
-      message:
-        'Codex host execution does not support panel Talks. Use a single-agent ordered Talk instead.',
-    };
-  }
-
-  const assignments = await listTalkAgents(talkId);
-  if (assignments.length > 1) {
-    return {
-      supported: false,
-      message: 'Codex host execution only supports single-agent Talks in v1.',
-    };
-  }
-
-  return { supported: true };
-}
-
-function contextUsesUnsupportedCodexTools(context: ExecutionContext): string[] {
-  const unsupportedToolNames = new Set<string>();
-  for (const tool of context.contextTools) {
-    if (
-      tool.name === 'list_outputs' ||
-      tool.name === 'read_output' ||
-      tool.name === 'write_output'
-    ) {
-      unsupportedToolNames.add(tool.name);
-    }
-  }
-  if (context.connectorTools.length > 0) {
-    unsupportedToolNames.add('connectors');
-  }
-  return Array.from(unsupportedToolNames);
 }
 
 /** @internal Exported for integration testing only. */
@@ -1915,7 +1858,21 @@ function buildResponseMetadataJson(input: {
   sequenceIndex?: number | null;
   isSynthesis: boolean;
   completion?: TalkExecutorOutput['completion'] | null;
+  providerData?: {
+    codexReasoningItems?: Array<Record<string, unknown>>;
+    codexMessageItems?: Array<Record<string, unknown>>;
+  };
 }): string {
+  const codexReasoning =
+    input.providerData?.codexReasoningItems &&
+    input.providerData.codexReasoningItems.length > 0
+      ? input.providerData.codexReasoningItems
+      : undefined;
+  const codexMessages =
+    input.providerData?.codexMessageItems &&
+    input.providerData.codexMessageItems.length > 0
+      ? input.providerData.codexMessageItems
+      : undefined;
   return JSON.stringify({
     runId: input.runId,
     providerId: input.providerId,
@@ -1928,6 +1885,8 @@ function buildResponseMetadataJson(input: {
     incompleteReason: input.completion?.incompleteReason ?? null,
     completedCleanly: input.completion?.completionStatus !== 'incomplete',
     ...(input.isSynthesis ? { isSynthesis: true } : {}),
+    ...(codexReasoning ? { codexReasoningItems: codexReasoning } : {}),
+    ...(codexMessages ? { codexMessageItems: codexMessages } : {}),
   });
 }
 
@@ -2014,27 +1973,6 @@ export class CleanTalkExecutor implements TalkExecutor {
         connectorTools: contextPackage.connectorTools,
         history: contextPackage.history,
       };
-      const talkCodexSupport = await talkUsesUnsupportedCodexExecution(
-        input.talkId,
-      );
-      if (plan.backend === 'host_codex' && !talkCodexSupport.supported) {
-        throw new TalkExecutorError(
-          'CODEX_TALK_UNSUPPORTED',
-          talkCodexSupport.message ||
-            'Codex host execution is not supported for this Talk.',
-        );
-      }
-      if (plan.backend === 'host_codex') {
-        const unsupportedContextTools =
-          contextUsesUnsupportedCodexTools(context);
-        if (unsupportedContextTools.length > 0) {
-          throw new TalkExecutorError(
-            'CODEX_TALK_UNSUPPORTED',
-            `Codex host execution does not support this Talk context yet: ${unsupportedContextTools.join(', ')}.`,
-          );
-        }
-      }
-
       const orderedStep = await buildStepUserMessageText({
         triggerContent: input.triggerContent,
         estimatedContextTokens: contextPackage.estimatedTokens,
@@ -2114,146 +2052,6 @@ export class CleanTalkExecutor implements TalkExecutor {
           agentNickname: resolved.nickname,
           providerId: activeAgent.provider_id,
           modelId: activeAgent.model_id,
-          responseSequenceInRun: 1,
-          metadataJson: buildResponseMetadataJson({
-            runId: input.runId,
-            providerId: activeAgent.provider_id,
-            modelId: activeAgent.model_id,
-            estimatedContextTokens: contextPackage.estimatedTokens,
-            responseGroupId: input.responseGroupId,
-            sequenceIndex: input.sequenceIndex,
-            isSynthesis: orderedStep.isSynthesis,
-            completion: {
-              completionStatus: 'complete',
-              providerStopReason: null,
-              incompleteReason: null,
-            },
-          }),
-        };
-      }
-
-      if (plan.backend === 'host_codex') {
-        const talk = await getTalkById(input.talkId);
-        const projectMountHostPath = resolveValidatedProjectMountPath(
-          talk?.project_path ?? null,
-          false,
-        );
-        emitTalkEvent({
-          type: 'talk_response_started',
-          runId: input.runId,
-          talkId: input.talkId,
-          threadId: input.threadId,
-          agentId: activeAgent.id,
-          agentNickname: resolved.nickname,
-          responseGroupId: input.responseGroupId ?? null,
-          sequenceIndex: input.sequenceIndex ?? null,
-          providerId: activeAgent.provider_id,
-          modelId: activeAgent.model_id,
-        });
-
-        const codexResult = await executeCodexAgentTurn({
-          runId: input.runId,
-          userId: input.requestedBy,
-          agent: activeAgent,
-          promptLabel: 'talk',
-          userMessage: orderedStep.userMessageText,
-          signal,
-          context: {
-            systemPrompt: [
-              context.systemPrompt,
-              activeAgent.system_prompt?.trim() || '',
-            ]
-              .filter(Boolean)
-              .join('\n\n'),
-            history: contextPackage.history,
-          },
-          modelContextWindow,
-          talkId: input.talkId,
-          threadId: input.threadId,
-          triggerMessageId: input.triggerMessageId,
-          historyMessageIds: contextPackage.metadata.historyMessageIds,
-          projectMountHostPath,
-          jobPolicy,
-          enableWebTools: scopedEffectiveTools.some(
-            (tool) => tool.toolFamily === 'web' && tool.enabled,
-          ),
-          enableBrowserTools: scopedEffectiveTools.some(
-            (tool) => tool.toolFamily === 'browser' && tool.enabled,
-          ),
-          onProgressUpdate: (message: string) => {
-            const currentAgent = resolved;
-            emitTalkEvent({
-              type: 'talk_progress_update',
-              runId: input.runId,
-              talkId: input.talkId,
-              threadId: input.threadId,
-              agentId: currentAgent.agent.id,
-              agentNickname: currentAgent.nickname,
-              responseGroupId: input.responseGroupId ?? null,
-              sequenceIndex: input.sequenceIndex ?? null,
-              providerId: currentAgent.agent.provider_id,
-              modelId: currentAgent.agent.model_id,
-              message,
-            });
-          },
-        });
-
-        if (
-          codexResult.usage?.inputTokens !== undefined ||
-          codexResult.usage?.cachedInputTokens !== undefined ||
-          codexResult.usage?.outputTokens !== undefined
-        ) {
-          emitTalkEvent({
-            type: 'talk_response_usage',
-            runId: input.runId,
-            talkId: input.talkId,
-            threadId: input.threadId,
-            agentId: activeAgent.id,
-            responseGroupId: input.responseGroupId ?? null,
-            sequenceIndex: input.sequenceIndex ?? null,
-            providerId: activeAgent.provider_id,
-            modelId: activeAgent.model_id,
-            usage: {
-              inputTokens: codexResult.usage.inputTokens,
-              cachedInputTokens: codexResult.usage.cachedInputTokens,
-              outputTokens: codexResult.usage.outputTokens,
-            },
-          });
-        }
-
-        emitTalkEvent({
-          type: 'talk_response_completed',
-          runId: input.runId,
-          talkId: input.talkId,
-          threadId: input.threadId,
-          agentId: activeAgent.id,
-          agentNickname: resolved.nickname,
-          responseGroupId: input.responseGroupId ?? null,
-          sequenceIndex: input.sequenceIndex ?? null,
-          providerId: activeAgent.provider_id,
-          modelId: activeAgent.model_id,
-          usage: codexResult.usage
-            ? {
-                inputTokens: codexResult.usage.inputTokens,
-                cachedInputTokens: codexResult.usage.cachedInputTokens,
-                outputTokens: codexResult.usage.outputTokens,
-              }
-            : undefined,
-        });
-
-        return {
-          content: codexResult.content,
-          agentId: activeAgent.id,
-          agentNickname: resolved.nickname,
-          providerId: activeAgent.provider_id,
-          modelId: activeAgent.model_id,
-          usage: codexResult.usage
-            ? {
-                inputTokens: codexResult.usage.inputTokens,
-                cachedInputTokens: codexResult.usage.cachedInputTokens,
-                outputTokens: codexResult.usage.outputTokens,
-              }
-            : undefined,
           responseSequenceInRun: 1,
           metadataJson: buildResponseMetadataJson({
             runId: input.runId,
@@ -2361,6 +2159,7 @@ export class CleanTalkExecutor implements TalkExecutor {
           sequenceIndex: input.sequenceIndex,
           isSynthesis: orderedStep.isSynthesis,
           completion: result.completion,
+          providerData: result.providerData,
         }),
         completion: result.completion,
       };

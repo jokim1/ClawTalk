@@ -6,8 +6,6 @@ function getExecutionBackendLabel(
   switch (executionDecision.backend) {
     case 'container':
       return 'Container';
-    case 'host_codex':
-      return 'Codex host';
     default:
       return 'Direct';
   }
@@ -19,8 +17,6 @@ function getExecutionAuthLabel(executionDecision: ExecutionDecision): string {
       return 'subscription';
     case 'api_key':
       return 'API key';
-    case 'host_login':
-      return 'host login';
     case 'none':
       return 'no auth';
   }

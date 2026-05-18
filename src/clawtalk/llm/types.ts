@@ -1,4 +1,7 @@
-export type LlmApiFormat = 'anthropic_messages' | 'openai_chat_completions';
+export type LlmApiFormat =
+  | 'anthropic_messages'
+  | 'openai_chat_completions'
+  | 'codex_responses';
 
 export type LlmCoreCompatibility = 'none' | 'claude_sdk_proxy';
 

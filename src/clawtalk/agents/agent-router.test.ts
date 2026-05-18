@@ -93,6 +93,68 @@ describe('agent-router', () => {
     expect(events.some((event) => event.type === 'completed')).toBe(false);
   });
 
+  it('retries Codex incomplete responses up to MAX_CODEX_CONTINUATIONS, threading provider_data into the replay', async () => {
+    vi.mocked(resolveExecution).mockReturnValue({
+      providerConfig: {
+        providerId: 'provider.openai_codex',
+        baseUrl: 'https://chatgpt.com/backend-api/codex',
+        apiFormat: 'codex_responses',
+        authScheme: 'bearer',
+      },
+      secret: { apiKey: 'oauth-token', credentialKind: 'subscription' },
+    } as never);
+
+    const reasoningBlob = {
+      type: 'reasoning',
+      encrypted_content: 'OPAQUE',
+      summary: [],
+    };
+    let call = 0;
+    const seenMessageHistories: unknown[][] = [];
+    vi.mocked(streamLlmResponse).mockImplementation(async function* (
+      _provider,
+      _secret,
+      _modelId,
+      messages,
+    ) {
+      // Snapshot history each turn so we can verify replay.
+      seenMessageHistories.push([...messages]);
+      call += 1;
+      if (call === 1) {
+        // First turn: reasoning-only / commentary, incomplete.
+        yield { type: 'text_delta', text: 'thinking…' };
+        yield {
+          type: 'provider_data',
+          providerData: { codexReasoningItems: [reasoningBlob] },
+        };
+        yield { type: 'done', stopReason: 'incomplete' };
+        return;
+      }
+      // Second turn: clean answer.
+      yield { type: 'text_delta', text: 'final answer' };
+      yield { type: 'done', stopReason: 'stop' };
+    } as typeof streamLlmResponse);
+
+    const result = await executeWithAgent('agent-1', null, 'Compute X', {
+      runId: 'run-codex',
+      userId: 'owner-1',
+    });
+
+    expect(call).toBe(2);
+    // Final content concatenates both turns.
+    expect(result.content).toBe('thinking…final answer');
+    // The retry turn re-sent the reasoning blob as part of the
+    // assistant continuation message.
+    const retryHistory = seenMessageHistories[1] as Array<{
+      role: string;
+      providerData?: { codexReasoningItems?: unknown[] };
+    }>;
+    const continuation = retryHistory.find(
+      (m) => m.role === 'assistant' && m.providerData?.codexReasoningItems,
+    );
+    expect(continuation).toBeTruthy();
+  });
+
   it('passes the model default output budget through to the direct HTTP client', async () => {
     vi.mocked(resolveExecution).mockReturnValue({
       providerConfig: {

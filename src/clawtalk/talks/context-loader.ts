@@ -1186,7 +1186,25 @@ interface MessageRow {
   content: string;
   agent_id: string | null;
   created_at: string;
-  metadata_json: string | null;
+  // postgres.js parses jsonb columns on read; this is the parsed
+  // object, not the serialized string.
+  metadata_json: Record<string, unknown> | null;
+}
+
+function extractAssistantProviderData(
+  metadata: Record<string, unknown> | null,
+): LlmMessage['providerData'] | undefined {
+  if (!metadata) return undefined;
+  const reasoning = metadata.codexReasoningItems;
+  const message = metadata.codexMessageItems;
+  const out: LlmMessage['providerData'] = {};
+  if (Array.isArray(reasoning) && reasoning.length > 0) {
+    out.codexReasoningItems = reasoning as Array<Record<string, unknown>>;
+  }
+  if (Array.isArray(message) && message.length > 0) {
+    out.codexMessageItems = message as Array<Record<string, unknown>>;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 async function loadMessageHistory(
@@ -1246,12 +1264,25 @@ async function loadMessageHistory(
   // Reverse to chronological order
   selectedRows.reverse();
 
-  // Convert to LlmMessage format
+  // Convert to LlmMessage format. Codex provider_data (encrypted
+  // reasoning + replayable message items) was stashed in
+  // metadata_json by the executor's buildResponseMetadataJson — surface
+  // it on assistant messages so the codex_responses adapter can replay
+  // it to the backend on the next turn.
   return {
-    messages: selectedRows.map((row) => ({
-      role: row.role as 'user' | 'assistant' | 'system' | 'tool',
-      content: row.content,
-    })),
+    messages: selectedRows.map((row) => {
+      const message: LlmMessage = {
+        role: row.role as 'user' | 'assistant' | 'system' | 'tool',
+        content: row.content,
+      };
+      if (row.role === 'assistant') {
+        const providerData = extractAssistantProviderData(row.metadata_json);
+        if (providerData) {
+          message.providerData = providerData;
+        }
+      }
+      return message;
+    }),
     messageIds: selectedRows.map((row) => row.id),
   };
 }

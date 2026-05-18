@@ -541,8 +541,8 @@ export type BrowserResume = {
 };
 
 export type ExecutionDecision = {
-  backend: 'direct_http' | 'container' | 'host_codex';
-  authPath: 'api_key' | 'subscription' | 'host_login' | 'none';
+  backend: 'direct_http' | 'container';
+  authPath: 'api_key' | 'subscription' | 'none';
   credentialSource:
     | 'db_secret'
     | 'env'
@@ -1882,8 +1882,8 @@ export type RegisteredAgent = {
   updatedAt: string;
   executionPreview: {
     surface: 'main';
-    backend: 'direct_http' | 'container' | 'host_codex' | null;
-    authPath: 'api_key' | 'subscription' | 'host_login' | null;
+    backend: 'direct_http' | 'container' | null;
+    authPath: 'api_key' | 'subscription' | null;
     selectedMode: 'api' | 'subscription' | null;
     transport: 'direct' | 'subscription' | null;
     reasonCode: string | null;
