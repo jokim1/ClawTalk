@@ -9,11 +9,22 @@
 -- agents pinned to this provider failed with shape mismatches.
 --
 -- This migration:
---   1. Switches api_format to 'codex_responses' so the llm-client
+--   1. Widens the api_format CHECK constraint to admit 'codex_responses'.
+--      The original constraint in 0001 only allowed anthropic_messages
+--      and openai_chat_completions, so the UPDATE below would otherwise
+--      hit SQLSTATE 23514.
+--   2. Switches api_format to 'codex_responses' so the llm-client
 --      dispatches to the codex Responses adapter.
---   2. Seeds the gpt-5.4-mini model row that was missing from 0010
+--   3. Seeds the gpt-5.4-mini model row that was missing from 0010
 --      (the catalog defines three Codex models but 0010 only seeded
 --      gpt-5.4 and gpt-5.3-codex).
+
+alter table public.llm_providers
+  drop constraint if exists llm_providers_api_format_check;
+
+alter table public.llm_providers
+  add constraint llm_providers_api_format_check
+  check (api_format in ('anthropic_messages', 'openai_chat_completions', 'codex_responses'));
 
 update public.llm_providers
 set api_format = 'codex_responses',
