@@ -11,10 +11,14 @@
 //      eb_csrf cookies get set, then calls onSignedIn so the app
 //      can refresh its session state.
 //
-// Refresh is NOT handled here — backend /api/v1/auth/refresh owns
-// refresh. The api.ts fetch wrapper retries 401s by hitting that
-// route. autoRefreshToken=false on the supabase client keeps
-// supabase-js's auto-refresh out of the way.
+// Refresh is owned by supabase-js (autoRefreshToken=true in
+// supabase-client.ts). On every TOKEN_REFRESHED we mirror the new
+// session into the backend cookies via the same callback endpoint, so
+// the HttpOnly cookies the Worker reads stay continuously fresh.
+// INITIAL_SESSION fires once on boot when a persisted session is
+// hydrated from localStorage — we mirror it then too in case the
+// backend cookies have expired (1h Max-Age) while the localStorage
+// session was still good.
 
 import type {
   AuthChangeEvent,
@@ -95,25 +99,34 @@ export function uninstallAuthStateListener(): void {
   onSignedInCallback = undefined;
 }
 
+// Events we mirror into the backend cookies. SIGNED_OUT / USER_DELETED
+// are intentionally NOT mirrored — the Worker's /api/v1/auth/logout
+// route handles cookie teardown, and we don't want a stray sign-out
+// event to clobber an unrelated session.
+const COOKIE_SYNC_EVENTS: ReadonlySet<AuthChangeEvent> = new Set([
+  'SIGNED_IN',
+  'TOKEN_REFRESHED',
+  'INITIAL_SESSION',
+  'USER_UPDATED',
+]);
+
 async function handleAuthStateChange(
   event: AuthChangeEvent,
   session: Session | null,
 ): Promise<void> {
   if (!session) return;
-  // Only act on SIGNED_IN — the OAuth / magic-link return path.
-  // TOKEN_REFRESHED is ignored: backend owns refresh.
-  if (event !== 'SIGNED_IN') return;
+  if (!COOKIE_SYNC_EVENTS.has(event)) return;
 
   try {
     await postCallback(session.access_token, session.refresh_token);
     consecutiveFailures = 0;
-    if (onSignedInCallback) {
+    if (event === 'SIGNED_IN' && onSignedInCallback) {
       await onSignedInCallback();
     }
   } catch (err) {
     consecutiveFailures += 1;
     console.warn(
-      `[supabase-cookie-shim] sign-in callback POST failed (${consecutiveFailures}x)`,
+      `[supabase-cookie-shim] ${event} callback POST failed (${consecutiveFailures}x)`,
       err,
     );
     if (consecutiveFailures >= WARN_AFTER_FAILURES) {
