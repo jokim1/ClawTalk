@@ -108,6 +108,12 @@ import {
   pollOpenAiCodexOauthRoute,
 } from './routes/agent-oauth.js';
 import {
+  deleteWebSearchCredentialRoute,
+  listWebSearchProvidersRoute,
+  putWebSearchActiveProviderRoute,
+  putWebSearchCredentialRoute,
+} from './routes/web-search.js';
+import {
   getTalkAttachmentContentRoute,
   listTalkAttachmentsRoute,
   uploadTalkAttachmentRoute,
@@ -412,6 +418,54 @@ function buildApp(): Hono<{ Variables: Variables }> {
       c.req.param('providerId'),
       scope,
     );
+    return jsonResponse(result);
+  });
+
+  // ── Web search providers (per-user keys + active picker) ─────
+  app.get('/api/v1/web-search/providers', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'read' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const result = await listWebSearchProvidersRoute(auth);
+    return jsonResponse(result);
+  });
+
+  app.put('/api/v1/web-search/providers/:providerId', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const csrfFail = checkCsrf(c, auth);
+    if (csrfFail) return csrfFail;
+    const body = await c.req.json().catch(() => ({}));
+    const result = await putWebSearchCredentialRoute(
+      auth,
+      c.req.param('providerId'),
+      body,
+    );
+    return jsonResponse(result);
+  });
+
+  app.delete('/api/v1/web-search/providers/:providerId', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const csrfFail = checkCsrf(c, auth);
+    if (csrfFail) return csrfFail;
+    const result = await deleteWebSearchCredentialRoute(
+      auth,
+      c.req.param('providerId'),
+    );
+    return jsonResponse(result);
+  });
+
+  app.put('/api/v1/web-search/active', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const csrfFail = checkCsrf(c, auth);
+    if (csrfFail) return csrfFail;
+    const body = await c.req.json().catch(() => ({}));
+    const result = await putWebSearchActiveProviderRoute(auth, body);
     return jsonResponse(result);
   });
 

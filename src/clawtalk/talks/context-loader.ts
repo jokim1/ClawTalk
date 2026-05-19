@@ -23,7 +23,29 @@ import {
 import type { TalkPersonaRole } from '../llm/types.js';
 import type { TalkJobExecutionPolicy } from './executor.js';
 
-const WEB_TOOL_DEFINITIONS: LlmToolDefinition[] = [];
+const WEB_TOOL_DEFINITIONS: LlmToolDefinition[] = [
+  {
+    name: 'web_search',
+    description:
+      "Search the live web for recent information. Returns a list of result objects with title, url, and a short snippet. Use this when the user asks about current events, recent news, or any fact that may have changed since your training data. The actual search backend (Tavily, Brave, Firecrawl) is chosen by the workspace's active provider setting — you don't need to specify one.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description:
+            'The natural-language search query. Keep it short and focused — like what you would type into Google.',
+        },
+        max_results: {
+          type: 'number',
+          description:
+            'Optional cap on the number of results returned. Defaults to 5; provider hard cap is 10.',
+        },
+      },
+      required: ['query'],
+    },
+  },
+];
 const BROWSER_TOOL_DEFINITIONS: LlmToolDefinition[] = [];
 
 // ---------------------------------------------------------------------------

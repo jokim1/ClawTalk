@@ -126,8 +126,53 @@ async function executeConnectorTool(
 async function executeWebFetch(..._args: unknown[]): Promise<ToolResultStub> {
   throw new Error('Web fetch tool is disabled (chassis removed).');
 }
-async function executeWebSearch(..._args: unknown[]): Promise<ToolResultStub> {
-  throw new Error('Web search tool is disabled (chassis removed).');
+async function executeWebSearch(
+  args: Record<string, unknown>,
+  signal: AbortSignal,
+): Promise<ToolResultStub> {
+  const query = typeof args.query === 'string' ? args.query.trim() : '';
+  if (!query) {
+    return {
+      result: 'Error: web_search requires a non-empty `query` string.',
+      isError: true,
+    };
+  }
+  const rawMax = args.max_results;
+  const maxResults =
+    typeof rawMax === 'number' && Number.isFinite(rawMax) && rawMax > 0
+      ? Math.floor(rawMax)
+      : undefined;
+
+  try {
+    const { runWebSearchForUser } = await import('../web-search/registry.js');
+    const response = await runWebSearchForUser(query, { maxResults, signal });
+    if (response.results.length === 0) {
+      return {
+        result: JSON.stringify({
+          provider: response.providerId,
+          query: response.query,
+          results: [],
+          note: 'No results returned by the provider.',
+        }),
+      };
+    }
+    return {
+      result: JSON.stringify({
+        provider: response.providerId,
+        query: response.query,
+        results: response.results,
+      }),
+    };
+  } catch (err) {
+    const { WebSearchError } = await import('../web-search/types.js');
+    if (err instanceof WebSearchError) {
+      return { result: `web_search error: ${err.message}`, isError: true };
+    }
+    return {
+      result: `web_search error: ${err instanceof Error ? err.message : String(err)}`,
+      isError: true,
+    };
+  }
 }
 async function executeBrowserTool(
   ..._args: unknown[]

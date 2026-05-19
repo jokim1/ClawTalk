@@ -1865,6 +1865,70 @@ export async function getAiAgents(): Promise<AiAgentsPageData> {
 }
 
 // ---------------------------------------------------------------------------
+// Web Search Providers (per-user keys + active picker)
+// ---------------------------------------------------------------------------
+
+export type WebSearchProviderId =
+  | 'web_search.tavily'
+  | 'web_search.brave'
+  | 'web_search.firecrawl';
+
+export interface WebSearchProviderCard {
+  id: WebSearchProviderId;
+  name: string;
+  baseUrl: string;
+  enabled: boolean;
+  hasCredential: boolean;
+  credentialHint: string | null;
+  isActive: boolean;
+}
+
+export interface WebSearchPageData {
+  providers: WebSearchProviderCard[];
+  activeProviderId: WebSearchProviderId | null;
+}
+
+export async function getWebSearchProviders(): Promise<WebSearchPageData> {
+  return apiRequest<WebSearchPageData>('/api/v1/web-search/providers');
+}
+
+export async function setWebSearchCredential(
+  providerId: WebSearchProviderId,
+  apiKey: string,
+): Promise<void> {
+  await apiMutationRequest<{ saved: true }>(
+    `/api/v1/web-search/providers/${encodeURIComponent(providerId)}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ apiKey }),
+      includeJson: true,
+    },
+  );
+}
+
+export async function clearWebSearchCredential(
+  providerId: WebSearchProviderId,
+): Promise<void> {
+  await apiMutationRequest<{ deleted: true }>(
+    `/api/v1/web-search/providers/${encodeURIComponent(providerId)}`,
+    { method: 'DELETE' },
+  );
+}
+
+export async function setActiveWebSearchProvider(
+  providerId: WebSearchProviderId | null,
+): Promise<void> {
+  await apiMutationRequest<{ activeProviderId: WebSearchProviderId | null }>(
+    '/api/v1/web-search/active',
+    {
+      method: 'PUT',
+      body: JSON.stringify({ providerId }),
+      includeJson: true,
+    },
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Registered Agents
 // ---------------------------------------------------------------------------
 
