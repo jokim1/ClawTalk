@@ -284,6 +284,8 @@ function buildApp(): Hono<{ Variables: Variables }> {
   app.use('/api/v1/agents/*', requireAuthMiddleware);
   app.use('/api/v1/registered-agents', requireAuthMiddleware);
   app.use('/api/v1/registered-agents/*', requireAuthMiddleware);
+  app.use('/api/v1/web-search', requireAuthMiddleware);
+  app.use('/api/v1/web-search/*', requireAuthMiddleware);
   app.use('/api/v1/talks', requireAuthMiddleware);
   app.use('/api/v1/talks/*', requireAuthMiddleware);
   app.use('/api/v1/talk-folders', requireAuthMiddleware);
