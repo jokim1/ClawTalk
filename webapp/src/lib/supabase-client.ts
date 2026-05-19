@@ -1,23 +1,27 @@
-// Supabase client factory — Phase 5 PR 2.
+// Supabase client factory — auth settings mirror rocketboard's
+// proven-good pattern (rocketboard/src/platform/supabase/client.ts).
 //
-// One module-scoped client serves the whole webapp. We deliberately
-// disable session persistence (`persistSession: false`) so Supabase
-// never writes tokens to localStorage — `eb_at` / `eb_rt` HttpOnly
-// cookies set by `POST /api/v1/auth/callback` are the only persisted
-// session state.
+// `persistSession: true` keeps the session in localStorage so a page
+// reload / browser restart finds the user already signed in.
 //
-// `detectSessionInUrl: true` — Supabase auto-extracts access_token
-// + refresh_token from the URL hash on landing back from Google
-// OAuth and fires SIGNED_IN. The cookie shim's listener catches that
-// event and POSTs the tokens to /api/v1/auth/callback so cookies get
-// set, then the app re-checks /api/v1/session/me and flips into
-// authenticated state.
+// `autoRefreshToken: true` makes supabase-js refresh the access token
+// on a background timer before it expires, instead of the SPA having
+// to wait for a 401 to react. The cookie shim mirrors every refreshed
+// session into the backend's HttpOnly `eb_at` / `eb_rt` cookies via
+// POST /api/v1/auth/callback, so the cookie tier and the localStorage
+// tier stay in sync.
 //
-// `autoRefreshToken: false` — the backend /api/v1/auth/refresh route
-// owns refresh, not supabase-js. The api.ts fetch wrapper retries
-// 401s by hitting the refresh route; we don't want supabase-js's
-// auto-refresh racing the backend wrapper.
+// `lock: processLock` serializes auth operations across browser tabs
+// using the Web Locks API. Without it, two tabs can race a refresh,
+// the loser invalidates the single-use refresh token, and the user
+// gets bounced to login.
+//
+// `detectSessionInUrl: true` — Supabase pulls access_token +
+// refresh_token out of the URL hash on the OAuth landing, fires
+// SIGNED_IN; the shim then POSTs to /api/v1/auth/callback so cookies
+// land.
 
+import { processLock } from '@supabase/auth-js';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL ?? '';
@@ -38,9 +42,10 @@ export function getSupabaseClient(): SupabaseClient {
   }
   cached = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     auth: {
-      persistSession: false,
-      autoRefreshToken: false,
+      autoRefreshToken: true,
       detectSessionInUrl: true,
+      lock: processLock,
+      persistSession: true,
     },
   });
   return cached;
