@@ -11,7 +11,9 @@ import {
 } from '../../db/agent-accessors.js';
 import {
   getDefaultTalkAgentId,
+  getDefaultTalkAgentIdOrNull,
   getMainAgentId,
+  getMainAgentIdOrNull,
   setMainAgentId,
 } from '../../agents/agent-registry.js';
 import { TALK_EXECUTOR_ANTHROPIC_API_KEY } from '../../config.js';
@@ -328,14 +330,20 @@ export async function deleteAgentRoute(
     );
   }
   return withUserContext(auth.userId, async () => {
-    if (agentId === (await getMainAgentId())) {
+    // Use null-safe lookups here — a missing main / default talk agent
+    // is a benign "nothing protected yet" state, not a 500. Throwing
+    // out of these guards blocks the user from deleting any agent
+    // when settings_kv has no defaults configured.
+    const protectedMainId = await getMainAgentIdOrNull();
+    if (protectedMainId && agentId === protectedMainId) {
       return envelopeError(
         400,
         'invalid_input',
         'Cannot delete the main agent. Set a different main agent first.',
       );
     }
-    if (agentId === (await getDefaultTalkAgentId())) {
+    const protectedDefaultId = await getDefaultTalkAgentIdOrNull();
+    if (protectedDefaultId && agentId === protectedDefaultId) {
       return envelopeError(
         400,
         'invalid_input',

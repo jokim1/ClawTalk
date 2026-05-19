@@ -67,6 +67,18 @@ export async function getMainAgentId(): Promise<string> {
 }
 
 /**
+ * Returns the main agent ID, or null when the setting is absent.
+ *
+ * Use this instead of `getMainAgentId()` when you only need the ID to
+ * compare against (e.g. "don't delete the main agent") and a missing
+ * main is a benign state rather than an error.
+ */
+export async function getMainAgentIdOrNull(): Promise<string | null> {
+  const value = await getSettingValue(MAIN_AGENT_SETTING_KEY);
+  return value ? value : null;
+}
+
+/**
  * Returns the default Talk agent ID from settings_kv.
  * Falls back to the direct-safe seeded Talk agent when the setting is absent,
  * and then to the main agent if the fallback agent has been removed.
@@ -79,6 +91,23 @@ export async function getDefaultTalkAgentId(): Promise<string> {
     return candidate;
   }
   return getMainAgentId();
+}
+
+/**
+ * Null-safe variant of `getDefaultTalkAgentId()`. Returns the
+ * configured fallback when present, the main agent ID when set,
+ * otherwise null. Used by DELETE-side guards that just need a
+ * "protected agent" comparison and shouldn't 500 when no defaults
+ * exist yet.
+ */
+export async function getDefaultTalkAgentIdOrNull(): Promise<string | null> {
+  const value = await getSettingValue(DEFAULT_TALK_AGENT_SETTING_KEY);
+  const candidate = value?.trim() || DEFAULT_TALK_AGENT_FALLBACK_ID;
+  const agent = await getRegisteredAgent(candidate);
+  if (agent && agent.enabled === true) {
+    return candidate;
+  }
+  return getMainAgentIdOrNull();
 }
 
 /**
