@@ -242,11 +242,24 @@ export async function putWebSearchActiveProviderRoute(
         );
       }
     }
-    await db`
+    // RLS only lets the authenticated role update its own users row
+    // (policy users_self_update + column-scoped grant). Use RETURNING
+    // to confirm the write actually landed — a 0-row response would
+    // mean the row is gone or the policy regressed, and we'd rather
+    // 500 than tell the UI the picker is set when it isn't.
+    const updated = await db<Array<{ id: string }>>`
       update public.users
       set preferred_web_search_provider_id = ${providerId}
       where id = ${auth.userId}::uuid
+      returning id
     `;
+    if (updated.length === 0) {
+      return envelopeError(
+        500,
+        'update_failed',
+        'Failed to update active web search provider.',
+      );
+    }
     return envelopeOk({ activeProviderId: providerId });
   });
 }
