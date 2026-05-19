@@ -132,15 +132,13 @@ function buildDraftExecutionPreview(input: {
     input.executorSettings.hasOauthToken || input.executorSettings.hasAuthToken;
   const containerRuntimeAvailable =
     input.containerRuntimeAvailability === 'ready';
-  const usesSubscriptionContainerByPolicy =
-    input.executorSettings.executorAuthMode === 'subscription' &&
-    hasSubscriptionCredential;
-  const wouldFallbackToSubscriptionContainer =
-    !input.executorSettings.hasApiKey && hasSubscriptionCredential;
-  const requiresContainerBackend =
-    heavyToolsEnabled ||
-    usesSubscriptionContainerByPolicy ||
-    wouldFallbackToSubscriptionContainer;
+  // Post-PR-#332: Claude OAuth subscriptions run through direct_http
+  // with Bearer + claude-cli headers (see llm-client.ts) — no local
+  // container required. Only heavy tools (shell / filesystem) still
+  // need the container runtime, and that path is stubbed out on the
+  // cloud Worker anyway. So the only thing that genuinely requires
+  // a container is heavyToolsEnabled.
+  const requiresContainerBackend = heavyToolsEnabled;
 
   if (requiresContainerBackend && !containerRuntimeAvailable) {
     return withExecutionPreviewDefaults({
@@ -150,7 +148,7 @@ function buildDraftExecutionPreview(input: {
       routeReason: 'no_valid_path',
       ready: false,
       message:
-        'Claude container runtime is unavailable on this host. Start Docker before using this Main agent configuration.',
+        'Shell, Filesystem, and Browser tools require a container runtime, which is not available in the cloud deployment yet.',
     });
   }
 
@@ -203,29 +201,13 @@ function buildDraftExecutionPreview(input: {
   ) {
     return withExecutionPreviewDefaults({
       surface: 'main',
-      backend: 'container',
+      backend: 'direct_http',
       authPath: 'subscription',
       selectedMode: 'subscription',
-      transport: 'subscription',
-      routeReason: 'normal',
-      ready: true,
-      message: 'Main will use Claude subscription via the container runtime.',
-    });
-  }
-
-  if (
-    input.executorSettings.executorAuthMode === 'api_key' &&
-    input.executorSettings.hasApiKey
-  ) {
-    return withExecutionPreviewDefaults({
-      surface: 'main',
-      backend: 'direct_http',
-      authPath: 'api_key',
-      selectedMode: 'api',
       transport: 'direct',
       routeReason: 'normal',
       ready: true,
-      message: 'Main will use Anthropic direct HTTP with an API key.',
+      message: 'Main will use Claude OAuth subscription via direct HTTP.',
     });
   }
 
@@ -245,14 +227,13 @@ function buildDraftExecutionPreview(input: {
   if (hasSubscriptionCredential) {
     return withExecutionPreviewDefaults({
       surface: 'main',
-      backend: 'container',
+      backend: 'direct_http',
       authPath: 'subscription',
       selectedMode: 'subscription',
-      transport: 'subscription',
-      routeReason: 'subscription_fallback',
+      transport: 'direct',
+      routeReason: 'normal',
       ready: true,
-      message:
-        'Main will use Claude subscription via container fallback because no Anthropic API key is configured.',
+      message: 'Main will use Claude OAuth subscription via direct HTTP.',
     });
   }
 
