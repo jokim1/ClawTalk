@@ -629,6 +629,11 @@ type DetailAction =
 
 const SCROLL_STICK_THRESHOLD_PX = 120;
 const TALK_MESSAGE_MAX_CHARS = 20_000;
+// Grace window after RUN_COMPLETED before we refetch the active thread to
+// pick up a missing MESSAGE_APPENDED. 3s is long enough to absorb normal
+// out-of-order delivery and short enough that the user doesn't stare at an
+// empty timeline.
+const MISSING_PERSISTED_MESSAGE_REFETCH_MS = 3_000;
 const MAX_EVENT_RUN_CACHE = 500;
 const COMPOSER_TEXTAREA_MIN_HEIGHT_PX = 48;
 const COMPOSER_TEXTAREA_MAX_HEIGHT_PX = 240;
@@ -2808,6 +2813,15 @@ export function TalkDetailPage({
   const activeThreadIdRef = useRef<string | null>(null);
   const threadSnapshotVersionRef = useRef(0);
   const deletedMessageIdsRef = useRef<Set<string>>(new Set());
+  // Tracks every runId we've ever seen on MESSAGE_APPENDED. Used by the
+  // "missing persisted message" timer below to decide whether to refetch.
+  const persistedRunMessageIdsRef = useRef<Set<string>>(new Set());
+  // Timer per runId that fires if RUN_COMPLETED arrives but the matching
+  // MESSAGE_APPENDED never lands. Without this, a dropped persistence event
+  // leaves the timeline empty until the user reloads or switches threads.
+  const pendingMessageRefetchTimersRef = useRef<
+    Map<string, ReturnType<typeof setTimeout>>
+  >(new Map());
   const threadStateRef = useRef<ThreadListState>(threadState);
   const searchQueryRef = useRef(searchQuery);
   const orchestrationMenuRef = useRef<HTMLDivElement | null>(null);
@@ -3672,6 +3686,16 @@ export function TalkDetailPage({
       onMessageAppended: (event: MessageAppendedEvent) => {
         if (event.talkId !== talkId) return;
         if (deletedMessageIdsRef.current.has(event.messageId)) return;
+        if (event.runId) {
+          persistedRunMessageIdsRef.current.add(event.runId);
+          const pendingTimer = pendingMessageRefetchTimersRef.current.get(
+            event.runId,
+          );
+          if (pendingTimer) {
+            clearTimeout(pendingTimer);
+            pendingMessageRefetchTimersRef.current.delete(event.runId);
+          }
+        }
         if (event.threadId) {
           ensureKnownThread(event.threadId);
         }
@@ -3781,6 +3805,28 @@ export function TalkDetailPage({
       onRunCompleted: (event: TalkRunCompletedEvent) => {
         if (event.talkId !== talkId) return;
         ensureKnownThread(event.threadId);
+        // If MESSAGE_APPENDED never arrives for this run, the timeline
+        // shows nothing for the response (RUN_COMPLETED deletes the
+        // liveResponse buffer). Schedule a refetch fallback that fires
+        // after a short grace window if the persisted message hasn't
+        // landed yet. Scoped to the user's active thread — refetching
+        // is a no-op otherwise, and the message arrives via
+        // THREAD_MESSAGES_LOADING when they navigate back.
+        if (
+          event.threadId === activeThreadIdRef.current &&
+          !persistedRunMessageIdsRef.current.has(event.runId)
+        ) {
+          const existingTimer = pendingMessageRefetchTimersRef.current.get(
+            event.runId,
+          );
+          if (existingTimer) clearTimeout(existingTimer);
+          const timer = setTimeout(() => {
+            pendingMessageRefetchTimersRef.current.delete(event.runId);
+            if (persistedRunMessageIdsRef.current.has(event.runId)) return;
+            void resyncTalkState({ refreshThreads: false });
+          }, MISSING_PERSISTED_MESSAGE_REFETCH_MS);
+          pendingMessageRefetchTimersRef.current.set(event.runId, timer);
+        }
         dispatch({
           type: 'RUN_COMPLETED',
           runId: event.runId,
@@ -3875,6 +3921,10 @@ export function TalkDetailPage({
     return () => {
       stream.close();
       dispatch({ type: 'STREAM_OFFLINE' });
+      for (const timer of pendingMessageRefetchTimersRef.current.values()) {
+        clearTimeout(timer);
+      }
+      pendingMessageRefetchTimersRef.current.clear();
     };
   }, [
     bumpThreadSummaryFromMessage,

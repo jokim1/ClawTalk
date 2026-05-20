@@ -3901,6 +3901,7 @@ describe('TalkDetailPage', () => {
         threadId: DEFAULT_THREAD_ID,
         runId: 'run-streamed',
         triggerMessageId: 'msg-1',
+        responseMessageId: null,
       });
       // Late delta that escaped reordering — without the guard it would
       // re-create a zombie liveResponse seeded with just this trailing chunk.
@@ -3921,6 +3922,79 @@ describe('TalkDetailPage', () => {
       screen.queryByText(/not lose his seat immediately/),
     ).toBeNull();
     expect(screen.queryByText(/^ie did/)).toBeNull();
+  });
+
+  it('refetches the active thread when MESSAGE_APPENDED never lands after RUN_COMPLETED', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let listMessagesCallCount = 0;
+      const userMsg = buildMessage({
+        id: 'msg-1',
+        role: 'user',
+        content: 'What is the latest?',
+        createdAt: '2026-03-06T00:00:00.000Z',
+      });
+      const assistantMsg = buildMessage({
+        id: 'msg-assistant-late',
+        role: 'assistant',
+        content: 'Persisted answer recovered by refetch',
+        createdAt: '2026-03-06T00:00:10.000Z',
+        runId: 'run-streamed',
+      });
+
+      installTalkDetailFetch({
+        messages: [userMsg],
+        onListMessages: () => {
+          listMessagesCallCount += 1;
+          return listMessagesCallCount === 1 ? [userMsg] : [userMsg, assistantMsg];
+        },
+      });
+
+      renderDetailPage('/app/talks/talk-1');
+      await screen.findByRole('heading', { name: /Cal Football/i });
+      await screen.findByText('What is the latest?');
+
+      if (!streamInput) {
+        throw new Error('Expected talk stream input');
+      }
+      const stream = streamInput;
+
+      await act(async () => {
+        stream.onResponseStarted?.({
+          talkId: 'talk-1',
+          threadId: DEFAULT_THREAD_ID,
+          runId: 'run-streamed',
+          agentId: 'agent-claude',
+          agentNickname: 'Claude Sonnet 4.6',
+          providerId: 'provider.anthropic',
+          modelId: 'claude-sonnet-4-6',
+        });
+        stream.onRunCompleted({
+          talkId: 'talk-1',
+          threadId: DEFAULT_THREAD_ID,
+          runId: 'run-streamed',
+          triggerMessageId: 'msg-1',
+          responseMessageId: 'msg-assistant-late',
+        });
+        // MESSAGE_APPENDED intentionally omitted to simulate a dropped event.
+      });
+
+      expect(
+        screen.queryByText(/Persisted answer recovered by refetch/),
+      ).toBeNull();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3_500);
+      });
+
+      await waitFor(() => {
+        expect(
+          screen.getByText(/Persisted answer recovered by refetch/),
+        ).toBeTruthy();
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('clears failed live responses when a new user message appends in the same thread', async () => {
