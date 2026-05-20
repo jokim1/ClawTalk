@@ -87,7 +87,11 @@ export type CodexInputItem =
   | {
       type: 'function_call_output';
       call_id: string;
-      output: string | CodexContentPart[];
+      // chatgpt.com/backend-api/codex requires a plain string here. Passing
+      // a content-parts array silently drops the output server-side and
+      // surfaces as "No tool output found for function call ..." on the
+      // next turn. Adapter callers must stringify before emitting.
+      output: string;
     }
   | {
       type: 'reasoning';
@@ -436,33 +440,14 @@ export function llmMessagesToResponsesInput(
     }
 
     if (msg.role === 'tool') {
-      // Map our LlmMessage tool result to function_call_output.
+      // Map our LlmMessage tool result to function_call_output. The
+      // Codex backend requires `output` to be a plain string — array-of-
+      // content-parts is silently dropped and the next turn fails with
+      // "No tool output found for function call ...".
       const callId =
         msg.toolCallId?.trim() || extractToolCallIdFromBlocks(msg.content);
       if (!callId) continue;
-
-      let output: string | CodexContentPart[];
-      if (typeof msg.content === 'string') {
-        output = msg.content;
-      } else {
-        const parts: CodexContentPart[] = [];
-        for (const block of msg.content) {
-          if (block.type === 'tool_result') {
-            parts.push({ type: 'input_text', text: block.content });
-          } else if (block.type === 'text') {
-            parts.push({ type: 'input_text', text: block.text });
-          } else if (block.type === 'image') {
-            parts.push({
-              type: 'input_image',
-              image_url: `data:${block.mimeType};base64,${block.data}`,
-              ...(block.detail ? { detail: block.detail } : {}),
-            });
-          }
-        }
-        output =
-          parts.length > 0 ? parts : stringifyToolResultContent(msg.content);
-      }
-
+      const output = stringifyToolResultContent(msg.content);
       items.push({
         type: 'function_call_output',
         call_id: callId,

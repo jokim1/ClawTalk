@@ -615,11 +615,17 @@ export async function executeWithAgent(
       // For Anthropic: tool_result blocks inside a single role:'tool' message
       //   (buildAnthropicRequest converts role:'tool' with LlmContentBlock[] to
       //    a user message with tool_result blocks)
-      // For OpenAI: individual role:'tool' messages with toolCallId
-      //   (buildOpenAiRequest handles role:'tool' with string content + toolCallId)
-      // Use structured content blocks — both builders handle this format.
-      if (providerConfig.apiFormat === 'openai_chat_completions') {
-        // OpenAI expects separate tool messages per tool call
+      // For OpenAI + Codex Responses: individual role:'tool' messages with
+      //   toolCallId. The Codex backend expects function_call_output.output to
+      //   be a plain string; sending tool_result blocks here would leave the
+      //   adapter forced to emit output as a content-parts array, which the
+      //   chatgpt.com/backend-api/codex endpoint silently drops — Codex then
+      //   complains "No tool output found for function call call_xxx" on the
+      //   next turn even though we sent one.
+      if (
+        providerConfig.apiFormat === 'openai_chat_completions' ||
+        providerConfig.apiFormat === 'codex_responses'
+      ) {
         for (const tr of toolResults) {
           messages.push({
             role: 'tool',

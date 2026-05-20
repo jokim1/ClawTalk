@@ -76,6 +76,32 @@ describe('llmMessagesToResponsesInput', () => {
     ]);
   });
 
+  it('stringifies tool_result blocks into function_call_output.output', () => {
+    // The Codex backend rejects content-parts arrays on function_call_output
+    // by silently dropping the output, which surfaces as "No tool output
+    // found for function call ..." on the next turn. The adapter must
+    // flatten LlmContentBlock[] into a plain string.
+    const out = llmMessagesToResponsesInput([
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool_result',
+            toolUseId: 'call_def',
+            content: '{"results":[]}',
+          },
+        ],
+      },
+    ]);
+    expect(out).toEqual([
+      {
+        type: 'function_call_output',
+        call_id: 'call_def',
+        output: '{"results":[]}',
+      },
+    ]);
+  });
+
   it('replays encrypted reasoning items from providerData on assistant messages', () => {
     const reasoningBlob = {
       type: 'reasoning',
