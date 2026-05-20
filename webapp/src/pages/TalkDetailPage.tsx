@@ -3003,7 +3003,32 @@ export function TalkDetailPage({
   }, []);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
-    endRef.current?.scrollIntoView({ behavior, block: 'end' });
+    // Drive timelineRef.scrollTop directly instead of
+    // endRef.scrollIntoView. The latter walks every overflow-scrollable
+    // ancestor and the talk shell has two of them (.talk-workspace-scroll
+    // wraps .talk-thread-scroll). In nested scroll containers,
+    // scrollIntoView can end up scrolling the outer wrapper to put endRef
+    // at the bottom of the viewport — which visually leaves the inner
+    // scroll at the top showing the oldest messages. Targeting the inner
+    // container alone is unambiguous. requestAnimationFrame defers the
+    // write to the next frame so scrollHeight reflects the newly
+    // committed message.
+    const apply = () => {
+      const container = timelineRef.current;
+      if (!container) return;
+      const target = container.scrollHeight - container.clientHeight;
+      if (target <= 0) return;
+      if (behavior === 'smooth' && typeof container.scrollTo === 'function') {
+        container.scrollTo({ top: target, behavior: 'smooth' });
+      } else {
+        container.scrollTop = target;
+      }
+    };
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(apply);
+    } else {
+      apply();
+    }
   }, []);
 
   const setMessageElementRef = useCallback(
@@ -7152,10 +7177,14 @@ export function TalkDetailPage({
         attachmentIds: input.attachmentIds,
         threadId: activeThreadId,
       });
-      const nearBottom = isNearBottom();
+      // The user just submitted — show them where their message landed,
+      // even if they were scrolled up reading earlier history. Subsequent
+      // agent responses go through the usual nearBottom gate so a user
+      // who scrolls away mid-stream won't get yanked back.
+      autoStickToBottomRef.current = true;
       dispatch({
         type: 'MESSAGE_APPENDED',
-        wasNearBottom: nearBottom,
+        wasNearBottom: true,
         message: result.message,
       });
       for (const run of result.runs) {
@@ -7175,7 +7204,7 @@ export function TalkDetailPage({
       }
       return result;
     },
-    [activeThreadId, isNearBottom, state.kind, state.talk],
+    [activeThreadId, state.kind, state.talk],
   );
 
   const submitDraft = async () => {
