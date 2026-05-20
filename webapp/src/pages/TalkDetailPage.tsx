@@ -4240,12 +4240,27 @@ export function TalkDetailPage({
       ),
     [state.runsById],
   );
+  // Set of runIds that already have a persisted assistant message in
+  // state.messages. Used to filter out orphan "Streaming…" placeholders
+  // for runs whose final message already landed — happens when
+  // MESSAGE_APPENDED reaches the SPA but the placeholder cleanup in the
+  // reducer missed (e.g., older message rows without a runId, or stream
+  // events arriving out of order across reconnects).
+  const persistedMessageRunIds = useMemo(
+    () =>
+      new Set(
+        state.messages
+          .map((message) => message.runId)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    [state.messages],
+  );
   const liveResponses = useMemo(
     () =>
-      Object.values(state.liveResponsesByRunId).sort(
-        (left, right) => left.startedAt - right.startedAt,
-      ),
-    [state.liveResponsesByRunId],
+      Object.values(state.liveResponsesByRunId)
+        .filter((response) => !persistedMessageRunIds.has(response.runId))
+        .sort((left, right) => left.startedAt - right.startedAt),
+    [persistedMessageRunIds, state.liveResponsesByRunId],
   );
   useEffect(() => {
     if (currentTab !== 'runs') return;
@@ -13475,9 +13490,29 @@ export function TalkDetailPage({
                             <header>
                               <strong>{label}</strong>
                               <time>
-                                {response.terminalStatus === 'failed'
-                                  ? 'Failed'
-                                  : 'Streaming…'}
+                                {(() => {
+                                  if (response.terminalStatus === 'failed') {
+                                    return 'Failed';
+                                  }
+                                  const run = state.runsById[response.runId];
+                                  if (run?.status === 'failed')
+                                    return 'Failed';
+                                  if (run?.status === 'cancelled')
+                                    return 'Cancelled';
+                                  // Run finished but the persisted
+                                  // message hasn't arrived yet (race or
+                                  // missed event). The placeholder above
+                                  // already filters out runIds that have
+                                  // a persisted message; reaching here
+                                  // with a 'completed' status means
+                                  // we're still waiting on it. Surface
+                                  // "Done" so the user can tell the
+                                  // model finished, not that it's still
+                                  // mid-stream.
+                                  if (run?.status === 'completed')
+                                    return 'Done';
+                                  return 'Streaming…';
+                                })()}
                               </time>
                             </header>
                             <p>
