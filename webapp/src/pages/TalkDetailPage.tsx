@@ -7152,14 +7152,10 @@ export function TalkDetailPage({
         attachmentIds: input.attachmentIds,
         threadId: activeThreadId,
       });
-      // The user just submitted — show them where their message landed,
-      // even if they were scrolled up reading earlier history. Subsequent
-      // agent responses go through the usual nearBottom gate so a user
-      // who scrolls away mid-stream won't get yanked back.
-      autoStickToBottomRef.current = true;
+      const nearBottom = isNearBottom();
       dispatch({
         type: 'MESSAGE_APPENDED',
-        wasNearBottom: true,
+        wasNearBottom: nearBottom,
         message: result.message,
       });
       for (const run of result.runs) {
@@ -7179,7 +7175,7 @@ export function TalkDetailPage({
       }
       return result;
     },
-    [activeThreadId, state.kind, state.talk],
+    [activeThreadId, isNearBottom, state.kind, state.talk],
   );
 
   const submitDraft = async () => {
