@@ -3726,6 +3726,11 @@ export function TalkDetailPage({
       onResponseStarted: (event: TalkResponseStartedEvent) => {
         if (event.talkId !== talkId) return;
         if (event.threadId !== activeThreadIdRef.current) return;
+        // If the user is parked at the bottom (typical right after a
+        // send), stay stuck so the "Thinking…" placeholder is visible
+        // when the agent starts streaming. Mirrors onResponseDelta.
+        const nearBottom = isNearBottom();
+        if (nearBottom) autoStickToBottomRef.current = true;
         dispatch({ type: 'RESPONSE_STARTED', event });
       },
       onProgressUpdate: (event: TalkProgressUpdateEvent) => {
@@ -3880,11 +3885,19 @@ export function TalkDetailPage({
     autoStickToBottomRef.current = false;
     scrollToBottom('smooth');
     dispatch({ type: 'CLEAR_UNREAD' });
+    // Also depends on liveResponsesByRunId so the effect re-runs on
+    // RESPONSE_STARTED (placeholder appears) and on each RESPONSE_DELTA
+    // (text grows). The talkStream handlers re-set autoStickToBottomRef
+    // every event if the user is still near the bottom, so this becomes
+    // a continuous "stick" during streaming. If the user scrolls away,
+    // nearBottom flips false, the handlers stop setting the ref, and
+    // this effect skips the scroll until they scroll back down.
   }, [
     scrollToBottom,
     state.initialScrollPending,
     state.kind,
     state.messages.length,
+    state.liveResponsesByRunId,
   ]);
 
   const accessRole = state.kind === 'ready' ? state.talk?.accessRole : null;
