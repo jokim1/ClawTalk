@@ -1,3 +1,8 @@
+import {
+  getSupabaseClient,
+  isSupabaseConfigured,
+} from './supabase-client';
+
 export class UnauthorizedError extends Error {
   constructor(message = 'Authentication is required') {
     super(message);
@@ -1114,6 +1119,7 @@ export type AuthConfigPayload = {
 };
 
 const AUTH_REFRESH_PATH = '/api/v1/auth/refresh';
+const AUTH_CALLBACK_PATH = '/api/v1/auth/callback';
 const AUTH_LOGOUT_PATH = '/api/v1/auth/logout';
 let refreshInFlight: Promise<boolean> | null = null;
 
@@ -3994,30 +4000,69 @@ function shouldSkipRefresh(path: string): boolean {
 async function ensureRefreshedSession(): Promise<boolean> {
   if (refreshInFlight) return refreshInFlight;
 
-  refreshInFlight = (async () => {
-    try {
-      const response = await fetch(AUTH_REFRESH_PATH, {
-        method: 'POST',
-        credentials: 'include',
-        headers: {
-          accept: 'application/json',
-        },
-      });
-      if (response.status === 401 || !response.ok) return false;
-
-      const payload = (await response
-        .json()
-        .catch(() => null)) as ApiEnvelope<unknown> | null;
-      return Boolean(payload?.ok);
-    } catch {
-      return false;
-    }
-  })();
-
+  refreshInFlight = doRefresh();
   try {
     return await refreshInFlight;
   } finally {
     refreshInFlight = null;
+  }
+}
+
+async function doRefresh(): Promise<boolean> {
+  // Prefer supabase-js's refresh path. It serializes via processLock
+  // with the background autoRefreshToken timer, so we don't race the
+  // single-use refresh-token rotation by calling /api/v1/auth/refresh
+  // separately. Cookie sync happens via POST /api/v1/auth/callback
+  // right after, before we resolve, so the retried request finds a
+  // fresh eb_at.
+  if (isSupabaseConfigured()) {
+    const refreshed = await refreshViaSupabase();
+    if (refreshed) return true;
+    // supabase-js had nothing to refresh (no localStorage session yet
+    // or it was wiped). Fall through to the cookie-only path so users
+    // with a valid eb_rt cookie but no localStorage session can still
+    // recover. Background autoRefreshToken isn't running in this case
+    // (no session to refresh), so no race.
+  }
+  return refreshViaServerEndpoint();
+}
+
+async function refreshViaSupabase(): Promise<boolean> {
+  try {
+    const { data, error } = await getSupabaseClient().auth.refreshSession();
+    if (error || !data.session) return false;
+    const res = await fetch(AUTH_CALLBACK_PATH, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accessToken: data.session.access_token,
+        refreshToken: data.session.refresh_token,
+      }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function refreshViaServerEndpoint(): Promise<boolean> {
+  try {
+    const response = await fetch(AUTH_REFRESH_PATH, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        accept: 'application/json',
+      },
+    });
+    if (response.status === 401 || !response.ok) return false;
+
+    const payload = (await response
+      .json()
+      .catch(() => null)) as ApiEnvelope<unknown> | null;
+    return Boolean(payload?.ok);
+  } catch {
+    return false;
   }
 }
 
