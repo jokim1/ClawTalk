@@ -300,7 +300,14 @@ export function openTalkStream(input: OpenTalkStreamInput): TalkStreamHandle {
         if (stopped) return;
         reconnectAttempt = 0;
         handlingReplayGap = false;
-        lastEventId = 0;
+        // Keep lastEventId as-is. For cursor_below_retention_floor the
+        // gap frame carried minEventId as its id, so onMessage already
+        // advanced lastEventId to that. For replay_cap_500_exceeded the
+        // DO sent 500 events ahead of the gap frame and lastEventId is
+        // at the last successfully-dispatched event — the next connect
+        // resumes from there and paginates forward. Resetting to 0 here
+        // would loop the DO into replaying the same first 500 frames on
+        // every reconnect.
         openConnection('connecting');
       })
       .catch(() => {

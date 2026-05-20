@@ -160,6 +160,46 @@ describe('openTalkStream', () => {
     expect(FakeTransport.instances).toHaveLength(2);
   });
 
+  it('keeps lastEventId after a replay_gap so the next connect paginates forward', async () => {
+    openTalkStream({
+      talkId: 'talk-1',
+      onUnauthorized: vi.fn(),
+      onReplayGap: vi.fn(async () => undefined),
+      onMessageAppended: vi.fn(),
+      onRunStarted: vi.fn(),
+      onRunQueued: vi.fn(),
+      onRunCompleted: vi.fn(),
+      onRunFailed: vi.fn(),
+      onRunCancelled: vi.fn(),
+      createTransport: (url, options) => new FakeTransport(url, options),
+      probeSession: vi.fn(async () => true),
+      jitterMs: () => 0,
+    });
+
+    const first = FakeTransport.instances[0]!;
+    // The DO sends 500 events ahead of a replay_gap (cap exceeded).
+    // Simulate the last one landing here so lastEventId advances.
+    first.emitFrame(
+      'talk_run_started',
+      {
+        talkId: 'talk-1',
+        runId: 'run-1',
+        triggerMessageId: null,
+        status: 'running',
+      },
+      500,
+    );
+    first.emitFrame('replay_gap', { reason: 'replay_cap_500_exceeded' });
+
+    await vi.runAllTicks();
+
+    expect(FakeTransport.instances).toHaveLength(2);
+    const second = FakeTransport.instances[1]!;
+    // Crucial: do NOT reset to 0. If we did, the DO would replay the
+    // same first 500 events every reconnect and loop forever.
+    expect(second.options.getLastEventId()).toBe(500);
+  });
+
   it('closes externally and prevents further reconnect attempts', async () => {
     const handle = openTalkStream({
       talkId: 'talk-1',

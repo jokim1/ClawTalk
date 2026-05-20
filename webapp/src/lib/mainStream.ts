@@ -249,7 +249,9 @@ export function openMainStream(input: OpenMainStreamInput): MainStreamHandle {
         if (stopped) return;
         reconnectAttempt = 0;
         handlingReplayGap = false;
-        lastEventId = 0;
+        // See talkStream.ts handleReplayGap for the rationale: keep
+        // lastEventId so each reconnect paginates forward instead of
+        // looping the DO into replaying the first 500 frames again.
         openConnection('connecting');
       })
       .catch(() => {
