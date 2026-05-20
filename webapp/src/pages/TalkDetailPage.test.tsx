@@ -3855,6 +3855,74 @@ describe('TalkDetailPage', () => {
     ).toBeNull();
   });
 
+  it('drops late response deltas after RUN_COMPLETED so they cannot resurrect a truncated zombie message', async () => {
+    installTalkDetailFetch({
+      messages: [
+        buildMessage({
+          id: 'msg-1',
+          role: 'user',
+          content: 'Summarize the latest news.',
+          createdAt: '2026-03-06T00:00:00.000Z',
+        }),
+      ],
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+    await screen.findByRole('heading', { name: /Cal Football/i });
+    await screen.findByText('Summarize the latest news.');
+
+    if (!streamInput) {
+      throw new Error('Expected talk stream input');
+    }
+    const stream = streamInput;
+
+    await act(async () => {
+      stream.onResponseStarted?.({
+        talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
+        runId: 'run-streamed',
+        agentId: 'agent-claude',
+        agentNickname: 'Claude Sonnet 4.6',
+        providerId: 'provider.anthropic',
+        modelId: 'claude-sonnet-4-6',
+      });
+      stream.onResponseDelta?.({
+        talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
+        runId: 'run-streamed',
+        agentId: 'agent-claude',
+        agentNickname: 'Claude Sonnet 4.6',
+        deltaText: 'Yes — Thomas Mass',
+        providerId: 'provider.anthropic',
+        modelId: 'claude-sonnet-4-6',
+      });
+      stream.onRunCompleted({
+        talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
+        runId: 'run-streamed',
+        triggerMessageId: 'msg-1',
+      });
+      // Late delta that escaped reordering — without the guard it would
+      // re-create a zombie liveResponse seeded with just this trailing chunk.
+      stream.onResponseDelta?.({
+        talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
+        runId: 'run-streamed',
+        agentId: 'agent-claude',
+        agentNickname: 'Claude Sonnet 4.6',
+        deltaText: 'ie did **not lose his seat immediately**…',
+        providerId: 'provider.anthropic',
+        modelId: 'claude-sonnet-4-6',
+      });
+    });
+
+    // No truncated zombie message should appear on the timeline.
+    expect(
+      screen.queryByText(/not lose his seat immediately/),
+    ).toBeNull();
+    expect(screen.queryByText(/^ie did/)).toBeNull();
+  });
+
   it('clears failed live responses when a new user message appends in the same thread', async () => {
     installTalkDetailFetch({
       messages: [

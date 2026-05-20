@@ -1363,6 +1363,20 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
     case 'RESPONSE_DELTA': {
       if (state.kind !== 'ready') return state;
       const existing = state.liveResponsesByRunId[action.event.runId];
+      // If RUN_COMPLETED already deleted the in-flight liveResponse, drop
+      // late deltas. Without this guard, the next delta re-creates a
+      // "zombie" liveResponse seeded with just the trailing chunk(s) — which
+      // surfaces as a truncated message marked "Done" (mid-sentence header
+      // + missing prefix) while the real content waits on MESSAGE_APPENDED.
+      // We only block creation; if the liveResponse already exists (e.g. a
+      // reconnect replays started+delta+failed against a failed-from-DB
+      // run), deltas keep appending normally.
+      if (!existing) {
+        const trackedRun = state.runsById[action.event.runId];
+        if (trackedRun && !isNonTerminalRunStatus(trackedRun.status)) {
+          return state;
+        }
+      }
       const rawText = `${existing?.rawText || ''}${action.event.deltaText}`;
       return {
         ...state,
