@@ -158,7 +158,7 @@ export const BUILTIN_ADDITIONAL_PROVIDERS: BuiltinAdditionalProvider[] = [
   },
   {
     id: 'provider.nvidia',
-    name: 'NVIDIA Kimi2.5',
+    name: 'NVIDIA NIM',
     providerKind: 'nvidia',
     credentialMode: 'api_key',
     apiFormat: 'openai_chat_completions',
@@ -169,8 +169,8 @@ export const BUILTIN_ADDITIONAL_PROVIDERS: BuiltinAdditionalProvider[] = [
     absoluteTimeoutMs: 300_000,
     models: [
       {
-        modelId: 'moonshotai/kimi-k2.5',
-        displayName: 'Kimi 2.5 (NVIDIA)',
+        modelId: 'moonshotai/kimi-k2.6',
+        displayName: 'Kimi 2.6 (NVIDIA)',
         contextWindowTokens: 262_144,
         defaultMaxOutputTokens: 16_384,
         defaultTtftTimeoutMs: 60_000,

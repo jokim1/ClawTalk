@@ -465,8 +465,8 @@ function buildAiAgentsData(): AiAgentsPageData {
         workspaceSubscriptionExpiresAt: null,
         modelSuggestions: [
           {
-            modelId: 'moonshotai/kimi-k2.5',
-            displayName: 'Kimi 2.5 (NVIDIA)',
+            modelId: 'moonshotai/kimi-k2.6',
+            displayName: 'Kimi 2.6 (NVIDIA)',
             contextWindowTokens: 262144,
             defaultMaxOutputTokens: 16384,
           },

@@ -1217,6 +1217,14 @@ function ProviderCredentialCard({
                 </button>
               </div>
             </label>
+            {provider.id === 'provider.nvidia' ? (
+              <p className="talk-llm-meta talk-llm-field-span">
+                On NVIDIA Build, click <strong>Generate API Key</strong>,
+                then copy the <code>nvapi-…</code> token from the Python
+                snippet (it appears in the <code>Authorization</code>{' '}
+                header).
+              </p>
+            ) : null}
             <div className="talk-llm-inline-actions">
               <button
                 type="button"

@@ -981,6 +981,10 @@ export type AgentProviderCard = {
     supportsTools?: boolean;
     supportsVision?: boolean;
   }>;
+  liveModelDiscovery?: {
+    status: 'ok' | 'auth_error' | 'unavailable' | 'rate_limited';
+    message?: string;
+  };
 };
 
 export type AiAgentsPageData = {

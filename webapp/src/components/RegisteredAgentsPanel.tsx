@@ -641,6 +641,13 @@ function AgentForm({
             </option>
           ))}
         </select>
+        {selectedProvider?.liveModelDiscovery &&
+        selectedProvider.liveModelDiscovery.status !== 'ok' ? (
+          <div className="agent-form-warning">
+            {selectedProvider.liveModelDiscovery.message ||
+              'Live model discovery unavailable — showing curated models only.'}
+          </div>
+        ) : null}
       </label>
 
       <label className="agent-form-field">

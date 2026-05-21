@@ -619,9 +619,22 @@ function buildAnthropicRequest(
 }
 
 /**
+ * Moonshot models hosted on NVIDIA NIM default to "thinking" mode, which
+ * emits reasoning separately from the assistant content. The generic
+ * OpenAI-compatible parser expects normal assistant text deltas, so we send
+ * `thinking: { type: 'disabled' }` for these specific models. Maintained as
+ * an explicit allowlist (not a `moonshotai/*` prefix) so a future moonshot
+ * model that *does* support thinking is not silently broken.
+ */
+const MOONSHOT_NO_THINKING: ReadonlySet<string> = new Set([
+  'moonshotai/kimi-k2.5',
+  'moonshotai/kimi-k2.6',
+]);
+
+/**
  * Convert LlmMessage[] to OpenAI format.
  */
-function buildOpenAiRequest(
+export function buildOpenAiRequest(
   provider: LlmProviderConfig,
   modelId: string,
   messages: LlmMessage[],
@@ -705,11 +718,8 @@ function buildOpenAiRequest(
       : {}),
     stream: true,
     stream_options: { include_usage: true },
-    // NVIDIA-hosted Kimi defaults to "thinking" mode, which emits reasoning
-    // separately from the final assistant content. Disable that mode so the
-    // generic OpenAI-compatible parser receives normal assistant text deltas.
     ...(provider.providerId === 'provider.nvidia' &&
-    modelId === 'moonshotai/kimi-k2.5'
+    MOONSHOT_NO_THINKING.has(modelId)
       ? { thinking: { type: 'disabled' as const } }
       : {}),
   };

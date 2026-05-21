@@ -10,6 +10,12 @@ import {
   type LlmSecret,
 } from '../../agents/llm-client.js';
 import {
+  discoverNvidiaModels,
+  invalidateNvidiaDiscovery,
+  type DiscoveryCacheLike,
+  type DiscoveryResult,
+} from '../../agents/nvidia-model-discovery.js';
+import {
   decryptProviderSecret,
   encryptProviderSecret,
 } from '../../llm/provider-secret-store.js';
@@ -72,6 +78,13 @@ export type AgentProviderCard = {
     supportsTools: boolean;
     supportsVision: boolean;
   }>;
+  // Only populated for providers that support live model discovery
+  // (NVIDIA today). Reflects the last call to the provider's /v1/models
+  // endpoint using whichever credential the cards were built with.
+  liveModelDiscovery?: {
+    status: 'ok' | 'auth_error' | 'unavailable' | 'rate_limited';
+    message?: string;
+  };
 };
 
 export type AiAgentsPageData = {
@@ -125,6 +138,21 @@ type ProviderVerificationResult = {
 };
 
 const CODEX_PROVIDER_ID = 'provider.openai_codex';
+const NVIDIA_PROVIDER_ID = 'provider.nvidia';
+
+/**
+ * Return the Cloudflare Workers default Cache, or undefined in environments
+ * (Node, tests) that don't expose it. `caches.default` is a Workers
+ * extension; we keep the type loose (`unknown` → `DiscoveryCacheLike`) so
+ * the project tsconfig doesn't need @cloudflare/workers-types just for
+ * this one helper.
+ */
+function getDefaultCache(): DiscoveryCacheLike | undefined {
+  const g = globalThis as typeof globalThis & {
+    caches?: { default?: unknown };
+  };
+  return (g.caches?.default ?? undefined) as DiscoveryCacheLike | undefined;
+}
 
 const PROVIDER_VERIFY_TIMEOUT_MS = 20_000;
 
@@ -381,6 +409,20 @@ async function buildAdditionalProviderCards(): Promise<AgentProviderCard[]> {
   const workspaceSubscriptionsByProvider =
     await listWorkspaceSubscriptionMetadata();
 
+  // Live model discovery for NVIDIA. Workspace credential wins so the team
+  // sees the shared catalog; falls back to the per-user credential if no
+  // workspace key is set. With no credential at all, the card just shows
+  // the curated fallback rows from llm_provider_models.
+  const nvidiaSecret =
+    workspaceSecretsByProvider.get(NVIDIA_PROVIDER_ID) ??
+    secretsByProvider.get(NVIDIA_PROVIDER_ID) ??
+    null;
+  const nvidiaDiscovery: DiscoveryResult | null = nvidiaSecret?.apiKey
+    ? await discoverNvidiaModels(nvidiaSecret.apiKey, {
+        cache: getDefaultCache(),
+      })
+    : null;
+
   return providerRows.map((provider) => {
     const builtinProvider = BUILTIN_ADDITIONAL_PROVIDERS.find(
       (entry) => entry.id === provider.id,
@@ -462,24 +504,78 @@ async function buildAdditionalProviderCards(): Promise<AgentProviderCard[]> {
       personalSubscriptionExpiresAt: personalSubscription?.expiresAt ?? null,
       hasWorkspaceSubscription: !!workspaceSubscription,
       workspaceSubscriptionExpiresAt: workspaceSubscription?.expiresAt ?? null,
-      modelSuggestions: (modelsByProvider.get(provider.id) ?? []).map(
-        (model) => {
-          const capabilities = resolveModelCapabilities({
-            providerId: provider.id,
-            modelId: model.model_id,
-          });
-          return {
-            modelId: model.model_id,
-            displayName: model.display_name,
-            contextWindowTokens: model.context_window_tokens,
-            defaultMaxOutputTokens: model.default_max_output_tokens,
-            supportsTools: capabilities.supports_tools,
-            supportsVision: capabilities.supports_vision,
-          };
-        },
+      modelSuggestions: buildModelSuggestions(
+        provider.id,
+        modelsByProvider.get(provider.id) ?? [],
+        provider.id === NVIDIA_PROVIDER_ID ? nvidiaDiscovery : null,
       ),
+      ...(provider.id === NVIDIA_PROVIDER_ID && nvidiaDiscovery
+        ? {
+            liveModelDiscovery: {
+              status: nvidiaDiscovery.status,
+              ...(nvidiaDiscovery.message
+                ? { message: nvidiaDiscovery.message }
+                : {}),
+            },
+          }
+        : {}),
     };
   });
+}
+
+/**
+ * Curated DB models come first (they carry display name + capability
+ * metadata); live-discovered models append on top, deduped against the
+ * curated set by modelId. Live models inherit the provider's modelId as
+ * their displayName because NVIDIA's /v1/models endpoint doesn't return a
+ * friendly label.
+ *
+ * Exported for unit testing.
+ */
+export function buildModelSuggestions(
+  providerId: string,
+  curated: ProviderModelRow[],
+  discovery: DiscoveryResult | null,
+): AgentProviderCard['modelSuggestions'] {
+  const seen = new Set<string>();
+  const suggestions: AgentProviderCard['modelSuggestions'] = [];
+
+  for (const model of curated) {
+    seen.add(model.model_id);
+    const capabilities = resolveModelCapabilities({
+      providerId,
+      modelId: model.model_id,
+    });
+    suggestions.push({
+      modelId: model.model_id,
+      displayName: model.display_name,
+      contextWindowTokens: model.context_window_tokens,
+      defaultMaxOutputTokens: model.default_max_output_tokens,
+      supportsTools: capabilities.supports_tools,
+      supportsVision: capabilities.supports_vision,
+    });
+  }
+
+  if (discovery?.status === 'ok') {
+    for (const live of discovery.models) {
+      if (seen.has(live.modelId)) continue;
+      seen.add(live.modelId);
+      const capabilities = resolveModelCapabilities({
+        providerId,
+        modelId: live.modelId,
+      });
+      suggestions.push({
+        modelId: live.modelId,
+        displayName: live.modelId,
+        contextWindowTokens: 0,
+        defaultMaxOutputTokens: 0,
+        supportsTools: capabilities.supports_tools,
+        supportsVision: capabilities.supports_vision,
+      });
+    }
+  }
+
+  return suggestions;
 }
 
 export async function buildAiAgentsPageData(): Promise<AiAgentsPageData> {
@@ -954,6 +1050,13 @@ export async function putAiProviderCredentialRoute(
     }
 
     await verifyProviderSecret(auth.userId, providerId, scope);
+    if (providerId === NVIDIA_PROVIDER_ID && apiKey) {
+      // Drop any cached discovery for this exact key. Handles the edge
+      // case where the user re-pastes the same key after NVIDIA invalidated
+      // it server-side — without this, the stale "ok" cache hides the
+      // failure for up to an hour.
+      await invalidateNvidiaDiscovery(apiKey, getDefaultCache());
+    }
     return getProviderCardOrNotFound(providerId);
   });
 }
