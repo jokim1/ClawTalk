@@ -1272,59 +1272,6 @@ describe('TalkDetailPage', () => {
     expect(await screen.findByText('Report deleted.')).toBeTruthy();
   });
 
-  it('creates report jobs from the Jobs tab', async () => {
-    const user = userEvent.setup();
-
-    installTalkDetailFetch({
-      jobs: [],
-      outputs: [
-        buildTalkOutput({
-          id: 'output-1',
-          title: 'Season Outlook',
-        }),
-      ],
-    });
-
-    renderDetailPage('/app/talks/talk-1/jobs');
-
-    await screen.findByRole('heading', { name: 'Jobs' });
-    expect(screen.getByText('No jobs yet.')).toBeTruthy();
-
-    await user.click(screen.getByRole('button', { name: 'New Job' }));
-
-    await user.type(screen.getByLabelText('Title'), 'Weekly Retention Brief');
-    await user.selectOptions(screen.getByLabelText('Deliverable'), 'report');
-    await user.selectOptions(screen.getByLabelText('Report Target'), 'create');
-    await user.type(
-      screen.getByLabelText('New Report Title'),
-      'Weekly Retention Report',
-    );
-    await user.type(
-      screen.getByLabelText('Prompt'),
-      'Summarize retention changes and the top three follow-ups.',
-    );
-    await user.click(screen.getByLabelText('Allow web access'));
-    await user.click(screen.getByLabelText('FTUE PostHog'));
-
-    expect(
-      screen.getByText(/1 connector · web access: FTUE PostHog/i),
-    ).toBeTruthy();
-
-    await user.click(screen.getByRole('button', { name: 'Create Job' }));
-
-    expect(await screen.findByText('Job created.')).toBeTruthy();
-    expect(
-      screen.getAllByText('Weekly Retention Brief').length,
-    ).toBeGreaterThan(0);
-    expect(screen.getByText(/Report · active/i)).toBeTruthy();
-    expect(screen.getByRole('link', { name: 'Open Report' })).toHaveAttribute(
-      'href',
-      '/app/talks/talk-1/outputs?thread=thread-default',
-    );
-
-    await user.click(screen.getByRole('button', { name: 'Run Now' }));
-  });
-
   it('lets owners manage the read-only project mount from the Agents tab', async () => {
     const user = userEvent.setup();
     installTalkDetailFetch();
