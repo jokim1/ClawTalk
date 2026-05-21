@@ -203,8 +203,13 @@ describe('SettingsPage', () => {
     );
 
     await screen.findByRole('heading', { name: 'Registered Agents' });
-    expect(screen.getByText('Claude Main')).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'Main Agent' })).toBeTruthy();
+    // Agent cards + the Main Agent section render after the async agents
+    // fetch completes; the panel heading shows up first while the rest is
+    // still loading, so wait for both pieces explicitly.
+    expect(await screen.findByText('Claude Main')).toBeTruthy();
+    expect(
+      await screen.findByRole('heading', { name: 'Main Agent' }),
+    ).toBeTruthy();
   });
 });
 
