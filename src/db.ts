@@ -53,6 +53,7 @@ export interface DbScopeEnvBindings {
   DB_EVENT_HUB_URL?: string;
   USER_EVENT_HUB?: UserEventHubNamespace;
   TALK_RUN_QUEUE?: TalkRunQueueLike;
+  ATTACHMENTS?: AttachmentBucketLike;
 }
 
 interface UserEventHubNamespace {
@@ -74,6 +75,25 @@ interface TalkRunQueueLike {
     message: unknown,
     options?: { contentType?: string; delaySeconds?: number },
   ): Promise<void>;
+}
+
+// Minimal R2Bucket surface — only the methods attachment-storage calls.
+// Kept inline to avoid importing @cloudflare/workers-types globals.
+export interface AttachmentBucketLike {
+  put(
+    key: string,
+    value: ArrayBuffer | ArrayBufferView | ReadableStream | Blob | string,
+    options?: { httpMetadata?: { contentType?: string } },
+  ): Promise<{ key: string; size: number }>;
+  get(key: string): Promise<AttachmentBucketObjectBody | null>;
+  delete(key: string): Promise<void>;
+  head(key: string): Promise<{ key: string; size: number } | null>;
+}
+export interface AttachmentBucketObjectBody {
+  key: string;
+  size: number;
+  httpMetadata?: { contentType?: string };
+  arrayBuffer(): Promise<ArrayBuffer>;
 }
 
 // ─── Notify queue entry (bare array on ALS) ─────────────────────────────

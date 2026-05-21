@@ -38,6 +38,7 @@ export interface Env {
   DB: { connectionString: string };
   ASSETS: { fetch: (request: Request) => Promise<Response> };
   JWKS_CACHE: KVNamespace;
+  ATTACHMENTS: R2Bucket;
   TALK_RUN_QUEUE: Queue;
   USER_EVENT_HUB: UserEventHubNamespace;
   SUPABASE_PROJECT_URL: string;
@@ -61,6 +62,29 @@ interface Queue {
     options?: { contentType?: string; delaySeconds?: number },
   ): Promise<void>;
   sendBatch(messages: Array<{ body: unknown }>): Promise<void>;
+}
+
+// Minimal R2Bucket surface — only the methods attachment-storage calls.
+// See src/clawtalk/talks/attachment-storage.ts. Re-exported from db.ts
+// under DbScopeEnvBindings so request-scoped helpers can pull it from
+// the ALS store without an explicit param.
+interface R2Bucket {
+  put(
+    key: string,
+    value: ArrayBuffer | ArrayBufferView | ReadableStream | Blob | string,
+    options?: { httpMetadata?: { contentType?: string } },
+  ): Promise<R2Object>;
+  get(key: string): Promise<R2ObjectBody | null>;
+  delete(key: string): Promise<void>;
+  head(key: string): Promise<R2Object | null>;
+}
+interface R2Object {
+  key: string;
+  size: number;
+  httpMetadata?: { contentType?: string };
+}
+interface R2ObjectBody extends R2Object {
+  arrayBuffer(): Promise<ArrayBuffer>;
 }
 
 interface UserEventHubNamespace {
@@ -122,6 +146,7 @@ export default {
           DB_EVENT_HUB_URL: env.DB_EVENT_HUB_URL,
           USER_EVENT_HUB: env.USER_EVENT_HUB,
           TALK_RUN_QUEUE: env.TALK_RUN_QUEUE,
+          ATTACHMENTS: env.ATTACHMENTS,
         },
         async () => getWorkerApp().fetch(request, env),
       );

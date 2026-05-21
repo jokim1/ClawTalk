@@ -1,25 +1,38 @@
-import fs from 'fs/promises';
 import path from 'path';
 
-import { STORE_DIR } from '../../config.js';
+import {
+  getRequestScopeEnvAndCtx,
+  type AttachmentBucketLike,
+} from '../../db.js';
 
 // ---------------------------------------------------------------------------
-// Constants
+// Bucket resolution
 // ---------------------------------------------------------------------------
 
-const ATTACHMENTS_DIR = path.join(STORE_DIR, 'attachments');
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+/**
+ * Pull the R2 bucket binding from the request-scoped env that
+ * `withRequestScopedDb` populated. Every caller of these helpers runs
+ * inside that scope (HTTP routes via worker.ts fetch handler, queue
+ * consumer via the queue() handler, scheduler via scheduled()), so the
+ * binding is always available in production.
+ *
+ * Tests that exercise the storage adapter must pass the bucket via
+ * `withRequestScopedDb(url, ctx, { ATTACHMENTS: mockBucket }, ...)`.
+ */
+function requireBucket(): AttachmentBucketLike {
+  const { env } = getRequestScopeEnvAndCtx();
+  const bucket = env?.ATTACHMENTS;
+  if (!bucket) {
+    throw new Error(
+      'attachment-storage: ATTACHMENTS R2 binding missing from request scope',
+    );
+  }
+  return bucket;
+}
 
 function extensionFromFileName(fileName: string): string {
   const ext = path.extname(fileName).toLowerCase();
   return ext || '.bin';
-}
-
-function storageKeyToPath(storageKey: string): string {
-  return path.join(STORE_DIR, storageKey);
 }
 
 // ---------------------------------------------------------------------------
@@ -27,56 +40,61 @@ function storageKeyToPath(storageKey: string): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Persist a raw file to disk. Returns the storage key (relative to STORE_DIR)
- * that should be saved in the `talk_message_attachments.storage_key` column.
+ * Persist a raw file to the ATTACHMENTS R2 bucket. Returns the storage
+ * key that should be saved in the `*.storage_key` columns.
  */
 export async function saveAttachmentFile(
   attachmentId: string,
   talkId: string,
   content: Buffer,
   fileName: string,
+  mimeType?: string,
 ): Promise<string> {
+  const bucket = requireBucket();
   const ext = extensionFromFileName(fileName);
-  const dir = path.join(ATTACHMENTS_DIR, talkId);
-  await fs.mkdir(dir, { recursive: true });
-
   const storageKey = `attachments/${talkId}/${attachmentId}${ext}`;
-  const filePath = path.join(STORE_DIR, storageKey);
-  await fs.writeFile(filePath, content);
+  // Slice the Buffer into a plain ArrayBuffer — R2 accepts ArrayBuffer
+  // / ArrayBufferView, and a fresh slice avoids leaking the Buffer's
+  // backing pool past the request boundary.
+  const body = content.buffer.slice(
+    content.byteOffset,
+    content.byteOffset + content.byteLength,
+  ) as ArrayBuffer;
+  await bucket.put(storageKey, body, {
+    httpMetadata: mimeType ? { contentType: mimeType } : undefined,
+  });
   return storageKey;
 }
 
 /**
- * Load a raw file from disk by its storage key.
+ * Load a raw file from R2 by its storage key. Throws if missing.
  */
 export async function loadAttachmentFile(storageKey: string): Promise<Buffer> {
-  const filePath = storageKeyToPath(storageKey);
-  return fs.readFile(filePath);
+  const bucket = requireBucket();
+  const obj = await bucket.get(storageKey);
+  if (!obj) {
+    throw new Error(`attachment-storage: object not found: ${storageKey}`);
+  }
+  const ab = await obj.arrayBuffer();
+  return Buffer.from(ab);
 }
 
 /**
- * Delete a file from disk by its storage key. Silently ignores missing files.
+ * Delete a file from R2 by its storage key. R2.delete is idempotent —
+ * missing keys do not throw.
  */
 export async function deleteAttachmentFile(storageKey: string): Promise<void> {
-  const filePath = storageKeyToPath(storageKey);
-  try {
-    await fs.unlink(filePath);
-  } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-  }
+  const bucket = requireBucket();
+  await bucket.delete(storageKey);
 }
 
 /**
- * Check whether a file exists on disk.
+ * Check whether a file exists in R2 (via HEAD).
  */
 export async function attachmentFileExists(
   storageKey: string,
 ): Promise<boolean> {
-  const filePath = storageKeyToPath(storageKey);
-  try {
-    await fs.access(filePath);
-    return true;
-  } catch {
-    return false;
-  }
+  const bucket = requireBucket();
+  const head = await bucket.head(storageKey);
+  return head !== null;
 }

@@ -732,8 +732,8 @@ export async function createTalkContextSource(input: {
   createdBy: string;
 }): Promise<ContextSourceSnapshot> {
   const count = await getTalkContextSourceCount(input.talkId);
-  if (count >= 20) {
-    throw new Error('Maximum 20 saved sources per talk');
+  if (count >= 50) {
+    throw new Error('Maximum 50 saved sources per talk');
   }
 
   const title = input.title.trim();

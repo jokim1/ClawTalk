@@ -26,11 +26,11 @@ import {
   type TalkStateEntrySnapshot,
 } from '../../db/index.js';
 import {
-  ALLOWED_ATTACHMENT_MIME_TYPES,
   extractAttachmentText,
   inferSupportedAttachmentMimeType,
   isImageAttachmentMimeType,
   MAX_ATTACHMENT_SIZE,
+  MAX_IMAGE_ATTACHMENT_SIZE,
 } from '../../talks/attachment-extraction.js';
 import {
   deleteAttachmentFile,
@@ -594,57 +594,59 @@ export async function uploadTalkContextSourceRoute(input: {
 
     // Check source count limit
     const count = await getTalkContextSourceCount(input.talkId);
-    if (count >= 20) {
-      return badRequest('source_limit', 'Maximum 20 saved sources per talk.');
+    if (count >= 50) {
+      return badRequest('source_limit', 'Maximum 50 saved sources per talk.');
     }
 
     const { file } = input;
 
-    // MIME inference with extension fallback
+    // MIME inference with extension fallback. Accepts both docs and
+    // images — images are surfaced to vision-capable agents in
+    // assembleSystemPrompt; non-vision agents get a manifest note.
     const mimeType = inferSupportedAttachmentMimeType(file.name, file.type);
-
-    // Validate MIME type — exclude images (handled by vision work)
-    if (
-      !mimeType ||
-      !ALLOWED_ATTACHMENT_MIME_TYPES.has(mimeType) ||
-      isImageAttachmentMimeType(mimeType)
-    ) {
+    if (!mimeType) {
       return badRequest(
         'unsupported_file_type',
-        `File type "${file.type || 'unknown'}" is not supported for context sources. Images are not accepted.`,
+        `File type "${file.type || 'unknown'}" is not supported for context sources.`,
       );
     }
 
-    // Validate size
-    if (file.data.length > MAX_ATTACHMENT_SIZE) {
+    // Per-type size cap — images are smaller because they ride in
+    // the system prompt as base64 on every turn.
+    const isImage = isImageAttachmentMimeType(mimeType);
+    const sizeCap = isImage ? MAX_IMAGE_ATTACHMENT_SIZE : MAX_ATTACHMENT_SIZE;
+    if (file.data.length > sizeCap) {
       return badRequest(
         'file_too_large',
-        `File exceeds maximum size of ${MAX_ATTACHMENT_SIZE / (1024 * 1024)} MB.`,
+        `File exceeds maximum size of ${sizeCap / (1024 * 1024)} MB.`,
       );
     }
 
     const sourceId = randomUUID();
 
-    // Save file to disk (uses attachments/ prefix for storage path)
+    // Save file to R2 (uses attachments/ prefix for storage path).
     const storageKey = await saveAttachmentFile(
       sourceId,
       input.talkId,
       file.data,
       file.name,
+      mimeType,
     );
 
-    // Extract text via the good pipeline
+    // Extract text for docs only — images carry no extractable text.
     let extractedText: string | null = null;
     let extractionError: string | null = null;
-    try {
-      extractedText = await extractAttachmentText(
-        file.data,
-        mimeType,
-        file.name,
-      );
-    } catch (err) {
-      extractionError =
-        err instanceof Error ? err.message : 'Unknown extraction error';
+    if (!isImage) {
+      try {
+        extractedText = await extractAttachmentText(
+          file.data,
+          mimeType,
+          file.name,
+        );
+      } catch (err) {
+        extractionError =
+          err instanceof Error ? err.message : 'Unknown extraction error';
+      }
     }
 
     const title = input.title?.trim() || file.name;
