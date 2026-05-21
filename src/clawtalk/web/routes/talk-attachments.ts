@@ -128,12 +128,13 @@ export async function uploadTalkAttachmentRoute(input: {
 
     const attachmentId = randomUUID();
 
-    // Save raw file to disk
+    // Save raw file to R2.
     const storageKey = await saveAttachmentFile(
       attachmentId,
       input.talkId,
       file.data,
       file.name,
+      mimeType,
     );
 
     // Create DB record

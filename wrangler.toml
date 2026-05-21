@@ -50,6 +50,21 @@ localConnectionString = "postgresql://postgres:postgres@127.0.0.1:54432/postgres
 binding = "JWKS_CACHE"
 id = "6fc09c6972224a32971b573a8628e5de"
 
+# ─── R2 — Talk attachments + context source blobs ─────────────────────
+#
+# Backs `attachment-storage.ts` (Talk-level Context source files +
+# per-message attachments). Replaces the Node-mode local filesystem
+# path, which has no Workers analogue.
+#
+# Create via:
+#   wrangler r2 bucket create clawtalk-attachments
+#
+# `wrangler dev` provisions a local R2 simulator automatically — no
+# preview bucket required.
+[[r2_buckets]]
+binding = "ATTACHMENTS"
+bucket_name = "clawtalk-attachments"
+
 # ─── Queues — multi-agent run dispatch ────────────────────────────────
 #
 # Create via:

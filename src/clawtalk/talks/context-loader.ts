@@ -85,6 +85,14 @@ export interface ContextPackage {
   /** Auditable snapshot of the context package actually used for the run */
   contextSnapshot: TalkRunContextSnapshot;
 
+  /**
+   * Talk-level Context image sources to attach as vision content blocks
+   * on the current user turn. Populated only when the caller declared
+   * the active agent supports vision (`agentSupportsVision: true`).
+   * Otherwise empty — non-vision agents see a manifest note instead.
+   */
+  contextImageSources: ContextImageSourceRef[];
+
   /** Metadata about the loaded context */
   metadata: {
     talkId: string;
@@ -97,6 +105,16 @@ export interface ContextPackage {
     stateEntryCount: number;
     hasSummary: boolean;
   };
+}
+
+export interface ContextImageSourceRef {
+  ref: string;
+  id: string;
+  title: string;
+  fileName: string;
+  mimeType: string;
+  storageKey: string;
+  fileSize: number;
 }
 
 export interface TalkRunContextStateEntrySnapshot {
@@ -343,6 +361,13 @@ export async function loadTalkContext(
     jobPolicy?: TalkJobExecutionPolicy | null;
     effectiveTools?: EffectiveToolAccess[];
     channelContextSection?: string | null;
+    /**
+     * Whether the active agent's model supports vision. Controls how
+     * image Context sources are surfaced: vision-capable models get
+     * the binary attached on the user turn; non-vision models see a
+     * "hidden" note in the source manifest.
+     */
+    agentSupportsVision?: boolean;
   },
 ): Promise<ContextPackage> {
   const db = getDbPg();
@@ -366,7 +391,25 @@ export async function loadTalkContext(
 
   // Step 2: Build source manifest
   const sources = await fetchSources(db, talkId);
-  const sourceLines = buildSourceManifest(sources);
+  const agentSupportsVision = options?.agentSupportsVision ?? false;
+  const sourceLines = buildSourceManifest(sources, agentSupportsVision);
+  const contextImageSources: ContextImageSourceRef[] = agentSupportsVision
+    ? sources
+        .filter(isImageSource)
+        .filter((row) => row.storage_key)
+        .map((row) => ({
+          ref: row.source_ref,
+          id: row.id,
+          title: row.title,
+          fileName: row.file_name ?? `${row.source_ref}.bin`,
+          mimeType: row.mime_type!,
+          storageKey: row.storage_key!,
+          fileSize:
+            typeof row.file_size === 'string'
+              ? Number(row.file_size) || 0
+              : (row.file_size ?? 0),
+        }))
+    : [];
   const retrievedContext = buildRetrievedContext({
     query: options?.retrievalQuery ?? null,
     personaRole,
@@ -528,6 +571,7 @@ export async function loadTalkContext(
     history,
     estimatedTokens,
     contextSnapshot,
+    contextImageSources,
     metadata,
   };
 }
@@ -571,11 +615,15 @@ async function fetchSummary(db: Sql, talkId: string): Promise<string | null> {
 // ---------------------------------------------------------------------------
 
 interface SourceRow {
+  id: string;
   source_ref: string;
   source_type: string;
   title: string;
   source_url: string | null;
   file_name: string | null;
+  file_size: number | string | null;
+  mime_type: string | null;
+  storage_key: string | null;
   extracted_text: string | null;
   status: string;
 }
@@ -583,11 +631,15 @@ interface SourceRow {
 async function fetchSources(db: Sql, talkId: string): Promise<SourceRow[]> {
   return await db<SourceRow[]>`
     select
+      id,
       source_ref,
       source_type,
       title,
       source_url,
       file_name,
+      file_size,
+      mime_type,
+      storage_key,
       extracted_text,
       status
     from public.talk_context_sources
@@ -596,7 +648,24 @@ async function fetchSources(db: Sql, talkId: string): Promise<SourceRow[]> {
   `;
 }
 
-function buildSourceManifest(sources: SourceRow[]): Array<{
+const IMAGE_SOURCE_MIME_TYPES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+]);
+
+function isImageSource(row: SourceRow): boolean {
+  return (
+    row.source_type === 'file' &&
+    !!row.mime_type &&
+    IMAGE_SOURCE_MIME_TYPES.has(row.mime_type)
+  );
+}
+
+function buildSourceManifest(
+  sources: SourceRow[],
+  agentSupportsVision: boolean,
+): Array<{
   ref: string;
   title: string;
   sourceType: string;
@@ -611,7 +680,12 @@ function buildSourceManifest(sources: SourceRow[]): Array<{
 
     // Build the source reference line (e.g., "[S1] Title - URL")
     let refLine = `[${ref}] ${source.title}`;
-    if (source.source_type === 'url' && source.source_url) {
+    if (isImageSource(source)) {
+      const fileLabel = source.file_name ? ` ${source.file_name}` : '';
+      refLine += agentSupportsVision
+        ? ` (image —${fileLabel}; attached to this turn)`
+        : ` (image —${fileLabel}; hidden, this agent's model lacks vision)`;
+    } else if (source.source_type === 'url' && source.source_url) {
       refLine += ` - ${source.source_url}`;
     } else if (source.source_type === 'file' && source.file_name) {
       refLine += ` (${source.file_name})`;

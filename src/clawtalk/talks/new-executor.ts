@@ -49,7 +49,10 @@ import {
 } from '../agents/agent-registry.js';
 import { modelSupportsVision } from '../llm/capabilities.js';
 import type { TalkPersonaRole } from '../llm/types.js';
-import { loadTalkContext } from './context-loader.js';
+import {
+  loadTalkContext,
+  type ContextImageSourceRef,
+} from './context-loader.js';
 import { isImageAttachmentMimeType } from './attachment-extraction.js';
 
 // ---------------------------------------------------------------------------
@@ -1727,6 +1730,50 @@ function messageContentToPlainText(content: LlmMessage['content']): string {
     .join('\n');
 }
 
+async function prependTalkContextImages(
+  base: LlmMessage['content'],
+  contextImageSources: ContextImageSourceRef[],
+): Promise<LlmMessage['content']> {
+  if (contextImageSources.length === 0) return base;
+
+  const imageBlocks: LlmContentBlock[] = [];
+  for (const source of contextImageSources) {
+    let base64: string;
+    try {
+      const buffer = await loadAttachmentFile(source.storageKey);
+      base64 = buffer.toString('base64');
+    } catch (err) {
+      logger.warn(
+        { err, sourceRef: source.ref, storageKey: source.storageKey },
+        'Failed to load Talk context image source — skipping',
+      );
+      continue;
+    }
+    imageBlocks.push({
+      type: 'text',
+      text: `Talk context image [${source.ref}] "${source.title}" (${source.fileName}):`,
+    });
+    imageBlocks.push({
+      type: 'image',
+      mimeType: source.mimeType,
+      data: base64,
+      detail: 'auto',
+    });
+  }
+
+  if (imageBlocks.length === 0) return base;
+
+  const headerBlock: LlmContentBlock = {
+    type: 'text',
+    text: 'Talk-level Context images (persisted across this Talk, available to you on every turn):',
+  };
+
+  if (typeof base === 'string') {
+    return [headerBlock, ...imageBlocks, { type: 'text', text: base }];
+  }
+  return [headerBlock, ...imageBlocks, ...base];
+}
+
 async function buildAttachmentAwareMessageContent(input: {
   attachmentRows: MessageAttachmentRecord[];
   userMessageText: string;
@@ -1984,6 +2031,10 @@ export class CleanTalkExecutor implements TalkExecutor {
         plan.effectiveTools,
         jobPolicy,
       );
+      const agentSupportsVision = modelSupportsVision(
+        activeAgent.provider_id,
+        activeAgent.model_id,
+      );
       const contextPackage = await loadTalkContext(
         input.talkId,
         modelContextWindow,
@@ -1996,6 +2047,7 @@ export class CleanTalkExecutor implements TalkExecutor {
           jobPolicy,
           effectiveTools: scopedEffectiveTools,
           channelContextSection: channelExecutionContext.channelContextSection,
+          agentSupportsVision,
         },
       );
       await setTalkRunMetadata(input.runId, {
@@ -2155,11 +2207,15 @@ export class CleanTalkExecutor implements TalkExecutor {
         estimatedContextTokens: contextPackage.estimatedTokens,
         userMessageText: orderedStep.userMessageText,
       });
-      const directUserMessage = await buildAttachmentAwareMessageContent({
+      const directUserMessageBase = await buildAttachmentAwareMessageContent({
         attachmentRows: currentAttachmentRows,
         userMessageText: orderedStep.userMessageText,
         attachmentHeading: 'Current message attachments:',
       });
+      const directUserMessage = await prependTalkContextImages(
+        directUserMessageBase,
+        contextPackage.contextImageSources,
+      );
       const result = await executeWithAgent(
         activeAgent.id,
         {

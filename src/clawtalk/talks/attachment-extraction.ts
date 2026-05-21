@@ -111,8 +111,8 @@ const SUPPORTED_ATTACHMENT_EXTENSION_MIME_MAP: Record<string, string> = {
   '.webp': 'image/webp',
 };
 
-export const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024; // 10 MB
-export const MAX_IMAGE_ATTACHMENT_SIZE = 5 * 1024 * 1024; // 5 MB
+export const MAX_ATTACHMENT_SIZE = 25 * 1024 * 1024; // 25 MB
+export const MAX_IMAGE_ATTACHMENT_SIZE = 10 * 1024 * 1024; // 10 MB
 export const MAX_ATTACHMENTS_PER_MESSAGE = 5;
 
 function normalizeMimeType(mimeType: string | null | undefined): string | null {
