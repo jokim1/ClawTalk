@@ -47,7 +47,6 @@ import {
   createTalkOutput,
   createTalkJob,
   DataConnector,
-  clearTalkProjectMount,
   deleteTalkResource,
   deleteTalkChannel,
   deleteTalkChannelBindingState,
@@ -124,7 +123,6 @@ import {
   testTalkChannelBinding,
   unquarantineTalkChannelBinding,
   retryTalkChannelDeliveryFailuresCapped,
-  updateTalkProjectMount,
   upsertTalkChannelBindingState,
   updateTalkTools,
   updateTalkAgents,
@@ -2879,11 +2877,6 @@ export function TalkDetailPage({
     message?: string;
   }>({ status: 'idle' });
   const [orchestrationMenuOpen, setOrchestrationMenuOpen] = useState(false);
-  const [projectPathDraft, setProjectPathDraft] = useState('');
-  const [projectPathState, setProjectPathState] = useState<{
-    status: 'idle' | 'saving' | 'error' | 'success';
-    message?: string;
-  }>({ status: 'idle' });
 
   // Context tab state
   const [contextGoal, setContextGoal] = useState<ContextGoal | null>(null);
@@ -3970,7 +3963,6 @@ export function TalkDetailPage({
   const canEditJobs = canEditAgents;
   const canManageTalkConnectors =
     accessRole === 'owner' || accessRole === 'admin';
-  const canManageProjectPath = accessRole === 'owner' || accessRole === 'admin';
   const canEditChannels = canEditAgents;
   const canBrowseChannelConnections = canManageTalkConnectors;
   const selectedJob = useMemo(
@@ -4049,10 +4041,6 @@ export function TalkDetailPage({
       ? state.talk.orchestrationMode
       : 'ordered';
   const orchestrationModeLabel = getOrchestrationModeLabel(orchestrationMode);
-  useEffect(() => {
-    if (state.kind !== 'ready' || !state.talk) return;
-    setProjectPathDraft(state.talk.projectPath ?? '');
-  }, [state.kind, state.talk]);
   const showOrchestrationSelector = agents.length >= 2;
   useEffect(() => {
     if (showOrchestrationSelector && orchestrationState.status !== 'saving') {
@@ -7532,59 +7520,6 @@ export function TalkDetailPage({
     [handleUnauthorized, state],
   );
 
-  const handleSaveProjectPath = useCallback(async () => {
-    if (state.kind !== 'ready' || !state.talk || !canManageProjectPath) return;
-    setProjectPathState({ status: 'saving' });
-    try {
-      const updatedTalk = await updateTalkProjectMount({
-        talkId: state.talk.id,
-        projectPath: projectPathDraft,
-      });
-      dispatch({ type: 'TALK_UPDATED', talk: updatedTalk });
-      setProjectPathState({
-        status: 'success',
-        message: 'Project mount updated.',
-      });
-    } catch (err) {
-      if (err instanceof UnauthorizedError) {
-        handleUnauthorized();
-        return;
-      }
-      setProjectPathState({
-        status: 'error',
-        message:
-          err instanceof Error
-            ? err.message
-            : 'Failed to update the project mount.',
-      });
-    }
-  }, [canManageProjectPath, handleUnauthorized, projectPathDraft, state]);
-
-  const handleClearProjectPath = useCallback(async () => {
-    if (state.kind !== 'ready' || !state.talk || !canManageProjectPath) return;
-    setProjectPathState({ status: 'saving' });
-    try {
-      const updatedTalk = await clearTalkProjectMount(state.talk.id);
-      dispatch({ type: 'TALK_UPDATED', talk: updatedTalk });
-      setProjectPathState({
-        status: 'success',
-        message: 'Project mount cleared.',
-      });
-    } catch (err) {
-      if (err instanceof UnauthorizedError) {
-        handleUnauthorized();
-        return;
-      }
-      setProjectPathState({
-        status: 'error',
-        message:
-          err instanceof Error
-            ? err.message
-            : 'Failed to clear the project mount.',
-      });
-    }
-  }, [canManageProjectPath, handleUnauthorized, state]);
-
   const handleCreateThread = useCallback(async () => {
     if (state.kind !== 'ready' || !state.talk) return;
     try {
@@ -8628,78 +8563,6 @@ export function TalkDetailPage({
                 Nicknames are local to this talk. The primary agent responds to
                 normal user messages by default.
               </p>
-              {canManageProjectPath ? (
-                <div className="talk-llm-card">
-                  <div className="connector-card-header">
-                    <div>
-                      <h3>Project Mount</h3>
-                      <p className="talk-llm-meta">
-                        Container-backed single-agent Talk runs can mount one
-                        project directory read-only at `/workspace/project`.
-                      </p>
-                    </div>
-                  </div>
-                  <div className="connector-attach-row">
-                    <label style={{ flex: 1 }}>
-                      <span className="sr-only">Project path</span>
-                      <input
-                        type="text"
-                        value={projectPathDraft}
-                        onChange={(event) => {
-                          setProjectPathDraft(event.target.value);
-                          setProjectPathState({ status: 'idle' });
-                        }}
-                        placeholder="/absolute/path/to/project"
-                        disabled={projectPathState.status === 'saving'}
-                        style={{ width: '100%' }}
-                      />
-                    </label>
-                    <button
-                      type="button"
-                      className="secondary-btn"
-                      onClick={() => void handleSaveProjectPath()}
-                      disabled={projectPathState.status === 'saving'}
-                    >
-                      {projectPathState.status === 'saving'
-                        ? 'Saving…'
-                        : 'Save Path'}
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-btn"
-                      onClick={() => void handleClearProjectPath()}
-                      disabled={
-                        projectPathState.status === 'saving' ||
-                        !talk.projectPath
-                      }
-                    >
-                      Clear
-                    </button>
-                  </div>
-                  <p className="talk-llm-meta">
-                    Current mount:{' '}
-                    {talk.projectPath
-                      ? talk.projectPath
-                      : 'No project path set'}
-                  </p>
-                  {projectPathState.status === 'error' ? (
-                    <div
-                      className="inline-banner inline-banner-error"
-                      role="alert"
-                    >
-                      {projectPathState.message}
-                    </div>
-                  ) : null}
-                  {projectPathState.status === 'success' ? (
-                    <div
-                      className="inline-banner inline-banner-success"
-                      role="status"
-                    >
-                      {projectPathState.message}
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
               {agentDrafts.map((agent) => (
                 <div key={agent.id} className="agent-editor-card">
                   <label>

@@ -161,7 +161,6 @@ import {
 import { dispatchRun } from '../talks/queue-producer.js';
 import {
   cancelTalkChat,
-  clearTalkProjectMountRoute,
   enqueueTalkChat,
   createTalkFolderRoute,
   createTalkRoute,
@@ -169,7 +168,6 @@ import {
   deleteTalkMessagesRoute,
   deleteTalkRoute,
   getTalkPolicyRoute,
-  getTalkProjectMountRoute,
   getTalkRoute,
   getTalkRunContextRoute,
   listTalkAgentsRoute,
@@ -183,7 +181,6 @@ import {
   searchTalkMessagesRoute,
   updateTalkAgentsRoute,
   updateTalkPolicyRoute,
-  updateTalkProjectMountRoute,
 } from './routes/talks.js';
 import {
   getEffectiveToolsRoute,
@@ -750,64 +747,6 @@ function buildApp(): Hono<{ Variables: Variables }> {
         payload.data.orchestrationMode === 'panel'
           ? payload.data.orchestrationMode
           : undefined,
-    });
-    return jsonResponse(result);
-  });
-
-  app.get('/api/v1/talks/:talkId/project-mount', async (c) => {
-    const auth = c.get('auth');
-    const rl = checkRateLimit({ userId: auth.userId, bucket: 'read' });
-    if (!rl.allowed) return rateLimitedResponse(c, rl);
-    const talkId = decodeIdParam(c, 'talkId');
-    if (!talkId.ok) return talkId.response;
-    const result = await getTalkProjectMountRoute({
-      auth,
-      talkId: talkId.value,
-    });
-    return jsonResponse(result);
-  });
-
-  app.put('/api/v1/talks/:talkId/project-mount', async (c) => {
-    const auth = c.get('auth');
-    const rl = checkRateLimit({ userId: auth.userId, bucket: 'write' });
-    if (!rl.allowed) return rateLimitedResponse(c, rl);
-    const csrfFail = checkCsrf(c, auth);
-    if (csrfFail) return csrfFail;
-    const talkId = decodeIdParam(c, 'talkId');
-    if (!talkId.ok) return talkId.response;
-    const payload = await readJsonBody<{ projectPath?: string }>(c);
-    if (!payload.ok) return invalidJsonResponse(c, payload.error);
-    if (typeof payload.data.projectPath !== 'string') {
-      return c.json(
-        {
-          ok: false,
-          error: {
-            code: 'invalid_project_path',
-            message: 'projectPath must be a string',
-          },
-        },
-        400,
-      );
-    }
-    const result = await updateTalkProjectMountRoute({
-      auth,
-      talkId: talkId.value,
-      projectPath: payload.data.projectPath,
-    });
-    return jsonResponse(result);
-  });
-
-  app.delete('/api/v1/talks/:talkId/project-mount', async (c) => {
-    const auth = c.get('auth');
-    const rl = checkRateLimit({ userId: auth.userId, bucket: 'write' });
-    if (!rl.allowed) return rateLimitedResponse(c, rl);
-    const csrfFail = checkCsrf(c, auth);
-    if (csrfFail) return csrfFail;
-    const talkId = decodeIdParam(c, 'talkId');
-    if (!talkId.ok) return talkId.response;
-    const result = await clearTalkProjectMountRoute({
-      auth,
-      talkId: talkId.value,
     });
     return jsonResponse(result);
   });

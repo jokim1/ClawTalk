@@ -1272,37 +1272,6 @@ describe('TalkDetailPage', () => {
     expect(await screen.findByText('Report deleted.')).toBeTruthy();
   });
 
-  it('lets owners manage the read-only project mount from the Agents tab', async () => {
-    const user = userEvent.setup();
-    installTalkDetailFetch();
-
-    renderDetailPage('/app/talks/talk-1/agents');
-
-    await screen.findByRole('heading', { name: 'Agents' });
-    expect(screen.getByRole('heading', { name: 'Project Mount' })).toBeTruthy();
-
-    const input = screen.getByPlaceholderText('/absolute/path/to/project');
-    await user.clear(input);
-    await user.type(input, '/tmp/project-alpha');
-    await user.click(screen.getByRole('button', { name: 'Save Path' }));
-
-    expect(await screen.findByText('Project mount updated.')).toBeTruthy();
-    expect(
-      screen.getByText(/Current mount: \/tmp\/project-alpha/i),
-    ).toBeTruthy();
-  });
-
-  it('hides the project mount editor for non-owner talk editors', async () => {
-    installTalkDetailFetch({
-      talk: buildTalkWith({ accessRole: 'editor', ownerId: 'owner-2' }),
-    });
-
-    renderDetailPage('/app/talks/talk-1/agents');
-
-    await screen.findByRole('heading', { name: 'Agents' });
-    expect(screen.queryByRole('heading', { name: 'Project Mount' })).toBeNull();
-  });
-
   it('loads the Tools tab and renders capability summaries and effective access', async () => {
     const user = userEvent.setup();
     installTalkDetailFetch();
@@ -4647,7 +4616,6 @@ function buildTalk(): Talk {
     id: 'talk-1',
     ownerId: 'owner-1',
     title: 'Cal Football',
-    projectPath: null,
     orchestrationMode: 'ordered',
     agents: ['Claude'],
     status: 'active',
@@ -5517,22 +5485,6 @@ function installTalkDetailFetch(input?: {
         if (body.orchestrationMode) {
           talk.orchestrationMode = body.orchestrationMode;
         }
-        return jsonResponse(200, { ok: true, data: { talk } });
-      }
-
-      if (path === '/api/v1/talks/talk-1/project-mount' && method === 'PUT') {
-        const body = JSON.parse(String(init?.body || '{}')) as {
-          projectPath?: string;
-        };
-        talk.projectPath = body.projectPath?.trim() || null;
-        return jsonResponse(200, { ok: true, data: { talk } });
-      }
-
-      if (
-        path === '/api/v1/talks/talk-1/project-mount' &&
-        method === 'DELETE'
-      ) {
-        talk.projectPath = null;
         return jsonResponse(200, { ok: true, data: { talk } });
       }
 

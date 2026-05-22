@@ -19,7 +19,6 @@ import {
   type RegisteredAgentRecord,
 } from '../db/agent-accessors.js';
 import {
-  getTalkById,
   getTalkMessageById,
   getTalkRunById,
   setTalkRunMetadata,
@@ -117,9 +116,6 @@ function buildBrowserResumeSection(..._args: unknown[]): string {
 }
 function getContainerAllowedTools(..._args: unknown[]): string[] {
   return [];
-}
-function resolveValidatedProjectMountPath(..._args: unknown[]): string {
-  throw new Error('Project mounts are disabled (chassis removed).');
 }
 async function executeConnectorTool(
   ..._args: unknown[]
@@ -2079,11 +2075,6 @@ export class CleanTalkExecutor implements TalkExecutor {
       });
 
       if (plan.backend === 'container') {
-        const talk = await getTalkById(input.talkId);
-        const projectMountHostPath = resolveValidatedProjectMountPath(
-          talk?.project_path ?? null,
-          false,
-        );
         emitTalkEvent({
           type: 'talk_response_started',
           runId: input.runId,
@@ -2123,7 +2114,6 @@ export class CleanTalkExecutor implements TalkExecutor {
           threadId: input.threadId,
           triggerMessageId: input.triggerMessageId,
           historyMessageIds: contextPackage.metadata.historyMessageIds,
-          projectMountHostPath,
           jobPolicy,
           enableBrowserTools: scopedEffectiveTools.some(
             (tool) => tool.toolFamily === 'browser' && tool.enabled,

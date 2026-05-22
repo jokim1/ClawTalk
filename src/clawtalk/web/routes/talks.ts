@@ -29,7 +29,6 @@ import {
   renameTalkFolder,
   reorderTalkSidebarItem,
   searchTalkMessages,
-  updateTalkProjectPath,
   type TalkMessageRecord,
   type TalkRunRecord,
   type TalkSidebarTalkRecord,
@@ -42,18 +41,6 @@ type BrowserBlockMetadata = Record<string, unknown>;
 type BrowserResumeMetadata = Record<string, unknown>;
 type CarriedBrowserSessionMetadata = Record<string, unknown>;
 type ExecutionDecisionMetadata = Record<string, unknown>;
-type MountValidationResult =
-  | { allowed: true; realHostPath: string; reason?: never }
-  | { allowed: false; reason: string; realHostPath?: never };
-function validateMount(
-  _mount: { hostPath: string; readonly?: boolean },
-  _opts?: unknown,
-): MountValidationResult {
-  return {
-    allowed: false,
-    reason: 'Mount validation is disabled (chassis removed).',
-  };
-}
 import {
   getDefaultTalkAgentId,
   ensureTalkUsesUsableDefaultAgent,
@@ -84,7 +71,6 @@ interface TalkApiRecord {
   folderId: string | null;
   sortOrder: number;
   title: string | null;
-  projectPath: string | null;
   orchestrationMode: 'ordered' | 'panel';
   agents: string[];
   status: 'active' | 'paused' | 'archived';
@@ -273,14 +259,12 @@ async function toTalkApiRecord(
 ): Promise<TalkApiRecord> {
   const effectiveAgents = await listEffectiveTalkAgents(talk.id, ownerId);
   const agents = effectiveAgents.map((a) => a.nickname);
-  const canManageProjectPath = talk.access_role === 'owner';
   return {
     id: talk.id,
     ownerId: talk.owner_id,
     folderId: talk.folder_id,
     sortOrder: talk.sort_order,
     title: talk.topic_title,
-    projectPath: canManageProjectPath ? talk.project_path : null,
     orchestrationMode: talk.orchestration_mode,
     agents: agents.length > 0 ? agents : DEFAULT_TALK_AGENTS,
     status: talk.status,
@@ -490,50 +474,6 @@ function buildMessagePreview(content: string, maxChars = 140): string {
   const normalized = content.replace(/\s+/g, ' ').trim();
   if (normalized.length <= maxChars) return normalized;
   return `${normalized.slice(0, maxChars - 1).trimEnd()}…`;
-}
-
-function canManageTalkProjectMount(
-  talk: Pick<TalkWithAccessRecord, 'owner_id'>,
-  auth: AuthContext,
-): boolean {
-  return (
-    auth.role === 'owner' ||
-    auth.role === 'admin' ||
-    talk.owner_id === auth.userId
-  );
-}
-
-function validateTalkProjectPath(rawPath: string): {
-  projectPath?: string;
-  error?: { code: string; message: string };
-} {
-  const trimmed = rawPath.trim();
-  if (!trimmed) {
-    return {
-      error: {
-        code: 'invalid_project_path',
-        message: 'Project path is required',
-      },
-    };
-  }
-
-  const result = validateMount(
-    {
-      hostPath: trimmed,
-      readonly: true,
-    },
-    false,
-  );
-  if (!result.allowed || !result.realHostPath) {
-    return {
-      error: {
-        code: 'invalid_project_path',
-        message: result.reason || 'Project path is not allowed',
-      },
-    };
-  }
-
-  return { projectPath: result.realHostPath };
 }
 
 function normalizeTalkBrowserExecutionMessage(message: string): string {
@@ -1156,183 +1096,6 @@ export async function deleteTalkRoute(input: {
     return {
       statusCode: 200,
       body: { ok: true, data: { deleted: true } },
-    };
-  });
-}
-
-export async function getTalkProjectMountRoute(input: {
-  auth: AuthContext;
-  talkId: string;
-}): Promise<{
-  statusCode: number;
-  body: ApiEnvelope<{ talk: TalkApiRecord }>;
-}> {
-  return await withUserContext(input.auth.userId, async () => {
-    const talk = await getTalkForUser(input.talkId);
-    if (!talk) {
-      return {
-        statusCode: 404,
-        body: {
-          ok: false,
-          error: { code: 'talk_not_found', message: 'Talk not found' },
-        },
-      };
-    }
-    if (!canManageTalkProjectMount(talk, input.auth)) {
-      return {
-        statusCode: 403,
-        body: {
-          ok: false,
-          error: {
-            code: 'forbidden',
-            message:
-              'Only the talk owner or an admin can manage the project mount',
-          },
-        },
-      };
-    }
-
-    return {
-      statusCode: 200,
-      body: {
-        ok: true,
-        data: {
-          talk: await toTalkApiRecord(talk, input.auth.userId),
-        },
-      },
-    };
-  });
-}
-
-export async function updateTalkProjectMountRoute(input: {
-  auth: AuthContext;
-  talkId: string;
-  projectPath: string;
-}): Promise<{
-  statusCode: number;
-  body: ApiEnvelope<{ talk: TalkApiRecord }>;
-}> {
-  const validated = validateTalkProjectPath(input.projectPath);
-  if (!validated.projectPath) {
-    return {
-      statusCode: 400,
-      body: {
-        ok: false,
-        error: validated.error || {
-          code: 'invalid_project_path',
-          message: 'Project path is invalid',
-        },
-      },
-    };
-  }
-
-  return await withUserContext(input.auth.userId, async () => {
-    const talk = await getTalkForUser(input.talkId);
-    if (!talk) {
-      return {
-        statusCode: 404,
-        body: {
-          ok: false,
-          error: { code: 'talk_not_found', message: 'Talk not found' },
-        },
-      };
-    }
-    if (!canManageTalkProjectMount(talk, input.auth)) {
-      return {
-        statusCode: 403,
-        body: {
-          ok: false,
-          error: {
-            code: 'forbidden',
-            message:
-              'Only the talk owner or an admin can manage the project mount',
-          },
-        },
-      };
-    }
-
-    const updated = await updateTalkProjectPath({
-      talkId: input.talkId,
-      projectPath: validated.projectPath!,
-    });
-    const reloaded = updated ? await getTalkForUser(updated.id) : undefined;
-    if (!reloaded) {
-      return {
-        statusCode: 404,
-        body: {
-          ok: false,
-          error: { code: 'talk_not_found', message: 'Talk not found' },
-        },
-      };
-    }
-
-    return {
-      statusCode: 200,
-      body: {
-        ok: true,
-        data: {
-          talk: await toTalkApiRecord(reloaded, input.auth.userId),
-        },
-      },
-    };
-  });
-}
-
-export async function clearTalkProjectMountRoute(input: {
-  auth: AuthContext;
-  talkId: string;
-}): Promise<{
-  statusCode: number;
-  body: ApiEnvelope<{ talk: TalkApiRecord }>;
-}> {
-  return await withUserContext(input.auth.userId, async () => {
-    const talk = await getTalkForUser(input.talkId);
-    if (!talk) {
-      return {
-        statusCode: 404,
-        body: {
-          ok: false,
-          error: { code: 'talk_not_found', message: 'Talk not found' },
-        },
-      };
-    }
-    if (!canManageTalkProjectMount(talk, input.auth)) {
-      return {
-        statusCode: 403,
-        body: {
-          ok: false,
-          error: {
-            code: 'forbidden',
-            message:
-              'Only the talk owner or an admin can manage the project mount',
-          },
-        },
-      };
-    }
-
-    const updated = await updateTalkProjectPath({
-      talkId: input.talkId,
-      projectPath: null,
-    });
-    const reloaded = updated ? await getTalkForUser(updated.id) : undefined;
-    if (!reloaded) {
-      return {
-        statusCode: 404,
-        body: {
-          ok: false,
-          error: { code: 'talk_not_found', message: 'Talk not found' },
-        },
-      };
-    }
-
-    return {
-      statusCode: 200,
-      body: {
-        ok: true,
-        data: {
-          talk: await toTalkApiRecord(reloaded, input.auth.userId),
-        },
-      },
     };
   });
 }

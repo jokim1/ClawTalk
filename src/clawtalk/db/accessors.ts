@@ -49,7 +49,6 @@ export interface TalkRecord {
   folder_id: string | null;
   sort_order: number;
   topic_title: string | null;
-  project_path: string | null;
   orchestration_mode: 'ordered' | 'panel';
   status: 'active' | 'paused' | 'archived';
   version: number;
@@ -122,7 +121,7 @@ export function normalizeTalkListPage(input?: {
 // ---------------------------------------------------------------------------
 
 const TALK_COLUMNS = `id, owner_id, folder_id, sort_order, topic_title,
-  project_path, orchestration_mode, status, version, created_at, updated_at`;
+  orchestration_mode, status, version, created_at, updated_at`;
 
 export async function createTalk(input: {
   ownerId: string;
@@ -370,22 +369,6 @@ export async function patchTalkMetadata(input: {
   }
 
   return await getTalkById(input.talkId);
-}
-
-export async function updateTalkProjectPath(input: {
-  talkId: string;
-  projectPath: string | null;
-}): Promise<TalkRecord | undefined> {
-  const db = getDbPg();
-  const rows = await db<TalkRecord[]>`
-    update public.talks
-    set project_path = ${input.projectPath},
-        updated_at = now(),
-        version = version + 1
-    where id = ${input.talkId}::uuid
-    returning ${db.unsafe(TALK_COLUMNS)}
-  `;
-  return rows[0];
 }
 
 export async function deleteTalkForOwner(input: {

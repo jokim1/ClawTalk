@@ -69,7 +69,6 @@ import {
   setTalkRunMetadata,
   TalkActiveRoundError,
   touchTalkUpdatedAt,
-  updateTalkProjectPath,
   updateTalkRunMetadata,
   updateTalkThreadMetadata,
   updateTalkThreadTitle,
@@ -236,14 +235,9 @@ describe('accessors-pg slice 1: talks/folders/members/threads', () => {
     });
   });
 
-  it('updateTalkProjectPath + touchTalkUpdatedAt + delete', async () => {
+  it('touchTalkUpdatedAt + delete', async () => {
     await withUserContext(USER_A_ID, async () => {
       const t = await createTalk({ ownerId: USER_A_ID, topicTitle: 'P' });
-      const updated = await updateTalkProjectPath({
-        talkId: t.id,
-        projectPath: '/local/repo',
-      });
-      expect(updated?.project_path).toBe('/local/repo');
 
       await touchTalkUpdatedAt(t.id);
       const touched = await getTalkById(t.id);
