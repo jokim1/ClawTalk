@@ -2,6 +2,27 @@
   font-family: 'IBM Plex Sans', 'Segoe UI', sans-serif;
   color: #1d2433;
   background: linear-gradient(180deg, #f9f4ed 0%, #f4f9ff 100%);
+
+  /* Talk status pill tokens — sourced from existing .run-history-status-* rules
+     so Run History and in-thread LiveResponsePanel share one source of truth. */
+  --talk-status-queued-bg: #f6f8ff;
+  --talk-status-queued-fg: #42527a;
+  --talk-status-queued-border: #d8dff0;
+  --talk-status-running-bg: #ecfff3;
+  --talk-status-running-fg: #1f713f;
+  --talk-status-running-border: #bae6cb;
+  --talk-status-completed-bg: #eff5ff;
+  --talk-status-completed-fg: #21498f;
+  --talk-status-completed-border: #c4d4f7;
+  --talk-status-failed-bg: #fff1f1;
+  --talk-status-failed-fg: #8e2e2e;
+  --talk-status-failed-border: #f3c0c0;
+  --talk-status-cancelled-bg: #f9f3ea;
+  --talk-status-cancelled-fg: #6e5a3b;
+  --talk-status-cancelled-border: #e0d5c5;
+
+  /* Muted body text — matches existing .message-pending-copy */
+  --color-muted: #5a6987;
 }
 
 * {
@@ -2274,33 +2295,73 @@ a {
 }
 
 .run-history-status-running {
-  border-color: #bae6cb;
-  background: #ecfff3;
-  color: #1f713f;
+  border-color: var(--talk-status-running-border);
+  background: var(--talk-status-running-bg);
+  color: var(--talk-status-running-fg);
 }
 
 .run-history-status-queued {
-  border-color: #d8dff0;
-  background: #f6f8ff;
-  color: #42527a;
+  border-color: var(--talk-status-queued-border);
+  background: var(--talk-status-queued-bg);
+  color: var(--talk-status-queued-fg);
 }
 
 .run-history-status-completed {
-  border-color: #c4d4f7;
-  background: #eff5ff;
-  color: #21498f;
+  border-color: var(--talk-status-completed-border);
+  background: var(--talk-status-completed-bg);
+  color: var(--talk-status-completed-fg);
 }
 
 .run-history-status-failed {
-  border-color: #f3c0c0;
-  background: #fff1f1;
-  color: #8e2e2e;
+  border-color: var(--talk-status-failed-border);
+  background: var(--talk-status-failed-bg);
+  color: var(--talk-status-failed-fg);
 }
 
 .run-history-status-cancelled {
-  border-color: #e0d5c5;
-  background: #f9f3ea;
-  color: #6e5a3b;
+  border-color: var(--talk-status-cancelled-border);
+  background: var(--talk-status-cancelled-bg);
+  color: var(--talk-status-cancelled-fg);
+}
+
+/* Elapsed-time segment inside a status pill. Tabular figures + min-width
+   prevent layout jitter as digits roll over (3s → 12s → 1:04). */
+.run-history-status .elapsed {
+  font-variant-numeric: tabular-nums;
+  display: inline-block;
+  min-width: 2.75ch;
+  text-align: right;
+}
+
+/* Dense-mode LiveResponsePanel: collapse bodies when ≥4 non-streaming
+   panels are stacked, so the user message stays in view. */
+.message-live.is-dense p {
+  display: none;
+}
+
+.message-live.is-dense {
+  padding: 0.4rem 0.65rem;
+}
+
+/* Long-nickname truncation on the panel header. */
+.message-live-label {
+  display: inline-block;
+  max-width: 18ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+@media (max-width: 480px) {
+  .message-live header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.25rem;
+  }
+  .message-live-label {
+    max-width: 100%;
+  }
 }
 
 .run-history-links {

@@ -3771,7 +3771,7 @@ describe('TalkDetailPage', () => {
     ).toBeNull();
   });
 
-  it('drops late response deltas after RUN_COMPLETED so they cannot resurrect a truncated zombie message', async () => {
+  it('[T1 REGRESSION] keeps the live response panel after RUN_COMPLETED until MESSAGE_APPENDED replaces it, and appends late deltas to the existing text', async () => {
     installTalkDetailFetch({
       messages: [
         buildMessage({
@@ -3819,8 +3819,10 @@ describe('TalkDetailPage', () => {
         triggerMessageId: 'msg-1',
         responseMessageId: null,
       });
-      // Late delta that escaped reordering — without the guard it would
-      // re-create a zombie liveResponse seeded with just this trailing chunk.
+      // Late delta after RUN_COMPLETED — with the new
+      // keep-until-MESSAGE_APPENDED behavior, this APPENDS to the existing
+      // panel rather than being dropped (which would have created a
+      // truncated zombie under the old delete-on-completed semantics).
       stream.onResponseDelta?.({
         talkId: 'talk-1',
         threadId: DEFAULT_THREAD_ID,
@@ -3833,11 +3835,38 @@ describe('TalkDetailPage', () => {
       });
     });
 
-    // No truncated zombie message should appear on the timeline.
+    // Panel persists with the full accumulated text and a "Done" pill.
+    // It will be replaced by the persisted assistant message bubble when
+    // MESSAGE_APPENDED arrives — the dedup at line 1141-1147 handles that.
     expect(
-      screen.queryByText(/not lose his seat immediately/),
-    ).toBeNull();
-    expect(screen.queryByText(/^ie did/)).toBeNull();
+      screen.getByText(
+        /Yes — Thomas Massie did \*\*not lose his seat immediately\*\*/,
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText('Done')).toBeTruthy();
+
+    // MESSAGE_APPENDED replaces the panel with the persisted bubble.
+    await act(async () => {
+      stream.onMessageAppended({
+        talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
+        messageId: 'msg-final',
+        runId: 'run-streamed',
+        role: 'assistant',
+        createdBy: null,
+        content:
+          'Yes — Thomas Massie did **not lose his seat immediately**…',
+        createdAt: '2026-03-06T00:00:05.000Z',
+        agentId: 'agent-claude',
+        agentNickname: 'Claude Sonnet 4.6',
+      });
+    });
+    // After MESSAGE_APPENDED, "Done" pill is gone (panel was replaced).
+    expect(screen.queryByText('Done')).toBeNull();
+    // The persisted assistant bubble now shows the same text.
+    expect(
+      screen.getByText(/Thomas Massie did/),
+    ).toBeTruthy();
   });
 
   it('refetches the active thread when MESSAGE_APPENDED never lands after RUN_COMPLETED', async () => {

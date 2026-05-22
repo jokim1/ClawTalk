@@ -37,6 +37,8 @@ export type TalkRunStartedEvent = {
   status: 'running' | 'queued';
   executorAlias?: string | null;
   executorModel?: string | null;
+  targetAgentId?: string | null;
+  targetAgentNickname?: string | null;
 };
 
 export type TalkRunCompletedEvent = {

@@ -136,6 +136,7 @@ import {
 } from '../lib/api';
 import { BrowserBlockedRunCard } from '../components/BrowserBlockedRunCard';
 import { ExecutionDecisionSummary } from '../components/ExecutionDecisionSummary';
+import { LiveResponsePanel } from '../components/LiveResponsePanel';
 import { InlineEditableTitle } from '../components/InlineEditableTitle';
 import { ThreadContextMenu } from '../components/ThreadContextMenu';
 import { ThreadRowTitleEditor } from '../components/ThreadRowTitleEditor';
@@ -248,7 +249,7 @@ type RunView = TalkRun & {
   updatedAt: number;
 };
 
-type LiveResponseView = {
+export type LiveResponseView = {
   runId: string;
   rawText: string;
   text: string;
@@ -259,10 +260,15 @@ type LiveResponseView = {
   sequenceIndex?: number | null;
   providerId?: string | null;
   modelId?: string | null;
+  errorCode?: string | null;
   errorMessage?: string;
   startedAt: number;
-  terminalStatus?: 'failed';
+  queuedAt: number;
+  pendingStatus?: 'queued' | 'running' | 'reconnecting';
+  terminalStatus?: 'completed' | 'failed' | 'cancelled';
 };
+
+export type { RunView };
 
 type OrderedRoundStepTone =
   | 'active'
@@ -890,6 +896,31 @@ function mapRunsById(runs: TalkRun[]): Record<string, RunView> {
   }, {});
 }
 
+function deriveLiveResponsesFromRuns(
+  runs: TalkRun[],
+  threadId: string | null,
+): Record<string, LiveResponseView> {
+  const result: Record<string, LiveResponseView> = {};
+  for (const run of runs) {
+    if (threadId !== null && run.threadId !== threadId) continue;
+    if (!isNonTerminalRunStatus(run.status)) continue;
+    const queuedAt = Date.parse(run.createdAt) || Date.now();
+    result[run.id] = {
+      runId: run.id,
+      rawText: '',
+      text: '',
+      agentId: run.targetAgentId ?? null,
+      agentNickname: run.targetAgentNickname ?? null,
+      responseGroupId: run.responseGroupId ?? null,
+      sequenceIndex: run.sequenceIndex ?? null,
+      queuedAt,
+      startedAt: run.startedAt ? Date.parse(run.startedAt) || queuedAt : queuedAt,
+      pendingStatus: run.status === 'queued' ? 'queued' : 'running',
+    };
+  }
+  return result;
+}
+
 function pruneEventRunCache(
   runsById: Record<string, RunView>,
 ): Record<string, RunView> {
@@ -1066,7 +1097,7 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
         runsById: mapRunsById(action.runs),
         streamState: 'connecting',
         sendState: { status: 'idle' },
-        liveResponsesByRunId: {},
+        liveResponsesByRunId: deriveLiveResponsesFromRuns(action.runs, null),
         cancelState: { status: 'idle' },
         hasUnreadBelow: false,
         initialScrollPending: true,
@@ -1127,7 +1158,10 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
         messageIds: new Set(action.messages.map((message) => message.id)),
         messagesLoading: false,
         runsById: pruneEventRunCache(mapRunsById(action.runs)),
-        liveResponsesByRunId: {},
+        liveResponsesByRunId: deriveLiveResponsesFromRuns(
+          action.runs,
+          action.threadId,
+        ),
         hasUnreadBelow: false,
         initialScrollPending: false,
       };
@@ -1161,58 +1195,126 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
             : state.hasUnreadBelow || true,
       };
     }
-    case 'RUN_STARTED':
+    case 'RUN_STARTED': {
       if (state.kind !== 'ready') return state;
-      return {
-        ...state,
-        runsById: withRun(state, action.runId, {
-          threadId: action.threadId || undefined,
-          status: 'running',
-          triggerMessageId: action.triggerMessageId,
-          executorAlias: action.executorAlias,
-          executorModel: action.executorModel,
-          createdAt: action.createdAt || undefined,
-          startedAt: new Date().toISOString(),
-          targetAgentId: action.targetAgentId,
-          targetAgentNickname: action.targetAgentNickname,
-          responseGroupId: action.responseGroupId,
-          sequenceIndex: action.sequenceIndex,
-        }),
+      const runsById = withRun(state, action.runId, {
+        threadId: action.threadId || undefined,
+        status: 'running',
+        triggerMessageId: action.triggerMessageId,
+        executorAlias: action.executorAlias,
+        executorModel: action.executorModel,
+        createdAt: action.createdAt || undefined,
+        startedAt: new Date().toISOString(),
+        targetAgentId: action.targetAgentId,
+        targetAgentNickname: action.targetAgentNickname,
+        responseGroupId: action.responseGroupId,
+        sequenceIndex: action.sequenceIndex,
+      });
+      if (action.threadId && action.threadId !== state.selectedThreadId) {
+        return { ...state, runsById };
+      }
+      const existing = state.liveResponsesByRunId[action.runId];
+      const queuedAt = existing?.queuedAt ?? Date.now();
+      const liveResponsesByRunId = {
+        ...state.liveResponsesByRunId,
+        [action.runId]: {
+          runId: action.runId,
+          rawText: existing?.rawText ?? '',
+          text: existing?.text ?? '',
+          progressMessage: existing?.progressMessage,
+          agentId: existing?.agentId ?? action.targetAgentId ?? null,
+          agentNickname:
+            existing?.agentNickname ?? action.targetAgentNickname ?? null,
+          responseGroupId:
+            existing?.responseGroupId ?? action.responseGroupId ?? null,
+          sequenceIndex:
+            existing?.sequenceIndex ?? action.sequenceIndex ?? null,
+          providerId: existing?.providerId,
+          modelId: existing?.modelId,
+          errorMessage: existing?.errorMessage,
+          queuedAt,
+          startedAt: existing?.startedAt ?? queuedAt,
+          pendingStatus: 'running' as const,
+          terminalStatus: existing?.terminalStatus,
+        },
       };
-    case 'RUN_QUEUED':
+      return { ...state, runsById, liveResponsesByRunId };
+    }
+    case 'RUN_QUEUED': {
       if (state.kind !== 'ready') return state;
-      return {
-        ...state,
-        runsById: withRun(state, action.runId, {
-          threadId: action.threadId || undefined,
-          status: 'queued',
-          triggerMessageId: action.triggerMessageId,
-          executorAlias: action.executorAlias,
-          executorModel: action.executorModel,
-          createdAt: action.createdAt || undefined,
-          targetAgentId: action.targetAgentId,
-          targetAgentNickname: action.targetAgentNickname,
-          responseGroupId: action.responseGroupId,
-          sequenceIndex: action.sequenceIndex,
-        }),
+      const runsById = withRun(state, action.runId, {
+        threadId: action.threadId || undefined,
+        status: 'queued',
+        triggerMessageId: action.triggerMessageId,
+        executorAlias: action.executorAlias,
+        executorModel: action.executorModel,
+        createdAt: action.createdAt || undefined,
+        targetAgentId: action.targetAgentId,
+        targetAgentNickname: action.targetAgentNickname,
+        responseGroupId: action.responseGroupId,
+        sequenceIndex: action.sequenceIndex,
+      });
+      if (action.threadId && action.threadId !== state.selectedThreadId) {
+        return { ...state, runsById };
+      }
+      const existing = state.liveResponsesByRunId[action.runId];
+      const queuedAt = existing?.queuedAt ?? Date.now();
+      const liveResponsesByRunId = {
+        ...state.liveResponsesByRunId,
+        [action.runId]: {
+          runId: action.runId,
+          rawText: existing?.rawText ?? '',
+          text: existing?.text ?? '',
+          progressMessage: existing?.progressMessage,
+          agentId: existing?.agentId ?? action.targetAgentId ?? null,
+          agentNickname:
+            existing?.agentNickname ?? action.targetAgentNickname ?? null,
+          responseGroupId:
+            existing?.responseGroupId ?? action.responseGroupId ?? null,
+          sequenceIndex:
+            existing?.sequenceIndex ?? action.sequenceIndex ?? null,
+          providerId: existing?.providerId,
+          modelId: existing?.modelId,
+          queuedAt,
+          startedAt: existing?.startedAt ?? queuedAt,
+          pendingStatus: 'queued' as const,
+          terminalStatus: existing?.terminalStatus,
+        },
       };
+      return { ...state, runsById, liveResponsesByRunId };
+    }
     case 'RUN_COMPLETED': {
       if (state.kind !== 'ready') return state;
-      const liveResponsesByRunId = { ...state.liveResponsesByRunId };
-      delete liveResponsesByRunId[action.runId];
+      const runsById = withRun(state, action.runId, {
+        threadId: action.threadId || undefined,
+        status: 'completed',
+        triggerMessageId: action.triggerMessageId,
+        executorAlias: action.executorAlias,
+        executorModel: action.executorModel,
+        completedAt: new Date().toISOString(),
+        responseGroupId: action.responseGroupId,
+        sequenceIndex: action.sequenceIndex,
+      });
+      // Keep the live panel visible with terminalStatus='completed' until
+      // MESSAGE_APPENDED replaces it — prevents the panel from vanishing
+      // before the persisted assistant message renders. The dedup at
+      // MESSAGE_APPENDED removes it once the message lands; the 3 s
+      // MISSING_PERSISTED_MESSAGE_REFETCH_MS backstop covers event drops.
+      const existing = state.liveResponsesByRunId[action.runId];
+      if (!existing) {
+        return { ...state, runsById };
+      }
       return {
         ...state,
-        liveResponsesByRunId,
-        runsById: withRun(state, action.runId, {
-          threadId: action.threadId || undefined,
-          status: 'completed',
-          triggerMessageId: action.triggerMessageId,
-          executorAlias: action.executorAlias,
-          executorModel: action.executorModel,
-          completedAt: new Date().toISOString(),
-          responseGroupId: action.responseGroupId,
-          sequenceIndex: action.sequenceIndex,
-        }),
+        runsById,
+        liveResponsesByRunId: {
+          ...state.liveResponsesByRunId,
+          [action.runId]: {
+            ...existing,
+            pendingStatus: undefined,
+            terminalStatus: 'completed' as const,
+          },
+        },
       };
     }
     case 'RUN_FAILED': {
@@ -1259,7 +1361,9 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
             sequenceIndex: existing?.sequenceIndex,
             providerId: existing?.providerId,
             modelId: existing?.modelId,
+            errorCode: action.errorCode,
             errorMessage: action.errorMessage,
+            queuedAt: existing?.queuedAt ?? Date.now(),
             startedAt: existing?.startedAt || Date.now(),
             terminalStatus: 'failed',
           },
@@ -1269,9 +1373,19 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
     }
     case 'RUN_CANCELLED_BATCH': {
       if (state.kind !== 'ready' || action.runIds.length === 0) return state;
+      // Keep cancelled panels visible with terminalStatus='cancelled' so the
+      // user sees "Cancelled · Ns" with retained elapsed. Previously these
+      // were deleted on cancel — which silently removed feedback.
       const liveResponsesByRunId = { ...state.liveResponsesByRunId };
       for (const runId of action.runIds) {
-        delete liveResponsesByRunId[runId];
+        const existing = liveResponsesByRunId[runId];
+        if (existing) {
+          liveResponsesByRunId[runId] = {
+            ...existing,
+            pendingStatus: undefined,
+            terminalStatus: 'cancelled' as const,
+          };
+        }
       }
       const runsById = { ...state.runsById };
       for (const runId of action.runIds) {
@@ -1313,30 +1427,42 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
         runsById: pruneEventRunCache(runsById),
       };
     }
-    case 'RESPONSE_STARTED':
+    case 'RESPONSE_STARTED': {
       if (state.kind !== 'ready') return state;
+      // Upsert: refine the queued/running placeholder created at RUN_QUEUED
+      // with provider details; do NOT clobber existing text/queuedAt.
+      const existing = state.liveResponsesByRunId[action.event.runId];
+      const queuedAt = existing?.queuedAt ?? Date.now();
       return {
         ...state,
         liveResponsesByRunId: {
           ...state.liveResponsesByRunId,
           [action.event.runId]: {
             runId: action.event.runId,
-            rawText: '',
-            text: '',
-            progressMessage: undefined,
-            agentId: action.event.agentId,
-            agentNickname: action.event.agentNickname,
-            responseGroupId: action.event.responseGroupId ?? null,
-            sequenceIndex: action.event.sequenceIndex ?? null,
-            providerId: action.event.providerId,
-            modelId: action.event.modelId,
-            startedAt: Date.now(),
+            rawText: existing?.rawText ?? '',
+            text: existing?.text ?? '',
+            progressMessage: existing?.progressMessage,
+            agentId: action.event.agentId ?? existing?.agentId ?? null,
+            agentNickname:
+              action.event.agentNickname ?? existing?.agentNickname ?? null,
+            responseGroupId:
+              action.event.responseGroupId ?? existing?.responseGroupId ?? null,
+            sequenceIndex:
+              action.event.sequenceIndex ?? existing?.sequenceIndex ?? null,
+            providerId: action.event.providerId ?? existing?.providerId,
+            modelId: action.event.modelId ?? existing?.modelId,
+            queuedAt,
+            startedAt: existing?.startedAt ?? Date.now(),
+            pendingStatus: 'running' as const,
+            terminalStatus: existing?.terminalStatus,
           },
         },
       };
+    }
     case 'RESPONSE_PROGRESS': {
       if (state.kind !== 'ready') return state;
       const existing = state.liveResponsesByRunId[action.event.runId];
+      const queuedAt = existing?.queuedAt ?? Date.now();
       return {
         ...state,
         liveResponsesByRunId: {
@@ -1355,8 +1481,10 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
               action.event.sequenceIndex ?? existing?.sequenceIndex ?? null,
             providerId: action.event.providerId ?? existing?.providerId,
             modelId: action.event.modelId ?? existing?.modelId,
+            queuedAt,
             startedAt: existing?.startedAt || Date.now(),
             errorMessage: existing?.errorMessage,
+            pendingStatus: existing?.pendingStatus ?? 'running',
             terminalStatus: existing?.terminalStatus,
           },
         },
@@ -1380,6 +1508,7 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
         }
       }
       const rawText = `${existing?.rawText || ''}${action.event.deltaText}`;
+      const queuedAtDelta = existing?.queuedAt ?? Date.now();
       return {
         ...state,
         liveResponsesByRunId: {
@@ -1397,8 +1526,10 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
               action.event.sequenceIndex ?? existing?.sequenceIndex ?? null,
             providerId: action.event.providerId,
             modelId: action.event.modelId,
+            queuedAt: queuedAtDelta,
             startedAt: existing?.startedAt || Date.now(),
             errorMessage: existing?.errorMessage,
+            pendingStatus: existing?.pendingStatus ?? 'running',
             terminalStatus: existing?.terminalStatus,
           },
         },
@@ -1436,6 +1567,7 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
               action.event.sequenceIndex ?? existing?.sequenceIndex ?? null,
             providerId: action.event.providerId,
             modelId: action.event.modelId,
+            queuedAt: existing?.queuedAt ?? Date.now(),
             startedAt: existing?.startedAt || Date.now(),
             progressMessage: existing?.progressMessage,
             errorMessage: action.event.errorMessage,
@@ -1453,12 +1585,47 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
     case 'STREAM_CONNECTING':
       if (state.kind !== 'ready') return state;
       return { ...state, streamState: 'connecting' };
-    case 'STREAM_LIVE':
+    case 'STREAM_LIVE': {
       if (state.kind !== 'ready') return state;
-      return { ...state, streamState: 'live' };
-    case 'STREAM_RECONNECTING':
+      // Revert any panels stuck in 'reconnecting' back to 'running'.
+      const liveResponsesByRunId = { ...state.liveResponsesByRunId };
+      let changed = false;
+      for (const [runId, entry] of Object.entries(liveResponsesByRunId)) {
+        if (entry.pendingStatus === 'reconnecting') {
+          liveResponsesByRunId[runId] = { ...entry, pendingStatus: 'running' };
+          changed = true;
+        }
+      }
+      return {
+        ...state,
+        streamState: 'live',
+        liveResponsesByRunId: changed
+          ? liveResponsesByRunId
+          : state.liveResponsesByRunId,
+      };
+    }
+    case 'STREAM_RECONNECTING': {
       if (state.kind !== 'ready') return state;
-      return { ...state, streamState: 'reconnecting' };
+      // Flip all non-terminal panels to 'reconnecting' so the UI shows the SSE drop.
+      const liveResponsesByRunId = { ...state.liveResponsesByRunId };
+      let changed = false;
+      for (const [runId, entry] of Object.entries(liveResponsesByRunId)) {
+        if (entry.terminalStatus) continue;
+        if (entry.pendingStatus === 'reconnecting') continue;
+        liveResponsesByRunId[runId] = {
+          ...entry,
+          pendingStatus: 'reconnecting',
+        };
+        changed = true;
+      }
+      return {
+        ...state,
+        streamState: 'reconnecting',
+        liveResponsesByRunId: changed
+          ? liveResponsesByRunId
+          : state.liveResponsesByRunId,
+      };
+    }
     case 'STREAM_OFFLINE':
       if (state.kind !== 'ready') return state;
       return { ...state, streamState: 'offline' };
@@ -4493,16 +4660,27 @@ export function TalkDetailPage({
         })),
         ...liveResponses.map((response, index) => {
           const run = state.runsById[response.runId];
-          const runTimestamp = Date.parse(
-            run?.startedAt || run?.createdAt || '',
+          // Anchor on the trigger user message if known — keeps panels
+          // visually below the user message even when run.createdAt is
+          // microseconds earlier (runs are created before message_appended
+          // is emitted inside enqueueTalkTurnAtomic).
+          const triggerMessageId = run?.triggerMessageId ?? null;
+          const triggerMessage = triggerMessageId
+            ? state.messages.find((m) => m.id === triggerMessageId)
+            : undefined;
+          const anchorTimestamp = Date.parse(
+            triggerMessage?.createdAt ||
+              run?.startedAt ||
+              run?.createdAt ||
+              '',
           );
           return {
             kind: 'live-response' as const,
             key: response.runId,
             timestamp:
-              Number.isFinite(runTimestamp) && runTimestamp > 0
-                ? runTimestamp
-                : response.startedAt,
+              Number.isFinite(anchorTimestamp) && anchorTimestamp > 0
+                ? anchorTimestamp
+                : response.queuedAt || response.startedAt,
             sortOrder: state.messages.length + index,
             response,
           };
@@ -4551,6 +4729,25 @@ export function TalkDetailPage({
             run.status === 'awaiting_confirmation'),
       ),
     [activeThreadId, state.runsById],
+  );
+  // Per-second ticker for elapsed-time display in LiveResponsePanel.
+  // Only runs while at least one run is non-terminal — idle when no active round.
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    if (!activeRound) return;
+    const id = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [activeRound]);
+  // Dense mode: when ≥4 panels are queued/running with no visible content yet,
+  // collapse all bodies to keep the timeline scannable. Flips off as soon as any
+  // panel emits text or a progress message (all-or-nothing to avoid jitter).
+  const isDenseRound = useMemo(
+    () =>
+      liveResponses.length >= 4 &&
+      liveResponses.every(
+        (r) => !r.text && !r.progressMessage && !r.terminalStatus,
+      ),
+    [liveResponses],
   );
   const canEditHistory = useMemo(
     () =>
@@ -12617,89 +12814,24 @@ export function TalkDetailPage({
                             ? retryRunState.message
                             : null;
                         return (
-                          <article
+                          <LiveResponsePanel
                             key={entry.key}
-                            className={`message message-assistant message-live${
-                              response.terminalStatus === 'failed'
-                                ? ' message-error'
-                                : ''
-                            }`}
-                          >
-                            <header>
-                              <strong>{label}</strong>
-                              <time>
-                                {(() => {
-                                  if (response.terminalStatus === 'failed') {
-                                    return 'Failed';
-                                  }
-                                  const run = state.runsById[response.runId];
-                                  if (run?.status === 'failed')
-                                    return 'Failed';
-                                  if (run?.status === 'cancelled')
-                                    return 'Cancelled';
-                                  // Run finished but the persisted
-                                  // message hasn't arrived yet (race or
-                                  // missed event). The placeholder above
-                                  // already filters out runIds that have
-                                  // a persisted message; reaching here
-                                  // with a 'completed' status means
-                                  // we're still waiting on it. Surface
-                                  // "Done" so the user can tell the
-                                  // model finished, not that it's still
-                                  // mid-stream.
-                                  if (run?.status === 'completed')
-                                    return 'Done';
-                                  return 'Streaming…';
-                                })()}
-                              </time>
-                            </header>
-                            <p>
-                              {response.text ||
-                                response.progressMessage ||
-                                'Thinking…'}
-                            </p>
-                            {response.errorMessage ? (
-                              <p className="run-history-error">
-                                {response.errorMessage}
-                              </p>
-                            ) : null}
-                            {response.terminalStatus === 'failed' ? (
-                              <ExecutionDecisionSummary
-                                executionDecision={
-                                  state.runsById[response.runId]
-                                    ?.executionDecision
-                                }
-                              />
-                            ) : null}
-                            {response.terminalStatus === 'failed' ? (
-                              <div className="run-history-links">
-                                {canRetryAgent ? (
-                                  <button
-                                    type="button"
-                                    className="run-history-link"
-                                    onClick={() =>
-                                      void handleRetryAgentRun(response.runId)
-                                    }
-                                    disabled={retryPosting}
-                                  >
-                                    {retryPosting ? 'Retrying…' : 'Retry agent'}
-                                  </button>
-                                ) : null}
-                                <button
-                                  type="button"
-                                  className="run-history-link"
-                                  onClick={() =>
-                                    handleOpenRunHistory(response.runId)
-                                  }
-                                >
-                                  Open Run History
-                                </button>
-                              </div>
-                            ) : null}
-                            {retryError ? (
-                              <p className="run-history-error">{retryError}</p>
-                            ) : null}
-                          </article>
+                            panelKey={entry.key}
+                            response={response}
+                            run={failedRun}
+                            agentLabel={label}
+                            isDense={isDenseRound}
+                            now={nowTick}
+                            canRetryAgent={canRetryAgent}
+                            retryPosting={retryPosting}
+                            retryError={retryError}
+                            onRetry={() =>
+                              void handleRetryAgentRun(response.runId)
+                            }
+                            onOpenRunHistory={() =>
+                              handleOpenRunHistory(response.runId)
+                            }
+                          />
                         );
                       })
                     )}

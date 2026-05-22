@@ -29,6 +29,7 @@ import { randomUUID } from 'node:crypto';
 
 import { getCurrentUserId, getDbPg, getOutOfBandSql } from '../../db.js';
 import { emitOutboxEvent } from '../talks/outbox-emit.js';
+import { resolveTargetAgentNickname } from './talk-agents.js';
 import {
   inferThreadTitleFromContent,
   isLegacyPlaceholderTalkThreadTitle,
@@ -2114,6 +2115,7 @@ export async function enqueueTalkTurnAtomic(input: {
   messageId?: string;
   runIds?: string[];
   targetAgentIds: string[];
+  targetAgentNicknames?: Array<string | null> | null;
   responseGroupId?: string | null;
   sequenceIndexes?: Array<number | null> | null;
   attachmentIds?: string[] | null;
@@ -2227,7 +2229,8 @@ export async function enqueueTalkTurnAtomic(input: {
     },
     ownerIds: [input.ownerId],
   });
-  for (const run of runs) {
+  for (let i = 0; i < runs.length; i++) {
+    const run = runs[i];
     await emitOutboxEvent({
       topic: `talk:${input.talkId}`,
       eventType: 'talk_run_queued',
@@ -2238,6 +2241,7 @@ export async function enqueueTalkTurnAtomic(input: {
         runKind: run.run_kind,
         triggerMessageId: message.id,
         targetAgentId: run.target_agent_id,
+        targetAgentNickname: input.targetAgentNicknames?.[i] ?? null,
         responseGroupId,
         sequenceIndex: run.sequence_index,
         status: 'queued',
@@ -2332,6 +2336,10 @@ export async function claimQueuedTalkRuns(
     `;
     if (updated.length !== 1) continue;
     claimed.push(updated[0]);
+    const targetAgentNickname = await resolveTargetAgentNickname(
+      run.talk_id ?? '',
+      run.target_agent_id ?? null,
+    );
     await emitOutboxEvent({
       topic: `talk:${run.talk_id}`,
       eventType: 'talk_run_started',
@@ -2342,6 +2350,7 @@ export async function claimQueuedTalkRuns(
         runKind: run.run_kind,
         triggerMessageId: run.trigger_message_id,
         targetAgentId: run.target_agent_id ?? null,
+        targetAgentNickname,
         responseGroupId: run.response_group_id ?? null,
         sequenceIndex: run.sequence_index ?? null,
         status: 'running',
@@ -2424,6 +2433,10 @@ export async function markRunRunning(
   const claimed = updated[0];
 
   if (existing.status === 'queued') {
+    const targetAgentNickname = await resolveTargetAgentNickname(
+      claimed.talk_id ?? '',
+      claimed.target_agent_id ?? null,
+    );
     await emitOutboxEvent({
       topic: `talk:${claimed.talk_id}`,
       eventType: 'talk_run_started',
@@ -2434,6 +2447,7 @@ export async function markRunRunning(
         runKind: claimed.run_kind,
         triggerMessageId: claimed.trigger_message_id,
         targetAgentId: claimed.target_agent_id ?? null,
+        targetAgentNickname,
         responseGroupId: claimed.response_group_id ?? null,
         sequenceIndex: claimed.sequence_index ?? null,
         status: 'running',

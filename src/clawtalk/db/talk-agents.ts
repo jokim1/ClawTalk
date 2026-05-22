@@ -145,6 +145,28 @@ export async function listTalkAgents(
 }
 
 /**
+ * Resolve the display nickname for a target agent in a Talk.
+ * Returns the talk-specific nickname or the registered agent name, scoped by talk_id so the
+ * same registered agent in different talks resolves independently. Returns null if unresolvable.
+ */
+export async function resolveTargetAgentNickname(
+  talkId: string,
+  targetAgentId: string | null,
+): Promise<string | null> {
+  if (!targetAgentId) return null;
+  const db = getDbPg();
+  const rows = await db<{ nickname: string | null }[]>`
+    select coalesce(ta.nickname, ra.name) as nickname
+    from public.talk_agents ta
+    left join public.registered_agents ra on ra.id = ta.registered_agent_id
+    where ta.talk_id = ${talkId}::uuid
+      and ta.registered_agent_id = ${targetAgentId}::uuid
+    limit 1
+  `;
+  return rows[0]?.nickname ?? null;
+}
+
+/**
  * Resolve the primary agent for a Talk.
  * Returns the agent marked as primary, or the first assigned agent.
  * Only considers enabled agents — disabled agents are skipped.

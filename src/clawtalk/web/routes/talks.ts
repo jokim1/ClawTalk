@@ -1964,6 +1964,9 @@ export async function enqueueTalkChat(input: {
         messageId,
         runIds,
         targetAgentIds: selectedAgents.map((agent) => agent.id),
+        targetAgentNicknames: selectedAgents.map(
+          (agent) => agent.nickname ?? null,
+        ),
         responseGroupId,
         sequenceIndexes: orderedRunSet
           ? selectedAgents.map((_, index) => index)
