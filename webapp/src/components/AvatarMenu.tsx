@@ -97,21 +97,10 @@ export function AvatarMenu({ user, onSignOut, signOutBusy }: Props) {
             role="menuitem"
             onClick={() => {
               setOpen(false);
-              navigate('/app/profile');
+              navigate('/app/settings?tab=profile');
             }}
           >
             Profile
-          </button>
-          <button
-            type="button"
-            className="app-avatar-menu-item"
-            role="menuitem"
-            onClick={() => {
-              setOpen(false);
-              navigate('/app/settings');
-            }}
-          >
-            Settings
           </button>
           <div className="app-avatar-dropdown-divider" />
           <button

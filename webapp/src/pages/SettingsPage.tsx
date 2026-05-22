@@ -65,6 +65,26 @@ const TAB_VALUES: readonly SettingsTab[] = [
   'tools',
 ];
 
+const TAB_PAGE_HEADERS: Record<SettingsTab, { title: string; subtitle: string }> = {
+  profile: {
+    title: 'My Profile',
+    subtitle: 'Manage your personal information.',
+  },
+  'api-keys': {
+    title: 'API Keys',
+    subtitle:
+      'Workspace-shared and personal AI provider credentials used by your agents.',
+  },
+  agents: {
+    title: 'AI Agents',
+    subtitle: 'Register the agents available in your talks.',
+  },
+  tools: {
+    title: 'Tools',
+    subtitle: 'Configure tool integrations that agents can call.',
+  },
+};
+
 const PROVIDER_DOCS: Record<string, { url: string; label: string }> = {
   'provider.anthropic': {
     url: 'https://console.anthropic.com/settings/keys',
@@ -95,10 +115,6 @@ function parseTab(value: string | null): SettingsTab {
   return TAB_VALUES.includes(value as SettingsTab)
     ? (value as SettingsTab)
     : 'profile';
-}
-
-function canManageAdmin(userRole: string): boolean {
-  return userRole === 'owner' || userRole === 'admin';
 }
 
 function formatDateTime(value: string | null): string {
@@ -225,70 +241,18 @@ export function SettingsPage({
   onUnauthorized,
   onUserUpdated,
 }: Props): JSX.Element {
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
   const tab = parseTab(searchParams.get('tab'));
-  const canManage = canManageAdmin(userRole);
-
-  const setTab = (next: SettingsTab): void => {
-    const params = new URLSearchParams(searchParams);
-    if (next === 'profile') {
-      params.delete('tab');
-    } else {
-      params.set('tab', next);
-    }
-    setSearchParams(params, { replace: true });
-  };
+  const header = TAB_PAGE_HEADERS[tab];
 
   return (
     <section className="page-shell">
       <header className="page-header">
         <div>
-          <h1>Settings</h1>
-          <p>
-            Manage your profile, AI provider API keys, and the agents available
-            in your talks.
-          </p>
+          <h1>{header.title}</h1>
+          <p>{header.subtitle}</p>
         </div>
       </header>
-
-      <div className="talk-tabs" role="tablist" aria-label="Settings sections">
-        <button
-          type="button"
-          role="tab"
-          className={`talk-tab${tab === 'profile' ? ' talk-tab-active' : ''}`}
-          aria-selected={tab === 'profile'}
-          onClick={() => setTab('profile')}
-        >
-          Profile
-        </button>
-        <button
-          type="button"
-          role="tab"
-          className={`talk-tab${tab === 'api-keys' ? ' talk-tab-active' : ''}`}
-          aria-selected={tab === 'api-keys'}
-          onClick={() => setTab('api-keys')}
-        >
-          API Keys
-        </button>
-        <button
-          type="button"
-          role="tab"
-          className={`talk-tab${tab === 'agents' ? ' talk-tab-active' : ''}`}
-          aria-selected={tab === 'agents'}
-          onClick={() => setTab('agents')}
-        >
-          Agents
-        </button>
-        <button
-          type="button"
-          role="tab"
-          className={`talk-tab${tab === 'tools' ? ' talk-tab-active' : ''}`}
-          aria-selected={tab === 'tools'}
-          onClick={() => setTab('tools')}
-        >
-          Tools
-        </button>
-      </div>
 
       {tab === 'profile' ? (
         <ProfileTab
@@ -314,6 +278,45 @@ export function SettingsPage({
 }
 
 // ─── Profile tab ─────────────────────────────────────────────────────
+
+const PROFILE_AVATAR_GRADIENTS = [
+  'linear-gradient(135deg, #6366f1, #8b5cf6)',
+  'linear-gradient(135deg, #3b82f6, #06b6d4)',
+  'linear-gradient(135deg, #10b981, #34d399)',
+  'linear-gradient(135deg, #f59e0b, #f97316)',
+  'linear-gradient(135deg, #ef4444, #f43f5e)',
+  'linear-gradient(135deg, #8b5cf6, #ec4899)',
+  'linear-gradient(135deg, #14b8a6, #3b82f6)',
+  'linear-gradient(135deg, #f97316, #ef4444)',
+];
+
+function getProfileInitials(name: string): string {
+  const parts = name.trim().split(/\s+/);
+  if (parts.length >= 2) {
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  }
+  return name.trim().slice(0, 2).toUpperCase() || '?';
+}
+
+function getProfileGradient(userId: string): string {
+  let hash = 0;
+  for (let i = 0; i < userId.length; i++) {
+    hash = (hash * 31 + userId.charCodeAt(i)) | 0;
+  }
+  return PROFILE_AVATAR_GRADIENTS[
+    Math.abs(hash) % PROFILE_AVATAR_GRADIENTS.length
+  ];
+}
+
+function formatProfileDate(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.valueOf())) return iso;
+  return date.toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+}
 
 function ProfileTab({
   user,
@@ -360,6 +363,9 @@ function ProfileTab({
     }
   };
 
+  const initials = getProfileInitials(user.displayName);
+  const gradient = getProfileGradient(user.id);
+
   return (
     <>
       {error ? (
@@ -372,6 +378,18 @@ function ProfileTab({
           {notice}
         </div>
       ) : null}
+
+      <section className="settings-card">
+        <h2>Profile Picture</h2>
+        <div className="profile-avatar-section">
+          <span
+            className="profile-avatar-lg"
+            style={{ background: gradient }}
+          >
+            {initials}
+          </span>
+        </div>
+      </section>
 
       <section className="settings-card">
         <h2>Personal Information</h2>
@@ -419,6 +437,22 @@ function ProfileTab({
           </span>
         </div>
         <p className="settings-copy">{roleDescription(user.role)}</p>
+      </section>
+
+      <section className="settings-card">
+        <h2>Account</h2>
+        <div className="profile-meta-grid">
+          <div>
+            <span className="settings-label">User ID</span>
+            <strong className="profile-meta-value">
+              {user.id.slice(0, 12)}…
+            </strong>
+          </div>
+          <div>
+            <span className="settings-label">Member since</span>
+            <strong>{formatProfileDate(user.createdAt)}</strong>
+          </div>
+        </div>
       </section>
     </>
   );

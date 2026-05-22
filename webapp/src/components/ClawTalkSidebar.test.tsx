@@ -4,7 +4,22 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 
 import { ClawTalkSidebar } from './ClawTalkSidebar';
-import type { Talk, TalkSidebarFolder, TalkSidebarItem } from '../lib/api';
+import type {
+  SessionUser,
+  Talk,
+  TalkSidebarFolder,
+  TalkSidebarItem,
+} from '../lib/api';
+
+function buildUser(): SessionUser {
+  return {
+    id: 'user-1',
+    email: 'owner@example.com',
+    displayName: 'Owner Example',
+    role: 'owner',
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+}
 
 function buildTalk(): Talk {
   return {
@@ -107,7 +122,9 @@ describe('ClawTalkSidebar', () => {
           items={items}
           loading={false}
           error={null}
-          userRole="owner"
+          user={buildUser()}
+          onSignOut={vi.fn()}
+          signOutBusy={false}
           onCreateTalk={vi.fn(async () => buildTalk())}
           onCreateFolder={vi.fn(async () => buildFolder())}
           onRenameTalk={vi.fn()}

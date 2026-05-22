@@ -33,7 +33,7 @@ import { isSupabaseConfigured } from './lib/supabase-client';
 import { installAuthStateListener } from './lib/supabase-cookie-shim';
 import { TalkDetailPage } from './pages/TalkDetailPage';
 import { TalkListPage } from './pages/TalkListPage';
-import { ProfilePage } from './pages/ProfilePage';
+import { ConnectorsPage } from './pages/ConnectorsPage';
 import { SettingsPage } from './pages/SettingsPage';
 
 type AuthState =
@@ -724,7 +724,9 @@ export function App() {
           items={sidebarViewItems}
           loading={sidebarLoading}
           error={sidebarError}
-          userRole={auth.user.role}
+          user={auth.user}
+          onSignOut={handleSignOut}
+          signOutBusy={signOutBusy}
           onCreateTalk={handleCreateTalk}
           onCreateFolder={handleCreateFolder}
           onRenameTalk={handleRenameTalk}
@@ -784,14 +786,9 @@ export function App() {
             />
             <Route
               path="/app/profile"
-              element={
-                <ProfilePage
-                  user={auth.user}
-                  onUnauthorized={handleUnauthorized}
-                  onUserUpdated={handleUserUpdated}
-                />
-              }
+              element={<Navigate to="/app/settings?tab=profile" replace />}
             />
+            <Route path="/app/connectors" element={<ConnectorsPage />} />
             <Route path="*" element={<Navigate to="/app/main" replace />} />
           </Routes>
         </div>

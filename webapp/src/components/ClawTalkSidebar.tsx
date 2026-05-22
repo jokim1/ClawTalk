@@ -22,7 +22,13 @@ import {
 import { createPortal } from 'react-dom';
 import { NavLink } from 'react-router-dom';
 
-import type { Talk, TalkSidebarFolder, TalkSidebarItem } from '../lib/api';
+import { SidebarProfileMenu } from './SidebarProfileMenu';
+import type {
+  SessionUser,
+  Talk,
+  TalkSidebarFolder,
+  TalkSidebarItem,
+} from '../lib/api';
 
 type TalkSidebarTalkView = TalkSidebarItem & {
   type: 'talk';
@@ -51,7 +57,9 @@ type Props = {
   items: TalkSidebarItemView[];
   loading: boolean;
   error: string | null;
-  userRole: string;
+  user: SessionUser;
+  onSignOut: () => void;
+  signOutBusy: boolean;
   onCreateTalk: () => Promise<Talk>;
   onCreateFolder: () => Promise<TalkSidebarFolder>;
   onRenameTalk: (talkId: string, title: string) => void;
@@ -190,7 +198,9 @@ export function ClawTalkSidebar({
   items,
   loading,
   error,
-  userRole,
+  user,
+  onSignOut,
+  signOutBusy,
   onCreateTalk,
   onCreateFolder,
   onRenameTalk,
@@ -201,10 +211,6 @@ export function ClawTalkSidebar({
   onReorder,
   renameDraft,
 }: Props): JSX.Element {
-  // All authenticated users can register their own agents (per-user RLS).
-  // Admin-only gating now lives inside the API Keys tab for workspace
-  // credentials specifically.
-  const canManageAgents = true;
   const [expandedFolderIds, setExpandedFolderIds] = useState<
     Record<string, boolean>
   >({});
@@ -751,26 +757,6 @@ export function ClawTalkSidebar({
         >
           Home
         </NavLink>
-        {canManageAgents ? (
-          <NavLink
-            to="/app/settings?tab=agents"
-            className={({ isActive }) =>
-              `clawtalk-sidebar-link${isActive ? ' active' : ''}`
-            }
-          >
-            AI Agents
-          </NavLink>
-        ) : null}
-        {canManageAgents ? (
-          <NavLink
-            to="/app/connectors"
-            className={({ isActive }) =>
-              `clawtalk-sidebar-link${isActive ? ' active' : ''}`
-            }
-          >
-            Connectors
-          </NavLink>
-        ) : null}
       </nav>
 
       <div className="clawtalk-sidebar-section">
@@ -855,14 +841,11 @@ export function ClawTalkSidebar({
       </div>
 
       <div className="clawtalk-sidebar-footer">
-        <NavLink
-          to="/app/settings"
-          className={({ isActive }) =>
-            `clawtalk-sidebar-link${isActive ? ' active' : ''}`
-          }
-        >
-          ⚙ Settings
-        </NavLink>
+        <SidebarProfileMenu
+          user={user}
+          onSignOut={onSignOut}
+          signOutBusy={signOutBusy}
+        />
       </div>
     </aside>
   );

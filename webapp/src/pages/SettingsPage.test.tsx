@@ -19,7 +19,7 @@ describe('SettingsPage', () => {
     vi.restoreAllMocks();
   });
 
-  it('defaults to the Profile tab and shows the display-name editor', async () => {
+  it('defaults to the Profile section and shows the display-name editor', async () => {
     installSettingsFetch();
 
     render(
@@ -33,33 +33,10 @@ describe('SettingsPage', () => {
       </MemoryRouter>,
     );
 
-    await screen.findByRole('heading', { name: 'Settings' });
+    await screen.findByRole('heading', { name: 'My Profile' });
     expect(
       screen.getByRole('heading', { name: 'Personal Information' }),
     ).toBeTruthy();
-    const profileTab = screen.getByRole('tab', { name: 'Profile' });
-    expect(profileTab).toHaveAttribute('aria-selected', 'true');
-  });
-
-  it('shows all four tabs to member users (personal scope is open to everyone)', async () => {
-    installSettingsFetch();
-
-    render(
-      <MemoryRouter initialEntries={['/app/settings']}>
-        <SettingsPage
-          user={buildSessionUser({ role: 'member' })}
-          userRole="member"
-          onUnauthorized={vi.fn()}
-          onUserUpdated={vi.fn()}
-        />
-      </MemoryRouter>,
-    );
-
-    await screen.findByRole('heading', { name: 'Settings' });
-    expect(screen.getByRole('tab', { name: 'Profile' })).toBeTruthy();
-    expect(screen.getByRole('tab', { name: 'API Keys' })).toBeTruthy();
-    expect(screen.getByRole('tab', { name: 'Agents' })).toBeTruthy();
-    expect(screen.getByRole('tab', { name: 'Tools' })).toBeTruthy();
   });
 
   it('opens the API Keys tab via ?tab=api-keys and renders both Workspace and Personal sections', async () => {
@@ -599,9 +576,9 @@ describe('GoogleAccountSection (flag-gated)', () => {
       </MemoryRouter>,
     );
 
-    // The Tools tab should be visible, but the Google account section
-    // should NOT be rendered.
-    await screen.findByRole('tab', { name: 'Tools' });
+    // The Tools section should render, but the Google account section
+    // should NOT be present.
+    await screen.findByRole('heading', { name: 'Tools' });
     expect(screen.queryByTestId('google-account-section')).toBeNull();
   });
 
