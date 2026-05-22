@@ -38,7 +38,7 @@ type Props = {
   onUserUpdated: (user: SessionUser) => void;
 };
 
-type SettingsTab = 'profile' | 'api-keys' | 'agents';
+type SettingsTab = 'profile' | 'api-keys' | 'agents' | 'tools';
 
 type ProviderDraft = {
   apiKey: string;
@@ -46,7 +46,12 @@ type ProviderDraft = {
   expanded: boolean;
 };
 
-const TAB_VALUES: readonly SettingsTab[] = ['profile', 'api-keys', 'agents'];
+const TAB_VALUES: readonly SettingsTab[] = [
+  'profile',
+  'api-keys',
+  'agents',
+  'tools',
+];
 
 const PROVIDER_DOCS: Record<string, { url: string; label: string }> = {
   'provider.anthropic': {
@@ -262,6 +267,15 @@ export function SettingsPage({
         >
           Agents
         </button>
+        <button
+          type="button"
+          role="tab"
+          className={`talk-tab${tab === 'tools' ? ' talk-tab-active' : ''}`}
+          aria-selected={tab === 'tools'}
+          onClick={() => setTab('tools')}
+        >
+          Tools
+        </button>
       </div>
 
       {tab === 'profile' ? (
@@ -278,6 +292,10 @@ export function SettingsPage({
 
       {tab === 'agents' ? (
         <AgentsTab onUnauthorized={onUnauthorized} />
+      ) : null}
+
+      {tab === 'tools' ? (
+        <ToolsTab onUnauthorized={onUnauthorized} />
       ) : null}
     </section>
   );
@@ -745,10 +763,18 @@ function ApiKeysTab({
           </div>
         )}
       </section>
-
-      <WebSearchProvidersSection onUnauthorized={onUnauthorized} />
     </>
   );
+}
+
+// ─── Tools tab ───────────────────────────────────────────────────────
+
+function ToolsTab({
+  onUnauthorized,
+}: {
+  onUnauthorized: () => void;
+}): JSX.Element {
+  return <WebSearchProvidersSection onUnauthorized={onUnauthorized} />;
 }
 
 // ---------------------------------------------------------------------------

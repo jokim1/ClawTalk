@@ -41,7 +41,7 @@ describe('SettingsPage', () => {
     expect(profileTab).toHaveAttribute('aria-selected', 'true');
   });
 
-  it('shows all three tabs to member users (personal scope is open to everyone)', async () => {
+  it('shows all four tabs to member users (personal scope is open to everyone)', async () => {
     installSettingsFetch();
 
     render(
@@ -59,6 +59,7 @@ describe('SettingsPage', () => {
     expect(screen.getByRole('tab', { name: 'Profile' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: 'API Keys' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: 'Agents' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Tools' })).toBeTruthy();
   });
 
   it('opens the API Keys tab via ?tab=api-keys and renders both Workspace and Personal sections', async () => {
