@@ -158,6 +158,13 @@ import {
   listTalkThreadsRoute,
   patchTalkThreadRoute,
 } from './routes/talk-threads.js';
+import {
+  disconnectGoogleAccountRoute,
+  expandScopesRoute,
+  getUserGoogleAccountRoute,
+  handleGoogleCallback,
+  startConnectRoute,
+} from './routes/google-account.js';
 import { dispatchRun } from '../talks/queue-producer.js';
 import {
   cancelTalkChat,
@@ -289,6 +296,10 @@ function buildApp(): Hono<{ Variables: Variables }> {
   app.use('/api/v1/talk-folders/*', requireAuthMiddleware);
   app.use('/api/v1/user/*', requireAuthMiddleware);
   app.use('/api/v1/session/*', requireAuthMiddleware);
+  // C1: gate /api/v1/me/* (Google account routes). The callback at
+  // /api/v1/auth/google/callback stays public — Google redirects there
+  // directly with no auth cookies of its own.
+  app.use('/api/v1/me/*', requireAuthMiddleware);
   app.use('/api/v1/events', requireAuthMiddleware);
 
   // ── Sanity probe for the auth middleware ─────────────────────
@@ -466,6 +477,80 @@ function buildApp(): Hono<{ Variables: Variables }> {
     const body = await c.req.json().catch(() => ({}));
     const result = await putWebSearchActiveProviderRoute(auth, body);
     return jsonResponse(result);
+  });
+
+  // ── Google account OAuth (PR1: tool-scope OAuth flow) ────────
+  app.get('/api/v1/me/google-account', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'read' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const result = await getUserGoogleAccountRoute(auth);
+    return jsonResponse(result);
+  });
+
+  app.post('/api/v1/me/google-account/connect', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'auth_start',
+    });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const csrfFail = checkCsrf(c, auth);
+    if (csrfFail) return csrfFail;
+    const body = await c.req.json().catch(() => ({}));
+    const result = await startConnectRoute(auth, body);
+    return jsonResponse(result);
+  });
+
+  app.post('/api/v1/me/google-account/expand-scopes', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'auth_start',
+    });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const csrfFail = checkCsrf(c, auth);
+    if (csrfFail) return csrfFail;
+    const body = await c.req.json().catch(() => ({}));
+    const result = await expandScopesRoute(auth, body);
+    return jsonResponse(result);
+  });
+
+  app.post('/api/v1/me/google-account/disconnect', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const csrfFail = checkCsrf(c, auth);
+    if (csrfFail) return csrfFail;
+    const result = await disconnectGoogleAccountRoute(auth);
+    return jsonResponse(result);
+  });
+
+  // Public callback — no auth middleware. C9: IP-keyed rate limit.
+  app.get('/api/v1/auth/google/callback', async (c) => {
+    const ip =
+      c.req.header('cf-connecting-ip') ||
+      c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ||
+      'anonymous';
+    const rl = checkRateLimit({
+      principalId: `ip:${ip}`,
+      bucket: 'auth_callback',
+    });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const url = new URL(c.req.url);
+    const result = await handleGoogleCallback({
+      state: url.searchParams.get('state'),
+      code: url.searchParams.get('code'),
+      error: url.searchParams.get('error'),
+    });
+    return new Response(result.html, {
+      status: result.statusCode,
+      headers: {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store',
+        // popup origin must match opener to allow postMessage
+      },
+    });
   });
 
   // ── OAuth subscription flows ─────────────────────────────────

@@ -10,12 +10,17 @@ import {
   type ProviderVerificationStatus,
   type RegisteredAgent,
   type SessionUser,
+  type UserGoogleAccount,
   type WebSearchPageData,
   type WebSearchProviderId,
   clearWebSearchCredential,
   completeAnthropicSubscriptionOauth,
+  connectUserGoogleAccount,
+  disconnectUserGoogleAccount,
+  expandUserGoogleScopes,
   getAiAgents,
   getMainRegisteredAgent,
+  getUserGoogleAccount,
   getWebSearchProviders,
   initiateAnthropicSubscriptionOauth,
   initiateOpenAiCodexSubscriptionOauth,
@@ -29,7 +34,14 @@ import {
   updateSessionMe,
   verifyAiProviderCredential,
 } from '../lib/api';
+import { launchGoogleAccountPopup } from '../lib/googleAccountPopup';
 import { RegisteredAgentsPanel } from '../components/RegisteredAgentsPanel';
+
+const REQUIRED_GOOGLE_TOOL_SCOPES = ['drive.readonly', 'documents'];
+
+function isGoogleToolsEnabled(): boolean {
+  return import.meta.env.VITE_GOOGLE_TOOLS_ENABLED === 'true';
+}
 
 type Props = {
   user: SessionUser;
@@ -774,7 +786,215 @@ function ToolsTab({
 }: {
   onUnauthorized: () => void;
 }): JSX.Element {
-  return <WebSearchProvidersSection onUnauthorized={onUnauthorized} />;
+  return (
+    <>
+      {isGoogleToolsEnabled() ? (
+        <GoogleAccountSection onUnauthorized={onUnauthorized} />
+      ) : null}
+      <WebSearchProvidersSection onUnauthorized={onUnauthorized} />
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Google account (flag-gated behind VITE_GOOGLE_TOOLS_ENABLED until PR2)
+// ---------------------------------------------------------------------------
+
+function GoogleAccountSection({
+  onUnauthorized,
+}: {
+  onUnauthorized: () => void;
+}): JSX.Element {
+  const [account, setAccount] = useState<UserGoogleAccount | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<'connect' | 'expand' | 'disconnect' | null>(
+    null,
+  );
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const fresh = await getUserGoogleAccount();
+        if (cancelled) return;
+        setAccount(fresh);
+        setError(null);
+      } catch (err) {
+        if (cancelled) return;
+        if (err instanceof UnauthorizedError) {
+          onUnauthorized();
+          return;
+        }
+        setError(
+          err instanceof Error ? err.message : 'Failed to load Google account.',
+        );
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [onUnauthorized]);
+
+  async function refresh(): Promise<void> {
+    try {
+      const fresh = await getUserGoogleAccount();
+      setAccount(fresh);
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onUnauthorized();
+        return;
+      }
+      setError(
+        err instanceof Error ? err.message : 'Failed to reload Google account.',
+      );
+    }
+  }
+
+  async function handleConnect(): Promise<void> {
+    setBusy('connect');
+    setError(null);
+    setNotice(null);
+    try {
+      const launch = await connectUserGoogleAccount({
+        scopes: REQUIRED_GOOGLE_TOOL_SCOPES,
+      });
+      await launchGoogleAccountPopup(launch.authorizationUrl);
+      await refresh();
+      setNotice('Google account connected.');
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onUnauthorized();
+        return;
+      }
+      setError(
+        err instanceof Error ? err.message : 'Could not connect Google account.',
+      );
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleExpand(): Promise<void> {
+    setBusy('expand');
+    setError(null);
+    setNotice(null);
+    try {
+      const launch = await expandUserGoogleScopes({
+        scopes: REQUIRED_GOOGLE_TOOL_SCOPES,
+      });
+      await launchGoogleAccountPopup(launch.authorizationUrl);
+      await refresh();
+      setNotice('Scopes updated.');
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onUnauthorized();
+        return;
+      }
+      setError(
+        err instanceof Error ? err.message : 'Could not update scopes.',
+      );
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleDisconnect(): Promise<void> {
+    setBusy('disconnect');
+    setError(null);
+    setNotice(null);
+    try {
+      await disconnectUserGoogleAccount();
+      await refresh();
+      setNotice('Google account disconnected.');
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onUnauthorized();
+        return;
+      }
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Could not disconnect Google account.',
+      );
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const missingRequired = account
+    ? REQUIRED_GOOGLE_TOOL_SCOPES.filter(
+        (scope) => !account.scopes.includes(scope),
+      )
+    : [];
+
+  return (
+    <section
+      className="settings-section"
+      aria-label="Google account"
+      data-testid="google-account-section"
+    >
+      <header>
+        <h2>Google account</h2>
+        <p>
+          Connect your Google account to let agents read and write Google
+          Docs.
+        </p>
+      </header>
+
+      {error ? <p className="settings-error">{error}</p> : null}
+      {notice ? <p className="settings-notice">{notice}</p> : null}
+
+      {loading ? (
+        <p>Loading…</p>
+      ) : account?.connected ? (
+        <div className="settings-card">
+          <p>
+            <strong>Connected as:</strong>{' '}
+            {account.email ?? account.displayName ?? 'unknown'}
+          </p>
+          <p>
+            <strong>Granted scopes:</strong>{' '}
+            {account.scopes.length > 0 ? account.scopes.join(', ') : 'none'}
+          </p>
+          {missingRequired.length > 0 ? (
+            <p className="settings-warning">
+              Missing required scopes for Google Docs tools:{' '}
+              {missingRequired.join(', ')}.{' '}
+              <button
+                type="button"
+                onClick={() => void handleExpand()}
+                disabled={busy !== null}
+              >
+                {busy === 'expand' ? 'Re-requesting…' : 'Re-request scopes'}
+              </button>
+            </p>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => void handleDisconnect()}
+            disabled={busy !== null}
+          >
+            {busy === 'disconnect' ? 'Disconnecting…' : 'Disconnect'}
+          </button>
+        </div>
+      ) : (
+        <div className="settings-card">
+          <p>No Google account connected.</p>
+          <button
+            type="button"
+            onClick={() => void handleConnect()}
+            disabled={busy !== null}
+          >
+            {busy === 'connect' ? 'Connecting…' : 'Connect Google account'}
+          </button>
+        </div>
+      )}
+    </section>
+  );
 }
 
 // ---------------------------------------------------------------------------

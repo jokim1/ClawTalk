@@ -512,3 +512,152 @@ function jsonResponse(status: number, body: unknown): Response {
     headers: { 'content-type': 'application/json' },
   });
 }
+
+// ─── GoogleAccountSection (PR1, flag-gated) ─────────────────────────
+
+describe('GoogleAccountSection (flag-gated)', () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  function installToolsFetch(opts: { connected: boolean }) {
+    const account = opts.connected
+      ? {
+          connected: true,
+          email: 'tester@example.com',
+          displayName: 'Tester',
+          scopes: ['drive.readonly', 'documents'],
+          accessExpiresAt: '2026-12-31T00:00:00.000Z',
+        }
+      : {
+          connected: false,
+          email: null,
+          displayName: null,
+          scopes: [],
+          accessExpiresAt: null,
+        };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (request: RequestInfo | URL, init?: RequestInit) => {
+        const url =
+          typeof request === 'string'
+            ? request
+            : request instanceof URL
+              ? request.toString()
+              : request instanceof Request
+                ? request.url
+                : String(request);
+        const method = init?.method || 'GET';
+
+        if (url.endsWith('/api/v1/agents') && method === 'GET') {
+          return jsonResponse(200, { ok: true, data: buildAiAgentsData() });
+        }
+        if (url.endsWith('/api/v1/registered-agents') && method === 'GET') {
+          return jsonResponse(200, { ok: true, data: buildRegisteredAgents() });
+        }
+        if (
+          url.endsWith('/api/v1/registered-agents/main') &&
+          method === 'GET'
+        ) {
+          return jsonResponse(200, {
+            ok: true,
+            data: buildRegisteredAgents()[0],
+          });
+        }
+        if (url.endsWith('/api/v1/web-search/providers') && method === 'GET') {
+          return jsonResponse(200, {
+            ok: true,
+            data: { providers: [], activeProvider: null },
+          });
+        }
+        if (url.endsWith('/api/v1/me/google-account') && method === 'GET') {
+          return jsonResponse(200, {
+            ok: true,
+            data: { googleAccount: account },
+          });
+        }
+        throw new Error(`Unexpected fetch: ${method} ${url}`);
+      }),
+    );
+  }
+
+  it('does NOT render the Google account section when the flag is unset', async () => {
+    vi.stubEnv('VITE_GOOGLE_TOOLS_ENABLED', '');
+    installToolsFetch({ connected: false });
+
+    render(
+      <MemoryRouter initialEntries={['/app/settings?tab=tools']}>
+        <SettingsPage
+          user={buildSessionUser()}
+          userRole="owner"
+          onUnauthorized={vi.fn()}
+          onUserUpdated={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+
+    // The Tools tab should be visible, but the Google account section
+    // should NOT be rendered.
+    await screen.findByRole('tab', { name: 'Tools' });
+    expect(screen.queryByTestId('google-account-section')).toBeNull();
+  });
+
+  it('renders connect button when flag is on and account is disconnected', async () => {
+    vi.stubEnv('VITE_GOOGLE_TOOLS_ENABLED', 'true');
+    installToolsFetch({ connected: false });
+
+    render(
+      <MemoryRouter initialEntries={['/app/settings?tab=tools']}>
+        <SettingsPage
+          user={buildSessionUser()}
+          userRole="owner"
+          onUnauthorized={vi.fn()}
+          onUserUpdated={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+
+    const section = await screen.findByTestId('google-account-section');
+    expect(
+      within(section).getByText(/No Google account connected/i),
+    ).toBeTruthy();
+    expect(
+      within(section).getByRole('button', { name: /Connect Google account/i }),
+    ).toBeTruthy();
+    expect(
+      within(section).queryByRole('button', { name: /Disconnect/i }),
+    ).toBeNull();
+  });
+
+  it('renders disconnect button and email when flag is on and account is connected', async () => {
+    vi.stubEnv('VITE_GOOGLE_TOOLS_ENABLED', 'true');
+    installToolsFetch({ connected: true });
+
+    render(
+      <MemoryRouter initialEntries={['/app/settings?tab=tools']}>
+        <SettingsPage
+          user={buildSessionUser()}
+          userRole="owner"
+          onUnauthorized={vi.fn()}
+          onUserUpdated={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+
+    const section = await screen.findByTestId('google-account-section');
+    expect(within(section).getByText(/tester@example.com/)).toBeTruthy();
+    expect(
+      within(section).getByRole('button', { name: /Disconnect/i }),
+    ).toBeTruthy();
+    // Connect button should NOT be rendered when already connected (D4 UI gate)
+    expect(
+      within(section).queryByRole('button', {
+        name: /Connect Google account/i,
+      }),
+    ).toBeNull();
+  });
+});
+

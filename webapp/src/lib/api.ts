@@ -1640,6 +1640,19 @@ export async function getGooglePickerSession(): Promise<GooglePickerSession> {
   );
 }
 
+export async function disconnectUserGoogleAccount(): Promise<{
+  disconnected: boolean;
+}> {
+  return apiMutationRequest<{ disconnected: boolean }>(
+    '/api/v1/me/google-account/disconnect',
+    {
+      method: 'POST',
+      includeJson: true,
+      body: JSON.stringify({}),
+    },
+  );
+}
+
 export async function getTalkAudit(input: {
   talkId: string;
   limit?: number;
