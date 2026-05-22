@@ -133,11 +133,11 @@ export async function setTalkGoalRoute(input: {
     const denied = await requireEditAccess(input.talkId);
     if (denied) return denied;
 
-    const text = input.goalText.replace(/[\r\n]/g, '').trim();
-    if (text.length > 160) {
+    const text = input.goalText.replace(/\r\n/g, '\n').trim();
+    if (text.length > 1000) {
       return badRequest(
         'goal_too_long',
-        'Goal must be 160 characters or fewer.',
+        'Goal must be 1000 characters or fewer.',
       );
     }
 
@@ -258,10 +258,10 @@ export async function createTalkContextRuleRoute(input: {
     if (!text) {
       return badRequest('rule_text_required', 'Rule text is required.');
     }
-    if (text.length > 240) {
+    if (text.length > 800) {
       return badRequest(
         'rule_too_long',
-        'Rule must be 240 characters or fewer.',
+        'Rule must be 800 characters or fewer.',
       );
     }
 
@@ -311,10 +311,10 @@ export async function patchTalkContextRuleRoute(input: {
       const text = input.ruleText.trim();
       if (!text)
         return badRequest('rule_text_required', 'Rule text is required.');
-      if (text.length > 240)
+      if (text.length > 800)
         return badRequest(
           'rule_too_long',
-          'Rule must be 240 characters or fewer.',
+          'Rule must be 800 characters or fewer.',
         );
     }
 

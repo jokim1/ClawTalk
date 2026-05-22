@@ -170,7 +170,7 @@ type TabKey =
   | 'agents'
   | 'tools'
   | 'context'
-  | 'rules'
+  | 'steering'
   | 'state'
   | 'outputs'
   | 'channels'
@@ -191,11 +191,8 @@ const ORCHESTRATION_MODE_TOOLTIP =
   'Ordered is turn based synthesis focused multi-agent response. Parallel is fast independent response.';
 
 const SETTINGS_TAB_KEYS: ReadonlyArray<
-  Extract<
-    TabKey,
-    'rules' | 'tools' | 'state' | 'channels' | 'data-connectors'
-  >
-> = ['rules', 'tools', 'state', 'channels', 'data-connectors'];
+  Extract<TabKey, 'tools' | 'state' | 'channels' | 'data-connectors'>
+> = ['tools', 'state', 'channels', 'data-connectors'];
 
 function isSettingsTabKey(tab: TabKey): boolean {
   return SETTINGS_TAB_KEYS.includes(tab as (typeof SETTINGS_TAB_KEYS)[number]);
@@ -1698,7 +1695,7 @@ function getTabFromPath(pathname: string, talkId: string): TabKey {
   if (pathname === `${base}/agents`) return 'agents';
   if (pathname === `${base}/tools`) return 'tools';
   if (pathname === `${base}/context`) return 'context';
-  if (pathname === `${base}/rules`) return 'rules';
+  if (pathname === `${base}/steering`) return 'steering';
   if (pathname === `${base}/state`) return 'state';
   if (pathname === `${base}/outputs`) return 'outputs';
   if (pathname === `${base}/channels`) return 'channels';
@@ -4907,9 +4904,9 @@ export function TalkDetailPage({
   const contextTabHref = activeThreadId
     ? buildThreadHref(talkId, activeThreadId, 'context')
     : `/app/talks/${talkId}/context`;
-  const rulesTabHref = activeThreadId
-    ? buildThreadHref(talkId, activeThreadId, 'rules')
-    : `/app/talks/${talkId}/rules`;
+  const steeringTabHref = activeThreadId
+    ? buildThreadHref(talkId, activeThreadId, 'steering')
+    : `/app/talks/${talkId}/steering`;
   const stateTabHref = activeThreadId
     ? buildThreadHref(talkId, activeThreadId, 'state')
     : `/app/talks/${talkId}/state`;
@@ -4925,7 +4922,7 @@ export function TalkDetailPage({
   const runsTabHref = activeThreadId
     ? buildThreadHref(talkId, activeThreadId, 'runs')
     : `/app/talks/${talkId}/runs`;
-  const settingsTabHref = rulesTabHref;
+  const settingsTabHref = toolsTabHref;
   const manageAgentsHref = `/app/settings?tab=agents&returnTo=${encodeURIComponent(
     threadAwareTalkTabHref,
   )}`;
@@ -5252,7 +5249,7 @@ export function TalkDetailPage({
       try {
         await refreshContext({
           hydrateGoalDraft: true,
-          showLoading: currentTab === 'context' || currentTab === 'rules',
+          showLoading: currentTab === 'context' || currentTab === 'steering',
         });
         if (cancelled) return;
       } catch (err) {
@@ -8549,6 +8546,18 @@ export function TalkDetailPage({
                         Context
                       </Link>
                       <Link
+                        to={steeringTabHref}
+                        className={`talk-tab ${currentTab === 'steering' ? 'talk-tab-active' : ''}`}
+                      >
+                        Steering
+                        <span
+                          className="talk-tab-badge"
+                          aria-label={`${activeRuleCount} active rules`}
+                        >
+                          {activeRuleCount}
+                        </span>
+                      </Link>
+                      <Link
                         to={settingsTabHref}
                         className={`talk-tab ${isSettingsTab ? 'talk-tab-active' : ''}`}
                       >
@@ -8657,18 +8666,6 @@ export function TalkDetailPage({
                         className="talk-tabs talk-subtabs"
                         aria-label="Talk settings sections"
                       >
-                        <Link
-                          to={rulesTabHref}
-                          className={`talk-tab ${currentTab === 'rules' ? 'talk-tab-active' : ''}`}
-                        >
-                          Rules
-                          <span
-                            className="talk-tab-badge"
-                            aria-label={`${activeRuleCount} active rules`}
-                          >
-                            {activeRuleCount}
-                          </span>
-                        </Link>
                         <Link
                           to={toolsTabHref}
                           className={`talk-tab ${currentTab === 'tools' ? 'talk-tab-active' : ''}`}
@@ -9020,49 +9017,6 @@ export function TalkDetailPage({
                 <p className="page-state error">{contextStatus.message}</p>
               ) : (
                 <>
-                  {/* Goal */}
-                  <div className="talk-llm-card">
-                    <div className="connector-card-header">
-                      <div>
-                        <h3>Goal</h3>
-                        <p className="talk-llm-meta">
-                          A single-line goal for what this talk is about. Agents
-                          see this every turn.
-                        </p>
-                      </div>
-                    </div>
-                    {canEditAgents ? (
-                      <>
-                        <div className="connector-attach-row">
-                          <label style={{ flex: 1 }}>
-                            <input
-                              type="text"
-                              maxLength={160}
-                              value={goalDraft}
-                              onChange={(e) => setGoalDraft(e.target.value)}
-                              placeholder="e.g. Summarize Q4 earnings calls"
-                              disabled={contextStatus.status === 'saving'}
-                              style={{ width: '100%' }}
-                            />
-                          </label>
-                          <button
-                            type="button"
-                            className="secondary-btn"
-                            onClick={() => void handleSaveGoal()}
-                            disabled={contextStatus.status === 'saving'}
-                          >
-                            Save
-                          </button>
-                        </div>
-                        <p className="talk-llm-meta">{goalDraft.length}/160</p>
-                      </>
-                    ) : (
-                      <p className="talk-llm-meta">
-                        {contextGoal?.goalText || <em>No goal set.</em>}
-                      </p>
-                    )}
-                  </div>
-
                   {/* Saved Sources */}
                   <div className="talk-llm-card">
                     <div className="connector-card-header">
@@ -9352,28 +9306,81 @@ export function TalkDetailPage({
             </section>
           ) : null}
 
-          {currentTab === 'rules' ? (
-            <section className="talk-tab-panel" aria-label="Talk rules">
+          {currentTab === 'steering' ? (
+            <section className="talk-tab-panel" aria-label="Talk steering">
               {contextStatus.status === 'loading' && !contextLoaded ? (
-                <p className="page-state">Loading rules…</p>
+                <p className="page-state">Loading steering…</p>
               ) : contextStatus.status === 'error' && !contextLoaded ? (
                 <p className="page-state error">{contextStatus.message}</p>
               ) : (
                 <>
                   <div className="agents-panel-header">
-                    <h2>Rules</h2>
+                    <h2>Steering</h2>
                   </div>
                   <p className="policy-muted">
-                    Rules are durable talk-level instructions. Agents see active
-                    rules every turn in order.
+                    Goal and Rules steer every agent in this talk. Both are
+                    injected into every turn.
                   </p>
+
+                  {/* Goal */}
                   <div className="talk-llm-card">
                     <div className="connector-card-header">
                       <div>
-                        <h3>Active Rules</h3>
+                        <h3>Goal</h3>
                         <p className="talk-llm-meta">
-                          Up to 8 active rules. Drag to reorder. Inactive rules
-                          stay editable without affecting prompt injection.
+                          What is this talk for? Describe the overall objective
+                          so agents share a frame for every discussion.
+                        </p>
+                      </div>
+                    </div>
+                    {canEditAgents ? (
+                      <>
+                        <label style={{ display: 'block' }}>
+                          <span className="sr-only">Talk goal</span>
+                          <textarea
+                            maxLength={1000}
+                            rows={4}
+                            value={goalDraft}
+                            onChange={(e) => setGoalDraft(e.target.value)}
+                            placeholder="e.g. Track and discuss Cal Football news each week — scores, key plays, injury reports, and how the team is trending toward bowl eligibility."
+                            disabled={contextStatus.status === 'saving'}
+                            style={{ width: '100%' }}
+                          />
+                        </label>
+                        <div
+                          className="connector-attach-row"
+                          style={{ justifyContent: 'space-between' }}
+                        >
+                          <p className="talk-llm-meta">
+                            {goalDraft.length}/1000
+                          </p>
+                          <button
+                            type="button"
+                            className="secondary-btn"
+                            onClick={() => void handleSaveGoal()}
+                            disabled={contextStatus.status === 'saving'}
+                          >
+                            Save
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <p className="talk-llm-meta">
+                        {contextGoal?.goalText || <em>No goal set.</em>}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Rules */}
+                  <div className="talk-llm-card">
+                    <div className="connector-card-header">
+                      <div>
+                        <h3>Rules</h3>
+                        <p className="talk-llm-meta">
+                          Specific formats and constraints — e.g. an output
+                          shape to follow, or sources to avoid. Up to 8 active
+                          rules, applied in order. Inactive rules stay editable
+                          without affecting prompt injection.
                         </p>
                       </div>
                     </div>
@@ -9417,9 +9424,9 @@ export function TalkDetailPage({
                                         <span className="sr-only">
                                           Rule text
                                         </span>
-                                        <input
-                                          type="text"
-                                          maxLength={240}
+                                        <textarea
+                                          maxLength={800}
+                                          rows={2}
                                           value={draft}
                                           onChange={(event) =>
                                             setRuleDrafts((prev) => ({
@@ -9430,15 +9437,10 @@ export function TalkDetailPage({
                                           onBlur={() =>
                                             void handleSaveRuleText(rule)
                                           }
-                                          onKeyDown={(event) => {
-                                            if (event.key === 'Enter') {
-                                              event.preventDefault();
-                                              void handleSaveRuleText(rule);
-                                            }
-                                          }}
                                           disabled={
                                             contextStatus.status === 'saving'
                                           }
+                                          style={{ width: '100%' }}
                                         />
                                       </label>
                                       <div className="talk-rule-actions">
@@ -9493,16 +9495,13 @@ export function TalkDetailPage({
                       <div className="talk-rule-create-row">
                         <label style={{ flex: 1 }}>
                           <span className="sr-only">New rule text</span>
-                          <input
-                            type="text"
-                            maxLength={240}
+                          <textarea
+                            maxLength={800}
+                            rows={2}
                             value={newRuleText}
                             onChange={(e) => setNewRuleText(e.target.value)}
-                            placeholder="Add a rule…"
+                            placeholder="e.g. When summarizing Cal Football news, use: ⟨headline⟩ — ⟨score⟩ — three bullets of key plays."
                             disabled={contextStatus.status === 'saving'}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') void handleAddRule();
-                            }}
                             style={{ width: '100%' }}
                           />
                         </label>

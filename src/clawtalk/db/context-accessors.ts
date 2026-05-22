@@ -278,7 +278,7 @@ export async function setTalkGoal(input: {
   goalText: string;
   updatedBy: string;
 }): Promise<GoalSnapshot | null> {
-  const text = input.goalText.replace(/[\r\n]/g, '').trim();
+  const text = input.goalText.replace(/\r\n/g, '\n').trim();
   const db = getDbPg();
   if (!text) {
     await db`
@@ -286,8 +286,8 @@ export async function setTalkGoal(input: {
     `;
     return null;
   }
-  if (text.length > 160) {
-    throw new Error('Goal text exceeds 160-character limit');
+  if (text.length > 1000) {
+    throw new Error('Goal text exceeds 1000-character limit');
   }
   await db`
     insert into public.talk_context_goal
@@ -338,8 +338,8 @@ export async function createTalkContextRule(input: {
 }): Promise<ContextRuleSnapshot> {
   const text = input.ruleText.trim();
   if (!text) throw new Error('Rule text is required');
-  if (text.length > 240)
-    throw new Error('Rule text exceeds 240-character limit');
+  if (text.length > 800)
+    throw new Error('Rule text exceeds 800-character limit');
 
   const activeCount = await getActiveRuleCount(input.talkId);
   if (activeCount >= 8) {
@@ -389,8 +389,8 @@ export async function patchTalkContextRule(input: {
   if (input.ruleText !== undefined) {
     nextText = input.ruleText.trim();
     if (!nextText) throw new Error('Rule text is required');
-    if (nextText.length > 240)
-      throw new Error('Rule text exceeds 240-character limit');
+    if (nextText.length > 800)
+      throw new Error('Rule text exceeds 800-character limit');
   }
   if (input.isActive !== undefined) {
     if (input.isActive && !existing.is_active) {
