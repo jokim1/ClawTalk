@@ -1115,8 +1115,15 @@ function ProviderCredentialCard({
   onClear: () => void;
   onVerify: () => void;
 }): JSX.Element {
+  const [searchParams, setSearchParams] = useSearchParams();
   const view = projectProvider(provider, scope);
   const docs = PROVIDER_DOCS[provider.id];
+  const modelCount = provider.modelSuggestions.length;
+  const goToAgents = (): void => {
+    const params = new URLSearchParams(searchParams);
+    params.set('tab', 'agents');
+    setSearchParams(params, { replace: true });
+  };
   const placeholder = PROVIDER_KEY_PLACEHOLDER[provider.id] || 'sk-...';
   const disabled = !canManage || busySave;
   const scopeLabel = scope === 'workspace' ? 'workspace' : 'personal';
@@ -1158,6 +1165,22 @@ function ProviderCredentialCard({
             </p>
             {view.lastVerificationError ? (
               <p className="talk-llm-meta">{view.lastVerificationError}</p>
+            ) : null}
+            {modelCount > 0 ? (
+              <p className="talk-llm-meta">
+                {modelCount} model{modelCount === 1 ? '' : 's'} available
+                {provider.liveModelDiscovery?.status === 'ok'
+                  ? ' (live + curated)'
+                  : ''}
+                {' — '}
+                <button
+                  type="button"
+                  className="talk-llm-link-button"
+                  onClick={goToAgents}
+                >
+                  Configure agents →
+                </button>
+              </p>
             ) : null}
           </div>
           {canManage ? (
