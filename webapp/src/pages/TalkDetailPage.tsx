@@ -170,7 +170,6 @@ type TabKey =
   | 'agents'
   | 'tools'
   | 'context'
-  | 'steering'
   | 'state'
   | 'outputs'
   | 'channels'
@@ -1695,7 +1694,6 @@ function getTabFromPath(pathname: string, talkId: string): TabKey {
   if (pathname === `${base}/agents`) return 'agents';
   if (pathname === `${base}/tools`) return 'tools';
   if (pathname === `${base}/context`) return 'context';
-  if (pathname === `${base}/steering`) return 'steering';
   if (pathname === `${base}/state`) return 'state';
   if (pathname === `${base}/outputs`) return 'outputs';
   if (pathname === `${base}/channels`) return 'channels';
@@ -4904,9 +4902,6 @@ export function TalkDetailPage({
   const contextTabHref = activeThreadId
     ? buildThreadHref(talkId, activeThreadId, 'context')
     : `/app/talks/${talkId}/context`;
-  const steeringTabHref = activeThreadId
-    ? buildThreadHref(talkId, activeThreadId, 'steering')
-    : `/app/talks/${talkId}/steering`;
   const stateTabHref = activeThreadId
     ? buildThreadHref(talkId, activeThreadId, 'state')
     : `/app/talks/${talkId}/state`;
@@ -5249,7 +5244,7 @@ export function TalkDetailPage({
       try {
         await refreshContext({
           hydrateGoalDraft: true,
-          showLoading: currentTab === 'context' || currentTab === 'steering',
+          showLoading: currentTab === 'context',
         });
         if (cancelled) return;
       } catch (err) {
@@ -8544,12 +8539,6 @@ export function TalkDetailPage({
                         className={`talk-tab ${currentTab === 'context' ? 'talk-tab-active' : ''}`}
                       >
                         Context
-                      </Link>
-                      <Link
-                        to={steeringTabHref}
-                        className={`talk-tab ${currentTab === 'steering' ? 'talk-tab-active' : ''}`}
-                      >
-                        Steering
                         <span
                           className="talk-tab-badge"
                           aria-label={`${activeRuleCount} active rules`}
@@ -9017,6 +9006,204 @@ export function TalkDetailPage({
                 <p className="page-state error">{contextStatus.message}</p>
               ) : (
                 <>
+                  {/* Goal */}
+                  <div className="talk-llm-card">
+                    <div className="connector-card-header">
+                      <div>
+                        <h3>Goal</h3>
+                        <p className="talk-llm-meta">
+                          What is this talk for? Describe the overall objective
+                          so agents share a frame for every discussion.
+                        </p>
+                      </div>
+                    </div>
+                    {canEditAgents ? (
+                      <>
+                        <label style={{ display: 'block' }}>
+                          <span className="sr-only">Talk goal</span>
+                          <textarea
+                            maxLength={1000}
+                            rows={4}
+                            value={goalDraft}
+                            onChange={(e) => setGoalDraft(e.target.value)}
+                            placeholder="e.g. Track and discuss Cal Football news each week — scores, key plays, injury reports, and how the team is trending toward bowl eligibility."
+                            disabled={contextStatus.status === 'saving'}
+                            style={{ width: '100%' }}
+                          />
+                        </label>
+                        <div
+                          className="connector-attach-row"
+                          style={{ justifyContent: 'space-between' }}
+                        >
+                          <p className="talk-llm-meta">
+                            {goalDraft.length}/1000
+                          </p>
+                          <button
+                            type="button"
+                            className="secondary-btn"
+                            onClick={() => void handleSaveGoal()}
+                            disabled={contextStatus.status === 'saving'}
+                          >
+                            Save
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <p className="talk-llm-meta">
+                        {contextGoal?.goalText || <em>No goal set.</em>}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Rules */}
+                  <div className="talk-llm-card">
+                    <div className="connector-card-header">
+                      <div>
+                        <h3>Rules</h3>
+                        <p className="talk-llm-meta">
+                          Specific formats and constraints — e.g. an output
+                          shape to follow, or sources to avoid. Up to 8 active
+                          rules, applied in order. Inactive rules stay editable
+                          without affecting prompt injection.
+                        </p>
+                      </div>
+                    </div>
+                    {orderedContextRules.length > 0 ? (
+                      <DndContext
+                        sensors={ruleSensors}
+                        collisionDetection={closestCenter}
+                        onDragEnd={(event) => void handleRuleReorder(event)}
+                      >
+                        <div className="talk-rule-list">
+                          {orderedContextRules.map((rule) => {
+                            const draft = ruleDrafts[rule.id] ?? rule.ruleText;
+                            const hasTextChange =
+                              draft.trim().length > 0 &&
+                              draft.trim() !== rule.ruleText;
+                            return (
+                              <RuleRow
+                                key={rule.id}
+                                ruleId={rule.id}
+                                disabled={!canEditAgents}
+                                label={rule.ruleText}
+                              >
+                                <div
+                                  className={`talk-rule-card${
+                                    rule.isActive
+                                      ? ''
+                                      : ' talk-rule-card-inactive'
+                                  }`}
+                                >
+                                  <div className="talk-rule-card-top">
+                                    <span className="talk-agent-chip">
+                                      {rule.isActive ? 'Active' : 'Inactive'}
+                                    </span>
+                                    <span className="talk-llm-meta">
+                                      Position {rule.sortOrder + 1}
+                                    </span>
+                                  </div>
+                                  {canEditAgents ? (
+                                    <>
+                                      <label className="talk-rule-edit-field">
+                                        <span className="sr-only">
+                                          Rule text
+                                        </span>
+                                        <textarea
+                                          maxLength={800}
+                                          rows={2}
+                                          value={draft}
+                                          onChange={(event) =>
+                                            setRuleDrafts((prev) => ({
+                                              ...prev,
+                                              [rule.id]: event.target.value,
+                                            }))
+                                          }
+                                          onBlur={() =>
+                                            void handleSaveRuleText(rule)
+                                          }
+                                          disabled={
+                                            contextStatus.status === 'saving'
+                                          }
+                                          style={{ width: '100%' }}
+                                        />
+                                      </label>
+                                      <div className="talk-rule-actions">
+                                        <button
+                                          type="button"
+                                          className="secondary-btn"
+                                          onClick={() =>
+                                            void handleToggleRule(rule)
+                                          }
+                                        >
+                                          {rule.isActive ? 'Pause' : 'Activate'}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="secondary-btn"
+                                          onClick={() =>
+                                            void handleSaveRuleText(rule)
+                                          }
+                                          disabled={
+                                            contextStatus.status === 'saving' ||
+                                            !hasTextChange
+                                          }
+                                        >
+                                          Save
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="secondary-btn"
+                                          onClick={() =>
+                                            void handleDeleteRule(rule.id)
+                                          }
+                                        >
+                                          Delete
+                                        </button>
+                                      </div>
+                                    </>
+                                  ) : (
+                                    <p className="talk-rule-readonly">
+                                      {rule.ruleText}
+                                    </p>
+                                  )}
+                                </div>
+                              </RuleRow>
+                            );
+                          })}
+                        </div>
+                      </DndContext>
+                    ) : (
+                      <p className="page-state">No rules yet.</p>
+                    )}
+                    {canEditAgents ? (
+                      <div className="talk-rule-create-row">
+                        <label style={{ flex: 1 }}>
+                          <span className="sr-only">New rule text</span>
+                          <textarea
+                            maxLength={800}
+                            rows={2}
+                            value={newRuleText}
+                            onChange={(e) => setNewRuleText(e.target.value)}
+                            placeholder="e.g. When summarizing Cal Football news, use: ⟨headline⟩ — ⟨score⟩ — three bullets of key plays."
+                            disabled={contextStatus.status === 'saving'}
+                            style={{ width: '100%' }}
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          className="secondary-btn"
+                          onClick={() => void handleAddRule()}
+                          disabled={
+                            contextStatus.status === 'saving' ||
+                            !newRuleText.trim()
+                          }
+                        >
+                          Add Rule
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+
                   {/* Saved Sources */}
                   <div className="talk-llm-card">
                     <div className="connector-card-header">
@@ -9301,241 +9488,6 @@ export function TalkDetailPage({
                   contextStatus.message ? (
                     <p className="page-state">{contextStatus.message}</p>
                   ) : null}
-                </>
-              )}
-            </section>
-          ) : null}
-
-          {currentTab === 'steering' ? (
-            <section className="talk-tab-panel" aria-label="Talk steering">
-              {contextStatus.status === 'loading' && !contextLoaded ? (
-                <p className="page-state">Loading steering…</p>
-              ) : contextStatus.status === 'error' && !contextLoaded ? (
-                <p className="page-state error">{contextStatus.message}</p>
-              ) : (
-                <>
-                  <div className="agents-panel-header">
-                    <h2>Steering</h2>
-                  </div>
-                  <p className="policy-muted">
-                    Goal and Rules steer every agent in this talk. Both are
-                    injected into every turn.
-                  </p>
-
-                  {/* Goal */}
-                  <div className="talk-llm-card">
-                    <div className="connector-card-header">
-                      <div>
-                        <h3>Goal</h3>
-                        <p className="talk-llm-meta">
-                          What is this talk for? Describe the overall objective
-                          so agents share a frame for every discussion.
-                        </p>
-                      </div>
-                    </div>
-                    {canEditAgents ? (
-                      <>
-                        <label style={{ display: 'block' }}>
-                          <span className="sr-only">Talk goal</span>
-                          <textarea
-                            maxLength={1000}
-                            rows={4}
-                            value={goalDraft}
-                            onChange={(e) => setGoalDraft(e.target.value)}
-                            placeholder="e.g. Track and discuss Cal Football news each week — scores, key plays, injury reports, and how the team is trending toward bowl eligibility."
-                            disabled={contextStatus.status === 'saving'}
-                            style={{ width: '100%' }}
-                          />
-                        </label>
-                        <div
-                          className="connector-attach-row"
-                          style={{ justifyContent: 'space-between' }}
-                        >
-                          <p className="talk-llm-meta">
-                            {goalDraft.length}/1000
-                          </p>
-                          <button
-                            type="button"
-                            className="secondary-btn"
-                            onClick={() => void handleSaveGoal()}
-                            disabled={contextStatus.status === 'saving'}
-                          >
-                            Save
-                          </button>
-                        </div>
-                      </>
-                    ) : (
-                      <p className="talk-llm-meta">
-                        {contextGoal?.goalText || <em>No goal set.</em>}
-                      </p>
-                    )}
-                  </div>
-
-                  {/* Rules */}
-                  <div className="talk-llm-card">
-                    <div className="connector-card-header">
-                      <div>
-                        <h3>Rules</h3>
-                        <p className="talk-llm-meta">
-                          Specific formats and constraints — e.g. an output
-                          shape to follow, or sources to avoid. Up to 8 active
-                          rules, applied in order. Inactive rules stay editable
-                          without affecting prompt injection.
-                        </p>
-                      </div>
-                    </div>
-                    {orderedContextRules.length > 0 ? (
-                      <DndContext
-                        sensors={ruleSensors}
-                        collisionDetection={closestCenter}
-                        onDragEnd={(event) => void handleRuleReorder(event)}
-                      >
-                        <div className="talk-rule-list">
-                          {orderedContextRules.map((rule) => {
-                            const draft = ruleDrafts[rule.id] ?? rule.ruleText;
-                            const hasTextChange =
-                              draft.trim().length > 0 &&
-                              draft.trim() !== rule.ruleText;
-                            return (
-                              <RuleRow
-                                key={rule.id}
-                                ruleId={rule.id}
-                                disabled={!canEditAgents}
-                                label={rule.ruleText}
-                              >
-                                <div
-                                  className={`talk-rule-card${
-                                    rule.isActive
-                                      ? ''
-                                      : ' talk-rule-card-inactive'
-                                  }`}
-                                >
-                                  <div className="talk-rule-card-top">
-                                    <span className="talk-agent-chip">
-                                      {rule.isActive ? 'Active' : 'Inactive'}
-                                    </span>
-                                    <span className="talk-llm-meta">
-                                      Position {rule.sortOrder + 1}
-                                    </span>
-                                  </div>
-                                  {canEditAgents ? (
-                                    <>
-                                      <label className="talk-rule-edit-field">
-                                        <span className="sr-only">
-                                          Rule text
-                                        </span>
-                                        <textarea
-                                          maxLength={800}
-                                          rows={2}
-                                          value={draft}
-                                          onChange={(event) =>
-                                            setRuleDrafts((prev) => ({
-                                              ...prev,
-                                              [rule.id]: event.target.value,
-                                            }))
-                                          }
-                                          onBlur={() =>
-                                            void handleSaveRuleText(rule)
-                                          }
-                                          disabled={
-                                            contextStatus.status === 'saving'
-                                          }
-                                          style={{ width: '100%' }}
-                                        />
-                                      </label>
-                                      <div className="talk-rule-actions">
-                                        <button
-                                          type="button"
-                                          className="secondary-btn"
-                                          onClick={() =>
-                                            void handleToggleRule(rule)
-                                          }
-                                        >
-                                          {rule.isActive ? 'Pause' : 'Activate'}
-                                        </button>
-                                        <button
-                                          type="button"
-                                          className="secondary-btn"
-                                          onClick={() =>
-                                            void handleSaveRuleText(rule)
-                                          }
-                                          disabled={
-                                            contextStatus.status === 'saving' ||
-                                            !hasTextChange
-                                          }
-                                        >
-                                          Save
-                                        </button>
-                                        <button
-                                          type="button"
-                                          className="secondary-btn"
-                                          onClick={() =>
-                                            void handleDeleteRule(rule.id)
-                                          }
-                                        >
-                                          Delete
-                                        </button>
-                                      </div>
-                                    </>
-                                  ) : (
-                                    <p className="talk-rule-readonly">
-                                      {rule.ruleText}
-                                    </p>
-                                  )}
-                                </div>
-                              </RuleRow>
-                            );
-                          })}
-                        </div>
-                      </DndContext>
-                    ) : (
-                      <p className="page-state">No rules yet.</p>
-                    )}
-                    {canEditAgents ? (
-                      <div className="talk-rule-create-row">
-                        <label style={{ flex: 1 }}>
-                          <span className="sr-only">New rule text</span>
-                          <textarea
-                            maxLength={800}
-                            rows={2}
-                            value={newRuleText}
-                            onChange={(e) => setNewRuleText(e.target.value)}
-                            placeholder="e.g. When summarizing Cal Football news, use: ⟨headline⟩ — ⟨score⟩ — three bullets of key plays."
-                            disabled={contextStatus.status === 'saving'}
-                            style={{ width: '100%' }}
-                          />
-                        </label>
-                        <button
-                          type="button"
-                          className="secondary-btn"
-                          onClick={() => void handleAddRule()}
-                          disabled={
-                            contextStatus.status === 'saving' ||
-                            !newRuleText.trim()
-                          }
-                        >
-                          Add Rule
-                        </button>
-                      </div>
-                    ) : null}
-                    {(contextStatus.status === 'success' ||
-                      contextStatus.status === 'error') &&
-                    contextStatus.message ? (
-                      <div
-                        className={`inline-banner ${
-                          contextStatus.status === 'error'
-                            ? 'inline-banner-error'
-                            : 'inline-banner-success'
-                        }`}
-                        role={
-                          contextStatus.status === 'error' ? 'alert' : 'status'
-                        }
-                        style={{ marginTop: '0.75rem' }}
-                      >
-                        {contextStatus.message}
-                      </div>
-                    ) : null}
-                  </div>
                 </>
               )}
             </section>
