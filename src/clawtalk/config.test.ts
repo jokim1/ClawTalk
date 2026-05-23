@@ -17,6 +17,9 @@ function applyValidPublicModeEnv(): void {
     'GOOGLE_OAUTH_REDIRECT_URI',
     'https://clawtalk.app/api/v1/auth/google/callback',
   );
+  // PR2 C11: picker SDK env vars are required when public mode is on.
+  vi.stubEnv('GOOGLE_PICKER_API_KEY', 'test-picker-key');
+  vi.stubEnv('GOOGLE_PICKER_APP_ID', 'test-picker-app');
 }
 
 describe('clawtalk config public mode', () => {
@@ -116,6 +119,8 @@ describe('clawtalk config public mode', () => {
         'GOOGLE_OAUTH_CLIENT_ID must be set when public mode is enabled',
         'GOOGLE_OAUTH_CLIENT_SECRET must be set when public mode is enabled',
         'GOOGLE_OAUTH_REDIRECT_URI must be set to a non-localhost URL when public mode is enabled',
+        // PR2 C11: picker SDK env vars must be set in public mode.
+        'GOOGLE_PICKER_API_KEY and GOOGLE_PICKER_APP_ID must be set when public mode is enabled',
       ]),
     );
     expect(
@@ -125,6 +130,20 @@ describe('clawtalk config public mode', () => {
           error.includes('CLAWTALK_PROVIDER_SECRET_KEY must be set'),
         ),
     ).toBe(true);
+  });
+
+  it('PR2 C11: reports an error when picker SDK env vars are missing in public mode', async () => {
+    applyValidPublicModeEnv();
+    // Override just the picker keys to empty so the rest of the
+    // configuration remains valid — isolates the picker-config check.
+    vi.stubEnv('GOOGLE_PICKER_API_KEY', '');
+    vi.stubEnv('GOOGLE_PICKER_APP_ID', '');
+
+    const config = await loadConfig();
+
+    expect(config.getPublicModeConfigErrors()).toEqual([
+      'GOOGLE_PICKER_API_KEY and GOOGLE_PICKER_APP_ID must be set when public mode is enabled',
+    ]);
   });
 
   it('accepts a complete public mode config', async () => {

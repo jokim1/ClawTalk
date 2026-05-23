@@ -161,10 +161,16 @@ import {
 import {
   disconnectGoogleAccountRoute,
   expandScopesRoute,
+  getGooglePickerTokenRoute,
   getUserGoogleAccountRoute,
   handleGoogleCallback,
   startConnectRoute,
 } from './routes/google-account.js';
+import {
+  createTalkGoogleDriveResourceRoute,
+  deleteTalkResourceRoute,
+  listTalkResourcesRoute,
+} from './routes/talk-resources.js';
 import { ensureMainTalkForUser } from '../talks/main-talk-bootstrap.js';
 import { dispatchRun } from '../talks/queue-producer.js';
 import {
@@ -534,6 +540,17 @@ function buildApp(): Hono<{ Variables: Variables }> {
     const csrfFail = checkCsrf(c, auth);
     if (csrfFail) return csrfFail;
     const result = await disconnectGoogleAccountRoute(auth);
+    return jsonResponse(result);
+  });
+
+  // PR2 Lane C: picker token mint. Drives the Google Picker SDK launch in
+  // the Talk Tools sub-tab. Read-limited because every picker open hits
+  // this endpoint; the underlying refresh dedup (D1) absorbs bursts.
+  app.get('/api/v1/me/google-account/picker-token', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'read' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const result = await getGooglePickerTokenRoute(auth);
     return jsonResponse(result);
   });
 
@@ -1500,6 +1517,56 @@ function buildApp(): Hono<{ Variables: Variables }> {
       return jsonResponse(result);
     },
   );
+
+  // ── talk-resources.ts: bound Drive/Doc resources for a Talk (PR2 Lane C)
+  // C3 — edit-permission gate lives inside the route handlers; the auth
+  // + rate-limit + CSRF wiring here is structurally identical to the
+  // context/sources block above.
+  app.get('/api/v1/talks/:talkId/resources', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'read' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const result = await listTalkResourcesRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+    });
+    return jsonResponse(result);
+  });
+
+  app.post('/api/v1/talks/:talkId/resources', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const csrfFail = checkCsrf(c, auth);
+    if (csrfFail) return csrfFail;
+    const payload = await readJsonBody<{
+      kind?: unknown;
+      externalId?: unknown;
+      displayName?: unknown;
+      metadata?: unknown;
+    }>(c);
+    if (!payload.ok) return invalidJsonResponse(c, payload.error);
+    const result = await createTalkGoogleDriveResourceRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      body: payload.data,
+    });
+    return jsonResponse(result);
+  });
+
+  app.delete('/api/v1/talks/:talkId/resources/:resourceId', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const csrfFail = checkCsrf(c, auth);
+    if (csrfFail) return csrfFail;
+    const result = await deleteTalkResourceRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      resourceId: c.req.param('resourceId'),
+    });
+    return jsonResponse(result);
+  });
 
   // ── events-upgrade.ts: WebSocket Hibernation routes forwarded
   // to the UserEventHub Durable Object. G9 clone-and-mutate from

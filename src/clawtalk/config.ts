@@ -181,6 +181,14 @@ export function getPublicModeConfigErrors(): string[] {
       'GOOGLE_OAUTH_REDIRECT_URI must be set to a non-localhost URL when public mode is enabled',
     );
   }
+  // PR2 C11 — picker SDK env vars are required when public mode is on so
+  // the webapp's Talk Tools "Add from Drive" launches a working picker
+  // instead of failing on the first user click in prod.
+  if (!GOOGLE_PICKER_API_KEY.trim() || !GOOGLE_PICKER_APP_ID.trim()) {
+    errors.push(
+      'GOOGLE_PICKER_API_KEY and GOOGLE_PICKER_APP_ID must be set when public mode is enabled',
+    );
+  }
 
   return errors;
 }

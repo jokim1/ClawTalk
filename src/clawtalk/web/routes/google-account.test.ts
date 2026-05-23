@@ -1,14 +1,66 @@
 // Route-level tests for google-account.
 //
 // These tests cover the parts of the route module that don't require a live
-// Postgres connection — the htmlSafeJson helper (D3 XSS regression guard) and
-// the bare callback paths (no state → invalid response). DB-backed paths
-// (full happy-path callback, auth gate via middleware, rate-limit hits) live
-// in google-oauth-service.test.ts and the existing integration suite.
+// Postgres connection — the htmlSafeJson helper (D3 XSS regression guard),
+// the bare callback paths (no state → invalid response), and the
+// picker-token error mapping. DB-backed paths (full happy-path callback,
+// auth gate via middleware, rate-limit hits) live in
+// google-oauth-service.test.ts and the existing integration suite.
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { handleGoogleCallback, htmlSafeJson } from './google-account.js';
+// `withUserContext` from src/db.ts opens a real Postgres transaction. The
+// picker-token route doesn't actually use the DB itself (its only DB touch
+// is inside the mocked `buildGooglePickerSession`), so override
+// withUserContext to pass through. This keeps the test hermetic — no
+// supabase local stack required.
+vi.mock('../../../db.js', async () => {
+  const actual =
+    await vi.importActual<typeof import('../../../db.js')>('../../../db.js');
+  return {
+    ...actual,
+    withUserContext: async <T>(_userId: string, fn: () => Promise<T>) => fn(),
+  };
+});
+
+// Mock the picker-session builder so each test can shape the success /
+// error paths it cares about. The service module itself is covered by
+// google-tools-service.test.ts (DB-backed).
+vi.mock('../../identity/google-tools-service.js', async () => {
+  const actual = await vi.importActual<
+    typeof import('../../identity/google-tools-service.js')
+  >('../../identity/google-tools-service.js');
+  return {
+    ...actual,
+    buildGooglePickerSession: vi.fn(),
+  };
+});
+
+import {
+  getGooglePickerTokenRoute,
+  handleGoogleCallback,
+  htmlSafeJson,
+} from './google-account.js';
+import { buildGooglePickerSession } from '../../identity/google-tools-service.js';
+import { GoogleToolCredentialError } from '../../identity/google-tools-errors.js';
+import type { AuthContext } from '../types.js';
+
+const AUTH: AuthContext = {
+  sessionId: 'session-1',
+  userId: '11111111-1111-1111-1111-111111111111',
+  role: 'owner',
+  authType: 'cookie',
+};
+
+const mockedBuildPickerSession = vi.mocked(buildGooglePickerSession);
+
+beforeEach(() => {
+  mockedBuildPickerSession.mockReset();
+});
+
+afterEach(() => {
+  mockedBuildPickerSession.mockReset();
+});
 
 describe('htmlSafeJson (D3 XSS regression guard)', () => {
   it('escapes </ so the payload cannot close a <script> tag', () => {
@@ -70,5 +122,91 @@ describe('handleGoogleCallback — missing state', () => {
     // Verify the HTML uses a JSON.parse-style embed — no raw template
     // interpolation of strings into <script>.
     expect(result.html).toContain('var payload =');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/me/google-account/picker-token
+// ---------------------------------------------------------------------------
+
+describe('getGooglePickerTokenRoute', () => {
+  it('returns oauthToken + developerKey + appId on the happy path', async () => {
+    mockedBuildPickerSession.mockResolvedValueOnce({
+      oauthToken: 'access-from-credential',
+      developerKey: 'picker-key',
+      appId: 'picker-app',
+    });
+    const result = await getGooglePickerTokenRoute(AUTH);
+    expect(result.statusCode).toBe(200);
+    expect(result.body).toEqual({
+      ok: true,
+      data: {
+        oauthToken: 'access-from-credential',
+        developerKey: 'picker-key',
+        appId: 'picker-app',
+      },
+    });
+    expect(mockedBuildPickerSession).toHaveBeenCalledWith(AUTH.userId);
+  });
+
+  it('returns 404 google_account_not_connected when no credential exists', async () => {
+    mockedBuildPickerSession.mockRejectedValueOnce(
+      new GoogleToolCredentialError(
+        'google_account_not_connected',
+        'Google account is not connected.',
+        404,
+      ),
+    );
+    const result = await getGooglePickerTokenRoute(AUTH);
+    expect(result.statusCode).toBe(404);
+    expect(result.body.ok).toBe(false);
+    if (!result.body.ok) {
+      expect(result.body.error.code).toBe('google_account_not_connected');
+    }
+  });
+
+  it('returns 400 google_scopes_missing with missingScopes detail', async () => {
+    mockedBuildPickerSession.mockRejectedValueOnce(
+      new GoogleToolCredentialError(
+        'google_scopes_missing',
+        'Google account is missing required scopes: drive.readonly',
+        400,
+        { missingScopes: ['drive.readonly'] },
+      ),
+    );
+    const result = await getGooglePickerTokenRoute(AUTH);
+    expect(result.statusCode).toBe(400);
+    expect(result.body.ok).toBe(false);
+    if (!result.body.ok) {
+      expect(result.body.error.code).toBe('google_scopes_missing');
+      expect(result.body.error.details).toEqual({
+        missingScopes: ['drive.readonly'],
+      });
+    }
+  });
+
+  it('returns 503 google_picker_not_configured when picker env vars are empty (C11)', async () => {
+    // The service mints this error directly when GOOGLE_PICKER_API_KEY or
+    // GOOGLE_PICKER_APP_ID is empty. Configured via a mocked rejection so
+    // we exercise the route's error-mapping path even when the test
+    // process loaded real (or test-stubbed) values.
+    mockedBuildPickerSession.mockRejectedValueOnce(
+      new GoogleToolCredentialError(
+        'google_picker_not_configured',
+        'Google Picker is not configured on this server.',
+        503,
+      ),
+    );
+    const result = await getGooglePickerTokenRoute(AUTH);
+    expect(result.statusCode).toBe(503);
+    expect(result.body.ok).toBe(false);
+    if (!result.body.ok) {
+      expect(result.body.error.code).toBe('google_picker_not_configured');
+    }
+  });
+
+  it('re-throws non-typed errors so they surface as 500 via Hono onError', async () => {
+    mockedBuildPickerSession.mockRejectedValueOnce(new Error('boom'));
+    await expect(getGooglePickerTokenRoute(AUTH)).rejects.toThrow('boom');
   });
 });

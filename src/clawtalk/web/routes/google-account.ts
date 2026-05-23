@@ -21,6 +21,10 @@ import {
 } from '../../identity/google-oauth-service.js';
 import { decryptGoogleToolCredential } from '../../identity/google-tools-credential-store.js';
 import { normalizeGoogleScopeAliases } from '../../identity/google-scopes.js';
+import {
+  GoogleToolCredentialError,
+  buildGooglePickerSession,
+} from '../../identity/google-tools-service.js';
 import { ApiEnvelope, AuthContext } from '../types.js';
 
 // ---------------------------------------------------------------------------
@@ -224,6 +228,50 @@ export async function disconnectGoogleAccountRoute(
     statusCode: 200,
     body: { ok: true, data: { disconnected: removed } },
   };
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/me/google-account/picker-token
+// ---------------------------------------------------------------------------
+
+/**
+ * Mints the short-lived OAuth token + Picker SDK developer key + GCP appId
+ * the webapp needs to open the Google Picker. Token is the user's current
+ * Google access token (refreshed transparently if expired). Lifetime is
+ * tied to the credential's `expiryDate` — typically ~1h.
+ *
+ * Errors are mapped from `GoogleToolCredentialError.code`:
+ *   - `google_account_not_connected`   → 404
+ *   - `google_scopes_missing`          → 400 (includes `missingScopes`)
+ *   - `google_picker_not_configured`   → 503 (env vars empty on this Worker)
+ *   - other typed codes propagate through their carried `status`.
+ */
+export async function getGooglePickerTokenRoute(
+  auth: AuthContext,
+): Promise<
+  JsonRouteResult<{ oauthToken: string; developerKey: string; appId: string }>
+> {
+  try {
+    const session = await withUserContext(auth.userId, () =>
+      buildGooglePickerSession(auth.userId),
+    );
+    return { statusCode: 200, body: { ok: true, data: session } };
+  } catch (err) {
+    if (err instanceof GoogleToolCredentialError) {
+      const body: ApiEnvelope<never> = {
+        ok: false,
+        error: {
+          code: err.code,
+          message: err.message,
+          ...(err.missingScopes
+            ? { details: { missingScopes: err.missingScopes } }
+            : {}),
+        },
+      };
+      return { statusCode: err.status, body };
+    }
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------
