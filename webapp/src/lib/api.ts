@@ -1868,7 +1868,8 @@ export async function getAiAgents(): Promise<AiAgentsPageData> {
 export type WebSearchProviderId =
   | 'web_search.tavily'
   | 'web_search.brave'
-  | 'web_search.firecrawl';
+  | 'web_search.firecrawl'
+  | 'web_search.exa';
 
 export interface WebSearchProviderCard {
   id: WebSearchProviderId;
