@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { braveSearch } from './brave.js';
+import { exaSearch } from './exa.js';
 import { firecrawlSearch } from './firecrawl.js';
 import { tavilySearch } from './tavily.js';
 import { WebSearchError } from './types.js';
@@ -253,6 +254,111 @@ describe('firecrawlSearch', () => {
     await expect(firecrawlSearch('k', 'q')).rejects.toMatchObject({
       providerId: 'web_search.firecrawl',
       statusCode: 403,
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Exa
+// ---------------------------------------------------------------------------
+
+describe('exaSearch', () => {
+  it('POSTs to /search with x-api-key header and parses highlights into snippet', async () => {
+    const fetchMock = mockFetchOnce({
+      ok: true,
+      json: {
+        results: [
+          {
+            title: 'Exa Hit',
+            url: 'https://exa.example/a',
+            highlights: ['first highlight', 'second highlight'],
+            publishedDate: '2026-02-14',
+            score: 0.42,
+          },
+          {
+            title: 'No Highlights',
+            url: 'https://exa.example/b',
+          },
+        ],
+      },
+    });
+
+    const results = await exaSearch('exa-test', 'neural search');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('https://api.exa.ai/search');
+    expect((init as RequestInit).method).toBe('POST');
+    const headers = (init as RequestInit).headers as Record<string, string>;
+    expect(headers['x-api-key']).toBe('exa-test');
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body).toMatchObject({
+      query: 'neural search',
+      numResults: 5,
+      type: 'auto',
+      contents: { highlights: true },
+    });
+    expect(results).toEqual([
+      {
+        title: 'Exa Hit',
+        url: 'https://exa.example/a',
+        snippet: 'first highlight … second highlight',
+        score: 0.42,
+        publishedAt: '2026-02-14',
+      },
+      {
+        title: 'No Highlights',
+        url: 'https://exa.example/b',
+        snippet: undefined,
+        score: undefined,
+        publishedAt: undefined,
+      },
+    ]);
+  });
+
+  it('falls back to summary when highlights are missing', async () => {
+    mockFetchOnce({
+      ok: true,
+      json: {
+        results: [
+          {
+            title: 'Sum',
+            url: 'https://exa.example/sum',
+            summary: 'a one-line summary',
+          },
+        ],
+      },
+    });
+    const results = await exaSearch('k', 'q');
+    expect(results[0].snippet).toBe('a one-line summary');
+  });
+
+  it('clamps numResults to the hard cap of 10', async () => {
+    const fetchMock = mockFetchOnce({ ok: true, json: { results: [] } });
+    await exaSearch('k', 'q', { maxResults: 9999 });
+    const body = JSON.parse(
+      (fetchMock.mock.calls[0][1] as RequestInit).body as string,
+    );
+    expect(body.numResults).toBe(10);
+  });
+
+  it('drops result objects without a url', async () => {
+    mockFetchOnce({
+      ok: true,
+      json: { results: [{ title: 'no url' }, { url: 'https://ok.com' }] },
+    });
+    const results = await exaSearch('k', 'q');
+    expect(results).toHaveLength(1);
+    expect(results[0].url).toBe('https://ok.com');
+  });
+
+  it('throws WebSearchError with status code on 4xx/5xx', async () => {
+    mockFetchOnce({ ok: false, status: 401, text: 'invalid api key' });
+    await expect(exaSearch('bad', 'q')).rejects.toMatchObject({
+      name: 'WebSearchError',
+      providerId: 'web_search.exa',
+      statusCode: 401,
+      message: expect.stringContaining('401'),
     });
   });
 });

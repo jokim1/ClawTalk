@@ -16,6 +16,7 @@
 import { getDbPg } from '../../db.js';
 import { decryptProviderSecret } from '../llm/provider-secret-store.js';
 import { braveSearch } from './brave.js';
+import { exaSearch } from './exa.js';
 import { firecrawlSearch } from './firecrawl.js';
 import { tavilySearch } from './tavily.js';
 import {
@@ -30,6 +31,7 @@ const ADAPTERS: Record<WebSearchProviderId, WebSearchAdapter> = {
   'web_search.tavily': tavilySearch,
   'web_search.brave': braveSearch,
   'web_search.firecrawl': firecrawlSearch,
+  'web_search.exa': exaSearch,
 };
 
 export function isKnownWebSearchProviderId(

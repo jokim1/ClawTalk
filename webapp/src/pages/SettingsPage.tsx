@@ -1048,12 +1048,17 @@ const WEB_SEARCH_DOCS: Record<WebSearchProviderId, { url: string; label: string 
     url: 'https://www.firecrawl.dev/app/api-keys',
     label: 'Firecrawl',
   },
+  'web_search.exa': {
+    url: 'https://dashboard.exa.ai/api-keys',
+    label: 'Exa',
+  },
 };
 
 const WEB_SEARCH_PLACEHOLDER: Record<WebSearchProviderId, string> = {
   'web_search.tavily': 'tvly-...',
   'web_search.brave': 'BSA...',
   'web_search.firecrawl': 'fc-...',
+  'web_search.exa': 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',
 };
 
 function WebSearchProvidersSection({

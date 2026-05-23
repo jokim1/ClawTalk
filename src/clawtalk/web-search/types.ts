@@ -15,7 +15,8 @@
 export type WebSearchProviderId =
   | 'web_search.tavily'
   | 'web_search.brave'
-  | 'web_search.firecrawl';
+  | 'web_search.firecrawl'
+  | 'web_search.exa';
 
 export interface WebSearchOptions {
   /** Soft cap on results returned to the model. Providers may return fewer. */
