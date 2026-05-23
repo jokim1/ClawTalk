@@ -48,41 +48,18 @@ import {
   encryptGoogleToolCredential,
   type GoogleToolCredentialPayload,
 } from './google-tools-credential-store.js';
+import {
+  GoogleToolCredentialError,
+  type GoogleToolErrorCode,
+} from './google-tools-errors.js';
 import { normalizeGoogleScopeAliases } from './google-scopes.js';
+
+export { GoogleToolCredentialError, type GoogleToolErrorCode };
 
 const GOOGLE_REFRESH_ENDPOINT = 'https://oauth2.googleapis.com/token';
 const GOOGLE_REFRESH_SKEW_MS = 60_000;
 
 const refreshInFlight = new Map<string, Promise<GoogleToolCredentialPayload>>();
-
-export type GoogleToolErrorCode =
-  | 'google_account_not_connected'
-  | 'google_reauth_required'
-  | 'google_scopes_missing'
-  | 'google_picker_not_configured'
-  | 'google_refresh_unavailable'
-  | 'token_exchange_failed';
-
-export class GoogleToolCredentialError extends Error {
-  readonly code: GoogleToolErrorCode;
-  readonly status: number;
-  readonly missingScopes?: string[];
-
-  constructor(
-    code: GoogleToolErrorCode,
-    message: string,
-    status = 400,
-    extra?: { missingScopes?: string[] },
-  ) {
-    super(message);
-    this.name = 'GoogleToolCredentialError';
-    this.code = code;
-    this.status = status;
-    if (extra?.missingScopes && extra.missingScopes.length > 0) {
-      this.missingScopes = extra.missingScopes;
-    }
-  }
-}
 
 function isExpired(payload: GoogleToolCredentialPayload): boolean {
   if (!payload.expiryDate) return false;

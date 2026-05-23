@@ -358,9 +358,19 @@ describe('google-tools-service', () => {
       const deferredRefresh = new Promise<Response>((resolve) => {
         resolveRefresh = resolve;
       });
+      // Use mockImplementationOnce for the first call so the dedup test
+      // exercises a controlled deferred Promise, then a fallback
+      // mockImplementation that throws — so a future refactor that breaks
+      // dedup fails the test loudly instead of silently hitting the real
+      // oauth2.googleapis.com endpoint.
       const fetchSpy = vi
         .spyOn(globalThis, 'fetch')
-        .mockReturnValueOnce(deferredRefresh);
+        .mockImplementationOnce(() => deferredRefresh)
+        .mockImplementation(() => {
+          throw new Error(
+            'dedup broken: refreshCredentialIfNeeded called fetch more than once',
+          );
+        });
       await withUserContext(userId, async () => {
         await seedGoogleCredential({
           userId,
