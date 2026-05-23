@@ -52,7 +52,10 @@ import {
   GoogleToolCredentialError,
   type GoogleToolErrorCode,
 } from './google-tools-errors.js';
-import { normalizeGoogleScopeAliases } from './google-scopes.js';
+import {
+  expandImpliedScopes,
+  normalizeGoogleScopeAliases,
+} from './google-scopes.js';
 
 export { GoogleToolCredentialError, type GoogleToolErrorCode };
 
@@ -72,7 +75,14 @@ function assertRequiredScopes(
   payload: GoogleToolCredentialPayload,
   requiredScopes: string[],
 ): void {
-  const granted = new Set(normalizeGoogleScopeAliases(payload.scopes));
+  // Expand granted aliases by Google's scope hierarchy: a parent scope
+  // (e.g. `spreadsheets`) covers its readonly child (`spreadsheets.readonly`).
+  // Without this widening, a user who consented to `spreadsheets` for write
+  // tools would fail the scope check for `spreadsheets.readonly` on a read
+  // tool — even though the parent scope is strictly more permissive.
+  const granted = new Set(
+    expandImpliedScopes(normalizeGoogleScopeAliases(payload.scopes)),
+  );
   const required = normalizeGoogleScopeAliases(requiredScopes);
   const missing = required.filter((scope) => !granted.has(scope));
   if (missing.length > 0) {

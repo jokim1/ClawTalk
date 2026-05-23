@@ -181,6 +181,59 @@ describe('google-tools-service', () => {
       });
     });
 
+    it('hierarchy: granting `spreadsheets` alone satisfies a `spreadsheets.readonly` requirement', async () => {
+      const userId = await seedAuthUser();
+      userIds.push(userId);
+      await withUserContext(userId, async () => {
+        await seedGoogleCredential({
+          userId,
+          scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+        });
+        const result = await getValidGoogleToolAccessToken({
+          userId,
+          requiredScopes: ['spreadsheets.readonly'],
+        });
+        expect(result.accessToken).toBe('access-old');
+        expect(result.scopes).toContain('spreadsheets');
+      });
+    });
+
+    it('hierarchy: granting `documents` alone satisfies a `documents.readonly` requirement', async () => {
+      const userId = await seedAuthUser();
+      userIds.push(userId);
+      await withUserContext(userId, async () => {
+        await seedGoogleCredential({
+          userId,
+          scopes: ['https://www.googleapis.com/auth/documents'],
+        });
+        const result = await getValidGoogleToolAccessToken({
+          userId,
+          requiredScopes: ['documents.readonly'],
+        });
+        expect(result.accessToken).toBe('access-old');
+      });
+    });
+
+    it('hierarchy is one-way: granting `documents.readonly` alone does NOT satisfy a `documents` write requirement', async () => {
+      const userId = await seedAuthUser();
+      userIds.push(userId);
+      await withUserContext(userId, async () => {
+        await seedGoogleCredential({
+          userId,
+          scopes: ['https://www.googleapis.com/auth/documents.readonly'],
+        });
+        await expect(
+          getValidGoogleToolAccessToken({
+            userId,
+            requiredScopes: ['documents'],
+          }),
+        ).rejects.toMatchObject({
+          code: 'google_scopes_missing',
+          missingScopes: ['documents'],
+        });
+      });
+    });
+
     it('deletes the credential and throws google_reauth_required when ciphertext fails to decrypt', async () => {
       const userId = await seedAuthUser();
       userIds.push(userId);

@@ -49,8 +49,6 @@ import {
 const DRIVE_READONLY_URL = 'https://www.googleapis.com/auth/drive.readonly';
 const DOCUMENTS_URL = 'https://www.googleapis.com/auth/documents';
 const SPREADSHEETS_URL = 'https://www.googleapis.com/auth/spreadsheets';
-const SPREADSHEETS_READONLY_URL =
-  'https://www.googleapis.com/auth/spreadsheets.readonly';
 const GOOGLE_DOCS_MIME = 'application/vnd.google-apps.document';
 
 async function seedDriveCredential(userId: string): Promise<void> {
@@ -59,17 +57,12 @@ async function seedDriveCredential(userId: string): Promise<void> {
     accessToken: 'access-old',
     refreshToken: 'refresh-original',
     expiryDate: new Date(Date.now() + 3600_000).toISOString(),
-    // Grant both `spreadsheets` and `spreadsheets.readonly` here — Google
-    // treats the parent as a superset, but `normalizeGoogleScopeAliases`
-    // collapses on alias equality not hierarchy, so scope checks for the
-    // readonly alias require it explicitly. Tests grant both to keep them
-    // independent of how the OAuth consent flow happens to spell scopes.
-    scopes: [
-      DRIVE_READONLY_URL,
-      DOCUMENTS_URL,
-      SPREADSHEETS_URL,
-      SPREADSHEETS_READONLY_URL,
-    ],
+    // Only grant the parent scopes; `expandImpliedScopes` in
+    // google-scopes.ts widens these to cover the matching readonly
+    // children at scope-check time. This doubles as a regression guard:
+    // if a future change breaks the hierarchy logic, the Sheets/Docs
+    // read tests (which require *.readonly) would start failing here.
+    scopes: [DRIVE_READONLY_URL, DOCUMENTS_URL, SPREADSHEETS_URL],
     tokenType: 'Bearer',
   };
   await upsertUserGoogleCredential({
