@@ -330,10 +330,13 @@ export async function createTalkResourceBinding(input: {
   createdBy?: string | null;
 }): Promise<TalkResourceBindingRecord> {
   const db = getDbPg();
-  // The unique index (talk_id, binding_kind, external_id) makes the
-  // existing-row lookup idempotent. Use ON CONFLICT DO NOTHING + a
-  // follow-up SELECT to preserve the sqlite-era return semantics
-  // (return whichever row is there, whether we inserted or hit a dup).
+  // Migration 0018 widened the unique index to
+  // (talk_id, binding_kind, external_id, owner_id). The 4-column
+  // conflict target makes same-owner re-binds idempotent and lets two
+  // users in the same talk each hold their own binding row to the
+  // same external resource. The follow-up SELECT is RLS-scoped to
+  // owner_id = auth.uid(), so it returns the caller's row even when
+  // another user also has one.
   await db`
     insert into public.talk_resource_bindings
       (talk_id, owner_id, binding_kind, external_id, display_name,
@@ -343,7 +346,7 @@ export async function createTalkResourceBinding(input: {
        ${input.externalId}, ${input.displayName},
        ${input.metadata ? db.json(input.metadata as never) : null},
        ${input.createdBy ?? null}::uuid)
-    on conflict (talk_id, binding_kind, external_id) do nothing
+    on conflict (talk_id, binding_kind, external_id, owner_id) do nothing
   `;
   const rows = await db<RawTalkResourceBindingRow[]>`
     select id, talk_id, owner_id, binding_kind, external_id, display_name,
