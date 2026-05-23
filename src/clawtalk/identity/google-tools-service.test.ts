@@ -404,6 +404,59 @@ describe('google-tools-service', () => {
       // the next refresh starts fresh.
       expect(fetchSpy).toHaveBeenCalledTimes(1);
     });
+
+    it('clears the in-flight entry after refresh REJECTS so the next caller retries fresh', async () => {
+      const userId = await seedAuthUser();
+      userIds.push(userId);
+
+      // refreshCredentialIfNeeded chains `.finally(() => map.delete(userId))`
+      // onto the in-flight promise. A failed refresh must still drain that
+      // entry — otherwise the second caller would await the settled-rejected
+      // promise and re-throw token_exchange_failed instead of issuing a
+      // fresh refresh attempt.
+      const fetchSpy = vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 502,
+          json: async () => ({ error: 'bad_gateway' }),
+        } as unknown as Response)
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            access_token: 'access-retry',
+            expires_in: 3600,
+            token_type: 'Bearer',
+          }),
+        } as unknown as Response);
+
+      await withUserContext(userId, async () => {
+        await seedGoogleCredential({
+          userId,
+          expiryDate: new Date(Date.now() - 60_000).toISOString(),
+        });
+        const expired = decryptGoogleToolCredential(
+          (await getUserGoogleCredential())!.ciphertext,
+        );
+
+        // Attempt 1: transient 502 → performRefresh throws
+        // token_exchange_failed; the .finally cleanup should drain the map.
+        await expect(
+          refreshCredentialIfNeeded(userId, expired),
+        ).rejects.toMatchObject({ code: 'token_exchange_failed' });
+
+        // Attempt 2: with the map cleared, a fresh call must call fetch
+        // again and succeed. If the rejected promise were still cached
+        // we'd get an immediate re-throw without a second fetch.
+        const result = await refreshCredentialIfNeeded(userId, expired);
+        expect(result.accessToken).toBe('access-retry');
+      });
+      // vi.spyOn returns the same spy across .mockResolvedValueOnce calls;
+      // exactly 2 fetches total proves attempt 2 reissued instead of
+      // reusing the cached rejection.
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe('buildGooglePickerSession', () => {
