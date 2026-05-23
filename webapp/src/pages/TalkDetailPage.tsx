@@ -130,6 +130,7 @@ import { BrowserBlockedRunCard } from '../components/BrowserBlockedRunCard';
 import { ExecutionDecisionSummary } from '../components/ExecutionDecisionSummary';
 import { LiveResponsePanel } from '../components/LiveResponsePanel';
 import { InlineEditableTitle } from '../components/InlineEditableTitle';
+import { TalkToolsPanel } from '../components/TalkToolsPanel';
 import { ThreadContextMenu } from '../components/ThreadContextMenu';
 import { ThreadRowTitleEditor } from '../components/ThreadRowTitleEditor';
 import { ThreadStartButton } from '../components/ThreadStartButton';
@@ -159,6 +160,7 @@ type TabKey =
   | 'talk'
   | 'agents'
   | 'context'
+  | 'tools'
   | 'state'
   | 'outputs'
   | 'channels'
@@ -1682,6 +1684,7 @@ function getTabFromPath(pathname: string, talkId: string): TabKey {
   const base = `/app/talks/${talkId}`;
   if (pathname === `${base}/agents`) return 'agents';
   if (pathname === `${base}/context`) return 'context';
+  if (pathname === `${base}/tools`) return 'tools';
   if (pathname === `${base}/state`) return 'state';
   if (pathname === `${base}/outputs`) return 'outputs';
   if (pathname === `${base}/channels`) return 'channels';
@@ -4787,6 +4790,9 @@ export function TalkDetailPage({
   const contextTabHref = activeThreadId
     ? buildThreadHref(talkId, activeThreadId, 'context')
     : `/app/talks/${talkId}/context`;
+  const toolsTabHref = activeThreadId
+    ? buildThreadHref(talkId, activeThreadId, 'tools')
+    : `/app/talks/${talkId}/tools`;
   const stateTabHref = activeThreadId
     ? buildThreadHref(talkId, activeThreadId, 'state')
     : `/app/talks/${talkId}/state`;
@@ -8165,6 +8171,12 @@ export function TalkDetailPage({
                         </span>
                       </Link>
                       <Link
+                        to={toolsTabHref}
+                        className={`talk-tab ${currentTab === 'tools' ? 'talk-tab-active' : ''}`}
+                      >
+                        Tools
+                      </Link>
+                      <Link
                         to={settingsTabHref}
                         className={`talk-tab ${isSettingsTab ? 'talk-tab-active' : ''}`}
                       >
@@ -9104,6 +9116,8 @@ export function TalkDetailPage({
               )}
             </section>
           ) : null}
+
+          {currentTab === 'tools' ? <TalkToolsPanel talkId={talkId} /> : null}
 
           {currentTab === 'state' ? (
             <section className="talk-tab-panel" aria-label="Talk state">
