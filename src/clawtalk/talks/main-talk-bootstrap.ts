@@ -116,7 +116,7 @@ async function loadSetupChecklist(
     db<Array<{ count: number }>>`
       select count(*)::int as count
       from public.llm_provider_secrets
-      where user_id = ${userId}::uuid
+      where owner_id = ${userId}::uuid
     `,
     db<Array<{ count: number }>>`
       select count(*)::int as count
