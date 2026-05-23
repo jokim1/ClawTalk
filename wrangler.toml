@@ -21,10 +21,21 @@ compatibility_date = "2026-05-12"
 compatibility_flags = ["nodejs_compat"]
 
 # ─── Static Assets ────────────────────────────────────────────────────
+#
+# `run_worker_first = true` is load-bearing for OAuth callback flows. Without
+# it, Cloudflare's asset handler intercepts browser-navigation GETs that
+# accept text/html and serves index.html via SPA fallback BEFORE the Worker
+# runs — even for /api/* paths. That silently breaks any route that returns
+# HTML for a browser-issued redirect (e.g. /api/v1/auth/google/callback,
+# which returns a close-window HTML for the OAuth popup). With this flag,
+# the Worker always runs first; src/worker.ts delegates non-/api/* paths
+# to env.ASSETS.fetch, so the SPA still loads through the asset handler
+# with the SPA fallback intact.
 [assets]
 directory = "./webapp/dist"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
+run_worker_first = true
 
 # ─── Hyperdrive — pooled Postgres to Supabase ─────────────────────────
 #
