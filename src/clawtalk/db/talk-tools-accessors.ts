@@ -135,6 +135,16 @@ export const BUILTIN_TALK_TOOLS: ReadonlyArray<BuiltinTalkToolDefinition> = [
     sortOrder: 90,
   },
   {
+    id: 'google_docs_create',
+    family: 'google_docs',
+    displayName: 'Google Docs Create',
+    description: 'Create a new Google Doc and bind it to this Talk.',
+    requiresBinding: false,
+    defaultGrant: false,
+    mutatesExternalState: true,
+    sortOrder: 95,
+  },
+  {
     id: 'google_docs_read',
     family: 'google_docs',
     displayName: 'Google Docs Read',

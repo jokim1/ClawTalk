@@ -59,6 +59,7 @@ export const TOOL_FAMILY_MAP: Record<string, string[]> = {
   google_write: [
     'GoogleDriveWrite',
     'GoogleDocsWrite',
+    'google_docs_create',
     'google_docs_batch_update',
     'google_sheets_batch_update',
   ],
