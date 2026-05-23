@@ -939,7 +939,9 @@ export function buildToolExecutor(
       toolName === 'google_drive_list_folder' ||
       toolName === 'google_docs_read' ||
       toolName === 'google_docs_create' ||
-      toolName === 'google_docs_batch_update'
+      toolName === 'google_docs_batch_update' ||
+      toolName === 'google_sheets_read_range' ||
+      toolName === 'google_sheets_batch_update'
     ) {
       return executeGoogleDriveTalkTool({
         talkId,

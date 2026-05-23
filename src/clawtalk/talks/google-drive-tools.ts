@@ -55,6 +55,7 @@ import {
 
 const GOOGLE_DRIVE_API_BASE = 'https://www.googleapis.com/drive/v3';
 const GOOGLE_DOCS_API_BASE = 'https://docs.googleapis.com/v1';
+const GOOGLE_SHEETS_API_BASE = 'https://sheets.googleapis.com/v4';
 const GOOGLE_DRIVE_FOLDER_MIME = 'application/vnd.google-apps.folder';
 const GOOGLE_DOCS_MIME = 'application/vnd.google-apps.document';
 const GOOGLE_SHEETS_MIME = 'application/vnd.google-apps.spreadsheet';
@@ -62,6 +63,7 @@ const MAX_TEXT_RESPONSE_BYTES = 512 * 1024;
 const DEFAULT_SEARCH_RESULTS = 10;
 const DEFAULT_FOLDER_RESULTS = 25;
 const MAX_GOOGLE_DOCS_BATCH_REQUESTS = 50;
+const MAX_GOOGLE_SHEETS_BATCH_UPDATES = 50;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -255,6 +257,32 @@ const READ_TOOL_DEFINITIONS: LlmToolDefinition[] = [
       required: ['bindingRef'],
     },
   },
+  {
+    name: 'google_sheets_read_range',
+    description:
+      'Read a cell range from a bound Google Sheet by bindingRef. Range uses A1 notation, for example "Sheet1!A1:C10". Returns a 2D array of cell values.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        bindingRef: {
+          type: 'string',
+          description:
+            'Bound file ref like G1 for a directly bound Google Sheet.',
+        },
+        range: {
+          type: 'string',
+          description:
+            'A1-notation range like "Sheet1!A1:C10" or just "A1:C10" to use the first sheet.',
+        },
+        valueRenderOption: {
+          type: 'string',
+          description:
+            'Optional Google Sheets valueRenderOption. Defaults to FORMATTED_VALUE; use UNFORMATTED_VALUE for raw numbers or FORMULA to read formulas.',
+        },
+      },
+      required: ['bindingRef', 'range'],
+    },
+  },
 ];
 
 const WRITE_TOOL_DEFINITIONS: LlmToolDefinition[] = [
@@ -299,6 +327,43 @@ const WRITE_TOOL_DEFINITIONS: LlmToolDefinition[] = [
         },
       },
       required: ['bindingRef', 'requests'],
+    },
+  },
+  {
+    name: 'google_sheets_batch_update',
+    description:
+      'Write one or more cell ranges to a bound Google Sheet via the Sheets values.batchUpdate endpoint. Each update is { range, values } where values is a 2D array of cell values.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        bindingRef: {
+          type: 'string',
+          description:
+            'Bound file ref like G1 for a directly bound Google Sheet.',
+        },
+        updates: {
+          type: 'array',
+          description:
+            'Array of value-range updates. Each item: { range: "Sheet1!A1:B2", values: [["x","y"],["z","w"]] }.',
+          items: {
+            type: 'object',
+            properties: {
+              range: { type: 'string' },
+              values: {
+                type: 'array',
+                items: { type: 'array', items: {} },
+              },
+            },
+            required: ['range', 'values'],
+          },
+        },
+        valueInputOption: {
+          type: 'string',
+          description:
+            'Optional Google Sheets valueInputOption. Defaults to USER_ENTERED (formulas + auto-parsing); use RAW to write strings verbatim.',
+        },
+      },
+      required: ['bindingRef', 'updates'],
     },
   },
 ];
@@ -804,6 +869,134 @@ async function createGoogleDoc(input: {
 }
 
 // ---------------------------------------------------------------------------
+// Google Sheets — values.get + values.batchUpdate
+// ---------------------------------------------------------------------------
+
+async function fetchSheetRange(input: {
+  spreadsheetId: string;
+  range: string;
+  valueRenderOption: string | null;
+  accessToken: string;
+  signal: AbortSignal;
+}): Promise<JsonMap> {
+  const params = new URLSearchParams();
+  if (input.valueRenderOption) {
+    params.set('valueRenderOption', input.valueRenderOption);
+  }
+  const qs = params.toString();
+  const url =
+    `${GOOGLE_SHEETS_API_BASE}/spreadsheets/${encodeURIComponent(input.spreadsheetId)}` +
+    `/values/${encodeURIComponent(input.range)}${qs ? `?${qs}` : ''}`;
+  const response = await googleFetch(url, {}, input.accessToken, input.signal);
+  if (!response.ok) {
+    throw new GoogleToolCredentialError(
+      'drive_api_error',
+      `Google Sheets read failed with HTTP ${response.status}.`,
+      502,
+    );
+  }
+  return readJsonMapResponse(response, 'Google Sheets');
+}
+
+function validateGoogleSheetsBatchUpdateInput(args: Record<string, unknown>): {
+  bindingRef: string;
+  data: JsonMap[];
+  valueInputOption: 'RAW' | 'USER_ENTERED';
+} {
+  const bindingRef =
+    typeof args.bindingRef === 'string' ? args.bindingRef.trim() : '';
+  if (!bindingRef) {
+    throw new GoogleToolCredentialError(
+      'invalid_request',
+      'google_sheets_batch_update requires bindingRef.',
+      400,
+    );
+  }
+  const rawUpdates = Array.isArray(args.updates) ? args.updates : [];
+  if (rawUpdates.length === 0) {
+    throw new GoogleToolCredentialError(
+      'invalid_request',
+      'google_sheets_batch_update requires a non-empty updates array.',
+      400,
+    );
+  }
+  if (rawUpdates.length > MAX_GOOGLE_SHEETS_BATCH_UPDATES) {
+    throw new GoogleToolCredentialError(
+      'invalid_request',
+      `google_sheets_batch_update supports at most ${MAX_GOOGLE_SHEETS_BATCH_UPDATES} updates per call.`,
+      400,
+    );
+  }
+  const data: JsonMap[] = [];
+  for (const entry of rawUpdates) {
+    const map = parseJsonMap(entry);
+    if (!map) {
+      throw new GoogleToolCredentialError(
+        'invalid_request',
+        'google_sheets_batch_update updates must be JSON objects.',
+        400,
+      );
+    }
+    const range = typeof map.range === 'string' ? map.range.trim() : '';
+    if (!range) {
+      throw new GoogleToolCredentialError(
+        'invalid_request',
+        'each updates[].range must be a non-empty string.',
+        400,
+      );
+    }
+    if (!Array.isArray(map.values)) {
+      throw new GoogleToolCredentialError(
+        'invalid_request',
+        'each updates[].values must be a 2D array of cell values.',
+        400,
+      );
+    }
+    data.push({ range, values: map.values });
+  }
+  // USER_ENTERED matches the typical "write what a person would type" intent —
+  // formulas evaluate, dates parse, numbers stay numeric. RAW preserves the
+  // literal string for cases where the agent needs to bypass auto-parsing.
+  const rawOption =
+    typeof args.valueInputOption === 'string'
+      ? args.valueInputOption.trim().toUpperCase()
+      : '';
+  const valueInputOption: 'RAW' | 'USER_ENTERED' =
+    rawOption === 'RAW' ? 'RAW' : 'USER_ENTERED';
+  return { bindingRef, data, valueInputOption };
+}
+
+async function batchUpdateSheetValues(input: {
+  spreadsheetId: string;
+  data: JsonMap[];
+  valueInputOption: 'RAW' | 'USER_ENTERED';
+  accessToken: string;
+  signal: AbortSignal;
+}): Promise<JsonMap> {
+  const response = await googleFetch(
+    `${GOOGLE_SHEETS_API_BASE}/spreadsheets/${encodeURIComponent(input.spreadsheetId)}/values:batchUpdate`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        valueInputOption: input.valueInputOption,
+        data: input.data,
+      }),
+    },
+    input.accessToken,
+    input.signal,
+  );
+  if (!response.ok) {
+    throw new GoogleToolCredentialError(
+      'drive_api_error',
+      `Google Sheets batch update failed with HTTP ${response.status}.`,
+      502,
+    );
+  }
+  return readJsonMapResponse(response, 'Google Sheets batch update');
+}
+
+// ---------------------------------------------------------------------------
 // Individual tool executors
 // ---------------------------------------------------------------------------
 
@@ -1228,6 +1421,107 @@ async function executeDocsCreate(input: ToolContext): Promise<ExecutorResult> {
   return okResult(`Created ${ref}: "${created.title}" at ${created.url}`);
 }
 
+async function executeSheetsReadRange(
+  input: ToolContext,
+  resources: BoundGoogleDriveResource[],
+): Promise<ExecutorResult> {
+  const bindingRef = readString(input.args.bindingRef);
+  if (!bindingRef) {
+    return errorResult('google_sheets_read_range requires bindingRef.');
+  }
+  const range = readString(input.args.range);
+  if (!range) {
+    return errorResult(
+      'google_sheets_read_range requires a non-empty range (A1 notation).',
+    );
+  }
+  const resource = resources.find((r) => r.ref === bindingRef);
+  if (!resource) {
+    return errorResult(
+      `unbound_resource: ${bindingRef} was not found. Use a file ref like G1.`,
+    );
+  }
+  if (resource.bindingKind !== 'google_drive_file') {
+    return errorResult(
+      `${bindingRef} is a folder. Bind a Google Sheet file directly before using google_sheets_read_range.`,
+    );
+  }
+  if (resource.mimeType && resource.mimeType !== GOOGLE_SHEETS_MIME) {
+    return errorResult(
+      `${bindingRef} is not a Google Sheet. Bind a Sheets file before using google_sheets_read_range.`,
+    );
+  }
+  const valueRenderOption = readString(input.args.valueRenderOption) || null;
+  return withTokenRefresh(
+    input.userId,
+    ['spreadsheets.readonly'],
+    async (accessToken) => {
+      const payload = await fetchSheetRange({
+        spreadsheetId: resource.externalId,
+        range,
+        valueRenderOption,
+        accessToken,
+        signal: input.signal,
+      });
+      const returnedRange =
+        typeof payload.range === 'string' ? payload.range : range;
+      const values = Array.isArray(payload.values) ? payload.values : [];
+      return okResult({
+        range: returnedRange,
+        majorDimension:
+          typeof payload.majorDimension === 'string'
+            ? payload.majorDimension
+            : 'ROWS',
+        values,
+      });
+    },
+  );
+}
+
+async function executeSheetsBatchUpdate(
+  input: ToolContext,
+  resources: BoundGoogleDriveResource[],
+): Promise<ExecutorResult> {
+  // C6 mutation gate
+  if (input.jobPolicy && !input.jobPolicy.allowExternalMutation) {
+    return errorResult(
+      'external_mutation_blocked: google_sheets_batch_update is not allowed under the current scheduled job policy.',
+    );
+  }
+  const { bindingRef, data, valueInputOption } =
+    validateGoogleSheetsBatchUpdateInput(input.args);
+  const resource = resources.find((r) => r.ref === bindingRef);
+  if (!resource) {
+    return errorResult(
+      `unbound_resource: ${bindingRef} was not found. Use a file ref like G1.`,
+    );
+  }
+  if (resource.bindingKind !== 'google_drive_file') {
+    return errorResult(
+      `${bindingRef} is a folder. Bind a Google Sheet file directly before using google_sheets_batch_update.`,
+    );
+  }
+  if (resource.mimeType && resource.mimeType !== GOOGLE_SHEETS_MIME) {
+    return errorResult(
+      `${bindingRef} is not a Google Sheet. Bind a Sheets file before using google_sheets_batch_update.`,
+    );
+  }
+  return withTokenRefresh(
+    input.userId,
+    ['spreadsheets'],
+    async (accessToken) => {
+      const response = await batchUpdateSheetValues({
+        spreadsheetId: resource.externalId,
+        data,
+        valueInputOption,
+        accessToken,
+        signal: input.signal,
+      });
+      return okResult(response);
+    },
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Dispatcher
 // ---------------------------------------------------------------------------
@@ -1303,6 +1597,10 @@ export async function executeGoogleDriveTalkTool(input: {
         return await executeDocsRead(ctx, resources);
       case 'google_docs_batch_update':
         return await executeDocsBatchUpdate(ctx, resources);
+      case 'google_sheets_read_range':
+        return await executeSheetsReadRange(ctx, resources);
+      case 'google_sheets_batch_update':
+        return await executeSheetsBatchUpdate(ctx, resources);
       default:
         return errorResult(
           `Tool '${ctx.toolName}' is not a supported Google Drive Talk tool.`,

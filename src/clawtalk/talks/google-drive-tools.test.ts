@@ -48,6 +48,9 @@ import {
 
 const DRIVE_READONLY_URL = 'https://www.googleapis.com/auth/drive.readonly';
 const DOCUMENTS_URL = 'https://www.googleapis.com/auth/documents';
+const SPREADSHEETS_URL = 'https://www.googleapis.com/auth/spreadsheets';
+const SPREADSHEETS_READONLY_URL =
+  'https://www.googleapis.com/auth/spreadsheets.readonly';
 const GOOGLE_DOCS_MIME = 'application/vnd.google-apps.document';
 
 async function seedDriveCredential(userId: string): Promise<void> {
@@ -56,7 +59,17 @@ async function seedDriveCredential(userId: string): Promise<void> {
     accessToken: 'access-old',
     refreshToken: 'refresh-original',
     expiryDate: new Date(Date.now() + 3600_000).toISOString(),
-    scopes: [DRIVE_READONLY_URL, DOCUMENTS_URL],
+    // Grant both `spreadsheets` and `spreadsheets.readonly` here — Google
+    // treats the parent as a superset, but `normalizeGoogleScopeAliases`
+    // collapses on alias equality not hierarchy, so scope checks for the
+    // readonly alias require it explicitly. Tests grant both to keep them
+    // independent of how the OAuth consent flow happens to spell scopes.
+    scopes: [
+      DRIVE_READONLY_URL,
+      DOCUMENTS_URL,
+      SPREADSHEETS_URL,
+      SPREADSHEETS_READONLY_URL,
+    ],
     tokenType: 'Bearer',
   };
   await upsertUserGoogleCredential({
@@ -99,7 +112,7 @@ const signal = new AbortController().signal;
 
 describe('google-drive-tools — pure helpers', () => {
   describe('buildGoogleDriveContextTools', () => {
-    it('returns 4 read schemas when only read is enabled', () => {
+    it('returns read-side schemas (Drive + Docs + Sheets) when only read is enabled', () => {
       const tools = buildGoogleDriveContextTools({
         readEnabled: true,
         writeEnabled: false,
@@ -109,9 +122,10 @@ describe('google-drive-tools — pure helpers', () => {
         'google_drive_read',
         'google_drive_list_folder',
         'google_docs_read',
+        'google_sheets_read_range',
       ]);
     });
-    it('returns 2 write schemas when only write is enabled', () => {
+    it('returns write-side schemas (Docs + Sheets) when only write is enabled', () => {
       const tools = buildGoogleDriveContextTools({
         readEnabled: false,
         writeEnabled: true,
@@ -119,14 +133,15 @@ describe('google-drive-tools — pure helpers', () => {
       expect(tools.map((t) => t.name)).toEqual([
         'google_docs_create',
         'google_docs_batch_update',
+        'google_sheets_batch_update',
       ]);
     });
-    it('returns all 6 when both are enabled', () => {
+    it('returns all 8 when both are enabled', () => {
       const tools = buildGoogleDriveContextTools({
         readEnabled: true,
         writeEnabled: true,
       });
-      expect(tools.length).toBe(6);
+      expect(tools.length).toBe(8);
     });
     it('returns empty array when both disabled', () => {
       const tools = buildGoogleDriveContextTools({
@@ -564,6 +579,194 @@ describe('google-drive-tools — executor', () => {
       expect(parsed.results[0]).toMatchObject({
         bindingRef: setup.folderRef,
         resultType: 'bound_resource',
+      });
+    });
+  });
+
+  describe('google_sheets_*', () => {
+    const GOOGLE_SHEETS_MIME = 'application/vnd.google-apps.spreadsheet';
+
+    async function setupTalkWithSheetBinding(): Promise<{
+      userId: string;
+      talkId: string;
+      sheetRef: string;
+      sheetId: string;
+    }> {
+      const userId = await seedAuthUser();
+      userIds.push(userId);
+      const sheetId = 'sheet-id-xyz';
+      let talkId = '';
+      let sheetRef = 'G?';
+      await withUserContext(userId, async () => {
+        await seedDriveCredential(userId);
+        talkId = await seedTalk({ ownerId: userId });
+        await createTalkResourceBinding({
+          ownerId: userId,
+          talkId,
+          bindingKind: 'google_drive_file',
+          externalId: sheetId,
+          displayName: 'Budget Sheet',
+          metadata: { mimeType: GOOGLE_SHEETS_MIME },
+        });
+        const bindings = await loadGoogleDriveBindings(talkId);
+        sheetRef = bindings.find((b) => b.externalId === sheetId)?.ref ?? 'G?';
+      });
+      return { userId, talkId, sheetRef, sheetId };
+    }
+
+    it('google_sheets_read_range happy path returns the values array', async () => {
+      const setup = await setupTalkWithSheetBinding();
+      mockFetchSequence([
+        {
+          jsonBody: {
+            range: 'Sheet1!A1:B2',
+            majorDimension: 'ROWS',
+            values: [
+              ['Header A', 'Header B'],
+              ['1', '2'],
+            ],
+          },
+        },
+      ]);
+      await withUserContext(setup.userId, async () => {
+        const result = await executeGoogleDriveTalkTool({
+          talkId: setup.talkId,
+          userId: setup.userId,
+          toolName: 'google_sheets_read_range',
+          args: { bindingRef: setup.sheetRef, range: 'Sheet1!A1:B2' },
+          signal,
+        });
+        expect(result.isError).toBeUndefined();
+        const parsed = JSON.parse(result.result) as {
+          range: string;
+          values: unknown[][];
+        };
+        expect(parsed.range).toBe('Sheet1!A1:B2');
+        expect(parsed.values[0]).toEqual(['Header A', 'Header B']);
+      });
+    });
+
+    it('google_sheets_read_range rejects unknown bindingRef (C4)', async () => {
+      const setup = await setupTalkWithSheetBinding();
+      await withUserContext(setup.userId, async () => {
+        const result = await executeGoogleDriveTalkTool({
+          talkId: setup.talkId,
+          userId: setup.userId,
+          toolName: 'google_sheets_read_range',
+          args: { bindingRef: 'G99', range: 'A1:B2' },
+          signal,
+        });
+        expect(result.isError).toBe(true);
+        expect(result.result).toContain('unbound_resource');
+      });
+    });
+
+    it('google_sheets_read_range rejects when the binding is a Google Doc, not a Sheet', async () => {
+      // Reuse the Drive+Docs talk fixture — its bound file is a Doc, not
+      // a Sheet, so the mime-type check should reject the read.
+      const setup = await setupTalkWithBindings();
+      await withUserContext(setup.userId, async () => {
+        const result = await executeGoogleDriveTalkTool({
+          talkId: setup.talkId,
+          userId: setup.userId,
+          toolName: 'google_sheets_read_range',
+          args: { bindingRef: setup.fileRef, range: 'A1:B2' },
+          signal,
+        });
+        expect(result.isError).toBe(true);
+        expect(result.result).toContain('is not a Google Sheet');
+      });
+    });
+
+    it('google_sheets_batch_update happy path writes values', async () => {
+      const setup = await setupTalkWithSheetBinding();
+      mockFetchSequence([
+        {
+          jsonBody: {
+            spreadsheetId: setup.sheetId,
+            totalUpdatedRows: 2,
+            totalUpdatedColumns: 2,
+            totalUpdatedCells: 4,
+          },
+        },
+      ]);
+      await withUserContext(setup.userId, async () => {
+        const result = await executeGoogleDriveTalkTool({
+          talkId: setup.talkId,
+          userId: setup.userId,
+          toolName: 'google_sheets_batch_update',
+          args: {
+            bindingRef: setup.sheetRef,
+            updates: [
+              {
+                range: 'Sheet1!A1:B2',
+                values: [
+                  ['x', 'y'],
+                  ['z', 'w'],
+                ],
+              },
+            ],
+          },
+          signal,
+        });
+        expect(result.isError).toBeUndefined();
+        const parsed = JSON.parse(result.result) as {
+          totalUpdatedCells: number;
+        };
+        expect(parsed.totalUpdatedCells).toBe(4);
+      });
+    });
+
+    it('google_sheets_batch_update is blocked under jobPolicy.allowExternalMutation=false (C6)', async () => {
+      const setup = await setupTalkWithSheetBinding();
+      await withUserContext(setup.userId, async () => {
+        const result = await executeGoogleDriveTalkTool({
+          talkId: setup.talkId,
+          userId: setup.userId,
+          toolName: 'google_sheets_batch_update',
+          args: {
+            bindingRef: setup.sheetRef,
+            updates: [{ range: 'A1:A1', values: [['x']] }],
+          },
+          signal,
+          jobPolicy: { allowExternalMutation: false },
+        });
+        expect(result.isError).toBe(true);
+        expect(result.result).toContain('external_mutation_blocked');
+      });
+    });
+
+    it('google_sheets_batch_update rejects more than MAX_GOOGLE_SHEETS_BATCH_UPDATES updates', async () => {
+      const setup = await setupTalkWithSheetBinding();
+      const updates = Array.from({ length: 51 }, (_, i) => ({
+        range: `Sheet1!A${i + 1}:A${i + 1}`,
+        values: [['x']],
+      }));
+      await withUserContext(setup.userId, async () => {
+        const result = await executeGoogleDriveTalkTool({
+          talkId: setup.talkId,
+          userId: setup.userId,
+          toolName: 'google_sheets_batch_update',
+          args: { bindingRef: setup.sheetRef, updates },
+          signal,
+        });
+        expect(result.isError).toBe(true);
+        expect(result.result).toContain('at most 50 updates');
+      });
+    });
+
+    it('google_sheets_batch_update rejects empty updates array', async () => {
+      const setup = await setupTalkWithSheetBinding();
+      await withUserContext(setup.userId, async () => {
+        const result = await executeGoogleDriveTalkTool({
+          talkId: setup.talkId,
+          userId: setup.userId,
+          toolName: 'google_sheets_batch_update',
+          args: { bindingRef: setup.sheetRef, updates: [] },
+          signal,
+        });
+        expect(result.isError).toBe(true);
+        expect(result.result).toContain('non-empty updates array');
       });
     });
   });
