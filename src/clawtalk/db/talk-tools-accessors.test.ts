@@ -99,8 +99,8 @@ describe('talk-tools-accessors-pg (postgres + RLS)', () => {
       expect(created.bindingKind).toBe('google_drive_folder');
       expect(created.metadata).toEqual({ driveId: 'abc' });
 
-      // Second call with same (talkId, bindingKind, externalId) should
-      // dedupe — return the existing row, not throw.
+      // Same (talkId, bindingKind, externalId, owner) is idempotent under
+      // the 4-column conflict target — dedupes to the original row.
       const dedup = await createTalkResourceBinding({
         ownerId: USER_A_ID,
         talkId: TALK_A_ID,
@@ -117,6 +117,71 @@ describe('talk-tools-accessors-pg (postgres + RLS)', () => {
       expect(await deleteTalkResourceBinding(TALK_A_ID, created.id)).toBe(true);
       expect((await listTalkResourceBindings(TALK_A_ID)).length).toBe(0);
     });
+  });
+
+  it('C2: two users binding the same external_id to the same talk each get their own row', async () => {
+    // Pre-0018, the 3-column unique index (talk_id, binding_kind,
+    // external_id) made B's INSERT silently swallowed by ON CONFLICT
+    // DO NOTHING, then B's RLS-scoped follow-up SELECT returned zero
+    // rows and the accessor threw. Migration 0018 widened the index
+    // to include owner_id, matching the RLS scope.
+    const EXTERNAL_ID = 'shared-folder-x';
+
+    await withUserContext(USER_A_ID, async () => {
+      const createdByA = await createTalkResourceBinding({
+        ownerId: USER_A_ID,
+        talkId: TALK_A_ID,
+        bindingKind: 'google_drive_folder',
+        externalId: EXTERNAL_ID,
+        displayName: 'A view of shared folder',
+        createdBy: USER_A_ID,
+      });
+      expect(createdByA.ownerId).toBe(USER_A_ID);
+      expect((await listTalkResourceBindings(TALK_A_ID)).length).toBe(1);
+    });
+
+    await withUserContext(USER_B_ID, async () => {
+      const createdByB = await createTalkResourceBinding({
+        ownerId: USER_B_ID,
+        talkId: TALK_A_ID,
+        bindingKind: 'google_drive_folder',
+        externalId: EXTERNAL_ID,
+        displayName: 'B view of shared folder',
+        createdBy: USER_B_ID,
+      });
+      expect(createdByB.ownerId).toBe(USER_B_ID);
+      expect(createdByB.displayName).toBe('B view of shared folder');
+      // B's RLS-scoped list returns only B's row.
+      const bList = await listTalkResourceBindings(TALK_A_ID);
+      expect(bList.length).toBe(1);
+      expect(bList[0].ownerId).toBe(USER_B_ID);
+
+      // Same-owner re-bind by B is still idempotent.
+      const dedup = await createTalkResourceBinding({
+        ownerId: USER_B_ID,
+        talkId: TALK_A_ID,
+        bindingKind: 'google_drive_folder',
+        externalId: EXTERNAL_ID,
+        displayName: 'B view (second call ignored)',
+        createdBy: USER_B_ID,
+      });
+      expect(dedup.id).toBe(createdByB.id);
+    });
+
+    // Cross-check from the DB level: both rows actually exist.
+    const db = getDbPg();
+    const rows = await db<{ owner_id: string }[]>`
+      select owner_id
+      from public.talk_resource_bindings
+      where talk_id = ${TALK_A_ID}::uuid
+        and binding_kind = 'google_drive_folder'
+        and external_id = ${EXTERNAL_ID}
+      order by owner_id
+    `;
+    expect(rows.length).toBe(2);
+    expect(rows.map((r) => r.owner_id).sort()).toEqual(
+      [USER_A_ID, USER_B_ID].sort(),
+    );
   });
 
   it('user_google_credentials: upsert + read + delete + scopes dedupe', async () => {
