@@ -27,7 +27,6 @@
     "deploy:worker": "wrangler deploy"
   },
   "dependencies": {
-    "@hono/node-server": "^1.19.10",
     "exceljs": "^4.4.0",
     "hono": "^4.12.18",
     "jose": "^5.10.0",
