@@ -178,11 +178,7 @@ async function executeBrowserTool(
 ): Promise<ToolResultStub> {
   throw new Error('Browser tool is disabled (chassis removed).');
 }
-async function executeGoogleDriveTalkTool(
-  ..._args: unknown[]
-): Promise<ToolResultStub> {
-  throw new Error('Google Drive tool is disabled (chassis removed).');
-}
+import { executeGoogleDriveTalkTool } from './google-drive-tools.js';
 async function executeTalkOutputTool(
   ..._args: unknown[]
 ): Promise<ToolResultStub> {
@@ -942,6 +938,7 @@ export function buildToolExecutor(
       toolName === 'google_drive_read' ||
       toolName === 'google_drive_list_folder' ||
       toolName === 'google_docs_read' ||
+      toolName === 'google_docs_create' ||
       toolName === 'google_docs_batch_update'
     ) {
       return executeGoogleDriveTalkTool({
@@ -950,6 +947,9 @@ export function buildToolExecutor(
         toolName,
         args,
         signal,
+        jobPolicy: jobPolicy
+          ? { allowExternalMutation: jobPolicy.allowExternalMutation }
+          : null,
       });
     }
 
@@ -973,6 +973,7 @@ async function buildTalkJobExecutionPolicy(
     allowWeb: job.sourceScope.allowWeb,
     allowStateMutation: false,
     allowOutputWrite: false,
+    allowExternalMutation: false,
   };
 }
 

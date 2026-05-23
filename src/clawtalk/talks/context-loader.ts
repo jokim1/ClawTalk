@@ -22,6 +22,11 @@ import {
 } from '../agents/llm-client.js';
 import type { TalkPersonaRole } from '../llm/types.js';
 import type { TalkJobExecutionPolicy } from './executor.js';
+import {
+  buildBoundGoogleDrivePromptSection,
+  buildGoogleDriveContextTools,
+  loadGoogleDriveBindings,
+} from './google-drive-tools.js';
 
 const WEB_TOOL_DEFINITIONS: LlmToolDefinition[] = [
   {
@@ -425,17 +430,31 @@ export async function loadTalkContext(
     ),
     budgetTokens: RETRIEVAL_SECTION_RESERVE,
   });
-  const boundGoogleDriveResources = '';
-
-  // Web tools gate: only inject the "today's date + verify time-sensitive
-  // facts" stanza for agents that actually have web_search available. An
-  // agent without web access can't act on the rule, so the stanza is pure
-  // token cost for those — skip it.
+  // D4 — always advertise: emit the Bound Drive Resources prompt section
+  // whenever the agent has any Google family enabled, so the agent knows
+  // whether bindings exist (and is told to use the Tools tab when they
+  // don't). The schemas themselves are added in buildContextTools below.
   const enabledToolFamilies = new Set(
     (options?.effectiveTools ?? [])
       .filter((tool) => tool.enabled)
       .map((tool) => tool.toolFamily),
   );
+  const googleReadEnabled =
+    !options?.effectiveTools || enabledToolFamilies.has('google_read');
+  const googleWriteEnabled =
+    !options?.effectiveTools || enabledToolFamilies.has('google_write');
+  const includeBoundDriveSection = googleReadEnabled || googleWriteEnabled;
+  const driveBindings = includeBoundDriveSection
+    ? await loadGoogleDriveBindings(talkId)
+    : [];
+  const boundGoogleDriveResources = includeBoundDriveSection
+    ? buildBoundGoogleDrivePromptSection(driveBindings)
+    : '';
+
+  // Web tools gate: only inject the "today's date + verify time-sensitive
+  // facts" stanza for agents that actually have web_search available. An
+  // agent without web access can't act on the rule, so the stanza is pure
+  // token cost for those — skip it.
   const webEnabled = !options?.effectiveTools || enabledToolFamilies.has('web');
   const includeWebFreshnessStanza =
     webEnabled && (!options?.jobPolicy || options.jobPolicy.allowWeb);
@@ -1061,6 +1080,24 @@ function buildContextTools(
 
   if ((!jobPolicy || jobPolicy.allowWeb) && browserEnabled) {
     tools.push(...BROWSER_TOOL_DEFINITIONS);
+  }
+
+  // D4 — always advertise Google Drive/Docs tools when the agent's family
+  // is enabled. Credential / binding / scope gating happens at call time
+  // via typed errors so the agent gets actionable feedback ("connect Google"
+  // / "bind a doc first") instead of silently lacking the tool. The C6
+  // external-mutation gate is enforced inside the executor, not here.
+  const googleReadEnabled =
+    !effectiveTools || enabledToolFamilies.has('google_read');
+  const googleWriteEnabled =
+    !effectiveTools || enabledToolFamilies.has('google_write');
+  if (googleReadEnabled || googleWriteEnabled) {
+    tools.push(
+      ...buildGoogleDriveContextTools({
+        readEnabled: googleReadEnabled,
+        writeEnabled: googleWriteEnabled,
+      }),
+    );
   }
 
   return tools;
