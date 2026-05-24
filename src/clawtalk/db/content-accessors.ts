@@ -187,6 +187,25 @@ export async function createContent(input: {
   return toContent(rows[0]);
 }
 
+export interface ContentSidebarRecord {
+  id: string;
+  talk_id: string;
+  title: string;
+  updated_at: string;
+}
+
+export async function listContentsForSidebar(): Promise<
+  ContentSidebarRecord[]
+> {
+  const db = getDbPg();
+  const rows = await db<ContentSidebarRecord[]>`
+    select id, talk_id, title, updated_at
+    from public.contents
+    order by updated_at desc, id
+  `;
+  return rows;
+}
+
 export async function getContentByTalkId(
   talkId: string,
 ): Promise<Content | null> {

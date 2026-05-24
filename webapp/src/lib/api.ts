@@ -51,6 +51,7 @@ export type TalkSidebarTalk = {
   lastMessageAt?: string | null;
   messageCount?: number;
   hasActiveRun?: boolean;
+  hasContent?: boolean;
 };
 
 export type TalkSidebarFolder = {
@@ -63,9 +64,33 @@ export type TalkSidebarFolder = {
 
 export type TalkSidebarItem = TalkSidebarTalk | TalkSidebarFolder;
 
+export type ContentSidebarItem = {
+  id: string;
+  talkId: string;
+  title: string;
+  updatedAt: string;
+};
+
 export type TalkSidebarTree = {
   items: TalkSidebarItem[];
   mainTalkId: string | null;
+  contents: ContentSidebarItem[];
+};
+
+export type Content = {
+  id: string;
+  talkId: string;
+  title: string;
+  contentKind: string;
+  contentFormat: string;
+  bodyMarkdown: string;
+  bodyVersion: number;
+  anchorMap: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+  createdByUserId: string | null;
+  updatedByUserId: string | null;
+  updatedByRunId: string | null;
 };
 
 export type DataConnectorVerificationStatus =
@@ -1277,6 +1302,21 @@ export async function getTalk(talkId: string): Promise<Talk> {
     `/api/v1/talks/${encodeURIComponent(talkId)}`,
   );
   return envelope.talk;
+}
+
+export async function createTalkContent(input: {
+  talkId: string;
+  title: string;
+}): Promise<Content> {
+  const envelope = await apiMutationRequest<{ content: Content }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/content`,
+    {
+      method: 'POST',
+      includeJson: true,
+      body: JSON.stringify({ title: input.title }),
+    },
+  );
+  return envelope.content;
 }
 
 export async function getTalkPolicy(talkId: string): Promise<TalkPolicy> {

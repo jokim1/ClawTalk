@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router-dom';
 
 import { ClawTalkSidebar } from './ClawTalkSidebar';
 import type {
+  ContentSidebarItem,
   SessionUser,
   Talk,
   TalkSidebarFolder,
@@ -120,6 +121,7 @@ describe('ClawTalkSidebar', () => {
       <MemoryRouter>
         <ClawTalkSidebar
           items={items}
+          contents={[]}
           loading={false}
           error={null}
           user={buildUser()}
@@ -152,5 +154,108 @@ describe('ClawTalkSidebar', () => {
     });
 
     expect(screen.getByRole('button', { name: 'Rename Talk' })).toBeTruthy();
+  });
+
+  it('renders the Content section with empty-state hint when no documents exist', () => {
+    const items: TalkSidebarItem[] = [
+      {
+        type: 'talk',
+        id: 'talk-1',
+        title: 'Untitled',
+        status: 'active',
+        sortOrder: 0,
+      },
+    ];
+
+    render(
+      <MemoryRouter>
+        <ClawTalkSidebar
+          items={items}
+          contents={[]}
+          loading={false}
+          error={null}
+          user={buildUser()}
+          mainTalkId={null}
+          onSignOut={vi.fn()}
+          signOutBusy={false}
+          onCreateTalk={vi.fn(async () => buildTalk())}
+          onCreateFolder={vi.fn(async () => buildFolder())}
+          onRenameTalk={vi.fn()}
+          onPatchTalk={vi.fn(async () => undefined)}
+          onDeleteTalk={vi.fn(async () => undefined)}
+          onRenameFolder={vi.fn(async () => undefined)}
+          onDeleteFolder={vi.fn(async () => undefined)}
+          onReorder={vi.fn()}
+          renameDraft={null}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText('Content')).toBeTruthy();
+    expect(
+      screen.getByText('Promote a Talk to start creating documents.'),
+    ).toBeTruthy();
+  });
+
+  it('renders Content rows in given order and links to ?doc=1', () => {
+    const items: TalkSidebarItem[] = [
+      {
+        type: 'talk',
+        id: 'talk-with-doc',
+        title: 'Talk with doc',
+        status: 'active',
+        sortOrder: 0,
+        hasContent: true,
+      },
+    ];
+    const contents: ContentSidebarItem[] = [
+      {
+        id: 'content-1',
+        talkId: 'talk-with-doc',
+        title: 'Most recent doc',
+        updatedAt: '2026-05-24T10:00:00.000Z',
+      },
+      {
+        id: 'content-2',
+        talkId: 'talk-other',
+        title: 'Older doc',
+        updatedAt: '2026-05-20T10:00:00.000Z',
+      },
+    ];
+
+    render(
+      <MemoryRouter>
+        <ClawTalkSidebar
+          items={items}
+          contents={contents}
+          loading={false}
+          error={null}
+          user={buildUser()}
+          mainTalkId={null}
+          onSignOut={vi.fn()}
+          signOutBusy={false}
+          onCreateTalk={vi.fn(async () => buildTalk())}
+          onCreateFolder={vi.fn(async () => buildFolder())}
+          onRenameTalk={vi.fn()}
+          onPatchTalk={vi.fn(async () => undefined)}
+          onDeleteTalk={vi.fn(async () => undefined)}
+          onRenameFolder={vi.fn(async () => undefined)}
+          onDeleteFolder={vi.fn(async () => undefined)}
+          onReorder={vi.fn()}
+          renameDraft={null}
+        />
+      </MemoryRouter>,
+    );
+
+    const docList = screen.getByLabelText('Content documents');
+    const links = docList.querySelectorAll('a');
+    expect(links).toHaveLength(2);
+    expect(links[0].getAttribute('href')).toBe(
+      '/app/talks/talk-with-doc?doc=1',
+    );
+    expect(links[0].textContent).toContain('Most recent doc');
+    expect(links[1].getAttribute('href')).toBe('/app/talks/talk-other?doc=1');
+
+    expect(screen.getByLabelText('Has document')).toBeTruthy();
   });
 });

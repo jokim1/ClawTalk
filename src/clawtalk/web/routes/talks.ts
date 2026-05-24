@@ -88,6 +88,14 @@ interface SidebarTalkApiRecord {
   lastMessageAt: string | null;
   messageCount: number;
   hasActiveRun: boolean;
+  hasContent: boolean;
+}
+
+interface ContentSidebarApiRecord {
+  id: string;
+  talkId: string;
+  title: string;
+  updatedAt: string;
 }
 
 interface TalkFolderApiRecord {
@@ -286,6 +294,7 @@ function toSidebarTalkApiRecord(
     lastMessageAt: talk.last_message_at,
     messageCount: talk.message_count,
     hasActiveRun: talk.has_active_run,
+    hasContent: talk.has_content,
   };
 }
 
@@ -695,6 +704,7 @@ export async function listTalkSidebarRoute(input: {
   body: ApiEnvelope<{
     items: TalkSidebarItemApiRecord[];
     mainTalkId: string | null;
+    contents: ContentSidebarApiRecord[];
   }>;
 }> {
   return await withUserContext(input.auth.userId, async () => {
@@ -715,6 +725,13 @@ export async function listTalkSidebarRoute(input: {
       })),
     ].sort((a, b) => a.sortOrder - b.sortOrder || a.id.localeCompare(b.id));
 
+    const contents: ContentSidebarApiRecord[] = tree.contents.map((row) => ({
+      id: row.id,
+      talkId: row.talk_id,
+      title: row.title,
+      updatedAt: row.updated_at,
+    }));
+
     return {
       statusCode: 200,
       body: {
@@ -722,6 +739,7 @@ export async function listTalkSidebarRoute(input: {
         data: {
           items: rootItems,
           mainTalkId: tree.mainTalkId,
+          contents,
         },
       },
     };

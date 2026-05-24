@@ -744,6 +744,78 @@ a {
   font-size: 0.9rem;
 }
 
+.clawtalk-sidebar-content-section {
+  flex: 0 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid #e3eaf5;
+}
+
+.clawtalk-sidebar-content-empty {
+  margin: 0;
+  padding: 0.1rem 0.25rem 0.25rem;
+  color: #94a3b8;
+  font-size: 0.82rem;
+  font-style: italic;
+  line-height: 1.4;
+}
+
+.clawtalk-sidebar-content-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.18rem;
+  max-height: 14rem;
+  overflow-y: auto;
+  padding-right: 0.15rem;
+}
+
+.clawtalk-sidebar-content-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 2.1rem;
+  padding: 0.42rem 0.6rem;
+  border-radius: 10px;
+  text-decoration: none;
+  color: #31415f;
+  font-size: 0.9rem;
+  font-weight: 500;
+  transition:
+    background 140ms ease,
+    color 140ms ease;
+}
+
+.clawtalk-sidebar-content-row:hover {
+  background: rgba(67, 104, 184, 0.08);
+  color: #173a79;
+}
+
+.clawtalk-sidebar-content-row.active {
+  background: #f1f5fb;
+  color: #153c86;
+}
+
+.clawtalk-sidebar-content-row-icon {
+  flex: 0 0 auto;
+  color: #64748b;
+}
+
+.clawtalk-sidebar-content-row-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clawtalk-sidebar-content-indicator {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  color: #64748b;
+}
+
 .app-main {
   grid-column: 2;
   min-width: 0;
@@ -5014,4 +5086,139 @@ a {
 
 .talk-tools-binding-remove {
   font-size: 0.85rem;
+}
+
+.talk-tabs-add-doc {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid #16a34a;
+  border-radius: 10px;
+  background: #16a34a;
+  color: #fff;
+  padding: 0.4rem 0.8rem;
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 140ms ease,
+    border-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.talk-tabs-add-doc:hover {
+  background: #15893f;
+  border-color: #15893f;
+}
+
+.talk-tabs-add-doc:focus-visible {
+  outline: 2px solid #4ade80;
+  outline-offset: 2px;
+}
+
+.doc-promote-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  z-index: 60;
+}
+
+.doc-promote-modal {
+  background: #ffffff;
+  border-radius: 12px;
+  padding: 1.5rem;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.18);
+  width: 100%;
+  max-width: 440px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.doc-promote-modal h3 {
+  margin: 0;
+  font-size: 1.05rem;
+  color: #1d2433;
+}
+
+.doc-promote-modal-label {
+  font-size: 0.82rem;
+  color: #64748b;
+  font-weight: 600;
+}
+
+.doc-promote-modal-input {
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 0.55rem 0.7rem;
+  font: inherit;
+  font-size: 0.95rem;
+  color: #1d2433;
+  background: #fff;
+}
+
+.doc-promote-modal-input:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 1px;
+  border-color: #3b82f6;
+}
+
+.doc-promote-modal-error {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #b91c1c;
+}
+
+.doc-promote-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  margin-top: 0.2rem;
+}
+
+.doc-promote-modal-cancel,
+.doc-promote-modal-submit {
+  border-radius: 8px;
+  padding: 0.5rem 0.95rem;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease;
+}
+
+.doc-promote-modal-cancel {
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  color: #1d2433;
+}
+
+.doc-promote-modal-cancel:hover {
+  background: #f1f5f9;
+}
+
+.doc-promote-modal-submit {
+  background: #16a34a;
+  border: 1px solid #16a34a;
+  color: #fff;
+}
+
+.doc-promote-modal-submit:hover:not(:disabled) {
+  background: #15893f;
+  border-color: #15893f;
+}
+
+.doc-promote-modal-submit:disabled,
+.doc-promote-modal-cancel:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }

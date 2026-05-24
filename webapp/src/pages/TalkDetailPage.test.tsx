@@ -4331,6 +4331,8 @@ function renderDetailPage(initialEntry: string): ReturnType<typeof render> {
               onRenameDraftChange={vi.fn()}
               onRenameDraftCancel={vi.fn()}
               onRenameDraftCommit={vi.fn().mockResolvedValue(undefined)}
+              onSidebarChanged={vi.fn().mockResolvedValue(undefined)}
+              sidebarContents={[]}
             />
           }
         />
@@ -4380,6 +4382,8 @@ function renderDetailPageWithRenameHarness(
                     current?.talkId === talkId ? null : current,
                   );
                 }}
+                onSidebarChanged={vi.fn().mockResolvedValue(undefined)}
+                sidebarContents={[]}
               />
             }
           />

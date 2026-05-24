@@ -10,6 +10,7 @@ import {
   useSensors,
 } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
+import { FileText } from 'lucide-react';
 import {
   FormEvent,
   KeyboardEvent,
@@ -24,6 +25,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 
 import { SidebarProfileMenu } from './SidebarProfileMenu';
 import type {
+  ContentSidebarItem,
   SessionUser,
   Talk,
   TalkSidebarFolder,
@@ -55,6 +57,7 @@ type MenuPosition = {
 
 type Props = {
   items: TalkSidebarItemView[];
+  contents: ContentSidebarItem[];
   loading: boolean;
   error: string | null;
   user: SessionUser;
@@ -197,6 +200,7 @@ function buildMoveTargets(
 
 export function ClawTalkSidebar({
   items,
+  contents,
   loading,
   error,
   user,
@@ -521,6 +525,15 @@ export function ClawTalkSidebar({
                       : talk.title || 'Untitled talk'}
                   </span>
                 </span>
+                {talk.hasContent ? (
+                  <span
+                    className="clawtalk-sidebar-content-indicator"
+                    aria-label="Has document"
+                    title="This talk has a document"
+                  >
+                    <FileText size={12} aria-hidden="true" />
+                  </span>
+                ) : null}
                 {talk.unreadCount && talk.unreadCount > 0 ? (
                   <span
                     className="clawtalk-sidebar-unread-badge"
@@ -850,6 +863,41 @@ export function ClawTalkSidebar({
             </DndContext>
           )}
         </div>
+      </div>
+
+      <div className="clawtalk-sidebar-content-section">
+        <div className="clawtalk-sidebar-section-header">
+          <div className="clawtalk-sidebar-section-label">Content</div>
+        </div>
+        {contents.length === 0 ? (
+          <p className="clawtalk-sidebar-content-empty">
+            Promote a Talk to start creating documents.
+          </p>
+        ) : (
+          <div
+            className="clawtalk-sidebar-content-list"
+            aria-label="Content documents"
+          >
+            {contents.map((doc) => (
+              <NavLink
+                key={doc.id}
+                to={`/app/talks/${encodeURIComponent(doc.talkId)}?doc=1`}
+                className={({ isActive }) =>
+                  `clawtalk-sidebar-content-row${isActive ? ' active' : ''}`
+                }
+              >
+                <FileText
+                  size={12}
+                  className="clawtalk-sidebar-content-row-icon"
+                  aria-hidden="true"
+                />
+                <span className="clawtalk-sidebar-content-row-title">
+                  {doc.title}
+                </span>
+              </NavLink>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="clawtalk-sidebar-footer">

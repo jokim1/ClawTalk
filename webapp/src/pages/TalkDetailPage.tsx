@@ -35,9 +35,11 @@ import {
   ChannelQueueFailure,
   ChannelTarget,
   ChannelTargetListPage,
+  ContentSidebarItem,
   ContextGoal,
   ContextRule,
   ContextSource,
+  createTalkContent,
   createTalkThread,
   createTalkChannel,
   createTalkContextRule,
@@ -2845,6 +2847,8 @@ export function TalkDetailPage({
   onRenameDraftChange,
   onRenameDraftCancel,
   onRenameDraftCommit,
+  onSidebarChanged,
+  sidebarContents,
 }: {
   onUnauthorized: () => void;
   titleOverride?: string | null;
@@ -2852,6 +2856,8 @@ export function TalkDetailPage({
   onRenameDraftChange: (talkId: string, draft: string) => void;
   onRenameDraftCancel: (talkId: string) => void;
   onRenameDraftCommit: (talkId: string, draft: string) => Promise<void>;
+  onSidebarChanged: () => Promise<void> | void;
+  sidebarContents: ContentSidebarItem[];
 }): JSX.Element {
   const { talkId = '' } = useParams<{ talkId: string }>();
   const navigate = useNavigate();
@@ -2933,6 +2939,11 @@ export function TalkDetailPage({
   const threadStateRef = useRef<ThreadListState>(threadState);
   const searchQueryRef = useRef(searchQuery);
   const orchestrationMenuRef = useRef<HTMLDivElement | null>(null);
+  const [docModalOpen, setDocModalOpen] = useState(false);
+  const [docModalTitle, setDocModalTitle] = useState('');
+  const [docModalSubmitting, setDocModalSubmitting] = useState(false);
+  const [docModalError, setDocModalError] = useState<string | null>(null);
+  const docModalInputRef = useRef<HTMLInputElement | null>(null);
   const [agents, setAgents] = useState<TalkAgent[]>([]);
   const [agentDrafts, setAgentDrafts] = useState<TalkAgent[]>([]);
   const [aiAgentsData, setAiAgentsData] = useState<AiAgentsPageData | null>(
@@ -3108,6 +3119,70 @@ export function TalkDetailPage({
     () => contextRules.filter((rule) => rule.isActive).length,
     [contextRules],
   );
+
+  const currentTalkHasContent = useMemo(
+    () => sidebarContents.some((c) => c.talkId === talkId),
+    [sidebarContents, talkId],
+  );
+
+  const openDocModal = useCallback(() => {
+    setDocModalTitle('');
+    setDocModalError(null);
+    setDocModalOpen(true);
+  }, []);
+
+  const closeDocModal = useCallback(() => {
+    if (docModalSubmitting) return;
+    setDocModalOpen(false);
+    setDocModalError(null);
+  }, [docModalSubmitting]);
+
+  const handleCreateDoc = useCallback(
+    async (event: FormEvent) => {
+      event.preventDefault();
+      if (docModalSubmitting) return;
+      const trimmed = docModalTitle.trim();
+      if (!trimmed) {
+        setDocModalError('Please enter a title.');
+        return;
+      }
+      setDocModalSubmitting(true);
+      setDocModalError(null);
+      try {
+        await createTalkContent({ talkId, title: trimmed });
+        await onSidebarChanged();
+        setDocModalOpen(false);
+        setDocModalTitle('');
+        navigate(`/app/talks/${encodeURIComponent(talkId)}?doc=1`);
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          onUnauthorized();
+          return;
+        }
+        const message =
+          err instanceof Error ? err.message : 'Failed to create document.';
+        setDocModalError(message);
+        if (err instanceof ApiError && err.code === 'content_already_exists') {
+          await onSidebarChanged();
+        }
+      } finally {
+        setDocModalSubmitting(false);
+      }
+    },
+    [
+      docModalSubmitting,
+      docModalTitle,
+      navigate,
+      onSidebarChanged,
+      onUnauthorized,
+      talkId,
+    ],
+  );
+
+  useEffect(() => {
+    if (!docModalOpen) return;
+    docModalInputRef.current?.focus();
+  }, [docModalOpen]);
 
   const isNearBottom = useCallback((): boolean => {
     const container = timelineRef.current;
@@ -8286,6 +8361,17 @@ export function TalkDetailPage({
                         ) : null}
                       </div>
                     ) : null}
+                    {!currentTalkHasContent ? (
+                      <button
+                        type="button"
+                        className="talk-tabs-add-doc"
+                        onClick={openDocModal}
+                        aria-label="Add a document to this talk"
+                        title="Add a document to this talk"
+                      >
+                        + Doc
+                      </button>
+                    ) : null}
                     <Link to="/app/talks" className="talk-page-back-link">
                       Back
                     </Link>
@@ -12356,6 +12442,67 @@ export function TalkDetailPage({
         onConfirm={handleDeleteHistoryMessages}
         resolveActorLabel={resolveMessageActorLabel}
       />
+      {docModalOpen ? (
+        <div
+          className="doc-promote-modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="doc-promote-modal-title"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeDocModal();
+          }}
+        >
+          <form className="doc-promote-modal" onSubmit={handleCreateDoc}>
+            <h3 id="doc-promote-modal-title">Add a document</h3>
+            <label
+              className="doc-promote-modal-label"
+              htmlFor="doc-promote-modal-input"
+            >
+              Title
+            </label>
+            <input
+              id="doc-promote-modal-input"
+              ref={docModalInputRef}
+              type="text"
+              className="doc-promote-modal-input"
+              value={docModalTitle}
+              onChange={(event) => setDocModalTitle(event.target.value)}
+              placeholder="Untitled document"
+              maxLength={160}
+              disabled={docModalSubmitting}
+              autoComplete="off"
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  closeDocModal();
+                }
+              }}
+            />
+            {docModalError ? (
+              <p className="doc-promote-modal-error" role="alert">
+                {docModalError}
+              </p>
+            ) : null}
+            <div className="doc-promote-modal-actions">
+              <button
+                type="button"
+                className="doc-promote-modal-cancel"
+                onClick={closeDocModal}
+                disabled={docModalSubmitting}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="doc-promote-modal-submit"
+                disabled={docModalSubmitting || !docModalTitle.trim()}
+              >
+                {docModalSubmitting ? 'Creating…' : 'Create document'}
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
     </section>
   );
 }

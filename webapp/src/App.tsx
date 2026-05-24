@@ -12,6 +12,7 @@ import { ClawTalkMark } from './components/ClawTalkMark';
 import { ClawTalkSidebar } from './components/ClawTalkSidebar';
 import { SignInView } from './components/SignInView';
 import {
+  ContentSidebarItem,
   createTalk,
   createTalkFolder,
   deleteTalk,
@@ -393,6 +394,9 @@ export function App() {
   const [auth, setAuth] = useState<AuthState>({ status: 'loading' });
   const [signOutBusy, setSignOutBusy] = useState(false);
   const [sidebarItems, setSidebarItems] = useState<TalkSidebarItem[]>([]);
+  const [sidebarContents, setSidebarContents] = useState<ContentSidebarItem[]>(
+    [],
+  );
   const [mainTalkId, setMainTalkId] = useState<string | null>(null);
   const [sidebarLoading, setSidebarLoading] = useState(true);
   const [sidebarError, setSidebarError] = useState<string | null>(null);
@@ -468,6 +472,7 @@ export function App() {
     try {
       const tree = await getTalkSidebar();
       setSidebarItems(tree.items);
+      setSidebarContents(tree.contents ?? []);
       setMainTalkId(tree.mainTalkId);
       setSidebarError(null);
     } catch (err) {
@@ -486,6 +491,7 @@ export function App() {
   useEffect(() => {
     if (auth.status !== 'authenticated') {
       setSidebarItems([]);
+      setSidebarContents([]);
       setMainTalkId(null);
       setSidebarLoading(true);
       setSidebarError(null);
@@ -748,6 +754,7 @@ export function App() {
       {!sidebarCollapsed ? (
         <ClawTalkSidebar
           items={sidebarViewItems}
+          contents={sidebarContents}
           loading={sidebarLoading}
           error={sidebarError}
           user={auth.user}
@@ -793,6 +800,8 @@ export function App() {
                   onRenameDraftChange={handleRenameDraftChange}
                   onRenameDraftCancel={handleRenameDraftCancel}
                   onRenameDraftCommit={handleRenameDraftCommit}
+                  onSidebarChanged={refreshSidebar}
+                  sidebarContents={sidebarContents}
                 />
               }
             />

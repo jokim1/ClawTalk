@@ -29,6 +29,10 @@ import { randomUUID } from 'node:crypto';
 
 import { getCurrentUserId, getDbPg, getOutOfBandSql } from '../../db.js';
 import { emitOutboxEvent } from '../talks/outbox-emit.js';
+import {
+  listContentsForSidebar,
+  type ContentSidebarRecord,
+} from './content-accessors.js';
 import { resolveTargetAgentNickname } from './talk-agents.js';
 import {
   inferThreadTitleFromContent,
@@ -95,6 +99,7 @@ export interface TalkSidebarTalkRecord {
   last_message_at: string | null;
   message_count: number;
   has_active_run: boolean;
+  has_content: boolean;
 }
 
 export interface TalkSidebarTreeRecord {
@@ -102,6 +107,7 @@ export interface TalkSidebarTreeRecord {
   rootTalks: TalkSidebarTalkRecord[];
   talksByFolderId: Record<string, TalkSidebarTalkRecord[]>;
   mainTalkId: string | null;
+  contents: ContentSidebarRecord[];
 }
 
 export function normalizeTalkListPage(input?: {
@@ -670,6 +676,9 @@ export async function listTalkSidebarTreeForUser(input?: {
     }
   }
 
+  const contents = await listContentsForSidebar();
+  const talkIdsWithContent = new Set(contents.map((c) => c.talk_id));
+
   const talks: TalkSidebarTalkRecord[] = rawTalks.map((talk) => ({
     id: talk.id,
     owner_id: talk.owner_id,
@@ -684,6 +693,7 @@ export async function listTalkSidebarTreeForUser(input?: {
     last_message_at: metricsByTalkId.get(talk.id)?.lastMessageAt ?? null,
     message_count: metricsByTalkId.get(talk.id)?.messageCount ?? 0,
     has_active_run: metricsByTalkId.get(talk.id)?.hasActiveRun ?? false,
+    has_content: talkIdsWithContent.has(talk.id),
   }));
   const rootTalks = talks
     .filter((talk) => talk.folder_id === null)
@@ -714,7 +724,7 @@ export async function listTalkSidebarTreeForUser(input?: {
     limit 1
   `;
   const mainTalkId = mainTalkRows[0]?.id ?? null;
-  return { folders, rootTalks, talksByFolderId, mainTalkId };
+  return { folders, rootTalks, talksByFolderId, mainTalkId, contents };
 }
 
 export async function reorderTalkSidebarItem(input: {
