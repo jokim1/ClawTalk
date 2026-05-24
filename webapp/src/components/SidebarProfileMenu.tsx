@@ -46,7 +46,7 @@ const MENU_ITEMS: MenuItem[] = [
   { label: 'API Keys', to: '/app/settings?tab=api-keys' },
   { label: 'AI Agents', to: '/app/settings?tab=agents' },
   { label: 'Tools', to: '/app/settings?tab=tools' },
-  { label: 'Connectors', to: '/app/connectors' },
+  { label: 'Connectors', to: '/app/settings?tab=connectors' },
 ];
 
 export function SidebarProfileMenu({
