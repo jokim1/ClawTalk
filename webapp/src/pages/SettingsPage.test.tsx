@@ -847,6 +847,12 @@ function installConnectorsFetch(seed: {
           data: { dataConnectors },
         });
       }
+      if (
+        url.endsWith('/api/v1/workspace/connectors/slack/installs') &&
+        method === 'GET'
+      ) {
+        return jsonResponse(200, { ok: true, data: { installs: [] } });
+      }
       const deleteChannelMatch = url.match(
         /\/api\/v1\/workspace\/channels\/([^/?]+)$/,
       );

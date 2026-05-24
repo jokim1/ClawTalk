@@ -3995,6 +3995,23 @@ export type TalkConnectorsView = {
   dataConnectors: TalkConnectorDataConnectorRow[];
 };
 
+export type WorkspaceSlackInstall = {
+  teamId: string;
+  teamName: string;
+  botUserId: string | null;
+  appId: string | null;
+  scopes: string[];
+  installedBy: string | null;
+  installedAt: string;
+  updatedAt: string;
+  boundChannelCount: number;
+};
+
+export type SlackInstallAuthorizationLaunch = {
+  authorizationUrl: string;
+  expiresInSec: number;
+};
+
 export async function listWorkspaceChannels(): Promise<WorkspaceChannel[]> {
   const envelope = await apiRequest<{ channels: WorkspaceChannel[] }>(
     '/api/v1/workspace/channels',
@@ -4148,6 +4165,37 @@ export async function getTalkConnectors(
 ): Promise<TalkConnectorsView> {
   return apiRequest<TalkConnectorsView>(
     `/api/v1/talks/${encodeURIComponent(talkId)}/connectors`,
+  );
+}
+
+export async function listWorkspaceSlackInstalls(): Promise<
+  WorkspaceSlackInstall[]
+> {
+  const envelope = await apiRequest<{ installs: WorkspaceSlackInstall[] }>(
+    '/api/v1/workspace/connectors/slack/installs',
+  );
+  return envelope.installs;
+}
+
+export async function connectWorkspaceSlackInstall(input?: {
+  returnTo?: string;
+}): Promise<SlackInstallAuthorizationLaunch> {
+  return apiMutationRequest<SlackInstallAuthorizationLaunch>(
+    '/api/v1/workspace/connectors/slack/installs/connect',
+    {
+      method: 'POST',
+      includeJson: true,
+      body: JSON.stringify({ returnTo: input?.returnTo }),
+    },
+  );
+}
+
+export async function deleteWorkspaceSlackInstall(teamId: string): Promise<void> {
+  await apiMutationRequest<{ deleted: boolean }>(
+    `/api/v1/workspace/connectors/slack/installs/${encodeURIComponent(teamId)}`,
+    {
+      method: 'DELETE',
+    },
   );
 }
 

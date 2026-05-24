@@ -150,6 +150,14 @@ new_sqlite_classes = ["UserEventHub"]
 #     credentials. Migration 0006 (which revokes outbox SELECT from
 #     `authenticated`) must NOT apply until this secret is set.
 #
+#   wrangler secret put SLACK_CLIENT_ID
+#   wrangler secret put SLACK_CLIENT_SECRET
+#     Slack OAuth app credentials. Create the app at api.slack.com/apps,
+#     configure bot scopes (channels:read, groups:read, im:read, mpim:read,
+#     chat:write, channels:history, groups:history, im:history, mpim:history,
+#     app_mentions:read, users:read) and the redirect URL declared in
+#     [vars].SLACK_OAUTH_REDIRECT_URI below.
+#
 # What does NOT live as a Workers Secret:
 #   - SUPABASE_PROJECT_URL: declared in [vars] (non-secret).
 #   - VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY: webapp build-time vars;
@@ -163,3 +171,4 @@ TRUSTED_PROXY_MODE = "cloudflare"
 CLAWTALK_ALLOWED_ORIGINS = "https://clawtalk.jokim1.workers.dev,https://clawtalk.app"
 SUPABASE_PROJECT_URL = "https://llklxclnredhtpxmhyea.supabase.co"
 GOOGLE_OAUTH_REDIRECT_URI = "https://clawtalk.app/api/v1/auth/google/callback"
+SLACK_OAUTH_REDIRECT_URI = "https://clawtalk.app/api/v1/auth/slack/callback"

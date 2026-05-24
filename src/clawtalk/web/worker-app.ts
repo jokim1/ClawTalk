@@ -196,6 +196,12 @@ import {
   startConnectRoute,
 } from './routes/google-account.js';
 import {
+  deleteWorkspaceSlackInstallRoute,
+  handleSlackCallback,
+  listWorkspaceSlackInstallsRoute,
+  startSlackInstallRoute,
+} from './routes/slack-installs.js';
+import {
   createTalkGoogleDriveResourceRoute,
   deleteTalkResourceRoute,
   listTalkResourcesRoute,
@@ -795,6 +801,71 @@ function buildApp(): Hono<{ Variables: Variables }> {
     if (!rl.allowed) return rateLimitedResponse(c, rl);
     const result = await getGooglePickerTokenRoute(auth);
     return jsonResponse(result);
+  });
+
+  // ── Slack workspace installs (admin-managed OAuth) ───────────
+  app.get('/api/v1/workspace/connectors/slack/installs', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'read' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const result = await listWorkspaceSlackInstallsRoute(auth);
+    return jsonResponse(result);
+  });
+
+  app.post('/api/v1/workspace/connectors/slack/installs/connect', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'auth_start',
+    });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const csrfFail = checkCsrf(c, auth);
+    if (csrfFail) return csrfFail;
+    const body = await c.req.json().catch(() => ({}));
+    const result = await startSlackInstallRoute(auth, body);
+    return jsonResponse(result);
+  });
+
+  app.delete(
+    '/api/v1/workspace/connectors/slack/installs/:teamId',
+    async (c) => {
+      const auth = c.get('auth');
+      const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+      if (!rl.allowed) return rateLimitedResponse(c, rl);
+      const csrfFail = checkCsrf(c, auth);
+      if (csrfFail) return csrfFail;
+      const result = await deleteWorkspaceSlackInstallRoute({
+        auth,
+        teamId: c.req.param('teamId'),
+      });
+      return jsonResponse(result);
+    },
+  );
+
+  // Public callback — no auth middleware. IP-keyed rate limit.
+  app.get('/api/v1/auth/slack/callback', async (c) => {
+    const ip =
+      c.req.header('cf-connecting-ip') ||
+      c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ||
+      'anonymous';
+    const rl = checkRateLimit({
+      principalId: `ip:${ip}`,
+      bucket: 'auth_callback',
+    });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const url = new URL(c.req.url);
+    const result = await handleSlackCallback({
+      state: url.searchParams.get('state'),
+      code: url.searchParams.get('code'),
+      error: url.searchParams.get('error'),
+    });
+    return new Response(result.html, {
+      status: result.statusCode,
+      headers: {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store',
+      },
+    });
   });
 
   // Public callback — no auth middleware. C9: IP-keyed rate limit.

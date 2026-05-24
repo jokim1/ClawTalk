@@ -17,13 +17,16 @@ import {
   type WebSearchProviderId,
   type WorkspaceChannel,
   type WorkspaceDataConnector,
+  type WorkspaceSlackInstall,
   clearWebSearchCredential,
   completeAnthropicSubscriptionOauth,
   connectUserGoogleAccount,
+  connectWorkspaceSlackInstall,
   createWorkspaceChannel,
   createWorkspaceDataConnector,
   deleteWorkspaceChannel,
   deleteWorkspaceDataConnector,
+  deleteWorkspaceSlackInstall,
   disconnectUserGoogleAccount,
   expandUserGoogleScopes,
   getAiAgents,
@@ -35,6 +38,7 @@ import {
   listRegisteredAgents,
   listWorkspaceChannels,
   listWorkspaceDataConnectors,
+  listWorkspaceSlackInstalls,
   pollOpenAiCodexSubscriptionOauth,
   saveAiProviderCredential,
   setActiveWebSearchProvider,
@@ -49,6 +53,7 @@ import {
   verifyAiProviderCredential,
 } from '../lib/api';
 import { launchGoogleAccountPopup } from '../lib/googleAccountPopup';
+import { launchSlackInstallPopup } from '../lib/slackInstallPopup';
 import { RegisteredAgentsPanel } from '../components/RegisteredAgentsPanel';
 import { ConnectorStatusPill } from '../components/connectors/StatusPill';
 import { resolveConnectorSubtitle } from '../components/connectors/subtitle';
@@ -2205,6 +2210,9 @@ function ConnectorsTab({
   const [dataConnectors, setDataConnectors] = useState<
     WorkspaceDataConnector[]
   >([]);
+  const [slackInstalls, setSlackInstalls] = useState<WorkspaceSlackInstall[]>(
+    [],
+  );
   const [modal, setModal] = useState<ConnectorModalState>({ kind: 'closed' });
   const [createKind, setCreateKind] = useState<string>('slack');
   const [deleteState, setDeleteState] = useState<ConnectorDeleteState>({
@@ -2213,19 +2221,31 @@ function ConnectorsTab({
   const [formSubmitting, setFormSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [deleteSubmitting, setDeleteSubmitting] = useState(false);
+  const [slackBusy, setSlackBusy] = useState<
+    null | 'connect' | { kind: 'delete'; teamId: string }
+  >(null);
+  const [slackNotice, setSlackNotice] = useState<string | null>(null);
+  const [slackError, setSlackError] = useState<string | null>(null);
 
   const refresh = async () => {
     try {
-      const [nextChannels, nextDataConnectors] = await Promise.all([
-        listWorkspaceChannels(),
-        listWorkspaceDataConnectors(),
-      ]);
+      const [nextChannels, nextDataConnectors, nextSlackInstalls] =
+        await Promise.all([
+          listWorkspaceChannels(),
+          listWorkspaceDataConnectors(),
+          listWorkspaceSlackInstalls(),
+        ]);
       const byName = (
         a: { displayName: string },
         b: { displayName: string },
       ): number => a.displayName.localeCompare(b.displayName);
       setChannels([...nextChannels].sort(byName));
       setDataConnectors([...nextDataConnectors].sort(byName));
+      setSlackInstalls(
+        [...nextSlackInstalls].sort((a, b) =>
+          a.teamName.localeCompare(b.teamName),
+        ),
+      );
       setStatus({ kind: 'ready' });
     } catch (err) {
       if (err instanceof UnauthorizedError) {
@@ -2237,6 +2257,63 @@ function ConnectorsTab({
         message:
           err instanceof Error ? err.message : 'Failed to load connectors.',
       });
+    }
+  };
+
+  const handleConnectSlackWorkspace = async () => {
+    setSlackBusy('connect');
+    setSlackError(null);
+    setSlackNotice(null);
+    try {
+      const launch = await connectWorkspaceSlackInstall();
+      const result = await launchSlackInstallPopup(launch.authorizationUrl);
+      await refresh();
+      setSlackNotice(
+        result.teamName
+          ? `Connected Slack workspace ${result.teamName}.`
+          : 'Slack workspace connected.',
+      );
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onUnauthorized();
+        return;
+      }
+      setSlackError(
+        err instanceof Error
+          ? err.message
+          : 'Could not connect Slack workspace.',
+      );
+    } finally {
+      setSlackBusy(null);
+    }
+  };
+
+  const handleDisconnectSlackWorkspace = async (install: WorkspaceSlackInstall) => {
+    if (install.boundChannelCount > 0) {
+      const confirmed = window.confirm(
+        `Disconnecting ${install.teamName} will leave ${install.boundChannelCount} channel${install.boundChannelCount === 1 ? '' : 's'} without a credential. Continue?`,
+      );
+      if (!confirmed) return;
+    }
+    setSlackBusy({ kind: 'delete', teamId: install.teamId });
+    setSlackError(null);
+    setSlackNotice(null);
+    try {
+      await deleteWorkspaceSlackInstall(install.teamId);
+      await refresh();
+      setSlackNotice(`Disconnected Slack workspace ${install.teamName}.`);
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onUnauthorized();
+        return;
+      }
+      setSlackError(
+        err instanceof Error
+          ? err.message
+          : 'Could not disconnect Slack workspace.',
+      );
+    } finally {
+      setSlackBusy(null);
     }
   };
 
@@ -2444,6 +2521,98 @@ function ConnectorsTab({
     <>
       <section
         className="page-shell-section connectors-section"
+        aria-label="Slack workspaces"
+      >
+        <header className="agents-panel-header">
+          <h2>Slack workspaces</h2>
+          {isAdmin ? (
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={handleConnectSlackWorkspace}
+              disabled={slackBusy === 'connect'}
+            >
+              {slackBusy === 'connect'
+                ? 'Opening Slack…'
+                : '+ Connect Slack workspace'}
+            </button>
+          ) : null}
+        </header>
+        {slackError ? (
+          <p className="page-state error" role="alert">
+            {slackError}
+          </p>
+        ) : null}
+        {slackNotice ? (
+          <p className="page-state" role="status">
+            {slackNotice}
+          </p>
+        ) : null}
+        {slackInstalls.length === 0 ? (
+          <p className="page-state">
+            {isAdmin
+              ? 'No Slack workspaces connected yet. Connect a workspace to add channels from it below.'
+              : 'No Slack workspaces connected. Ask your workspace admin to connect one.'}
+          </p>
+        ) : (
+          <table className="connector-table">
+            <thead>
+              <tr>
+                <th scope="col">Workspace</th>
+                <th scope="col">Channels</th>
+                <th scope="col">Installed</th>
+                <th scope="col" aria-label="Actions" />
+              </tr>
+            </thead>
+            <tbody>
+              {slackInstalls.map((install) => {
+                const isDeleting =
+                  slackBusy &&
+                  typeof slackBusy === 'object' &&
+                  slackBusy.teamId === install.teamId;
+                return (
+                  <tr key={install.teamId}>
+                    <td>
+                      <div className="connector-row-name">
+                        <strong>{install.teamName}</strong>
+                        <span className="connector-row-subtitle">
+                          {install.teamId}
+                        </span>
+                      </div>
+                    </td>
+                    <td>
+                      {install.boundChannelCount === 0
+                        ? 'No channels yet'
+                        : install.boundChannelCount === 1
+                          ? '1 channel'
+                          : `${install.boundChannelCount} channels`}
+                    </td>
+                    <td>{new Date(install.installedAt).toLocaleDateString()}</td>
+                    <td className="connector-row-actions">
+                      {isAdmin ? (
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-danger-outline"
+                          aria-label={`Disconnect Slack workspace ${install.teamName}`}
+                          onClick={() =>
+                            handleDisconnectSlackWorkspace(install)
+                          }
+                          disabled={Boolean(isDeleting)}
+                        >
+                          {isDeleting ? 'Disconnecting…' : 'Disconnect'}
+                        </button>
+                      ) : null}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </section>
+
+      <section
+        className="page-shell-section connectors-section"
         aria-label="Channels available to talks"
       >
         <header className="agents-panel-header">
@@ -2580,6 +2749,7 @@ function ConnectorsTab({
               setCreateKind={setCreateKind}
               submitting={formSubmitting}
               error={formError}
+              slackInstalls={slackInstalls}
               onCancel={closeModal}
               onCreateChannel={handleCreateChannelSubmit}
               onEditChannel={handleEditChannelSubmit}
@@ -2726,6 +2896,7 @@ function ConnectorModalContent({
   setCreateKind,
   submitting,
   error,
+  slackInstalls,
   onCancel,
   onCreateChannel,
   onEditChannel,
@@ -2737,6 +2908,7 @@ function ConnectorModalContent({
   setCreateKind: (kind: string) => void;
   submitting: boolean;
   error: string | null;
+  slackInstalls: WorkspaceSlackInstall[];
   onCancel: () => void;
   onCreateChannel: (
     kind: ChannelKind,
@@ -2795,6 +2967,7 @@ function ConnectorModalContent({
             mode="create"
             submitting={submitting}
             error={error}
+            installs={slackInstalls}
             onSubmit={(input) => onCreateChannel('slack', input)}
             onCancel={onCancel}
           />
@@ -2821,6 +2994,7 @@ function ConnectorModalContent({
             initial={channel}
             submitting={submitting}
             error={error}
+            installs={slackInstalls}
             onSubmit={(input) => onEditChannel(channel, input)}
             onCancel={onCancel}
           />

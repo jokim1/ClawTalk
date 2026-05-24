@@ -1,17 +1,19 @@
-import { FormEvent, useState } from 'react';
+import { FormEvent, useEffect, useState } from 'react';
 
-import type { WorkspaceChannel } from '../../lib/api';
+import type {
+  WorkspaceChannel,
+  WorkspaceSlackInstall,
+} from '../../lib/api';
 
 type SlackChannelFormProps = {
   mode: 'create' | 'edit';
   initial?: WorkspaceChannel;
   submitting: boolean;
   error: string | null;
+  installs: WorkspaceSlackInstall[];
   onSubmit: (input: {
     displayName: string;
     config: { workspace_id: string; channel_id: string };
-    apiKey?: string | null;
-    rotateCredential?: boolean;
   }) => void | Promise<void>;
   onCancel: () => void;
 };
@@ -21,28 +23,40 @@ export function SlackChannelForm({
   initial,
   submitting,
   error,
+  installs,
   onSubmit,
   onCancel,
 }: SlackChannelFormProps): JSX.Element {
   const initialConfig = (initial?.config ?? {}) as Record<string, unknown>;
+  const initialWorkspaceId =
+    typeof initialConfig.workspace_id === 'string'
+      ? initialConfig.workspace_id
+      : '';
+  const initialChannelId =
+    typeof initialConfig.channel_id === 'string'
+      ? initialConfig.channel_id
+      : '';
+
   const [displayName, setDisplayName] = useState<string>(
     initial?.displayName ?? '',
   );
-  const [workspaceId, setWorkspaceId] = useState<string>(
-    typeof initialConfig.workspace_id === 'string'
-      ? initialConfig.workspace_id
-      : '',
-  );
-  const [channelId, setChannelId] = useState<string>(
-    typeof initialConfig.channel_id === 'string'
-      ? initialConfig.channel_id
-      : '',
-  );
-  const [botToken, setBotToken] = useState<string>('');
-  const [rotating, setRotating] = useState<boolean>(mode === 'create');
+  const [workspaceId, setWorkspaceId] = useState<string>(() => {
+    if (initialWorkspaceId) return initialWorkspaceId;
+    if (installs.length === 1) return installs[0].teamId;
+    return '';
+  });
+  const [channelId, setChannelId] = useState<string>(initialChannelId);
 
-  const editingExisting = mode === 'edit';
-  const showCredentialInput = !editingExisting || rotating;
+  // If the install list arrives after first paint (refresh races), default
+  // the dropdown to the only option when there's exactly one and the user
+  // hasn't picked yet.
+  useEffect(() => {
+    if (!workspaceId && installs.length === 1) {
+      setWorkspaceId(installs[0].teamId);
+    }
+  }, [installs, workspaceId]);
+
+  const noInstalls = installs.length === 0;
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -58,9 +72,6 @@ export function SlackChannelForm({
         workspace_id: trimmedWorkspace,
         channel_id: trimmedChannel,
       },
-      ...(rotating
-        ? { apiKey: botToken.trim() || null, rotateCredential: true }
-        : {}),
     });
   }
 
@@ -78,15 +89,31 @@ export function SlackChannelForm({
         />
       </label>
       <label className="form-field">
-        <span className="form-field-label">Workspace ID</span>
-        <input
-          type="text"
+        <span className="form-field-label">Workspace</span>
+        <select
           value={workspaceId}
           onChange={(event) => setWorkspaceId(event.target.value)}
-          placeholder="T01ABCDE"
           required
-        />
+          disabled={noInstalls}
+        >
+          <option value="" disabled>
+            {noInstalls
+              ? 'No Slack workspaces connected'
+              : 'Select a workspace'}
+          </option>
+          {installs.map((install) => (
+            <option key={install.teamId} value={install.teamId}>
+              {install.teamName} ({install.teamId})
+            </option>
+          ))}
+        </select>
       </label>
+      {noInstalls ? (
+        <p className="form-field-help">
+          Connect a Slack workspace from the Slack workspaces section above,
+          then return here to add channels from it.
+        </p>
+      ) : null}
       <label className="form-field">
         <span className="form-field-label">Channel ID</span>
         <input
@@ -98,39 +125,10 @@ export function SlackChannelForm({
         />
       </label>
       <p className="form-field-help">
-        Find your workspace ID at api.slack.com/methods/team.info; find the
-        channel ID by right-clicking a channel → Copy link.
+        Find a channel ID by right-clicking the channel in Slack → Copy link;
+        the trailing path segment is the channel ID. Channel picker arrives in
+        the next iteration.
       </p>
-      <fieldset className="connector-kind-form-credential">
-        <legend>Bot token</legend>
-        {editingExisting && initial?.hasCredential && !rotating ? (
-          <div className="connector-kind-form-credential-row">
-            <code aria-hidden="true">••••••••</code>
-            <button
-              type="button"
-              className="btn btn-sm"
-              onClick={() => {
-                const confirmed = window.confirm(
-                  `Replacing credential for ${initial?.displayName}. The previous credential will be lost.`,
-                );
-                if (!confirmed) return;
-                setRotating(true);
-              }}
-            >
-              Rotate
-            </button>
-          </div>
-        ) : null}
-        {showCredentialInput ? (
-          <input
-            type="password"
-            value={botToken}
-            onChange={(event) => setBotToken(event.target.value)}
-            placeholder="xoxb-…"
-            autoComplete="off"
-          />
-        ) : null}
-      </fieldset>
       {error ? (
         <p className="form-error" role="alert">
           {error}
@@ -145,7 +143,11 @@ export function SlackChannelForm({
         >
           Cancel
         </button>
-        <button type="submit" className="btn btn-primary" disabled={submitting}>
+        <button
+          type="submit"
+          className="btn btn-primary"
+          disabled={submitting || noInstalls}
+        >
           {submitting ? 'Saving…' : mode === 'create' ? 'Add channel' : 'Save'}
         </button>
       </div>

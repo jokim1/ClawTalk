@@ -25,6 +25,7 @@ groups/global/*
 .env
 .env.local
 .env.*.local
+.dev.vars
 webapp/.env.local
 webapp/.env.*.local
 

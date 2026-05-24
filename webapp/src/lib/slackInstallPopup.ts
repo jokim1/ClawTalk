@@ -1,25 +1,29 @@
 type SlackInstallPopupEvent = {
   type: 'clawtalk:slack-workspace-install';
   status: 'success' | 'error';
+  teamName?: string | null;
   message?: string | null;
-  workspaceName?: string | null;
+};
+
+export type SlackInstallPopupResult = {
+  teamName: string | null;
 };
 
 export function launchSlackInstallPopup(
   authorizationUrl: string,
-): Promise<void> {
+): Promise<SlackInstallPopupResult> {
   const popup = window.open(
     authorizationUrl,
     'clawtalk-slack-install',
-    'popup=yes,width=720,height=820,noopener=no,noreferrer=no',
+    'popup=yes,width=620,height=760,noopener=no,noreferrer=no',
   );
 
   if (!popup) {
     window.location.assign(authorizationUrl);
-    return Promise.resolve();
+    return Promise.resolve({ teamName: null });
   }
 
-  return new Promise<void>((resolve, reject) => {
+  return new Promise<SlackInstallPopupResult>((resolve, reject) => {
     let settled = false;
     let pollId = 0;
 
@@ -30,14 +34,17 @@ export function launchSlackInstallPopup(
       window.removeEventListener('message', onMessage);
     };
 
-    const finish = (error?: Error) => {
+    const finish = (
+      result: SlackInstallPopupResult | null,
+      error?: Error,
+    ) => {
       if (settled) return;
       settled = true;
       cleanup();
       if (error) {
         reject(error);
       } else {
-        resolve();
+        resolve(result ?? { teamName: null });
       }
     };
 
@@ -46,16 +53,19 @@ export function launchSlackInstallPopup(
       const data = event.data as SlackInstallPopupEvent | null;
       if (!data || data.type !== 'clawtalk:slack-workspace-install') return;
       if (data.status === 'error') {
-        finish(new Error(data.message || 'Slack installation did not complete.'));
+        finish(
+          null,
+          new Error(data.message || 'Slack install did not complete.'),
+        );
         return;
       }
-      finish();
+      finish({ teamName: data.teamName ?? null });
     };
 
     window.addEventListener('message', onMessage);
     pollId = window.setInterval(() => {
       if (!popup.closed) return;
-      finish(new Error('Slack installation was closed before it completed.'));
+      finish(null, new Error('Slack install was closed before it completed.'));
     }, 500);
   });
 }
