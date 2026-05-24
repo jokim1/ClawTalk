@@ -35,6 +35,7 @@ import {
   ChannelQueueFailure,
   ChannelTarget,
   ChannelTargetListPage,
+  Content,
   ContentSidebarItem,
   ContextGoal,
   ContextRule,
@@ -63,6 +64,7 @@ import {
   getDataConnectors,
   getTalk,
   getTalkAgents,
+  getTalkContent,
   getTalkOutput,
   getTalkJob,
   getTalkState,
@@ -139,9 +141,14 @@ import { ThreadRowTitleEditor } from '../components/ThreadRowTitleEditor';
 import { ThreadStartButton } from '../components/ThreadStartButton';
 import { TalkHistoryEditor } from '../components/TalkHistoryEditor';
 import { stripInternalAssistantText } from '../lib/assistantText';
+import {
+  getContentSplitRatio,
+  setContentSplitRatio,
+} from '../lib/contentSplitRatio';
 import { linkifyText } from '../lib/linkifyText';
 import { displayThreadTitle } from '../lib/threadTitles';
 import { openTalkStream } from '../lib/talkStream';
+import { RichTextEditor } from '../components/rich-text/RichTextEditor';
 import type {
   TalkBrowserBlockedEvent,
   TalkBrowserUnblockedEvent,
@@ -2944,6 +2951,22 @@ export function TalkDetailPage({
   const [docModalSubmitting, setDocModalSubmitting] = useState(false);
   const [docModalError, setDocModalError] = useState<string | null>(null);
   const docModalInputRef = useRef<HTMLInputElement | null>(null);
+  const [talkContent, setTalkContent] = useState<Content | null>(null);
+  const [talkContentLoading, setTalkContentLoading] = useState(false);
+  const [talkContentError, setTalkContentError] = useState<string | null>(null);
+  const [chatRatio, setChatRatio] = useState(0.5);
+  const [isNarrowViewport, setIsNarrowViewport] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    if (typeof window.matchMedia !== 'function') return false;
+    return window.matchMedia('(max-width: 767px)').matches;
+  });
+  const initialDocParam = locationParams.get('doc') === '1';
+  const [mobilePane, setMobilePane] = useState<'chat' | 'doc'>(
+    initialDocParam ? 'doc' : 'chat',
+  );
+  const splitContainerRef = useRef<HTMLDivElement | null>(null);
+  const splitHandleRef = useRef<HTMLDivElement | null>(null);
+  const splitDraggingRef = useRef(false);
   const [agents, setAgents] = useState<TalkAgent[]>([]);
   const [agentDrafts, setAgentDrafts] = useState<TalkAgent[]>([]);
   const [aiAgentsData, setAiAgentsData] = useState<AiAgentsPageData | null>(
@@ -3183,6 +3206,127 @@ export function TalkDetailPage({
     if (!docModalOpen) return;
     docModalInputRef.current?.focus();
   }, [docModalOpen]);
+
+  useEffect(() => {
+    setTalkContent(null);
+    setTalkContentError(null);
+  }, [talkId]);
+
+  useEffect(() => {
+    if (!talkId || !currentTalkHasContent) return;
+    let cancelled = false;
+    setTalkContentLoading(true);
+    setTalkContentError(null);
+    getTalkContent(talkId)
+      .then((payload) => {
+        if (cancelled) return;
+        setTalkContent(payload.content);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        if (err instanceof UnauthorizedError) {
+          onUnauthorized();
+          return;
+        }
+        setTalkContentError(
+          err instanceof Error ? err.message : 'Failed to load document.',
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setTalkContentLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentTalkHasContent, onUnauthorized, talkId]);
+
+  useEffect(() => {
+    if (!talkId) return;
+    setChatRatio(getContentSplitRatio(talkId));
+  }, [talkId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia('(max-width: 767px)');
+    const onChange = (event: MediaQueryListEvent) =>
+      setIsNarrowViewport(event.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+
+  // When the user navigates to ?doc=1 (e.g., from the sidebar CONTENT
+  // row or the +Doc promotion modal), default the narrow-screen toggle
+  // to the doc pane. Re-evaluates whenever the query string changes.
+  useEffect(() => {
+    if (initialDocParam) setMobilePane('doc');
+  }, [initialDocParam]);
+
+  const clampRatio = useCallback((value: number) => {
+    if (!Number.isFinite(value)) return 0.5;
+    return Math.max(0.2, Math.min(0.8, value));
+  }, []);
+
+  const applyChatRatio = useCallback(
+    (nextRaw: number) => {
+      const next = clampRatio(nextRaw);
+      setChatRatio(next);
+      if (talkId) setContentSplitRatio(talkId, next);
+    },
+    [clampRatio, talkId],
+  );
+
+  const handleResizeHandleKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        applyChatRatio(chatRatio - 0.05);
+      } else if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        applyChatRatio(chatRatio + 0.05);
+      } else if (event.key === 'Home') {
+        event.preventDefault();
+        applyChatRatio(0.2);
+      } else if (event.key === 'End') {
+        event.preventDefault();
+        applyChatRatio(0.8);
+      }
+    },
+    [applyChatRatio, chatRatio],
+  );
+
+  useEffect(() => {
+    const handle = splitHandleRef.current;
+    if (!handle) return;
+    const onPointerDown = (event: PointerEvent) => {
+      splitDraggingRef.current = true;
+      handle.setPointerCapture(event.pointerId);
+    };
+    const onPointerMove = (event: PointerEvent) => {
+      if (!splitDraggingRef.current) return;
+      const container = splitContainerRef.current;
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      if (rect.width <= 0) return;
+      applyChatRatio((event.clientX - rect.left) / rect.width);
+    };
+    const onPointerUp = (event: PointerEvent) => {
+      splitDraggingRef.current = false;
+      if (handle.hasPointerCapture(event.pointerId)) {
+        handle.releasePointerCapture(event.pointerId);
+      }
+    };
+    handle.addEventListener('pointerdown', onPointerDown);
+    handle.addEventListener('pointermove', onPointerMove);
+    handle.addEventListener('pointerup', onPointerUp);
+    handle.addEventListener('pointercancel', onPointerUp);
+    return () => {
+      handle.removeEventListener('pointerdown', onPointerDown);
+      handle.removeEventListener('pointermove', onPointerMove);
+      handle.removeEventListener('pointerup', onPointerUp);
+      handle.removeEventListener('pointercancel', onPointerUp);
+    };
+  }, [applyChatRatio, currentTalkHasContent, talkContent]);
 
   const isNearBottom = useCallback((): boolean => {
     const container = timelineRef.current;
@@ -11655,8 +11799,69 @@ export function TalkDetailPage({
           ) : null}
 
           {currentTab === 'talk' ? (
-            <div className="talk-thread-shell">
-              <aside className="talk-thread-rail" aria-label="Talk threads">
+            <div
+              ref={splitContainerRef}
+              className={[
+                'talk-tab-content',
+                talkContent ? 'talk-tab-content-split' : '',
+                talkContent && isNarrowViewport
+                  ? 'talk-tab-content-split-narrow'
+                  : '',
+              ]
+                .filter(Boolean)
+                .join(' ')}
+            >
+              {talkContent && isNarrowViewport ? (
+                <div
+                  className="talk-tab-mobile-toggle"
+                  role="tablist"
+                  aria-label="Talk or document"
+                >
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={mobilePane === 'chat'}
+                    className={`talk-tab-mobile-toggle-btn${
+                      mobilePane === 'chat'
+                        ? ' talk-tab-mobile-toggle-btn-active'
+                        : ''
+                    }`}
+                    onClick={() => setMobilePane('chat')}
+                  >
+                    Chat
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={mobilePane === 'doc'}
+                    className={`talk-tab-mobile-toggle-btn${
+                      mobilePane === 'doc'
+                        ? ' talk-tab-mobile-toggle-btn-active'
+                        : ''
+                    }`}
+                    onClick={() => setMobilePane('doc')}
+                  >
+                    Doc
+                  </button>
+                </div>
+              ) : null}
+              <div
+                className={[
+                  'talk-tab-chat-pane',
+                  talkContent && isNarrowViewport && mobilePane !== 'chat'
+                    ? 'talk-tab-pane-hidden'
+                    : '',
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
+                style={
+                  talkContent && !isNarrowViewport
+                    ? { flex: `${chatRatio} 1 0` }
+                    : undefined
+                }
+              >
+                <div className="talk-thread-shell">
+                  <aside className="talk-thread-rail" aria-label="Talk threads">
                 <div className="talk-thread-rail-header">
                   <h2>Threads</h2>
                   <ThreadStartButton
@@ -12424,6 +12629,59 @@ export function TalkDetailPage({
                   }}
                   onDelete={() => void handleDeleteThread(menuThread)}
                 />
+              ) : null}
+                </div>
+              </div>
+              {talkContent && !isNarrowViewport ? (
+                <div
+                  ref={splitHandleRef}
+                  className="talk-tab-split-handle"
+                  role="separator"
+                  aria-orientation="vertical"
+                  aria-valuemin={20}
+                  aria-valuemax={80}
+                  aria-valuenow={Math.round(chatRatio * 100)}
+                  aria-label="Resize chat and document panes"
+                  tabIndex={0}
+                  onKeyDown={handleResizeHandleKeyDown}
+                />
+              ) : null}
+              {talkContent ? (
+                <section
+                  className={[
+                    'talk-tab-doc-pane',
+                    isNarrowViewport && mobilePane !== 'doc'
+                      ? 'talk-tab-pane-hidden'
+                      : '',
+                  ]
+                    .filter(Boolean)
+                    .join(' ')}
+                  style={
+                    !isNarrowViewport
+                      ? { flex: `${1 - chatRatio} 1 0` }
+                      : undefined
+                  }
+                  aria-label="Talk document"
+                >
+                  <header className="talk-tab-doc-header">
+                    <h2 className="talk-tab-doc-title">{talkContent.title}</h2>
+                    {talkContentLoading ? (
+                      <span className="talk-tab-doc-status">Loading…</span>
+                    ) : null}
+                  </header>
+                  {talkContentError ? (
+                    <p className="page-state" role="alert">
+                      {talkContentError}
+                    </p>
+                  ) : (
+                    <div className="talk-tab-doc-body">
+                      <RichTextEditor
+                        bodyMarkdown={talkContent.bodyMarkdown}
+                        editable={false}
+                      />
+                    </div>
+                  )}
+                </section>
               ) : null}
             </div>
           ) : null}

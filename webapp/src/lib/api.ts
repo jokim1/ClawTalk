@@ -1304,6 +1304,36 @@ export async function getTalk(talkId: string): Promise<Talk> {
   return envelope.talk;
 }
 
+export type ContentProposalSummary = {
+  id: string;
+  contentId: string;
+  proposedByRunId: string | null;
+  proposedByAgentId: string | null;
+  proposedByMessageId: string | null;
+  kind: 'append';
+  afterAnchorId: string | null;
+  insertedMarkdown: string;
+  rationale: string | null;
+  status: 'pending' | 'accepted' | 'rejected' | 'stale';
+  statusReason: string | null;
+  baseContentVersion: number;
+  baseAnchorContentHash: string | null;
+  appliedAnchorIds: string[];
+  createdAt: string;
+  resolvedAt: string | null;
+  resolvedByUserId: string | null;
+};
+
+export async function getTalkContent(talkId: string): Promise<{
+  content: Content | null;
+  pendingProposals: ContentProposalSummary[];
+}> {
+  return apiRequest<{
+    content: Content | null;
+    pendingProposals: ContentProposalSummary[];
+  }>(`/api/v1/talks/${encodeURIComponent(talkId)}/content`);
+}
+
 export async function createTalkContent(input: {
   talkId: string;
   title: string;
