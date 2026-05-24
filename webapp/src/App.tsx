@@ -33,7 +33,6 @@ import { isSupabaseConfigured } from './lib/supabase-client';
 import { installAuthStateListener } from './lib/supabase-cookie-shim';
 import { TalkDetailPage } from './pages/TalkDetailPage';
 import { TalkListPage } from './pages/TalkListPage';
-import { ConnectorsPage } from './pages/ConnectorsPage';
 import { SettingsPage } from './pages/SettingsPage';
 
 type AuthState =
@@ -816,7 +815,10 @@ export function App() {
               path="/app/profile"
               element={<Navigate to="/app/settings?tab=profile" replace />}
             />
-            <Route path="/app/connectors" element={<ConnectorsPage />} />
+            <Route
+              path="/app/connectors"
+              element={<Navigate to="/app/settings?tab=connectors" replace />}
+            />
             <Route
               path="/app/main"
               element={
