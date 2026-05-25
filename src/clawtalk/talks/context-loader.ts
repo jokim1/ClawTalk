@@ -13,7 +13,6 @@
  */
 
 import { getDbPg, type Sql } from '../../db.js';
-import { logger } from '../../logger.js';
 import { listTalkStateEntries } from '../db/context-accessors.js';
 import { getContentByTalkId, type Content } from '../db/content-accessors.js';
 import type { EffectiveToolAccess } from '../db/agent-accessors.js';
@@ -471,23 +470,6 @@ export async function loadTalkContext(
   const content = await getContentByTalkId(talkId);
   const contentOutline = content ? buildContentOutline(content) : null;
 
-  // Diagnostic (PR 5 follow-up): Kimi's response says it doesn't see
-  // the doc despite `propose_content_append` being registered. Log the
-  // outline's first 400 chars so we can confirm it really is in the
-  // assembled prompt for the offending run.
-  logger.info(
-    {
-      talkId,
-      hasContent: content !== null,
-      anchorCount: content ? Object.keys(content.anchorMap).length : 0,
-      outlineBytes: contentOutline
-        ? new TextEncoder().encode(contentOutline).byteLength
-        : 0,
-      outlineHead: contentOutline?.slice(0, 400) ?? null,
-    },
-    'clawtalk.content_outline_diag',
-  );
-
   // Step 4: Assemble system prompt
   const systemPrompt = assembleSystemPrompt(
     goal,
@@ -801,9 +783,13 @@ export function buildContentOutline(
     .map(([anchorId, entry]) => ({ anchorId, ...entry }))
     .sort((a, b) => a.sort_order - b.sort_order);
 
-  const header = `**Document Outline:** "${content.title}" (v${content.bodyVersion})`;
+  const header = [
+    `**Attached Document:** "${content.title}" (v${content.bodyVersion})`,
+    '',
+    'This Talk has a long-form document attached. When the user refers to "the doc", "the document", "this doc", or "the attached document", they mean THIS document — not a Google Doc binding. You see its full structure in the outline below. To read the full text of a specific block, ask the user; full block bodies are not in the outline by design (2KB budget).',
+  ].join('\n');
   const footer =
-    'Call `propose_content_append({ after_anchor_id, markdown, rationale })` to suggest a new block; the user accepts or rejects in the Talk UI.';
+    'To append a new block to this document, call `propose_content_append({ after_anchor_id, markdown, rationale })`. The user reviews and accepts or rejects in the Talk UI; you are not editing the document directly.';
 
   const encoder = new TextEncoder();
   const headerBytes = encoder.encode(header).byteLength;
@@ -902,6 +888,14 @@ function assembleSystemPrompt(
     parts.push(`**Rules:**\n${ruleLines.join('\n')}`);
   }
 
+  // Place the Attached Document section right after Rules so it sits
+  // alongside the orienting context, not buried below Sources/State.
+  // 104-block / 2KB outlines were getting overlooked otherwise — Kimi
+  // saw the section but pattern-matched on "Google Doc" instead.
+  if (contentOutline) {
+    parts.push(contentOutline);
+  }
+
   if (roleHint) {
     parts.push(`**Role Context Hint:**\n${roleHint}`);
   }
@@ -933,10 +927,6 @@ function assembleSystemPrompt(
     if (inlineBlocks.length > 0) {
       parts.push(inlineBlocks.join('\n'));
     }
-  }
-
-  if (contentOutline) {
-    parts.push(contentOutline);
   }
 
   if (boundGoogleDriveResources) {
