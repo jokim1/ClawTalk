@@ -202,6 +202,10 @@ import {
   startSlackInstallRoute,
 } from './routes/slack-installs.js';
 import {
+  bulkAddSlackChannelsRoute,
+  listSlackInstallChannelsRoute,
+} from './routes/slack-channels.js';
+import {
   createTalkGoogleDriveResourceRoute,
   deleteTalkResourceRoute,
   listTalkResourcesRoute,
@@ -837,6 +841,39 @@ function buildApp(): Hono<{ Variables: Variables }> {
       const result = await deleteWorkspaceSlackInstallRoute({
         auth,
         teamId: c.req.param('teamId'),
+      });
+      return jsonResponse(result);
+    },
+  );
+
+  // ── Slack channel picker (PR 2) ─────────────────────────────────
+  app.get(
+    '/api/v1/workspace/connectors/slack/installs/:teamId/channels',
+    async (c) => {
+      const auth = c.get('auth');
+      const rl = checkRateLimit({ principalId: auth.userId, bucket: 'read' });
+      if (!rl.allowed) return rateLimitedResponse(c, rl);
+      const result = await listSlackInstallChannelsRoute({
+        auth,
+        teamId: c.req.param('teamId'),
+      });
+      return jsonResponse(result);
+    },
+  );
+
+  app.post(
+    '/api/v1/workspace/connectors/slack/installs/:teamId/channels',
+    async (c) => {
+      const auth = c.get('auth');
+      const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+      if (!rl.allowed) return rateLimitedResponse(c, rl);
+      const csrfFail = checkCsrf(c, auth);
+      if (csrfFail) return csrfFail;
+      const body = await c.req.json().catch(() => ({}));
+      const result = await bulkAddSlackChannelsRoute({
+        auth,
+        teamId: c.req.param('teamId'),
+        body,
       });
       return jsonResponse(result);
     },

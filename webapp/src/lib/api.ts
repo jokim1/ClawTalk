@@ -4229,6 +4229,55 @@ export async function deleteWorkspaceSlackInstall(teamId: string): Promise<void>
   );
 }
 
+export type SlackChannelOption = {
+  id: string;
+  name: string;
+  isPrivate: boolean;
+  isMember: boolean;
+  numMembers: number | null;
+  topic: string | null;
+  alreadyAdded: boolean;
+};
+
+export async function listSlackInstallChannels(
+  teamId: string,
+): Promise<SlackChannelOption[]> {
+  const envelope = await apiRequest<{ channels: SlackChannelOption[] }>(
+    `/api/v1/workspace/connectors/slack/installs/${encodeURIComponent(teamId)}/channels`,
+  );
+  return envelope.channels;
+}
+
+export type SlackChannelPickInput = {
+  channelId: string;
+  channelName: string;
+  isPrivate: boolean;
+  displayName?: string;
+};
+
+export type SlackChannelAddResult = {
+  id: string;
+  channelId: string;
+  displayName: string;
+};
+
+export async function bulkAddSlackChannels(input: {
+  teamId: string;
+  channels: SlackChannelPickInput[];
+}): Promise<SlackChannelAddResult[]> {
+  const envelope = await apiMutationRequest<{
+    created: SlackChannelAddResult[];
+  }>(
+    `/api/v1/workspace/connectors/slack/installs/${encodeURIComponent(input.teamId)}/channels`,
+    {
+      method: 'POST',
+      includeJson: true,
+      body: JSON.stringify({ channels: input.channels }),
+    },
+  );
+  return envelope.created;
+}
+
 export async function setTalkChannelLink(input: {
   talkId: string;
   channelId: string;

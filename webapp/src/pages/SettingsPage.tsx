@@ -58,6 +58,7 @@ import { RegisteredAgentsPanel } from '../components/RegisteredAgentsPanel';
 import { ConnectorStatusPill } from '../components/connectors/StatusPill';
 import { resolveConnectorSubtitle } from '../components/connectors/subtitle';
 import { SlackChannelForm } from '../components/connectors/SlackChannelForm';
+import { SlackChannelPicker } from '../components/connectors/SlackChannelPicker';
 import { TelegramChannelForm } from '../components/connectors/TelegramChannelForm';
 import { PostHogDataConnectorForm } from '../components/connectors/PostHogDataConnectorForm';
 import { GoogleDocsDataConnectorForm } from '../components/connectors/GoogleDocsDataConnectorForm';
@@ -2328,6 +2329,16 @@ function ConnectorsTab({
     setFormSubmitting(false);
   };
 
+  const handleSlackChannelsAdded = async (count: number) => {
+    closeModal();
+    await refresh();
+    setSlackNotice(
+      count === 0
+        ? 'No new Slack channels were added.'
+        : `Added ${count} Slack channel${count === 1 ? '' : 's'}.`,
+    );
+  };
+
   const handleCreateChannelSubmit = async (
     kind: ChannelKind,
     input: {
@@ -2753,6 +2764,7 @@ function ConnectorsTab({
               onCancel={closeModal}
               onCreateChannel={handleCreateChannelSubmit}
               onEditChannel={handleEditChannelSubmit}
+              onSlackChannelsAdded={handleSlackChannelsAdded}
               onCreateDataConnector={handleCreateDataConnectorSubmit}
               onEditDataConnector={handleEditDataConnectorSubmit}
             />
@@ -2900,6 +2912,7 @@ function ConnectorModalContent({
   onCancel,
   onCreateChannel,
   onEditChannel,
+  onSlackChannelsAdded,
   onCreateDataConnector,
   onEditDataConnector,
 }: {
@@ -2928,6 +2941,7 @@ function ConnectorModalContent({
       rotateCredential?: boolean;
     },
   ) => Promise<void>;
+  onSlackChannelsAdded: (count: number) => Promise<void> | void;
   onCreateDataConnector: (
     kind: DataConnectorKind,
     input: {
@@ -2963,12 +2977,11 @@ function ConnectorModalContent({
           </select>
         </label>
         {createKind === 'slack' ? (
-          <SlackChannelForm
-            mode="create"
-            submitting={submitting}
-            error={error}
+          <SlackChannelPicker
             installs={slackInstalls}
-            onSubmit={(input) => onCreateChannel('slack', input)}
+            onAdded={(count) => {
+              void onSlackChannelsAdded(count);
+            }}
             onCancel={onCancel}
           />
         ) : (
