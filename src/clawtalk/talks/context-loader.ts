@@ -14,6 +14,7 @@
 
 import { getDbPg, type Sql } from '../../db.js';
 import { listTalkStateEntries } from '../db/context-accessors.js';
+import { getContentByTalkId, type Content } from '../db/content-accessors.js';
 import type { EffectiveToolAccess } from '../db/agent-accessors.js';
 import { listTalkOutputs } from '../db/output-accessors.js';
 import {
@@ -206,6 +207,7 @@ const OUTPUT_RESERVE = 4096; // Tokens to reserve for model output
 const TOOL_SCHEMA_RESERVE = 2000; // Tokens to reserve for tool definitions
 const STATE_SNAPSHOT_RESERVE = 2000; // Tokens reserved for bounded Talk state
 const RETRIEVAL_SECTION_RESERVE = 1200; // Tokens reserved for targeted retrieval
+const CONTENT_OUTLINE_BUDGET_BYTES = 2048; // Hard byte budget for the doc outline
 const CHARS_TO_TOKENS = 0.25; // Simple estimation: 1 char ≈ 0.25 tokens
 const SMALL_SOURCE_THRESHOLD = 250; // Max tokens to inline a source
 const MAX_RETRIEVED_STATE_ENTRIES = 3;
@@ -462,6 +464,12 @@ export async function loadTalkContext(
   // Step 3: Build connector tools (currently empty stub)
   const connectorTools = buildConnectorTools(talkId, options?.jobPolicy);
 
+  // Content document (PR 5): outline + propose_content_append tool are
+  // gated on the Talk actually having an attached doc. One per Talk by
+  // schema, so this is at most one row.
+  const content = await getContentByTalkId(talkId);
+  const contentOutline = content ? buildContentOutline(content) : null;
+
   // Step 4: Assemble system prompt
   const systemPrompt = assembleSystemPrompt(
     goal,
@@ -473,6 +481,7 @@ export async function loadTalkContext(
     outputManifest.promptText,
     retrievedContext.promptText,
     sourceLines,
+    contentOutline,
     boundGoogleDriveResources,
     includeWebFreshnessStanza,
   );
@@ -484,6 +493,7 @@ export async function loadTalkContext(
     userId,
     options?.jobPolicy,
     options?.effectiveTools,
+    content !== null,
   );
 
   // Step 6: Load message history with token budgeting (thread-scoped if threadId provided)
@@ -756,6 +766,74 @@ function buildConnectorTools(
 // Step 4: Assemble System Prompt
 // ---------------------------------------------------------------------------
 
+/**
+ * Build the outline section for the agent's system prompt.
+ *
+ * Format per block: `[anchor:<id>] <kind> "<first 60 chars>"`. Blocks
+ * are emitted in document order. If the outline would exceed the byte
+ * budget, truncate from the bottom and append `[… N more blocks not
+ * shown]`. The 60-char preview lives in `anchor_map_json` already, so
+ * this is a pure projection — no re-tokenization of the body.
+ */
+export function buildContentOutline(
+  content: Content,
+  budgetBytes: number = CONTENT_OUTLINE_BUDGET_BYTES,
+): string {
+  const entries = Object.entries(content.anchorMap)
+    .map(([anchorId, entry]) => ({ anchorId, ...entry }))
+    .sort((a, b) => a.sort_order - b.sort_order);
+
+  const header = `**Document Outline:** "${content.title}" (v${content.bodyVersion})`;
+  const footer =
+    'Call `propose_content_append({ after_anchor_id, markdown, rationale })` to suggest a new block; the user accepts or rejects in the Talk UI.';
+
+  const encoder = new TextEncoder();
+  const headerBytes = encoder.encode(header).byteLength;
+  const footerBytes = encoder.encode(`\n\n${footer}`).byteLength;
+  const truncationTemplate = (n: number): string =>
+    `[… ${n} more blocks not shown]`;
+  const maxTruncationBytes = encoder.encode(
+    truncationTemplate(entries.length),
+  ).byteLength;
+
+  let usedBytes = headerBytes + footerBytes;
+  const lines: string[] = [];
+  let included = 0;
+
+  for (const entry of entries) {
+    const preview = entry.preview.replace(/"/g, '\\"');
+    const line = `[anchor:${entry.anchorId}] ${entry.kind} "${preview}"`;
+    const lineBytes = encoder.encode(`\n${line}`).byteLength;
+    const remaining = entries.length - included - 1;
+    const reserveForTruncation =
+      remaining > 0
+        ? encoder.encode(`\n${truncationTemplate(remaining)}`).byteLength
+        : 0;
+    if (usedBytes + lineBytes + reserveForTruncation > budgetBytes) break;
+    lines.push(line);
+    usedBytes += lineBytes;
+    included += 1;
+  }
+
+  const remaining = entries.length - included;
+  const truncationLine = remaining > 0 ? truncationTemplate(remaining) : null;
+
+  const parts: string[] = [header];
+  if (lines.length > 0) parts.push(lines.join('\n'));
+  if (truncationLine) parts.push(truncationLine);
+  parts.push(footer);
+
+  // Sanity guard: respect the budget even when the header alone is
+  // unusually large (long title). Trim from the bottom up.
+  let assembled = parts.join('\n\n');
+  if (encoder.encode(assembled).byteLength > budgetBytes && included > 0) {
+    return `${header}\n\n${truncationTemplate(entries.length)}\n\n${footer}`;
+  }
+  // Suppress unused warning when zero blocks fit but budget allows header+footer.
+  void maxTruncationBytes;
+  return assembled;
+}
+
 function buildWebFreshnessStanza(): string {
   const today = new Date().toISOString().slice(0, 10);
   return [
@@ -783,6 +861,7 @@ function assembleSystemPrompt(
     line: string;
     inlineContent: string | null;
   }>,
+  contentOutline: string | null,
   boundGoogleDriveResources: string | null,
   includeWebFreshnessStanza: boolean,
 ): string {
@@ -836,6 +915,10 @@ function assembleSystemPrompt(
     if (inlineBlocks.length > 0) {
       parts.push(inlineBlocks.join('\n'));
     }
+  }
+
+  if (contentOutline) {
+    parts.push(contentOutline);
   }
 
   if (boundGoogleDriveResources) {
@@ -953,6 +1036,7 @@ function buildContextTools(
   userId?: string | null,
   jobPolicy?: TalkJobExecutionPolicy | null,
   effectiveTools?: EffectiveToolAccess[],
+  hasContent: boolean = false,
 ): LlmToolDefinition[] {
   const tools: LlmToolDefinition[] = [
     {
@@ -1098,6 +1182,43 @@ function buildContextTools(
         writeEnabled: googleWriteEnabled,
       }),
     );
+  }
+
+  // Content document tool (PR 5) — only register when this Talk has an
+  // attached doc, so agents in chat-only Talks aren't tempted to call it
+  // and fall into "no document" errors.
+  if (hasContent) {
+    tools.push({
+      name: 'propose_content_append',
+      description: [
+        "Propose appending a new block to the Talk's attached document.",
+        '',
+        'Anchor IDs come from the **Document Outline** in your system prompt. Pass `after_anchor_id` to insert immediately after a specific block, or `null` to prepend at the very top. The user reviews and accepts or rejects the proposal in the Talk UI — your call writes a pending proposal, not the document itself.',
+        '',
+        'Use this when the user asks you to add to, extend, draft, or continue the doc. For now this is append-only — there is no replace or delete surface; smaller proposals (one or two blocks) review better than long ones.',
+      ].join('\n'),
+      inputSchema: {
+        type: 'object',
+        properties: {
+          after_anchor_id: {
+            type: ['string', 'null'],
+            description:
+              'Anchor ID of the block to insert AFTER, copied from the Document Outline. Pass null to prepend at the top.',
+          },
+          markdown: {
+            type: 'string',
+            description:
+              'The new block(s) as GitHub-flavored markdown. Keep it tight — one or two blocks reviews better than a wall of text.',
+          },
+          rationale: {
+            type: 'string',
+            description:
+              "Optional one-sentence explanation shown on the proposal card so the user knows why you're suggesting this block.",
+          },
+        },
+        required: ['markdown'],
+      },
+    });
   }
 
   return tools;

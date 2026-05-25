@@ -179,6 +179,7 @@ async function executeBrowserTool(
   throw new Error('Browser tool is disabled (chassis removed).');
 }
 import { executeGoogleDriveTalkTool } from './google-drive-tools.js';
+import { executeProposeContentAppend } from './content-tool-handlers.js';
 async function executeTalkOutputTool(
   ..._args: unknown[]
 ): Promise<ToolResultStub> {
@@ -271,6 +272,13 @@ function mapExecutionEvent(
       };
 
     case 'tool_call':
+      return {
+        type: 'tool_call_started',
+        ...shared,
+        toolName: event.toolName,
+        arguments: event.arguments,
+      };
+
     case 'tool_result':
     case 'awaiting_confirmation':
       return null;
@@ -582,6 +590,7 @@ export function buildToolExecutor(
   signal: AbortSignal,
   jobPolicy?: TalkJobExecutionPolicy | null,
   effectiveTools?: EffectiveToolAccess[],
+  agentId?: string | null,
 ) {
   let connectorCache: Map<string, TalkRunConnectorRecord> | null = null;
   const enabledToolFamilies = new Set(
@@ -952,6 +961,16 @@ export function buildToolExecutor(
         jobPolicy: jobPolicy
           ? { allowExternalMutation: jobPolicy.allowExternalMutation }
           : null,
+      });
+    }
+
+    if (toolName === 'propose_content_append') {
+      return executeProposeContentAppend({
+        talkId,
+        userId,
+        runId,
+        agentId: agentId ?? null,
+        args,
       });
     }
 
@@ -2167,6 +2186,7 @@ export class CleanTalkExecutor implements TalkExecutor {
         signal,
         jobPolicy,
         scopedEffectiveTools,
+        activeAgent.id,
       );
       const currentAttachmentRows = await listMessageAttachmentRecords(
         input.triggerMessageId,

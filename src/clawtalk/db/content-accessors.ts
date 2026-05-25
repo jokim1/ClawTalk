@@ -52,6 +52,7 @@ export interface ContentRecord {
 
 export interface Content {
   id: string;
+  ownerId: string;
   talkId: string;
   title: string;
   contentKind: string;
@@ -110,6 +111,7 @@ export interface ContentProposal {
 function toContent(row: ContentRecord): Content {
   return {
     id: row.id,
+    ownerId: row.owner_id,
     talkId: row.talk_id,
     title: row.title,
     contentKind: row.content_kind,

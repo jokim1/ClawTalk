@@ -132,6 +132,20 @@ export type TalkExecutionEvent =
       agentId?: string | null;
       responseGroupId?: string | null;
       sequenceIndex?: number | null;
+    }
+  | {
+      type: 'tool_call_started';
+      runId: string;
+      talkId: string;
+      threadId?: string | null;
+      agentId?: string | null;
+      agentNickname?: string | null;
+      responseGroupId?: string | null;
+      sequenceIndex?: number | null;
+      providerId?: string | null;
+      modelId?: string | null;
+      toolName: string;
+      arguments: Record<string, unknown>;
     };
 
 export interface TalkExecutorOutput {
