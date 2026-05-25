@@ -1,7 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
+  buildLlmHttpErrorMessage,
   buildOpenAiRequest,
+  classifyHttpFailure,
+  fetchWithUpstreamRetry,
   type LlmMessage,
   type LlmProviderConfig,
 } from './llm-client.js';
@@ -78,5 +81,165 @@ describe('buildOpenAiRequest — moonshot thinking-disabled allowlist', () => {
       1024,
     );
     expect(req.thinking).toBeUndefined();
+  });
+});
+
+describe('classifyHttpFailure', () => {
+  it('returns upstream_timeout for 502/503/504/524', () => {
+    expect(classifyHttpFailure(502, '')).toBe('upstream_timeout');
+    expect(classifyHttpFailure(503, '')).toBe('upstream_timeout');
+    expect(classifyHttpFailure(504, '')).toBe('upstream_timeout');
+    expect(classifyHttpFailure(524, 'error code: 524')).toBe(
+      'upstream_timeout',
+    );
+  });
+
+  it('returns upstream_5xx for other 5xx', () => {
+    expect(classifyHttpFailure(500, '')).toBe('upstream_5xx');
+    expect(classifyHttpFailure(599, '')).toBe('upstream_5xx');
+  });
+
+  it('keeps existing classifications', () => {
+    expect(classifyHttpFailure(401, '')).toBe('auth');
+    expect(classifyHttpFailure(403, '')).toBe('auth');
+    expect(classifyHttpFailure(429, '')).toBe('rate_limit');
+    expect(classifyHttpFailure(400, '')).toBe('invalid_request');
+    expect(classifyHttpFailure(451, '')).toBe('policy');
+    expect(classifyHttpFailure(404, '')).toBe('network');
+  });
+});
+
+describe('buildLlmHttpErrorMessage', () => {
+  it('uses a friendly lead-in for 524', () => {
+    const msg = buildLlmHttpErrorMessage({
+      providerLabel: 'provider.nvidia',
+      status: 524,
+      statusText: '',
+      body: 'error code: 524',
+    });
+    expect(msg).toContain('provider.nvidia upstream timed out (HTTP 524');
+    expect(msg).toContain('Try again in a moment');
+    expect(msg).toContain('switch to another agent');
+    // The raw body is still appended so logs keep the debug info.
+    expect(msg).toContain('error code: 524');
+  });
+
+  it('uses a friendly lead-in for 503 (different verb)', () => {
+    const msg = buildLlmHttpErrorMessage({
+      providerLabel: 'provider.nvidia',
+      status: 503,
+      statusText: 'Service Unavailable',
+      body: '',
+    });
+    expect(msg).toContain('is temporarily unavailable');
+    expect(msg).toContain('HTTP 503');
+  });
+
+  it('uses the original format for non-upstream-timeout errors', () => {
+    const msg = buildLlmHttpErrorMessage({
+      providerLabel: 'provider.openai',
+      status: 400,
+      statusText: 'Bad Request',
+      body: '{"error":"invalid model"}',
+    });
+    expect(msg).toBe(
+      'provider.openai API error (400 Bad Request): {"error":"invalid model"}',
+    );
+  });
+
+  it('renders empty statusText as <none>', () => {
+    const msg = buildLlmHttpErrorMessage({
+      providerLabel: 'provider.nvidia',
+      status: 500,
+      statusText: '',
+      body: 'internal error',
+    });
+    expect(msg).toContain('(500 <none>)');
+  });
+
+  it('truncates very long bodies', () => {
+    const longBody = 'x'.repeat(2000);
+    const msg = buildLlmHttpErrorMessage({
+      providerLabel: 'provider.nvidia',
+      status: 524,
+      statusText: '',
+      body: longBody,
+    });
+    // 600-char cap on the body slice.
+    expect(msg.length).toBeLessThan(1200);
+  });
+});
+
+describe('fetchWithUpstreamRetry', () => {
+  function makeResponse(status: number, body = ''): Response {
+    return new Response(body, {
+      status,
+      statusText: status === 524 ? '' : 'OK',
+    });
+  }
+
+  it('returns the first response when status is not retryable', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse(200));
+    vi.stubGlobal('fetch', fetchMock);
+    const controller = new AbortController();
+    const res = await fetchWithUpstreamRetry(
+      'https://example/x',
+      {},
+      controller.signal,
+    );
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
+  });
+
+  it('retries once on 524, then returns the second response', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse(524, 'error code: 524'))
+      .mockResolvedValueOnce(makeResponse(200, 'ok'));
+    vi.stubGlobal('fetch', fetchMock);
+    const controller = new AbortController();
+    const res = await fetchWithUpstreamRetry(
+      'https://example/x',
+      {},
+      controller.signal,
+    );
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    vi.unstubAllGlobals();
+  });
+
+  it('does not retry when parentSignal is already aborted', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse(524, 'error code: 524'));
+    vi.stubGlobal('fetch', fetchMock);
+    const controller = new AbortController();
+    controller.abort('user_cancel');
+    const res = await fetchWithUpstreamRetry(
+      'https://example/x',
+      {},
+      controller.signal,
+    );
+    expect(res.status).toBe(524);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
+  });
+
+  it('returns the second response even when it also fails (retries are one-shot)', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse(524, 'error code: 524'))
+      .mockResolvedValueOnce(makeResponse(524, 'still failing'));
+    vi.stubGlobal('fetch', fetchMock);
+    const controller = new AbortController();
+    const res = await fetchWithUpstreamRetry(
+      'https://example/x',
+      {},
+      controller.signal,
+    );
+    expect(res.status).toBe(524);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    vi.unstubAllGlobals();
   });
 });

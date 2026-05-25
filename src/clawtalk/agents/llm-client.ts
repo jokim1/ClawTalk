@@ -1178,26 +1178,32 @@ export async function* streamLlmResponse(
             }
           : {};
 
-      const response = await fetch(`${provider.baseUrl}/v1/messages`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'anthropic-version': '2023-06-01',
-          ...subscriptionHeaders,
-          ...authHeaders,
+      const response = await fetchWithUpstreamRetry(
+        `${provider.baseUrl}/v1/messages`,
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'anthropic-version': '2023-06-01',
+            ...subscriptionHeaders,
+            ...authHeaders,
+          },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
         },
-        body: JSON.stringify(requestBody),
-        signal: controller.signal,
-      });
+        parentSignal,
+      );
 
       if (!response.ok) {
         const errorText = await response.text();
         const failureClass = classifyHttpFailure(response.status, errorText);
-        const detail = errorText ? errorText.slice(0, 600).trim() : '';
         throw new LlmClientError(
-          `${provider.providerId ?? 'anthropic'} API error (${response.status} ${response.statusText})${
-            detail ? `: ${detail}` : ''
-          }`,
+          buildLlmHttpErrorMessage({
+            providerLabel: provider.providerId ?? 'anthropic',
+            status: response.status,
+            statusText: response.statusText,
+            body: errorText,
+          }),
           failureClass,
           response.status,
         );
@@ -1219,24 +1225,30 @@ export async function* streamLlmResponse(
         options?.maxOutputTokens,
       );
 
-      const response = await fetch(`${provider.baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          ...authHeaders,
+      const response = await fetchWithUpstreamRetry(
+        `${provider.baseUrl}/chat/completions`,
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            ...authHeaders,
+          },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
         },
-        body: JSON.stringify(requestBody),
-        signal: controller.signal,
-      });
+        parentSignal,
+      );
 
       if (!response.ok) {
         const errorText = await response.text();
         const failureClass = classifyHttpFailure(response.status, errorText);
-        const detail = errorText ? errorText.slice(0, 600).trim() : '';
         throw new LlmClientError(
-          `${provider.providerId ?? 'openai-compatible'} API error (${response.status} ${response.statusText})${
-            detail ? `: ${detail}` : ''
-          }`,
+          buildLlmHttpErrorMessage({
+            providerLabel: provider.providerId ?? 'openai-compatible',
+            status: response.status,
+            statusText: response.statusText,
+            body: errorText,
+          }),
           failureClass,
           response.status,
         );
@@ -1276,17 +1288,21 @@ export async function* streamLlmResponse(
 
       const codexHeaders = buildCodexCloudflareHeaders(secret?.apiKey || '');
 
-      const response = await fetch(`${provider.baseUrl}/responses`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          accept: 'text/event-stream',
-          ...codexHeaders,
-          ...authHeaders,
+      const response = await fetchWithUpstreamRetry(
+        `${provider.baseUrl}/responses`,
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            accept: 'text/event-stream',
+            ...codexHeaders,
+            ...authHeaders,
+          },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
         },
-        body: JSON.stringify(requestBody),
-        signal: controller.signal,
-      });
+        parentSignal,
+      );
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -1294,13 +1310,15 @@ export async function* streamLlmResponse(
         // Surface the backend's error body — chatgpt.com/backend-api/codex
         // returns structured JSON with the real reason (invalid field,
         // unsupported model, expired token, missing entitlement, etc.)
-        // that the bare statusText hides. Trim defensively so a giant
-        // stack trace doesn't blow up the assistant message.
-        const detail = errorText ? errorText.slice(0, 600).trim() : '';
+        // that the bare statusText hides. buildLlmHttpErrorMessage trims
+        // defensively so a giant stack trace doesn't blow up the message.
         throw new LlmClientError(
-          `Codex Responses API error (${response.status} ${response.statusText})${
-            detail ? `: ${detail}` : ''
-          }`,
+          buildLlmHttpErrorMessage({
+            providerLabel: 'Codex Responses',
+            status: response.status,
+            statusText: response.statusText,
+            body: errorText,
+          }),
           failureClass,
           response.status,
         );
@@ -1429,12 +1447,22 @@ export async function callLlm(
 /**
  * Classify HTTP errors into failure classes for retry logic.
  */
-function classifyHttpFailure(statusCode: number, errorText: string): string {
+export function classifyHttpFailure(
+  statusCode: number,
+  errorText: string,
+): string {
   if (statusCode === 401 || statusCode === 403) {
     return 'auth';
   }
   if (statusCode === 429) {
     return 'rate_limit';
+  }
+  // 502/503/504/524 are upstream-transient: the gateway/CDN couldn't reach
+  // the model server in time. Worth a single retry and a friendlier message
+  // (see buildLlmHttpErrorMessage). Keep them distinct from generic 5xx so
+  // future code can act on the difference.
+  if (UPSTREAM_TIMEOUT_STATUSES.has(statusCode)) {
+    return 'upstream_timeout';
   }
   if (statusCode >= 500 && statusCode < 600) {
     return 'upstream_5xx';
@@ -1446,4 +1474,86 @@ function classifyHttpFailure(statusCode: number, errorText: string): string {
     return 'policy';
   }
   return 'network';
+}
+
+/**
+ * Statuses that mean "upstream gateway couldn't reach the model server in
+ * time" rather than "the model server returned an error". Worth a retry.
+ * - 502: bad gateway
+ * - 503: service unavailable
+ * - 504: gateway timeout
+ * - 524: Cloudflare origin timeout (NVIDIA NIM's CDN does this when their
+ *   inference backend doesn't respond in ~100s)
+ */
+const UPSTREAM_TIMEOUT_STATUSES: ReadonlySet<number> = new Set([
+  502, 503, 504, 524,
+]);
+const UPSTREAM_RETRY_DELAY_MS = 800;
+
+/**
+ * Build a user-facing error message for an LLM HTTP failure.
+ *
+ * Upstream-timeout statuses (502/503/504/524) get a friendlier lead-in so
+ * the UI doesn't show raw `provider.nvidia API error (524 <none>): error
+ * code: 524`. The raw status + body are preserved at the end of the
+ * message so logs and run-history rows keep enough debug info.
+ */
+export function buildLlmHttpErrorMessage(input: {
+  providerLabel: string;
+  status: number;
+  statusText: string;
+  body: string;
+}): string {
+  const status = input.status;
+  const statusText = input.statusText || '<none>';
+  const detail = input.body ? `: ${input.body.slice(0, 600).trim()}` : '';
+  if (UPSTREAM_TIMEOUT_STATUSES.has(status)) {
+    const verb =
+      status === 524
+        ? 'upstream timed out'
+        : status === 504
+          ? 'gateway timed out'
+          : status === 503
+            ? 'is temporarily unavailable'
+            : 'returned a bad-gateway error';
+    return `${input.providerLabel} ${verb} (HTTP ${status} ${statusText}). Try again in a moment, or switch to another agent${detail}`;
+  }
+  return `${input.providerLabel} API error (${status} ${statusText})${detail}`;
+}
+
+/**
+ * Fetch with one-shot retry on upstream-timeout statuses.
+ *
+ * Why: NVIDIA NIM's CDN periodically returns 524 when their inference
+ * backend is overloaded; the same retry usually succeeds. We retry only on
+ * the initial HTTP exchange (before any stream bytes are consumed), so
+ * there's no risk of double-applying tool calls or partial output.
+ *
+ * Honours `parentSignal`: if the caller cancels mid-retry, we skip the
+ * retry sleep and return the first response. Drains the first response
+ * body before retrying so the underlying connection can release.
+ */
+export async function fetchWithUpstreamRetry(
+  url: string,
+  init: RequestInit,
+  parentSignal: AbortSignal,
+): Promise<Response> {
+  const first = await fetch(url, init);
+  if (!UPSTREAM_TIMEOUT_STATUSES.has(first.status)) return first;
+  if (parentSignal.aborted) return first;
+  try {
+    await first.text();
+  } catch {
+    // Body may already be consumed by a higher reader; ignore.
+  }
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, UPSTREAM_RETRY_DELAY_MS);
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    parentSignal.addEventListener('abort', onAbort, { once: true });
+  });
+  if (parentSignal.aborted) return first;
+  return await fetch(url, init);
 }
