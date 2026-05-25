@@ -1193,8 +1193,11 @@ export async function* streamLlmResponse(
       if (!response.ok) {
         const errorText = await response.text();
         const failureClass = classifyHttpFailure(response.status, errorText);
+        const detail = errorText ? errorText.slice(0, 600).trim() : '';
         throw new LlmClientError(
-          `Anthropic API error: ${response.statusText}`,
+          `${provider.providerId ?? 'anthropic'} API error (${response.status} ${response.statusText})${
+            detail ? `: ${detail}` : ''
+          }`,
           failureClass,
           response.status,
         );
@@ -1229,8 +1232,11 @@ export async function* streamLlmResponse(
       if (!response.ok) {
         const errorText = await response.text();
         const failureClass = classifyHttpFailure(response.status, errorText);
+        const detail = errorText ? errorText.slice(0, 600).trim() : '';
         throw new LlmClientError(
-          `OpenAI API error: ${response.statusText}`,
+          `${provider.providerId ?? 'openai-compatible'} API error (${response.status} ${response.statusText})${
+            detail ? `: ${detail}` : ''
+          }`,
           failureClass,
           response.status,
         );
