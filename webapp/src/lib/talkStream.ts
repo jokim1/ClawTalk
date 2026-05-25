@@ -171,6 +171,12 @@ export type TalkBrowserUnblockedEvent = {
   browserResume?: BrowserResume | null;
 };
 
+export type TalkContentUpdatedEvent = {
+  contentId: string;
+  version: number;
+  appliedAnchorIds?: string[];
+};
+
 interface TalkStreamCallbacks {
   onMessageAppended: (event: MessageAppendedEvent) => void;
   onRunStarted: (event: TalkRunStartedEvent) => void;
@@ -188,6 +194,7 @@ interface TalkStreamCallbacks {
   onHistoryEdited?: (event: TalkHistoryEditedEvent) => void;
   onBrowserBlocked?: (event: TalkBrowserBlockedEvent) => void;
   onBrowserUnblocked?: (event: TalkBrowserUnblockedEvent) => void;
+  onContentUpdated?: (event: TalkContentUpdatedEvent) => void;
   onReplayGap: () => void | Promise<void>;
   onStateChange?: (state: TalkStreamState) => void;
   onUnauthorized: () => void;
@@ -408,6 +415,11 @@ export function openTalkStream(input: OpenTalkStreamInput): TalkStreamHandle {
       case 'browser_unblocked': {
         const payload = parseFrame<TalkBrowserUnblockedEvent>(frame);
         if (payload) input.onBrowserUnblocked?.(payload);
+        return;
+      }
+      case 'content_updated': {
+        const payload = parseFrame<TalkContentUpdatedEvent>(frame);
+        if (payload) input.onContentUpdated?.(payload);
         return;
       }
       case 'replay_gap': {

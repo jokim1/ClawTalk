@@ -1,6 +1,11 @@
 // Tiptap extension that maintains stable per-block `data-anchor-id`
 // attributes used by the Content feature's proposal pipeline.
 //
+// Anchor IDs are generic stable targets — agent proposals are the
+// first consumer, but inline comments, highlights, and any future
+// per-block annotation surface should reuse this same attribute
+// rather than inventing a parallel ID scheme.
+//
 // Three responsibilities:
 //   1. Add the `dataAnchorId` global attribute to every block-level
 //      node type the editor knows about, so the attribute round-trips

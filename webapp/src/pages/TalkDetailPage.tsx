@@ -148,11 +148,15 @@ import {
 import { linkifyText } from '../lib/linkifyText';
 import { displayThreadTitle } from '../lib/threadTitles';
 import { openTalkStream } from '../lib/talkStream';
-import { RichTextEditor } from '../components/rich-text/RichTextEditor';
+import {
+  RichTextEditor,
+  type RichTextEditorSaveStatus,
+} from '../components/rich-text/RichTextEditor';
 import type {
   TalkBrowserBlockedEvent,
   TalkBrowserUnblockedEvent,
   MessageAppendedEvent,
+  TalkContentUpdatedEvent,
   TalkHistoryEditedEvent,
   TalkProgressUpdateEvent,
   TalkResponseDeltaEvent,
@@ -2954,6 +2958,17 @@ export function TalkDetailPage({
   const [talkContent, setTalkContent] = useState<Content | null>(null);
   const [talkContentLoading, setTalkContentLoading] = useState(false);
   const [talkContentError, setTalkContentError] = useState<string | null>(null);
+  const [talkContentSaveStatus, setTalkContentSaveStatus] =
+    useState<RichTextEditorSaveStatus>('idle');
+  const [talkContentConflict, setTalkContentConflict] = useState(false);
+  const talkContentRef = useRef<Content | null>(null);
+  const talkContentSaveStatusRef = useRef<RichTextEditorSaveStatus>('idle');
+  useEffect(() => {
+    talkContentRef.current = talkContent;
+  }, [talkContent]);
+  useEffect(() => {
+    talkContentSaveStatusRef.current = talkContentSaveStatus;
+  }, [talkContentSaveStatus]);
   const [chatRatio, setChatRatio] = useState(0.5);
   const [isNarrowViewport, setIsNarrowViewport] = useState(() => {
     if (typeof window === 'undefined') return false;
@@ -3210,7 +3225,28 @@ export function TalkDetailPage({
   useEffect(() => {
     setTalkContent(null);
     setTalkContentError(null);
+    setTalkContentConflict(false);
+    setTalkContentSaveStatus('idle');
   }, [talkId]);
+
+  const refetchTalkContent = useCallback(async (): Promise<Content | null> => {
+    if (!talkId) return null;
+    try {
+      const payload = await getTalkContent(talkId);
+      setTalkContent(payload.content);
+      setTalkContentError(null);
+      return payload.content;
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onUnauthorized();
+        return null;
+      }
+      setTalkContentError(
+        err instanceof Error ? err.message : 'Failed to load document.',
+      );
+      return null;
+    }
+  }, [onUnauthorized, talkId]);
 
   useEffect(() => {
     if (!talkId || !currentTalkHasContent) return;
@@ -4182,6 +4218,22 @@ export function TalkDetailPage({
         }
         scheduleThreadListRefresh();
       },
+      onContentUpdated: (event: TalkContentUpdatedEvent) => {
+        // The DO scopes events to the current talk-room subscription, so
+        // the contentId here always belongs to this Talk. Bail when the
+        // user hasn't loaded the doc yet — no local version to compare.
+        const current = talkContentRef.current;
+        if (!current || current.id !== event.contentId) return;
+        if (event.version <= current.bodyVersion) return;
+        const status = talkContentSaveStatusRef.current;
+        const hasUnsavedEdits =
+          status === 'pending' || status === 'saving' || status === 'error';
+        if (hasUnsavedEdits) {
+          setTalkContentConflict(true);
+          return;
+        }
+        void refetchTalkContent();
+      },
       onReplayGap: async () => {
         await resyncTalkState({ refreshThreads: true });
       },
@@ -4218,6 +4270,7 @@ export function TalkDetailPage({
     ensureKnownThread,
     handleUnauthorized,
     isNearBottom,
+    refetchTalkContent,
     rememberDeletedMessageIds,
     resyncTalkState,
     scheduleThreadListRefresh,
@@ -4257,6 +4310,7 @@ export function TalkDetailPage({
     accessRole === 'owner' || accessRole === 'admin' || accessRole === 'editor';
   const canEditOutputs = canEditAgents;
   const canEditJobs = canEditAgents;
+  const canEditDoc = canEditAgents;
   const canManageTalkConnectors =
     accessRole === 'owner' || accessRole === 'admin';
   const canEditChannels = canEditAgents;
@@ -12667,8 +12721,46 @@ export function TalkDetailPage({
                     <h2 className="talk-tab-doc-title">{talkContent.title}</h2>
                     {talkContentLoading ? (
                       <span className="talk-tab-doc-status">Loading…</span>
-                    ) : null}
+                    ) : (
+                      <span
+                        className={`talk-tab-doc-status talk-tab-doc-save-${talkContentSaveStatus}`}
+                        aria-live="polite"
+                      >
+                        {talkContentSaveStatus === 'saving'
+                          ? 'Saving…'
+                          : talkContentSaveStatus === 'pending'
+                            ? 'Unsaved changes'
+                            : talkContentSaveStatus === 'saved'
+                              ? 'Saved'
+                              : talkContentSaveStatus === 'error'
+                                ? 'Save failed'
+                                : ''}
+                      </span>
+                    )}
                   </header>
+                  {talkContentConflict ? (
+                    <div
+                      className="talk-tab-doc-conflict"
+                      role="alert"
+                      aria-live="assertive"
+                    >
+                      <span>
+                        This document changed elsewhere. Reload to see the
+                        latest version — your unsaved edits will be lost.
+                      </span>
+                      <button
+                        type="button"
+                        className="talk-tab-doc-conflict-button"
+                        onClick={() => {
+                          setTalkContentConflict(false);
+                          setTalkContentSaveStatus('idle');
+                          void refetchTalkContent();
+                        }}
+                      >
+                        Reload
+                      </button>
+                    </div>
+                  ) : null}
                   {talkContentError ? (
                     <p className="page-state" role="alert">
                       {talkContentError}
@@ -12677,7 +12769,29 @@ export function TalkDetailPage({
                     <div className="talk-tab-doc-body">
                       <RichTextEditor
                         bodyMarkdown={talkContent.bodyMarkdown}
-                        editable={false}
+                        editable={canEditDoc && !talkContentConflict}
+                        autosave={
+                          canEditDoc
+                            ? {
+                                contentId: talkContent.id,
+                                bodyVersion: talkContent.bodyVersion,
+                                onSaved: ({ content }) => {
+                                  setTalkContent((current) =>
+                                    current && current.id === content.id
+                                      ? content
+                                      : current,
+                                  );
+                                },
+                                onConflict: () => {
+                                  setTalkContentConflict(true);
+                                },
+                                onError: (err) => {
+                                  setTalkContentError(err.message);
+                                },
+                                onStatusChange: setTalkContentSaveStatus,
+                              }
+                            : undefined
+                        }
                       />
                     </div>
                   )}
