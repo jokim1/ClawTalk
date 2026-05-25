@@ -68,10 +68,9 @@ describe('buildContentOutline', () => {
     });
 
     const outline = buildContentOutline(content);
-    expect(outline).toContain(
-      '**Attached Document:** "Why Fortnite UEFN Failed" (v3)',
-    );
-    expect(outline.toLowerCase()).toContain('not a google doc');
+    expect(outline).toContain('**The Doc');
+    expect(outline).toContain('"Why Fortnite UEFN Failed" (v3)');
+    expect(outline.toLowerCase()).toContain('google doc');
     expect(outline).toContain(
       '[anchor:aaaa11112222] heading "The Audience Trap"',
     );
@@ -133,7 +132,8 @@ describe('buildContentOutline', () => {
   it('emits a header + footer even when there are zero blocks', () => {
     const content = makeContent({ title: 'Empty Doc', blocks: [] });
     const outline = buildContentOutline(content);
-    expect(outline).toContain('**Attached Document:** "Empty Doc"');
+    expect(outline).toContain('**The Doc');
+    expect(outline).toContain('"Empty Doc"');
     expect(outline).toContain('propose_content_append');
   });
 });

@@ -784,12 +784,12 @@ export function buildContentOutline(
     .sort((a, b) => a.sort_order - b.sort_order);
 
   const header = [
-    `**Attached Document:** "${content.title}" (v${content.bodyVersion})`,
+    `**The Doc — this Talk's attached document:** "${content.title}" (v${content.bodyVersion})`,
     '',
-    'This Talk has a long-form document attached. When the user refers to "the doc", "the document", "this doc", or "the attached document", they mean THIS document — not a Google Doc binding. You see its full structure in the outline below. To read the full text of a specific block, ask the user; full block bodies are not in the outline by design (2KB budget).',
+    'This Talk has exactly one long-form document attached, and the outline below IS that document. When the user says "the doc", "the document", "this doc", "summarize the doc", or anything similar, they mean THIS document — the one outlined below. Do NOT look for a Google Doc binding. Do NOT search [S1]/[S2]/etc. Do NOT inspect chat attachments whose filename happens to match this title (the user often uploads a draft .md before promoting it into the doc — those are stale source material, not the live document). The outline below is the canonical, current copy.',
   ].join('\n');
   const footer =
-    'To append a new block to this document, call `propose_content_append({ after_anchor_id, markdown, rationale })`. The user reviews and accepts or rejects in the Talk UI; you are not editing the document directly.';
+    'To suggest a new block on this document, call `propose_content_append({ after_anchor_id, markdown, rationale })`. The user reviews and accepts or rejects in the Talk UI; you are not editing the document directly.';
 
   const encoder = new TextEncoder();
   const headerBytes = encoder.encode(header).byteLength;
@@ -871,6 +871,15 @@ function assembleSystemPrompt(
 ): string {
   const parts: string[] = [];
 
+  // The Attached Document goes at the absolute top so the agent
+  // anchors on it before any other context. After Rules wasn't enough
+  // — Kimi 2.6 still opened with "I don't see a Google Doc" because by
+  // the time it read the section, it had already pattern-matched the
+  // user's "the doc" against its training-time Google-Docs prior.
+  if (contentOutline) {
+    parts.push(contentOutline);
+  }
+
   if (includeWebFreshnessStanza) {
     parts.push(buildWebFreshnessStanza());
   }
@@ -886,14 +895,6 @@ function assembleSystemPrompt(
   if (rules.length > 0) {
     const ruleLines = rules.map((r, i) => `${i + 1}. ${r}`);
     parts.push(`**Rules:**\n${ruleLines.join('\n')}`);
-  }
-
-  // Place the Attached Document section right after Rules so it sits
-  // alongside the orienting context, not buried below Sources/State.
-  // 104-block / 2KB outlines were getting overlooked otherwise — Kimi
-  // saw the section but pattern-matched on "Google Doc" instead.
-  if (contentOutline) {
-    parts.push(contentOutline);
   }
 
   if (roleHint) {
