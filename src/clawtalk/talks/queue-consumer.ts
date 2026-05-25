@@ -28,12 +28,7 @@ import {
   markRunRunning,
   type TalkRunRecord,
 } from '../db/accessors.js';
-import {
-  blockTalkJob,
-  getTalkJobById,
-  markTalkJobRunFinished,
-} from '../db/job-accessors.js';
-import { replaceJobReportOutput } from '../db/output-accessors.js';
+import { markTalkJobRunFinished } from '../db/job-accessors.js';
 import { logger } from '../../logger.js';
 
 import { CleanTalkExecutor } from './new-executor.js';
@@ -217,7 +212,12 @@ export async function processTalkRunMessage(
         responseSequenceInRun: output.responseSequenceInRun,
       });
       if (completed.applied) {
-        await handleJobCompletion(run, responseContent);
+        if (run.job_id) {
+          await markTalkJobRunFinished({
+            jobId: run.job_id,
+            status: 'completed',
+          });
+        }
       } else {
         logger.debug(
           { runId: run.id, talkId: run.talk_id },
@@ -271,50 +271,6 @@ async function failRun(
     await markTalkJobRunFinished({
       jobId: run.job_id,
       status: 'failed',
-    });
-  }
-}
-
-async function handleJobCompletion(
-  run: TalkRunRecord,
-  responseContent: string,
-): Promise<void> {
-  if (!run.job_id) return;
-  let finalStatus = 'completed';
-
-  try {
-    const job = await getTalkJobById(run.job_id);
-    if (job?.deliverableKind === 'report') {
-      if (!job.reportOutputId) {
-        await blockTalkJob(job.talkId, job.id, 'blocked');
-        finalStatus = 'blocked';
-      } else {
-        const updated = await replaceJobReportOutput({
-          talkId: job.talkId,
-          outputId: job.reportOutputId,
-          contentMarkdown: responseContent,
-          updatedByRunId: run.id,
-        });
-        if (!updated) {
-          await blockTalkJob(job.talkId, job.id, 'blocked');
-          finalStatus = 'blocked';
-        }
-      }
-    }
-  } catch (err) {
-    logger.error(
-      {
-        err,
-        runId: run.id,
-        talkId: run.talk_id,
-        jobId: run.job_id,
-      },
-      'Job report delivery failed after successful run completion',
-    );
-  } finally {
-    await markTalkJobRunFinished({
-      jobId: run.job_id,
-      status: finalStatus,
     });
   }
 }

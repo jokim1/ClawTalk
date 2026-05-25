@@ -47,7 +47,6 @@ import {
   createTalkChannel,
   createTalkContextRule,
   createTalkContextSource,
-  createTalkOutput,
   createTalkJob,
   DataConnector,
   deleteTalkChannel,
@@ -58,7 +57,6 @@ import {
   deleteTalkThread,
   deleteTalkContextRule,
   deleteTalkContextSource,
-  deleteTalkOutput,
   deleteTalkJob,
   deleteTalkStateEntry,
   detachTalkDataConnector,
@@ -68,7 +66,6 @@ import {
   getTalk,
   getTalkAgents,
   getTalkContent,
-  getTalkOutput,
   getTalkJob,
   getTalkState,
   getTalkContext,
@@ -77,7 +74,6 @@ import {
   getTalkRuns,
   listTalkJobRuns,
   listTalkJobs,
-  listTalkOutputs,
   listTalkThreads,
   listChannelConnections,
   listChannelTargets,
@@ -91,7 +87,6 @@ import {
   patchTalkChannel,
   patchTalkContextRule,
   patchTalkMetadata,
-  patchTalkOutput,
   patchTalkJob,
   rejectContentProposal,
   retryTalkChannelDeliveryFailure,
@@ -115,8 +110,6 @@ import {
   TalkMessageAttachment,
   TalkRun,
   TalkRunContextSnapshot,
-  TalkOutput,
-  TalkOutputSummary,
   TalkStateEntry,
   TalkThread,
   uploadTalkAttachment,
@@ -191,13 +184,7 @@ import type {
   TalkStreamState,
 } from '../lib/talkStream';
 
-type TabKey =
-  | 'talk'
-  | 'agents'
-  | 'context'
-  | 'outputs'
-  | 'connectors'
-  | 'runs';
+type TabKey = 'talk' | 'agents' | 'context' | 'connectors' | 'runs';
 
 type TalkOrchestrationMode = Talk['orchestrationMode'];
 
@@ -394,11 +381,6 @@ type TalkJobDraft = {
   hour: number;
   minute: number;
   timezone: string;
-  deliverableKind: 'thread' | 'report';
-  reportTargetMode: 'existing' | 'create';
-  reportOutputId: string;
-  createReportTitle: string;
-  createReportContentMarkdown: string;
   connectorIds: string[];
   channelBindingIds: string[];
   allowWeb: boolean;
@@ -470,11 +452,6 @@ function buildDefaultJobDraft(input?: {
     hour: 9,
     minute: 0,
     timezone: input?.timezone ?? getDefaultJobTimezone(),
-    deliverableKind: 'thread',
-    reportTargetMode: 'existing',
-    reportOutputId: '',
-    createReportTitle: '',
-    createReportContentMarkdown: '',
     connectorIds: [],
     channelBindingIds: [],
     allowWeb: false,
@@ -496,11 +473,6 @@ function buildJobDraftFromJob(job: TalkJob): TalkJobDraft {
     hour: job.schedule.kind === 'weekly' ? job.schedule.hour : 9,
     minute: job.schedule.kind === 'weekly' ? job.schedule.minute : 0,
     timezone: job.timezone,
-    deliverableKind: job.deliverableKind,
-    reportTargetMode: 'existing',
-    reportOutputId: job.reportOutputId ?? '',
-    createReportTitle: '',
-    createReportContentMarkdown: '',
     connectorIds: [...job.sourceScope.connectorIds],
     channelBindingIds: [...job.sourceScope.channelBindingIds],
     allowWeb: job.sourceScope.allowWeb,
@@ -789,25 +761,6 @@ function renderRunContextSnapshot(
               .map((source) => `[${source.ref}] ${source.title}`)
               .join(', ')}
           </p>
-        </div>
-      ) : null}
-      {snapshot.outputs.manifest.length > 0 ? (
-        <div className="run-context-section">
-          <strong>Outputs Manifest</strong>
-          <ul>
-            {snapshot.outputs.manifest.map((output) => (
-              <li key={output.id}>
-                <code>{output.id}</code> {output.title} · v{output.version} ·{' '}
-                {output.contentLength} chars
-              </li>
-            ))}
-          </ul>
-          {snapshot.outputs.omittedCount > 0 ? (
-            <p className="run-context-meta">
-              {snapshot.outputs.omittedCount} additional outputs omitted from
-              the default manifest.
-            </p>
-          ) : null}
         </div>
       ) : null}
       <div className="run-context-section">
@@ -1752,7 +1705,6 @@ function getTabFromPath(pathname: string, talkId: string): TabKey {
   const base = `/app/talks/${talkId}`;
   if (pathname === `${base}/agents`) return 'agents';
   if (pathname === `${base}/context`) return 'context';
-  if (pathname === `${base}/outputs`) return 'outputs';
   if (pathname === `${base}/connectors`) return 'connectors';
   if (pathname === `${base}/runs`) return 'runs';
   if (
@@ -3176,18 +3128,6 @@ export function TalkDetailPage({
     status: 'idle' | 'loading' | 'error';
     message?: string;
   }>({ status: 'idle' });
-  const [talkOutputs, setTalkOutputs] = useState<TalkOutputSummary[]>([]);
-  const [talkOutputsLoaded, setTalkOutputsLoaded] = useState(false);
-  const [talkOutputsStatus, setTalkOutputsStatus] = useState<{
-    status: 'idle' | 'loading' | 'saving' | 'error' | 'success';
-    message?: string;
-  }>({ status: 'idle' });
-  const [selectedOutputId, setSelectedOutputId] = useState<string | null>(null);
-  const [selectedOutput, setSelectedOutput] = useState<TalkOutput | null>(null);
-  const [selectedOutputStatus, setSelectedOutputStatus] = useState<{
-    status: 'idle' | 'loading' | 'error';
-    message?: string;
-  }>({ status: 'idle' });
   const [talkJobs, setTalkJobs] = useState<TalkJob[]>([]);
   const [talkJobsLoaded, setTalkJobsLoaded] = useState(false);
   const [talkJobsStatus, setTalkJobsStatus] = useState<{
@@ -3206,8 +3146,6 @@ export function TalkDetailPage({
   const [jobDraft, setJobDraft] = useState<TalkJobDraft>(() =>
     buildDefaultJobDraft(),
   );
-  const [outputTitleDraft, setOutputTitleDraft] = useState('');
-  const [outputBodyDraft, setOutputBodyDraft] = useState('');
   const [goalDraft, setGoalDraft] = useState('');
   const [newRuleText, setNewRuleText] = useState('');
   const [addSourceUrl, setAddSourceUrl] = useState('');
@@ -3715,65 +3653,6 @@ export function TalkDetailPage({
     [handleUnauthorized, talkId],
   );
 
-  const loadOutputDetail = useCallback(
-    async (outputId: string, options?: { showLoading?: boolean }) => {
-      if (options?.showLoading) {
-        setSelectedOutputStatus({ status: 'loading' });
-      }
-      const output = await getTalkOutput({ talkId, outputId });
-      setSelectedOutputId(output.id);
-      setSelectedOutput(output);
-      setOutputTitleDraft(output.title);
-      setOutputBodyDraft(output.contentMarkdown);
-      setSelectedOutputStatus({ status: 'idle' });
-      return output;
-    },
-    [talkId],
-  );
-
-  const refreshTalkOutputs = useCallback(
-    async (options?: {
-      showLoading?: boolean;
-      preserveSelection?: boolean;
-    }) => {
-      if (options?.showLoading) {
-        setTalkOutputsStatus({ status: 'loading' });
-      }
-      const outputs = await listTalkOutputs(talkId);
-      setTalkOutputs(outputs);
-      setTalkOutputsLoaded(true);
-      setTalkOutputsStatus({ status: 'idle' });
-
-      const preferredId = options?.preserveSelection ? selectedOutputId : null;
-      const nextSelectedId =
-        (preferredId &&
-          outputs.some((output) => output.id === preferredId) &&
-          preferredId) ||
-        (selectedOutputId &&
-          outputs.some((output) => output.id === selectedOutputId) &&
-          selectedOutputId) ||
-        outputs[0]?.id ||
-        null;
-
-      if (!nextSelectedId) {
-        setSelectedOutputId(null);
-        setSelectedOutput(null);
-        setOutputTitleDraft('');
-        setOutputBodyDraft('');
-        setSelectedOutputStatus({ status: 'idle' });
-        return outputs;
-      }
-
-      if (selectedOutput?.id === nextSelectedId) {
-        return outputs;
-      }
-
-      await loadOutputDetail(nextSelectedId, { showLoading: false });
-      return outputs;
-    },
-    [loadOutputDetail, selectedOutput?.id, selectedOutputId, talkId],
-  );
-
   const loadSelectedJobRuns = useCallback(
     async (jobId: string, options?: { showLoading?: boolean }) => {
       if (options?.showLoading) {
@@ -3796,15 +3675,13 @@ export function TalkDetailPage({
       if (options?.showLoading) {
         setTalkJobsStatus({ status: 'loading' });
       }
-      const [jobs, outputs, attachedConnectors, bindings] = await Promise.all([
+      const [jobs, attachedConnectors, bindings] = await Promise.all([
         listTalkJobs(talkId),
-        listTalkOutputs(talkId),
         getTalkDataConnectors(talkId),
         listTalkChannels(talkId),
       ]);
       setTalkJobs(jobs);
       setTalkJobsLoaded(true);
-      setTalkOutputs(outputs);
       setTalkConnectors(attachedConnectors);
       setChannelBindings(bindings);
       setTalkJobsStatus({ status: 'idle' });
@@ -3901,12 +3778,6 @@ export function TalkDetailPage({
     setTalkStateEntries([]);
     setTalkStateLoaded(false);
     setTalkStateStatus({ status: 'idle' });
-    setTalkOutputs([]);
-    setTalkOutputsLoaded(false);
-    setTalkOutputsStatus({ status: 'idle' });
-    setSelectedOutputId(null);
-    setSelectedOutput(null);
-    setSelectedOutputStatus({ status: 'idle' });
     setTalkJobs([]);
     setTalkJobsLoaded(false);
     setTalkJobsStatus({ status: 'idle' });
@@ -3915,8 +3786,6 @@ export function TalkDetailPage({
     setSelectedJobRunsStatus({ status: 'idle' });
     setCreatingJob(false);
     setJobDraft(buildDefaultJobDraft());
-    setOutputTitleDraft('');
-    setOutputBodyDraft('');
     setGoalDraft('');
     setNewRuleText('');
     setAddSourceTitle('');
@@ -4551,7 +4420,6 @@ export function TalkDetailPage({
   const accessRole = state.kind === 'ready' ? state.talk?.accessRole : null;
   const canEditAgents =
     accessRole === 'owner' || accessRole === 'admin' || accessRole === 'editor';
-  const canEditOutputs = canEditAgents;
   const canEditJobs = canEditAgents;
   const canEditDoc = canEditAgents;
   // Accept buttons are disabled while the editor has unsaved keystrokes
@@ -4973,11 +4841,6 @@ export function TalkDetailPage({
   const sortedThreads = useMemo(
     () => sortThreads(threadState.threads),
     [threadState.threads],
-  );
-  const hasUnsavedOutputChanges = Boolean(
-    selectedOutput &&
-    (outputTitleDraft !== selectedOutput.title ||
-      outputBodyDraft !== selectedOutput.contentMarkdown),
   );
   const activeThread = useMemo(
     () => sortedThreads.find((thread) => thread.id === activeThreadId) || null,
@@ -5586,9 +5449,6 @@ export function TalkDetailPage({
   const contextTabHref = activeThreadId
     ? buildThreadHref(talkId, activeThreadId, 'context')
     : `/app/talks/${talkId}/context`;
-  const outputsTabHref = activeThreadId
-    ? buildThreadHref(talkId, activeThreadId, 'outputs')
-    : `/app/talks/${talkId}/outputs`;
   const workspaceConnectorsTabHref = activeThreadId
     ? buildThreadHref(talkId, activeThreadId, 'connectors')
     : `/app/talks/${talkId}/connectors`;
@@ -5777,48 +5637,6 @@ export function TalkDetailPage({
 
     void refreshTalkStateEntries({ showLoading: !talkStateLoaded });
   }, [currentTab, refreshTalkStateEntries, state.kind, talkStateLoaded]);
-
-  useEffect(() => {
-    if (
-      state.kind !== 'ready' ||
-      currentTab !== 'outputs' ||
-      talkOutputsLoaded
-    ) {
-      return;
-    }
-
-    let cancelled = false;
-
-    const loadOutputs = async () => {
-      try {
-        await refreshTalkOutputs({ showLoading: true });
-        if (cancelled) return;
-      } catch (err) {
-        if (err instanceof UnauthorizedError) {
-          handleUnauthorized();
-          return;
-        }
-        if (!cancelled) {
-          setTalkOutputsStatus({
-            status: 'error',
-            message:
-              err instanceof Error ? err.message : 'Failed to load reports.',
-          });
-        }
-      }
-    };
-
-    void loadOutputs();
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    currentTab,
-    handleUnauthorized,
-    refreshTalkOutputs,
-    state.kind,
-    talkOutputsLoaded,
-  ]);
 
   useEffect(() => {
     if (state.kind !== 'ready' || currentTab !== 'context' || !contextLoaded) {
@@ -6145,148 +5963,6 @@ export function TalkDetailPage({
     }
   };
 
-  const handleSelectOutput = useCallback(
-    async (outputId: string) => {
-      try {
-        await loadOutputDetail(outputId, { showLoading: true });
-        setTalkOutputsStatus({ status: 'idle' });
-      } catch (err) {
-        if (err instanceof UnauthorizedError) {
-          handleUnauthorized();
-          return;
-        }
-        setSelectedOutputStatus({
-          status: 'error',
-          message:
-            err instanceof Error ? err.message : 'Failed to load report.',
-        });
-      }
-    },
-    [handleUnauthorized, loadOutputDetail],
-  );
-
-  const handleCreateOutput = useCallback(async () => {
-    if (!canEditOutputs) return;
-    setTalkOutputsStatus({ status: 'saving' });
-    try {
-      const output = await createTalkOutput({
-        talkId,
-        title: 'Untitled Report',
-        contentMarkdown: '',
-      });
-      setTalkOutputs((current) => [output, ...current]);
-      setTalkOutputsLoaded(true);
-      setSelectedOutputId(output.id);
-      setSelectedOutput(output);
-      setOutputTitleDraft(output.title);
-      setOutputBodyDraft(output.contentMarkdown);
-      setSelectedOutputStatus({ status: 'idle' });
-      setTalkOutputsStatus({
-        status: 'success',
-        message: 'Report created.',
-      });
-    } catch (err) {
-      if (err instanceof UnauthorizedError) {
-        handleUnauthorized();
-        return;
-      }
-      setTalkOutputsStatus({
-        status: 'error',
-        message:
-          err instanceof Error ? err.message : 'Failed to create report.',
-      });
-    }
-  }, [canEditOutputs, handleUnauthorized, talkId]);
-
-  const handleSaveOutput = useCallback(async () => {
-    if (!selectedOutput || !canEditOutputs) return;
-    setTalkOutputsStatus({ status: 'saving' });
-    try {
-      const output = await patchTalkOutput({
-        talkId,
-        outputId: selectedOutput.id,
-        expectedVersion: selectedOutput.version,
-        title: outputTitleDraft,
-        contentMarkdown: outputBodyDraft,
-      });
-      setSelectedOutput(output);
-      setOutputTitleDraft(output.title);
-      setOutputBodyDraft(output.contentMarkdown);
-      setTalkOutputs((current) =>
-        current
-          .map((summary) => (summary.id === output.id ? output : summary))
-          .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
-      );
-      setTalkOutputsStatus({
-        status: 'success',
-        message: 'Report saved.',
-      });
-    } catch (err) {
-      if (err instanceof UnauthorizedError) {
-        handleUnauthorized();
-        return;
-      }
-      setTalkOutputsStatus({
-        status: 'error',
-        message: err instanceof Error ? err.message : 'Failed to save report.',
-      });
-    }
-  }, [
-    canEditOutputs,
-    handleUnauthorized,
-    outputBodyDraft,
-    outputTitleDraft,
-    selectedOutput,
-    talkId,
-  ]);
-
-  const handleDeleteOutput = useCallback(async () => {
-    if (!selectedOutput || !canEditOutputs) return;
-    const confirmed = window.confirm(
-      `Delete "${selectedOutput.title}"? This cannot be undone.`,
-    );
-    if (!confirmed) return;
-
-    setTalkOutputsStatus({ status: 'saving' });
-    try {
-      await deleteTalkOutput({ talkId, outputId: selectedOutput.id });
-      const remaining = talkOutputs.filter(
-        (output) => output.id !== selectedOutput.id,
-      );
-      setTalkOutputs(remaining);
-      if (remaining.length > 0) {
-        await loadOutputDetail(remaining[0]!.id, { showLoading: false });
-      } else {
-        setSelectedOutputId(null);
-        setSelectedOutput(null);
-        setOutputTitleDraft('');
-        setOutputBodyDraft('');
-        setSelectedOutputStatus({ status: 'idle' });
-      }
-      setTalkOutputsStatus({
-        status: 'success',
-        message: 'Report deleted.',
-      });
-    } catch (err) {
-      if (err instanceof UnauthorizedError) {
-        handleUnauthorized();
-        return;
-      }
-      setTalkOutputsStatus({
-        status: 'error',
-        message:
-          err instanceof Error ? err.message : 'Failed to delete report.',
-      });
-    }
-  }, [
-    canEditOutputs,
-    handleUnauthorized,
-    loadOutputDetail,
-    selectedOutput,
-    talkId,
-    talkOutputs,
-  ]);
-
   const handleCreateJobDraft = useCallback(() => {
     setCreatingJob(true);
     setSelectedJobId(null);
@@ -6370,19 +6046,6 @@ export function TalkDetailPage({
     try {
       const sourceScope = draftToTalkJobScope(jobDraft);
       const schedule = draftToTalkJobSchedule(jobDraft);
-      const reportPayload =
-        jobDraft.deliverableKind === 'report' &&
-        jobDraft.reportTargetMode === 'create'
-          ? {
-              title: jobDraft.createReportTitle.trim() || 'Untitled Report',
-              contentMarkdown: jobDraft.createReportContentMarkdown,
-            }
-          : null;
-      const reportOutputId =
-        jobDraft.deliverableKind === 'report' &&
-        jobDraft.reportTargetMode === 'existing'
-          ? jobDraft.reportOutputId || null
-          : null;
 
       const saved = creatingJob
         ? await createTalkJob({
@@ -6392,9 +6055,6 @@ export function TalkDetailPage({
             targetAgentId: jobDraft.targetAgentId,
             schedule,
             timezone: jobDraft.timezone,
-            deliverableKind: jobDraft.deliverableKind,
-            reportOutputId,
-            createReport: reportPayload,
             sourceScope,
           })
         : await patchTalkJob({
@@ -6405,9 +6065,6 @@ export function TalkDetailPage({
             targetAgentId: jobDraft.targetAgentId,
             schedule,
             timezone: jobDraft.timezone,
-            deliverableKind: jobDraft.deliverableKind,
-            reportOutputId,
-            createReport: reportPayload,
             sourceScope,
           });
 
@@ -8872,12 +8529,6 @@ export function TalkDetailPage({
                         </span>
                       </Link>
                       <Link
-                        to={outputsTabHref}
-                        className={`talk-tab ${currentTab === 'outputs' ? 'talk-tab-active' : ''}`}
-                      >
-                        Reports
-                      </Link>
-                      <Link
                         to={workspaceConnectorsTabHref}
                         className={`talk-tab ${currentTab === 'connectors' ? 'talk-tab-active' : ''}`}
                       >
@@ -9867,177 +9518,6 @@ export function TalkDetailPage({
               talkId={talkId}
               onUnauthorized={handleUnauthorized}
             />
-          ) : null}
-
-          {currentTab === 'outputs' ? (
-            <section className="talk-tab-panel" aria-label="Talk reports">
-              {talkOutputsStatus.status === 'loading' && !talkOutputsLoaded ? (
-                <p className="page-state">Loading reports…</p>
-              ) : talkOutputsStatus.status === 'error' && !talkOutputsLoaded ? (
-                <p className="page-state error">{talkOutputsStatus.message}</p>
-              ) : (
-                <>
-                  <div className="agents-panel-header">
-                    <h2>Reports</h2>
-                    {canEditOutputs ? (
-                      <button
-                        type="button"
-                        className="secondary-btn"
-                        onClick={() => void handleCreateOutput()}
-                        disabled={talkOutputsStatus.status === 'saving'}
-                      >
-                        New Report
-                      </button>
-                    ) : null}
-                  </div>
-                  <p className="policy-muted">
-                    Reports are durable talk-level artifacts. They are separate
-                    from transcript messages and can be updated by users or Talk
-                    agents.
-                  </p>
-
-                  <div className="talk-outputs-layout">
-                    <aside
-                      className="talk-outputs-list"
-                      aria-label="Reports list"
-                    >
-                      {talkOutputs.length > 0 ? (
-                        talkOutputs.map((output) => (
-                          <button
-                            key={output.id}
-                            type="button"
-                            className={`talk-output-list-item${
-                              selectedOutputId === output.id
-                                ? ' talk-output-list-item-active'
-                                : ''
-                            }`}
-                            onClick={() => void handleSelectOutput(output.id)}
-                          >
-                            <strong>{output.title}</strong>
-                            <span className="talk-llm-meta">
-                              v{output.version} · {output.contentLength} chars
-                            </span>
-                            <span className="talk-llm-meta">
-                              Updated {formatDateTime(output.updatedAt)}
-                            </span>
-                          </button>
-                        ))
-                      ) : (
-                        <p className="page-state">No reports yet.</p>
-                      )}
-                    </aside>
-
-                    <div className="talk-output-editor">
-                      {selectedOutputStatus.status === 'loading' ? (
-                        <p className="page-state">Loading report…</p>
-                      ) : selectedOutputStatus.status === 'error' ? (
-                        <p className="page-state error">
-                          {selectedOutputStatus.message}
-                        </p>
-                      ) : selectedOutput ? (
-                        <div className="talk-llm-card">
-                          <div className="connector-card-header">
-                            <div>
-                              <h3>{selectedOutput.title}</h3>
-                              <p className="talk-llm-meta">
-                                Version {selectedOutput.version} · Updated{' '}
-                                {formatDateTime(selectedOutput.updatedAt)}
-                              </p>
-                            </div>
-                          </div>
-                          <label style={{ display: 'block' }}>
-                            <span className="settings-label">Title</span>
-                            <input
-                              type="text"
-                              value={outputTitleDraft}
-                              onChange={(event) =>
-                                setOutputTitleDraft(event.target.value)
-                              }
-                              disabled={
-                                !canEditOutputs ||
-                                talkOutputsStatus.status === 'saving'
-                              }
-                              style={{ width: '100%' }}
-                            />
-                          </label>
-                          <label
-                            style={{ display: 'block', marginTop: '0.75rem' }}
-                          >
-                            <span className="settings-label">
-                              Markdown Body
-                            </span>
-                            <textarea
-                              value={outputBodyDraft}
-                              onChange={(event) =>
-                                setOutputBodyDraft(event.target.value)
-                              }
-                              rows={18}
-                              disabled={
-                                !canEditOutputs ||
-                                talkOutputsStatus.status === 'saving'
-                              }
-                              style={{ width: '100%', resize: 'vertical' }}
-                            />
-                          </label>
-                          <div
-                            className="settings-button-row"
-                            style={{ marginTop: '0.75rem' }}
-                          >
-                            {canEditOutputs ? (
-                              <button
-                                type="button"
-                                className="secondary-btn"
-                                onClick={() => void handleSaveOutput()}
-                                disabled={
-                                  talkOutputsStatus.status === 'saving' ||
-                                  !hasUnsavedOutputChanges
-                                }
-                              >
-                                {talkOutputsStatus.status === 'saving'
-                                  ? 'Saving…'
-                                  : 'Save Report'}
-                              </button>
-                            ) : null}
-                            {canEditOutputs ? (
-                              <button
-                                type="button"
-                                className="secondary-btn danger-btn"
-                                onClick={() => void handleDeleteOutput()}
-                                disabled={talkOutputsStatus.status === 'saving'}
-                              >
-                                Delete Report
-                              </button>
-                            ) : null}
-                          </div>
-                        </div>
-                      ) : (
-                        <p className="page-state">
-                          Select an output to view its full contents.
-                        </p>
-                      )}
-                    </div>
-                  </div>
-
-                  {talkOutputsStatus.status === 'success' &&
-                  talkOutputsStatus.message ? (
-                    <div
-                      className="inline-banner inline-banner-success"
-                      role="status"
-                    >
-                      {talkOutputsStatus.message}
-                    </div>
-                  ) : null}
-                  {talkOutputsStatus.status === 'error' && talkOutputsLoaded ? (
-                    <div
-                      className="inline-banner inline-banner-danger"
-                      role="alert"
-                    >
-                      {talkOutputsStatus.message}
-                    </div>
-                  ) : null}
-                </>
-              )}
-            </section>
           ) : null}
 
           {currentTab === 'runs' ? (

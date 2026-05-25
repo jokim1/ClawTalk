@@ -4,7 +4,6 @@ export interface TalkJobExecutionPolicy {
   allowedChannelBindingIds: string[];
   allowWeb: boolean;
   allowStateMutation: boolean;
-  allowOutputWrite: boolean;
   // C6: gate for tools that mutate external state (Google Docs create/update,
   // future Sheets writes, etc.). Defaults to false on scheduled jobs so they
   // can't accidentally publish or modify external systems without the

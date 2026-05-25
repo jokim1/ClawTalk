@@ -372,22 +372,6 @@ export type TalkStateEntry = {
   updatedByRunId: string | null;
 };
 
-export type TalkOutputSummary = {
-  id: string;
-  title: string;
-  version: number;
-  contentLength: number;
-  createdAt: string;
-  updatedAt: string;
-  createdByUserId: string | null;
-  updatedByUserId: string | null;
-  updatedByRunId: string | null;
-};
-
-export type TalkOutput = TalkOutputSummary & {
-  contentMarkdown: string;
-};
-
 export type TalkJobWeekday =
   | 'sun'
   | 'mon'
@@ -425,9 +409,6 @@ export type TalkJob = {
   status: 'active' | 'paused' | 'blocked';
   schedule: TalkJobSchedule;
   timezone: string;
-  deliverableKind: 'thread' | 'report';
-  reportOutputId: string | null;
-  reportOutputTitle: string | null;
   sourceScope: TalkJobScope;
   threadId: string;
   lastRunAt: string | null;
@@ -685,14 +666,6 @@ export type TalkRunContextRetrievedSourceSnapshot = {
   excerpt: string;
 };
 
-export type TalkRunContextOutputManifestItem = {
-  id: string;
-  title: string;
-  version: number;
-  updatedAt: string;
-  contentLength: number;
-};
-
 export type TalkRunContextSnapshot = {
   version: 1;
   threadId: string | null;
@@ -718,11 +691,6 @@ export type TalkRunContextSnapshot = {
     totalCount: number;
     manifest: TalkRunContextSourceManifestItem[];
     inline: TalkRunContextInlineSourceSnapshot[];
-  };
-  outputs: {
-    totalCount: number;
-    omittedCount: number;
-    manifest: TalkRunContextOutputManifestItem[];
   };
   retrieval: {
     query: string | null;
@@ -3123,73 +3091,6 @@ export async function deleteTalkStateEntry(
   );
 }
 
-export async function listTalkOutputs(
-  talkId: string,
-): Promise<TalkOutputSummary[]> {
-  const envelope = await apiRequest<{ outputs: TalkOutputSummary[] }>(
-    `/api/v1/talks/${encodeURIComponent(talkId)}/outputs`,
-  );
-  return envelope.outputs;
-}
-
-export async function getTalkOutput(input: {
-  talkId: string;
-  outputId: string;
-}): Promise<TalkOutput> {
-  const envelope = await apiRequest<{ output: TalkOutput }>(
-    `/api/v1/talks/${encodeURIComponent(input.talkId)}/outputs/${encodeURIComponent(input.outputId)}`,
-  );
-  return envelope.output;
-}
-
-export async function createTalkOutput(input: {
-  talkId: string;
-  title: string;
-  contentMarkdown: string;
-}): Promise<TalkOutput> {
-  const envelope = await apiMutationRequest<{ output: TalkOutput }>(
-    `/api/v1/talks/${encodeURIComponent(input.talkId)}/outputs`,
-    {
-      method: 'POST',
-      includeJson: true,
-      body: JSON.stringify({
-        title: input.title,
-        contentMarkdown: input.contentMarkdown,
-      }),
-    },
-  );
-  return envelope.output;
-}
-
-export async function patchTalkOutput(input: {
-  talkId: string;
-  outputId: string;
-  expectedVersion: number;
-  title?: string;
-  contentMarkdown?: string;
-}): Promise<TalkOutput> {
-  const { talkId, outputId, ...patch } = input;
-  const envelope = await apiMutationRequest<{ output: TalkOutput }>(
-    `/api/v1/talks/${encodeURIComponent(talkId)}/outputs/${encodeURIComponent(outputId)}`,
-    {
-      method: 'PATCH',
-      includeJson: true,
-      body: JSON.stringify(patch),
-    },
-  );
-  return envelope.output;
-}
-
-export async function deleteTalkOutput(input: {
-  talkId: string;
-  outputId: string;
-}): Promise<void> {
-  await apiMutationRequest<{ deleted: true }>(
-    `/api/v1/talks/${encodeURIComponent(input.talkId)}/outputs/${encodeURIComponent(input.outputId)}`,
-    { method: 'DELETE' },
-  );
-}
-
 export async function listTalkJobs(talkId: string): Promise<TalkJob[]> {
   const envelope = await apiRequest<{ jobs: TalkJob[] }>(
     `/api/v1/talks/${encodeURIComponent(talkId)}/jobs`,
@@ -3230,9 +3131,6 @@ export async function createTalkJob(input: {
   targetAgentId: string;
   schedule: TalkJobSchedule;
   timezone: string;
-  deliverableKind: 'thread' | 'report';
-  reportOutputId?: string | null;
-  createReport?: { title: string; contentMarkdown?: string } | null;
   sourceScope: TalkJobScope;
 }): Promise<TalkJob> {
   const envelope = await apiMutationRequest<{ job: TalkJob }>(
@@ -3254,9 +3152,6 @@ export async function patchTalkJob(input: {
   targetAgentId?: string;
   schedule?: TalkJobSchedule;
   timezone?: string;
-  deliverableKind?: 'thread' | 'report';
-  reportOutputId?: string | null;
-  createReport?: { title: string; contentMarkdown?: string } | null;
   sourceScope?: TalkJobScope;
 }): Promise<TalkJob> {
   const { talkId, jobId, ...patch } = input;

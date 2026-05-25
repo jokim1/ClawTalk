@@ -33,7 +33,6 @@
 //                                         entries are served from the
 //                                         same module as the rest of
 //                                         the context surface)
-//   /api/v1/talks/:talkId/outputs[/...] — talk-outputs.ts
 //   /api/v1/talks/:talkId/jobs[/...]    — talk-jobs.ts (CRUD +
 //                                         pause/resume/run-now; the
 //                                         run-now mount creates a
@@ -166,13 +165,6 @@ import {
   resumeTalkJobRoute,
   runTalkJobNowRoute,
 } from './routes/talk-jobs.js';
-import {
-  createTalkOutputRoute,
-  deleteTalkOutputRoute,
-  getTalkOutputRoute,
-  listTalkOutputsRoute,
-  patchTalkOutputRoute,
-} from './routes/talk-outputs.js';
 import {
   acceptContentProposalRoute,
   createTalkContentRoute,
@@ -1491,97 +1483,6 @@ function buildApp(): Hono<{ Variables: Variables }> {
     return jsonResponse(result);
   });
 
-  // ── talk-outputs.ts: per-Talk markdown outputs CRUD ──────────
-  app.get('/api/v1/talks/:talkId/outputs', async (c) => {
-    const auth = c.get('auth');
-    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'read' });
-    if (!rl.allowed) return rateLimitedResponse(c, rl);
-    const result = await listTalkOutputsRoute({
-      auth,
-      talkId: c.req.param('talkId'),
-    });
-    return jsonResponse(result);
-  });
-
-  app.get('/api/v1/talks/:talkId/outputs/:outputId', async (c) => {
-    const auth = c.get('auth');
-    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'read' });
-    if (!rl.allowed) return rateLimitedResponse(c, rl);
-    const result = await getTalkOutputRoute({
-      auth,
-      talkId: c.req.param('talkId'),
-      outputId: c.req.param('outputId'),
-    });
-    return jsonResponse(result);
-  });
-
-  app.post('/api/v1/talks/:talkId/outputs', async (c) => {
-    const auth = c.get('auth');
-    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
-    if (!rl.allowed) return rateLimitedResponse(c, rl);
-    const csrfFail = checkCsrf(c, auth);
-    if (csrfFail) return csrfFail;
-    const payload = await readJsonBody<{
-      title?: string;
-      contentMarkdown?: string;
-    }>(c);
-    if (!payload.ok) return invalidJsonResponse(c, payload.error);
-    const result = await createTalkOutputRoute({
-      auth,
-      talkId: c.req.param('talkId'),
-      title: typeof payload.data.title === 'string' ? payload.data.title : '',
-      contentMarkdown:
-        typeof payload.data.contentMarkdown === 'string'
-          ? payload.data.contentMarkdown
-          : '',
-    });
-    return jsonResponse(result);
-  });
-
-  app.patch('/api/v1/talks/:talkId/outputs/:outputId', async (c) => {
-    const auth = c.get('auth');
-    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
-    if (!rl.allowed) return rateLimitedResponse(c, rl);
-    const csrfFail = checkCsrf(c, auth);
-    if (csrfFail) return csrfFail;
-    const payload = await readJsonBody<{
-      expectedVersion?: number;
-      title?: string;
-      contentMarkdown?: string;
-    }>(c);
-    if (!payload.ok) return invalidJsonResponse(c, payload.error);
-    const result = await patchTalkOutputRoute({
-      auth,
-      talkId: c.req.param('talkId'),
-      outputId: c.req.param('outputId'),
-      expectedVersion:
-        typeof payload.data.expectedVersion === 'number'
-          ? payload.data.expectedVersion
-          : undefined,
-      title:
-        typeof payload.data.title === 'string' ? payload.data.title : undefined,
-      contentMarkdown:
-        typeof payload.data.contentMarkdown === 'string'
-          ? payload.data.contentMarkdown
-          : undefined,
-    });
-    return jsonResponse(result);
-  });
-
-  app.delete('/api/v1/talks/:talkId/outputs/:outputId', async (c) => {
-    const auth = c.get('auth');
-    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
-    if (!rl.allowed) return rateLimitedResponse(c, rl);
-    const csrfFail = checkCsrf(c, auth);
-    if (csrfFail) return csrfFail;
-    const result = await deleteTalkOutputRoute({
-      auth,
-      talkId: c.req.param('talkId'),
-      outputId: c.req.param('outputId'),
-    });
-    return jsonResponse(result);
-  });
-
   // ── talk-contents.ts: 1:1 Content doc per Talk + agent proposals ─
   app.get('/api/v1/talks/:talkId/content', async (c) => {
     const auth = c.get('auth');
@@ -2144,9 +2045,6 @@ function buildApp(): Hono<{ Variables: Variables }> {
       targetAgentId?: string;
       schedule?: Record<string, unknown>;
       timezone?: string;
-      deliverableKind?: 'thread' | 'report';
-      reportOutputId?: string | null;
-      createReport?: Record<string, unknown>;
       sourceScope?: Record<string, unknown>;
     }>(c);
     if (!payload.ok) return invalidJsonResponse(c, payload.error);
@@ -2163,14 +2061,6 @@ function buildApp(): Hono<{ Variables: Variables }> {
       schedule: (payload.data.schedule ?? null) as any,
       timezone:
         typeof payload.data.timezone === 'string' ? payload.data.timezone : '',
-      deliverableKind:
-        payload.data.deliverableKind === 'report' ? 'report' : 'thread',
-      reportOutputId:
-        typeof payload.data.reportOutputId === 'string' ||
-        payload.data.reportOutputId === null
-          ? payload.data.reportOutputId
-          : undefined,
-      createReport: payload.data.createReport,
       sourceScope: (payload.data.sourceScope ?? null) as any,
     });
     return jsonResponse(result);
@@ -2188,9 +2078,6 @@ function buildApp(): Hono<{ Variables: Variables }> {
       targetAgentId?: string;
       schedule?: Record<string, unknown>;
       timezone?: string;
-      deliverableKind?: 'thread' | 'report';
-      reportOutputId?: string | null;
-      createReport?: Record<string, unknown>;
       sourceScope?: Record<string, unknown>;
     }>(c);
     if (!payload.ok) return invalidJsonResponse(c, payload.error);
@@ -2213,17 +2100,6 @@ function buildApp(): Hono<{ Variables: Variables }> {
         typeof payload.data.timezone === 'string'
           ? payload.data.timezone
           : undefined,
-      deliverableKind:
-        payload.data.deliverableKind === 'report' ||
-        payload.data.deliverableKind === 'thread'
-          ? payload.data.deliverableKind
-          : undefined,
-      reportOutputId:
-        typeof payload.data.reportOutputId === 'string' ||
-        payload.data.reportOutputId === null
-          ? payload.data.reportOutputId
-          : undefined,
-      createReport: payload.data.createReport,
       sourceScope: payload.data.sourceScope as any,
     });
     return jsonResponse(result);

@@ -3,7 +3,6 @@ import {
   blockTalkJob,
   createJobTriggerRun,
   createTalkJob,
-  createTalkOutput,
   deleteTalkJob,
   getTalkForUser,
   getTalkJob,
@@ -79,54 +78,6 @@ async function requireEditAccess(
   return null;
 }
 
-function normalizeCreateReportPayload(value: unknown): {
-  title: string;
-  contentMarkdown: string;
-} | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return null;
-  }
-  const title =
-    typeof (value as { title?: unknown }).title === 'string'
-      ? (value as { title: string }).title.trim()
-      : '';
-  const contentMarkdown =
-    typeof (value as { contentMarkdown?: unknown }).contentMarkdown === 'string'
-      ? (value as { contentMarkdown: string }).contentMarkdown
-      : '';
-  if (!title) {
-    throw new Error('createReport requires a title.');
-  }
-  return { title, contentMarkdown };
-}
-
-async function resolveReportTarget(input: {
-  talkId: string;
-  deliverableKind: 'thread' | 'report';
-  reportOutputId?: string | null;
-  createReport?: unknown;
-  auth: AuthContext;
-}): Promise<string | null | undefined> {
-  if (input.deliverableKind !== 'report') {
-    return null;
-  }
-  if (typeof input.reportOutputId === 'string' && input.reportOutputId.trim()) {
-    return input.reportOutputId.trim();
-  }
-  const createReport = normalizeCreateReportPayload(input.createReport);
-  if (!createReport) {
-    return undefined;
-  }
-  const output = await createTalkOutput({
-    ownerId: input.auth.userId,
-    talkId: input.talkId,
-    title: createReport.title,
-    contentMarkdown: createReport.contentMarkdown,
-    createdByUserId: input.auth.userId,
-  });
-  return output.id;
-}
-
 export async function listTalkJobsRoute(input: {
   auth: AuthContext;
   talkId: string;
@@ -175,9 +126,6 @@ export async function createTalkJobRoute(input: {
   targetAgentId: string;
   schedule: TalkJobSchedule;
   timezone: string;
-  deliverableKind: 'thread' | 'report';
-  reportOutputId?: string | null;
-  createReport?: unknown;
   sourceScope?: TalkJobScope;
 }): Promise<{
   statusCode: number;
@@ -190,20 +138,6 @@ export async function createTalkJobRoute(input: {
     if (denied) return denied;
 
     try {
-      const reportOutputId = await resolveReportTarget({
-        talkId: input.talkId,
-        deliverableKind: input.deliverableKind,
-        reportOutputId: input.reportOutputId,
-        createReport: input.createReport,
-        auth: input.auth,
-      });
-      if (input.deliverableKind === 'report' && !reportOutputId) {
-        return badRequest(
-          'report_target_required',
-          'Report jobs require an existing reportOutputId or createReport payload.',
-        );
-      }
-
       const job = await createTalkJob({
         ownerId: input.auth.userId,
         talkId: input.talkId,
@@ -212,8 +146,6 @@ export async function createTalkJobRoute(input: {
         targetAgentId: input.targetAgentId,
         schedule: input.schedule,
         timezone: input.timezone,
-        deliverableKind: input.deliverableKind,
-        reportOutputId,
         sourceScope: input.sourceScope,
         createdBy: input.auth.userId,
       });
@@ -239,9 +171,6 @@ export async function patchTalkJobRoute(input: {
   targetAgentId?: string;
   schedule?: TalkJobSchedule;
   timezone?: string;
-  deliverableKind?: 'thread' | 'report';
-  reportOutputId?: string | null;
-  createReport?: unknown;
   sourceScope?: TalkJobScope;
 }): Promise<{
   statusCode: number;
@@ -257,24 +186,6 @@ export async function patchTalkJobRoute(input: {
     if (!current) return notFound('Job not found.');
 
     try {
-      const deliverableKind = input.deliverableKind ?? current.deliverableKind;
-      const reportOutputId = await resolveReportTarget({
-        talkId: input.talkId,
-        deliverableKind,
-        reportOutputId:
-          input.reportOutputId !== undefined
-            ? input.reportOutputId
-            : current.reportOutputId,
-        createReport: input.createReport,
-        auth: input.auth,
-      });
-      if (deliverableKind === 'report' && !reportOutputId) {
-        return badRequest(
-          'report_target_required',
-          'Report jobs require an existing reportOutputId or createReport payload.',
-        );
-      }
-
       const job = await patchTalkJob({
         talkId: input.talkId,
         jobId: input.jobId,
@@ -283,8 +194,6 @@ export async function patchTalkJobRoute(input: {
         targetAgentId: input.targetAgentId,
         schedule: input.schedule,
         timezone: input.timezone,
-        deliverableKind,
-        reportOutputId,
         sourceScope: input.sourceScope,
       });
       if (!job) return notFound('Job not found.');

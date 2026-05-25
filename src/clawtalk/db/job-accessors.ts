@@ -25,7 +25,6 @@ import { getDbPg } from '../../db.js';
 import { emitOutboxEvent } from '../talks/outbox-emit.js';
 
 export type TalkJobStatus = 'active' | 'paused' | 'blocked';
-export type TalkJobDeliverableKind = 'thread' | 'report';
 export type TalkJobWeekday =
   | 'sun'
   | 'mon'
@@ -61,9 +60,6 @@ interface TalkJobRow {
   status: TalkJobStatus;
   schedule_json: TalkJobSchedule;
   timezone: string;
-  deliverable_kind: TalkJobDeliverableKind;
-  report_output_id: string | null;
-  report_output_title: string | null;
   source_scope_json: TalkJobScope;
   thread_id: string;
   last_run_at: string | null;
@@ -86,9 +82,6 @@ export interface TalkJob {
   status: TalkJobStatus;
   schedule: TalkJobSchedule;
   timezone: string;
-  deliverableKind: TalkJobDeliverableKind;
-  reportOutputId: string | null;
-  reportOutputTitle: string | null;
   sourceScope: TalkJobScope;
   threadId: string;
   lastRunAt: string | null;
@@ -123,7 +116,7 @@ export interface TalkJobRunSummary {
 }
 
 export interface TalkJobDependencyIssue {
-  code: 'target_agent_missing' | 'report_output_missing' | 'thread_missing';
+  code: 'target_agent_missing' | 'thread_missing';
   message: string;
 }
 
@@ -336,9 +329,6 @@ function toTalkJob(row: TalkJobRow): TalkJob {
     status: row.status,
     schedule: normalizeTalkJobSchedule(row.schedule_json),
     timezone: row.timezone,
-    deliverableKind: row.deliverable_kind,
-    reportOutputId: row.report_output_id,
-    reportOutputTitle: row.report_output_title,
     sourceScope: normalizeTalkJobScope(row.source_scope_json),
     threadId: row.thread_id,
     lastRunAt: row.last_run_at,
@@ -362,9 +352,6 @@ const TALK_JOB_SELECT = `
   j.status,
   j.schedule_json,
   j.timezone,
-  j.deliverable_kind,
-  j.report_output_id,
-  o.title as report_output_title,
   j.source_scope_json,
   j.thread_id,
   j.last_run_at,
@@ -382,8 +369,6 @@ export async function listTalkJobs(talkId: string): Promise<TalkJob[]> {
     select ${db.unsafe(TALK_JOB_SELECT)}
     from public.talk_jobs j
     left join public.registered_agents ra on ra.id = j.target_agent_id
-    left join public.talk_outputs o
-      on o.id = j.report_output_id and o.talk_id = j.talk_id
     where j.talk_id = ${talkId}::uuid
     order by
       case j.status
@@ -406,8 +391,6 @@ export async function getTalkJob(
     select ${db.unsafe(TALK_JOB_SELECT)}
     from public.talk_jobs j
     left join public.registered_agents ra on ra.id = j.target_agent_id
-    left join public.talk_outputs o
-      on o.id = j.report_output_id and o.talk_id = j.talk_id
     where j.talk_id = ${talkId}::uuid and j.id = ${jobId}::uuid
     limit 1
   `;
@@ -422,8 +405,6 @@ export async function getTalkJobById(
     select ${db.unsafe(TALK_JOB_SELECT)}
     from public.talk_jobs j
     left join public.registered_agents ra on ra.id = j.target_agent_id
-    left join public.talk_outputs o
-      on o.id = j.report_output_id and o.talk_id = j.talk_id
     where j.id = ${jobId}::uuid
     limit 1
   `;
@@ -449,31 +430,9 @@ async function validateTargetAgentMembership(
   return rows.length > 0;
 }
 
-async function validateReportOutput(
-  talkId: string,
-  deliverableKind: TalkJobDeliverableKind,
-  reportOutputId: string | null | undefined,
-): Promise<void> {
-  if (deliverableKind !== 'report') return;
-  if (!reportOutputId?.trim()) {
-    throw new Error('Report jobs require a configured report output.');
-  }
-  const db = getDbPg();
-  const rows = await db<{ id: string }[]>`
-    select id from public.talk_outputs
-    where talk_id = ${talkId}::uuid and id = ${reportOutputId}::uuid
-    limit 1
-  `;
-  if (rows.length === 0) {
-    throw new Error('The selected report output was not found on this talk.');
-  }
-}
-
 async function validateTalkJobConfiguration(input: {
   talkId: string;
   targetAgentId: string;
-  deliverableKind: TalkJobDeliverableKind;
-  reportOutputId?: string | null;
 }): Promise<void> {
   if (
     !(await validateTargetAgentMembership(input.talkId, input.targetAgentId))
@@ -482,11 +441,6 @@ async function validateTalkJobConfiguration(input: {
       'The selected Talk agent is not currently configured on this talk.',
     );
   }
-  await validateReportOutput(
-    input.talkId,
-    input.deliverableKind,
-    input.reportOutputId,
-  );
 }
 
 export async function getTalkJobDependencyIssue(
@@ -512,25 +466,6 @@ export async function getTalkJobDependencyIssue(
       code: 'target_agent_missing',
       message: 'The selected Talk agent is no longer available on this talk.',
     };
-  }
-  if (job.deliverableKind === 'report') {
-    if (!job.reportOutputId) {
-      return {
-        code: 'report_output_missing',
-        message: 'This report job no longer has a configured report output.',
-      };
-    }
-    const outputRows = await db<{ id: string }[]>`
-      select id from public.talk_outputs
-      where talk_id = ${job.talkId}::uuid and id = ${job.reportOutputId}::uuid
-      limit 1
-    `;
-    if (outputRows.length === 0) {
-      return {
-        code: 'report_output_missing',
-        message: 'The configured report output no longer exists.',
-      };
-    }
   }
   return null;
 }
@@ -559,8 +494,6 @@ export async function createTalkJob(input: {
   targetAgentId: string;
   schedule: TalkJobSchedule;
   timezone: string;
-  deliverableKind: TalkJobDeliverableKind;
-  reportOutputId?: string | null;
   sourceScope?: TalkJobScope;
   createdBy: string;
 }): Promise<TalkJob> {
@@ -572,8 +505,6 @@ export async function createTalkJob(input: {
   await validateTalkJobConfiguration({
     talkId: input.talkId,
     targetAgentId: input.targetAgentId,
-    deliverableKind: input.deliverableKind,
-    reportOutputId: input.reportOutputId,
   });
   const now = new Date().toISOString();
   const nextDueAt = computeNextTalkJobDueAt({
@@ -585,22 +516,21 @@ export async function createTalkJob(input: {
     ownerId: input.ownerId,
     talkId: input.talkId,
     title,
-    isInternal: input.deliverableKind === 'report',
+    isInternal: false,
   });
 
   const db = getDbPg();
   const inserted = await db<{ id: string }[]>`
     insert into public.talk_jobs (
       talk_id, owner_id, title, prompt, target_agent_id, status,
-      schedule_json, timezone, deliverable_kind, report_output_id,
+      schedule_json, timezone,
       source_scope_json, thread_id, next_due_at, created_by,
       created_at, updated_at, run_count
     )
     values (
       ${input.talkId}::uuid, ${input.ownerId}::uuid, ${title}, ${prompt},
       ${input.targetAgentId}::uuid, 'active',
-      ${db.json(schedule as never)}, ${timezone}, ${input.deliverableKind},
-      ${input.reportOutputId ?? null}::uuid,
+      ${db.json(schedule as never)}, ${timezone},
       ${db.json(sourceScope as never)}, ${thread.id}::uuid,
       ${nextDueAt}::timestamptz, ${input.createdBy}::uuid,
       ${now}::timestamptz, ${now}::timestamptz, 0
@@ -619,8 +549,6 @@ export async function patchTalkJob(input: {
   targetAgentId?: string;
   schedule?: TalkJobSchedule;
   timezone?: string;
-  deliverableKind?: TalkJobDeliverableKind;
-  reportOutputId?: string | null;
   sourceScope?: TalkJobScope;
 }): Promise<TalkJob | undefined> {
   const current = await getTalkJob(input.talkId, input.jobId);
@@ -642,15 +570,10 @@ export async function patchTalkJob(input: {
     input.timezone !== undefined
       ? validateTimezone(input.timezone)
       : current.timezone;
-  const deliverableKind = input.deliverableKind ?? current.deliverableKind;
   const sourceScope =
     input.sourceScope !== undefined
       ? normalizeTalkJobScope(input.sourceScope)
       : current.sourceScope;
-  const reportOutputId =
-    input.reportOutputId !== undefined
-      ? input.reportOutputId
-      : current.reportOutputId;
 
   if (!targetAgentId) {
     throw new Error('Job target agent is required');
@@ -658,8 +581,6 @@ export async function patchTalkJob(input: {
   await validateTalkJobConfiguration({
     talkId: input.talkId,
     targetAgentId,
-    deliverableKind,
-    reportOutputId,
   });
 
   const now = new Date().toISOString();
@@ -672,7 +593,6 @@ export async function patchTalkJob(input: {
   await db`
     update public.talk_threads
     set title = ${title},
-        is_internal = ${deliverableKind === 'report'},
         updated_at = ${now}::timestamptz
     where id = ${current.threadId}::uuid and talk_id = ${input.talkId}::uuid
   `;
@@ -683,8 +603,6 @@ export async function patchTalkJob(input: {
         target_agent_id = ${targetAgentId}::uuid,
         schedule_json = ${db.json(schedule as never)},
         timezone = ${timezone},
-        deliverable_kind = ${deliverableKind},
-        report_output_id = ${reportOutputId ?? null}::uuid,
         source_scope_json = ${db.json(sourceScope as never)},
         next_due_at = ${nextDueAt}::timestamptz,
         updated_at = ${now}::timestamptz
@@ -883,8 +801,6 @@ export async function claimDueTalkJobs(
     select ${db.unsafe(TALK_JOB_SELECT)}
     from public.talk_jobs j
     left join public.registered_agents ra on ra.id = j.target_agent_id
-    left join public.talk_outputs o
-      on o.id = j.report_output_id and o.talk_id = j.talk_id
     where j.status = 'active'
       and j.next_due_at is not null
       and j.next_due_at <= ${currentNow}::timestamptz
@@ -1014,7 +930,6 @@ export async function createJobTriggerRun(input: {
     kind: 'job_trigger' as const,
     jobId: job.id,
     triggerSource: input.triggerSource,
-    deliverableKind: job.deliverableKind,
     scheduled: input.triggerSource === 'scheduler',
   };
 

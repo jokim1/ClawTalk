@@ -180,11 +180,6 @@ async function executeBrowserTool(
 }
 import { executeGoogleDriveTalkTool } from './google-drive-tools.js';
 import { executeProposeContentAppend } from './content-tool-handlers.js';
-async function executeTalkOutputTool(
-  ..._args: unknown[]
-): Promise<ToolResultStub> {
-  throw new Error('Talk output tool is disabled (chassis removed).');
-}
 async function executeContainerAgentTurn(
   ..._args: unknown[]
 ): Promise<ContainerTurnResultStub> {
@@ -612,21 +607,6 @@ export function buildToolExecutor(
     toolName: string,
     args: Record<string, unknown>,
   ): Promise<{ result: string; isError?: boolean }> => {
-    if (
-      toolName === 'list_outputs' ||
-      toolName === 'read_output' ||
-      toolName === 'write_output'
-    ) {
-      return executeTalkOutputTool({
-        talkId,
-        userId,
-        runId,
-        toolName,
-        args,
-        policy: jobPolicy,
-      });
-    }
-
     if (toolName === 'read_context_source') {
       const ref = args.sourceRef as string | undefined;
       if (!ref) {
@@ -993,7 +973,6 @@ async function buildTalkJobExecutionPolicy(
     allowedChannelBindingIds: job.sourceScope.channelBindingIds,
     allowWeb: job.sourceScope.allowWeb,
     allowStateMutation: false,
-    allowOutputWrite: false,
     allowExternalMutation: false,
   };
 }

@@ -31,8 +31,6 @@ import type {
   TalkMessageAttachment,
   TalkRun,
   TalkRunContextSnapshot,
-  TalkOutput,
-  TalkOutputSummary,
   TalkJob,
   TalkJobRunSummary,
   TalkStateEntry,
@@ -680,11 +678,6 @@ describe('TalkDetailPage', () => {
               },
             ],
           },
-          outputs: {
-            totalCount: 0,
-            omittedCount: 0,
-            manifest: [],
-          },
           tools: {
             contextToolNames: ['read_context_source'],
             connectorToolNames: ['google_sheets_query'],
@@ -1206,45 +1199,6 @@ describe('TalkDetailPage', () => {
     await user.click(expandButton);
 
     expect(screen.getByRole('button', { name: 'Show less' })).toBeTruthy();
-  });
-
-  it('creates, edits, and deletes reports from the Reports tab', async () => {
-    const user = userEvent.setup();
-
-    installTalkDetailFetch({
-      outputs: [
-        buildTalkOutput({
-          id: 'output-1',
-          title: 'Season Outlook',
-          contentMarkdown: '# Outlook\n\nCal wins 7.',
-          contentLength: '# Outlook\n\nCal wins 7.'.length,
-        }),
-      ],
-    });
-
-    renderDetailPage('/app/talks/talk-1/outputs');
-
-    await screen.findByRole('heading', { name: 'Reports' });
-    expect(screen.getByRole('button', { name: 'New Report' })).toBeTruthy();
-    expect(screen.getByDisplayValue('Season Outlook')).toBeTruthy();
-
-    const titleInput = screen.getByDisplayValue('Season Outlook');
-    const bodyInput = screen.getByLabelText('Markdown Body');
-    await user.clear(titleInput);
-    await user.type(titleInput, 'Updated Outlook');
-    await user.clear(bodyInput);
-    await user.type(bodyInput, 'Fresh body');
-    await user.click(screen.getByRole('button', { name: 'Save Report' }));
-
-    expect(await screen.findByText('Report saved.')).toBeTruthy();
-    expect(screen.getAllByText('Updated Outlook').length).toBeGreaterThan(0);
-
-    await user.click(screen.getByRole('button', { name: 'New Report' }));
-    expect(await screen.findByText('Report created.')).toBeTruthy();
-    expect(screen.getAllByText('Untitled Report').length).toBeGreaterThan(0);
-
-    await user.click(screen.getByRole('button', { name: 'Delete Report' }));
-    expect(await screen.findByText('Report deleted.')).toBeTruthy();
   });
 
   it('treats awaiting confirmation runs as active rounds on the Talk tab', async () => {
@@ -4101,30 +4055,6 @@ function buildTalkStateEntry(input?: Partial<TalkStateEntry>): TalkStateEntry {
   };
 }
 
-function buildTalkOutputSummary(
-  input?: Partial<TalkOutputSummary>,
-): TalkOutputSummary {
-  return {
-    id: input?.id ?? 'output-1',
-    title: input?.title ?? 'Season Outlook',
-    version: input?.version ?? 1,
-    contentLength: input?.contentLength ?? 18,
-    createdAt: input?.createdAt ?? '2026-03-06T00:00:00.000Z',
-    updatedAt: input?.updatedAt ?? '2026-03-06T00:00:00.000Z',
-    createdByUserId: input?.createdByUserId ?? 'owner-1',
-    updatedByUserId: input?.updatedByUserId ?? 'owner-1',
-    updatedByRunId: input?.updatedByRunId ?? null,
-  };
-}
-
-function buildTalkOutput(input?: Partial<TalkOutput>): TalkOutput {
-  const summary = buildTalkOutputSummary(input);
-  return {
-    ...summary,
-    contentMarkdown: input?.contentMarkdown ?? '# Outlook\n\nCal wins 7.',
-  };
-}
-
 function buildTalkJob(input?: Partial<TalkJob>): TalkJob {
   return {
     id: input?.id ?? 'job-1',
@@ -4141,9 +4071,6 @@ function buildTalkJob(input?: Partial<TalkJob>): TalkJob {
       minute: 0,
     },
     timezone: input?.timezone ?? 'America/Los_Angeles',
-    deliverableKind: input?.deliverableKind ?? 'thread',
-    reportOutputId: input?.reportOutputId ?? null,
-    reportOutputTitle: input?.reportOutputTitle ?? null,
     sourceScope: input?.sourceScope ?? {
       connectorIds: [],
       channelBindingIds: [],
@@ -4247,7 +4174,6 @@ function installTalkDetailFetch(input?: {
   registeredAgents?: RegisteredAgent[];
   context?: TalkContext;
   stateEntries?: TalkStateEntry[];
-  outputs?: TalkOutput[];
   jobs?: TalkJob[];
   jobRunsByJobId?: Record<string, TalkJobRunSummary[]>;
   rulePatchError?: {
@@ -4411,7 +4337,6 @@ function installTalkDetailFetch(input?: {
   ];
   let context = input?.context ?? buildTalkContext();
   let stateEntries = input?.stateEntries ?? [];
-  let outputs = input?.outputs ?? [buildTalkOutput()];
   let jobs = input?.jobs ?? [buildTalkJob()];
   let jobRunsByJobId = input?.jobRunsByJobId ?? {
     'job-1': [buildTalkJobRunSummary()],
@@ -4929,36 +4854,6 @@ function installTalkDetailFetch(input?: {
         return jsonResponse(200, { ok: true, data: { deleted: true } });
       }
 
-      if (path === '/api/v1/talks/talk-1/outputs' && method === 'GET') {
-        return jsonResponse(200, {
-          ok: true,
-          data: {
-            outputs: outputs.map(({ contentMarkdown, ...summary }) => summary),
-          },
-        });
-      }
-
-      if (path === '/api/v1/talks/talk-1/outputs' && method === 'POST') {
-        const body = JSON.parse(String(init?.body || '{}')) as {
-          title?: string;
-          contentMarkdown?: string;
-        };
-        const created = buildTalkOutput({
-          id: `output-${outputs.length + 1}`,
-          title: body.title?.trim() || 'Untitled Output',
-          contentMarkdown: body.contentMarkdown ?? '',
-          version: 1,
-          contentLength: (body.contentMarkdown ?? '').length,
-          createdAt: '2026-03-06T00:00:00.000Z',
-          updatedAt: '2026-03-06T00:00:00.000Z',
-        });
-        outputs = [created, ...outputs];
-        return jsonResponse(201, {
-          ok: true,
-          data: { output: created },
-        });
-      }
-
       if (path === '/api/v1/talks/talk-1/jobs' && method === 'GET') {
         return jsonResponse(200, {
           ok: true,
@@ -4973,24 +4868,8 @@ function installTalkDetailFetch(input?: {
           targetAgentId?: string;
           schedule?: TalkJob['schedule'];
           timezone?: string;
-          deliverableKind?: TalkJob['deliverableKind'];
-          reportOutputId?: string | null;
-          createReport?: { title?: string; contentMarkdown?: string } | null;
           sourceScope?: TalkJob['sourceScope'];
         };
-        let reportOutputId = body.reportOutputId ?? null;
-        let reportOutputTitle: string | null = null;
-        if (body.deliverableKind === 'report' && body.createReport?.title) {
-          const createdOutput = buildTalkOutput({
-            id: `output-${outputs.length + 1}`,
-            title: body.createReport.title,
-            contentMarkdown: body.createReport.contentMarkdown ?? '',
-            contentLength: (body.createReport.contentMarkdown ?? '').length,
-          });
-          outputs = [createdOutput, ...outputs];
-          reportOutputId = createdOutput.id;
-          reportOutputTitle = createdOutput.title;
-        }
         const created = buildTalkJob({
           id: `job-${jobs.length + 1}`,
           title: body.title?.trim() || 'Untitled Job',
@@ -5003,9 +4882,6 @@ function installTalkDetailFetch(input?: {
             minute: 0,
           },
           timezone: body.timezone ?? 'America/Los_Angeles',
-          deliverableKind: body.deliverableKind ?? 'thread',
-          reportOutputId,
-          reportOutputTitle,
           sourceScope: body.sourceScope ?? {
             connectorIds: [],
             channelBindingIds: [],
@@ -5028,20 +4904,9 @@ function installTalkDetailFetch(input?: {
         const jobId = path.split('/api/v1/talks/talk-1/jobs/')[1];
         const body = JSON.parse(
           String(init?.body || '{}'),
-        ) as Partial<TalkJob> & {
-          createReport?: { title?: string; contentMarkdown?: string } | null;
-        };
+        ) as Partial<TalkJob>;
         jobs = jobs.map((job) =>
-          job.id === jobId
-            ? buildTalkJob({
-                ...job,
-                ...body,
-                reportOutputId:
-                  body.reportOutputId !== undefined
-                    ? body.reportOutputId
-                    : job.reportOutputId,
-              })
-            : job,
+          job.id === jobId ? buildTalkJob({ ...job, ...body }) : job,
         );
         return jsonResponse(200, {
           ok: true,
@@ -5127,72 +4992,6 @@ function installTalkDetailFetch(input?: {
             runId: run.id,
             triggerMessageId: 'msg-job-run',
           },
-        });
-      }
-
-      if (
-        /\/api\/v1\/talks\/talk-1\/outputs\/[^/]+$/.test(path) &&
-        method === 'GET'
-      ) {
-        const outputId = path.split('/api/v1/talks/talk-1/outputs/')[1];
-        const output = outputs.find((entry) => entry.id === outputId);
-        if (!output) {
-          return jsonResponse(404, {
-            ok: false,
-            error: { code: 'not_found', message: 'Output not found.' },
-          });
-        }
-        return jsonResponse(200, {
-          ok: true,
-          data: { output },
-        });
-      }
-
-      if (
-        /\/api\/v1\/talks\/talk-1\/outputs\/[^/]+$/.test(path) &&
-        method === 'PATCH'
-      ) {
-        const outputId = path.split('/api/v1/talks/talk-1/outputs/')[1];
-        const body = JSON.parse(String(init?.body || '{}')) as {
-          expectedVersion: number;
-          title?: string;
-          contentMarkdown?: string;
-        };
-        outputs = outputs.map((output) =>
-          output.id === outputId
-            ? {
-                ...output,
-                title:
-                  body.title === undefined ? output.title : body.title.trim(),
-                contentMarkdown:
-                  body.contentMarkdown === undefined
-                    ? output.contentMarkdown
-                    : body.contentMarkdown,
-                version: output.version + 1,
-                updatedAt: '2026-03-06T00:00:30.000Z',
-                contentLength:
-                  body.contentMarkdown === undefined
-                    ? output.contentLength
-                    : body.contentMarkdown.length,
-              }
-            : output,
-        );
-        const updated = outputs.find((output) => output.id === outputId);
-        return jsonResponse(200, {
-          ok: true,
-          data: { output: updated },
-        });
-      }
-
-      if (
-        /\/api\/v1\/talks\/talk-1\/outputs\/[^/]+$/.test(path) &&
-        method === 'DELETE'
-      ) {
-        const outputId = path.split('/api/v1/talks/talk-1/outputs/')[1];
-        outputs = outputs.filter((output) => output.id !== outputId);
-        return jsonResponse(200, {
-          ok: true,
-          data: { deleted: true },
         });
       }
 

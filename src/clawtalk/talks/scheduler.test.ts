@@ -158,7 +158,6 @@ describe('runScheduledTick — processClaimableJobs', () => {
         targetAgentId: agentId,
         schedule: { kind: 'hourly_interval', everyHours: 1 },
         timezone: 'UTC',
-        deliverableKind: 'thread',
         createdBy: OWNER_ID,
         // Force the row to be due in the past by overriding next_due_at
         // directly below.
@@ -198,7 +197,6 @@ describe('runScheduledTick — processClaimableJobs', () => {
         targetAgentId: agentId,
         schedule: { kind: 'hourly_interval', everyHours: 6 },
         timezone: 'UTC',
-        deliverableKind: 'thread',
         createdBy: OWNER_ID,
       });
     });

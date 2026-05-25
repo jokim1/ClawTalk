@@ -189,7 +189,6 @@ describe('job-accessors-pg (postgres + RLS)', () => {
         targetAgentId: agentId,
         schedule: { kind: 'hourly_interval', everyHours: 6 },
         timezone: 'America/Los_Angeles',
-        deliverableKind: 'thread',
         createdBy: USER_A_ID,
       });
     });
@@ -227,7 +226,6 @@ describe('job-accessors-pg (postgres + RLS)', () => {
           targetAgentId: otherAgent.id,
           schedule: { kind: 'hourly_interval', everyHours: 12 },
           timezone: 'UTC',
-          deliverableKind: 'thread',
           createdBy: USER_A_ID,
         });
       }),
@@ -245,7 +243,6 @@ describe('job-accessors-pg (postgres + RLS)', () => {
         targetAgentId: agentId,
         schedule: { kind: 'hourly_interval', everyHours: 1 },
         timezone: 'UTC',
-        deliverableKind: 'thread',
         createdBy: USER_A_ID,
       });
     });
@@ -298,7 +295,6 @@ describe('job-accessors-pg (postgres + RLS)', () => {
         targetAgentId: agentId,
         schedule: { kind: 'hourly_interval', everyHours: 4 },
         timezone: 'UTC',
-        deliverableKind: 'thread',
         createdBy: USER_A_ID,
       });
     });
@@ -326,7 +322,6 @@ describe('job-accessors-pg (postgres + RLS)', () => {
         targetAgentId: agentId,
         schedule: { kind: 'hourly_interval', everyHours: 8 },
         timezone: 'UTC',
-        deliverableKind: 'thread',
         createdBy: USER_A_ID,
       });
     });
@@ -355,7 +350,6 @@ describe('job-accessors-pg (postgres + RLS)', () => {
         targetAgentId: agentId,
         schedule: { kind: 'hourly_interval', everyHours: 1 },
         timezone: 'UTC',
-        deliverableKind: 'thread',
         createdBy: USER_A_ID,
       });
       return j.nextDueAt!;
@@ -386,7 +380,6 @@ describe('job-accessors-pg (postgres + RLS)', () => {
         targetAgentId: agentId,
         schedule: { kind: 'hourly_interval', everyHours: 1 },
         timezone: 'UTC',
-        deliverableKind: 'thread',
         createdBy: USER_A_ID,
       });
     });
@@ -438,7 +431,6 @@ describe('job-accessors-pg (postgres + RLS)', () => {
         targetAgentId: agentId,
         schedule: { kind: 'hourly_interval', everyHours: 1 },
         timezone: 'UTC',
-        deliverableKind: 'thread',
         createdBy: USER_A_ID,
       });
       await pauseTalkJob(talkId, j.id);
@@ -465,7 +457,6 @@ describe('job-accessors-pg (postgres + RLS)', () => {
         targetAgentId: agentId,
         schedule: { kind: 'hourly_interval', everyHours: 1 },
         timezone: 'UTC',
-        deliverableKind: 'thread',
         createdBy: USER_A_ID,
       });
     });
@@ -501,7 +492,6 @@ describe('job-accessors-pg (postgres + RLS)', () => {
         targetAgentId: agentId,
         schedule: { kind: 'hourly_interval', everyHours: 1 },
         timezone: 'UTC',
-        deliverableKind: 'thread',
         createdBy: USER_A_ID,
       });
     });
@@ -538,7 +528,6 @@ describe('job-accessors-pg (postgres + RLS)', () => {
         targetAgentId: agentId,
         schedule: { kind: 'hourly_interval', everyHours: 1 },
         timezone: 'UTC',
-        deliverableKind: 'thread',
         createdBy: USER_A_ID,
       });
     });
@@ -591,7 +580,6 @@ describe('job-accessors-pg (postgres + RLS)', () => {
         targetAgentId: agentId,
         schedule: { kind: 'hourly_interval', everyHours: 4 },
         timezone: 'UTC',
-        deliverableKind: 'thread',
         createdBy: USER_A_ID,
       });
       const paused1 = await createTalkJob({
@@ -602,7 +590,6 @@ describe('job-accessors-pg (postgres + RLS)', () => {
         targetAgentId: agentId,
         schedule: { kind: 'hourly_interval', everyHours: 4 },
         timezone: 'UTC',
-        deliverableKind: 'thread',
         createdBy: USER_A_ID,
       });
       await pauseTalkJob(talkId, paused1.id);
@@ -631,7 +618,6 @@ describe('job-accessors-pg (postgres + RLS)', () => {
         targetAgentId: agentId,
         schedule: { kind: 'hourly_interval', everyHours: 1 },
         timezone: 'UTC',
-        deliverableKind: 'thread',
         createdBy: USER_A_ID,
       });
     });
@@ -660,7 +646,6 @@ describe('job-accessors-pg (postgres + RLS)', () => {
         targetAgentId: agentId,
         schedule: { kind: 'hourly_interval', everyHours: 1 },
         timezone: 'UTC',
-        deliverableKind: 'thread',
         createdBy: USER_A_ID,
       });
     });

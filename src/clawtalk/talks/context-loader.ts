@@ -16,7 +16,6 @@ import { getDbPg, type Sql } from '../../db.js';
 import { listTalkStateEntries } from '../db/context-accessors.js';
 import { getContentByTalkId, type Content } from '../db/content-accessors.js';
 import type { EffectiveToolAccess } from '../db/agent-accessors.js';
-import { listTalkOutputs } from '../db/output-accessors.js';
 import {
   type LlmToolDefinition,
   type LlmMessage,
@@ -150,14 +149,6 @@ export interface TalkRunContextRetrievedSourceSnapshot {
   excerpt: string;
 }
 
-export interface TalkRunContextOutputManifestItem {
-  id: string;
-  title: string;
-  version: number;
-  updatedAt: string;
-  contentLength: number;
-}
-
 export interface TalkRunContextSnapshot {
   version: 1;
   threadId: string | null;
@@ -175,11 +166,6 @@ export interface TalkRunContextSnapshot {
     totalCount: number;
     manifest: TalkRunContextSourceManifestItem[];
     inline: TalkRunContextInlineSourceSnapshot[];
-  };
-  outputs: {
-    totalCount: number;
-    omittedCount: number;
-    manifest: TalkRunContextOutputManifestItem[];
   };
   retrieval: {
     query: string | null;
@@ -213,7 +199,6 @@ const SMALL_SOURCE_THRESHOLD = 250; // Max tokens to inline a source
 const MAX_RETRIEVED_STATE_ENTRIES = 3;
 const MAX_RETRIEVED_SOURCE_ITEMS = 3;
 const MAX_RETRIEVED_SOURCE_CHARS = 500;
-const MAX_OUTPUT_MANIFEST_ITEMS = 10;
 
 const STOPWORDS = new Set([
   'a',
@@ -394,7 +379,6 @@ export async function loadTalkContext(
     stateEntries,
     STATE_SNAPSHOT_RESERVE,
   );
-  const outputManifest = await buildOutputManifest(talkId);
 
   // Step 2: Build source manifest
   const sources = await fetchSources(db, talkId);
@@ -478,7 +462,6 @@ export async function loadTalkContext(
     roleHint,
     options?.channelContextSection ?? null,
     stateSnapshot.promptText,
-    outputManifest.promptText,
     retrievedContext.promptText,
     sourceLines,
     contentOutline,
@@ -566,11 +549,6 @@ export async function loadTalkContext(
           ref: source.ref,
           text: source.inlineContent!,
         })),
-    },
-    outputs: {
-      totalCount: outputManifest.totalCount,
-      omittedCount: outputManifest.omittedCount,
-      manifest: outputManifest.included,
     },
     retrieval: {
       query: options?.retrievalQuery?.trim() || null,
@@ -854,7 +832,6 @@ function assembleSystemPrompt(
   roleHint: string | null,
   channelContextSection: string | null,
   stateSnapshot: string | null,
-  outputManifest: string | null,
   retrievedContext: string | null,
   sourceLines: Array<{
     ref: string;
@@ -907,10 +884,6 @@ function assembleSystemPrompt(
 
   if (stateSnapshot) {
     parts.push(stateSnapshot);
-  }
-
-  if (outputManifest) {
-    parts.push(outputManifest);
   }
 
   if (retrievedContext) {
@@ -1231,52 +1204,6 @@ function buildContextTools(
   }
 
   return tools;
-}
-
-async function buildOutputManifest(talkId: string): Promise<{
-  totalCount: number;
-  omittedCount: number;
-  included: TalkRunContextOutputManifestItem[];
-  promptText: string | null;
-}> {
-  const outputs = await listTalkOutputs(talkId);
-  if (outputs.length === 0) {
-    return {
-      totalCount: 0,
-      omittedCount: 0,
-      included: [],
-      promptText: null,
-    };
-  }
-
-  const included = outputs
-    .slice(0, MAX_OUTPUT_MANIFEST_ITEMS)
-    .map((output) => ({
-      id: output.id,
-      title: output.title,
-      version: output.version,
-      updatedAt: output.updatedAt,
-      contentLength: output.contentLength,
-    }));
-  const omittedCount = Math.max(0, outputs.length - included.length);
-  const lines = included.map(
-    (output) =>
-      `- ${output.id}: ${output.title} (v${output.version}, ${output.contentLength} chars, updated ${output.updatedAt})`,
-  );
-  if (omittedCount > 0) {
-    lines.push(
-      `- ${omittedCount} additional output${
-        omittedCount === 1 ? '' : 's'
-      } omitted from the default manifest.`,
-    );
-  }
-
-  return {
-    totalCount: outputs.length,
-    omittedCount,
-    included,
-    promptText: `**Outputs:**\n${lines.join('\n')}`,
-  };
 }
 
 function buildRoleHint(personaRole: TalkPersonaRole | null): string | null {
