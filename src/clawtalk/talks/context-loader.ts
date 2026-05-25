@@ -13,6 +13,7 @@
  */
 
 import { getDbPg, type Sql } from '../../db.js';
+import { logger } from '../../logger.js';
 import { listTalkStateEntries } from '../db/context-accessors.js';
 import { getContentByTalkId, type Content } from '../db/content-accessors.js';
 import type { EffectiveToolAccess } from '../db/agent-accessors.js';
@@ -469,6 +470,23 @@ export async function loadTalkContext(
   // schema, so this is at most one row.
   const content = await getContentByTalkId(talkId);
   const contentOutline = content ? buildContentOutline(content) : null;
+
+  // Diagnostic (PR 5 follow-up): Kimi's response says it doesn't see
+  // the doc despite `propose_content_append` being registered. Log the
+  // outline's first 400 chars so we can confirm it really is in the
+  // assembled prompt for the offending run.
+  logger.info(
+    {
+      talkId,
+      hasContent: content !== null,
+      anchorCount: content ? Object.keys(content.anchorMap).length : 0,
+      outlineBytes: contentOutline
+        ? new TextEncoder().encode(contentOutline).byteLength
+        : 0,
+      outlineHead: contentOutline?.slice(0, 400) ?? null,
+    },
+    'clawtalk.content_outline_diag',
+  );
 
   // Step 4: Assemble system prompt
   const systemPrompt = assembleSystemPrompt(
