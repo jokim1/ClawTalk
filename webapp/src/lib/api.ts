@@ -1349,6 +1349,31 @@ export async function createTalkContent(input: {
   return envelope.content;
 }
 
+export async function patchContent(input: {
+  contentId: string;
+  expectedVersion: number;
+  bodyMarkdown?: string;
+  title?: string;
+}): Promise<{ content: Content; staledProposalIds: string[] }> {
+  const body: Record<string, unknown> = {
+    expectedVersion: input.expectedVersion,
+  };
+  if (typeof input.bodyMarkdown === 'string') {
+    body.bodyMarkdown = input.bodyMarkdown;
+  }
+  if (typeof input.title === 'string') {
+    body.title = input.title;
+  }
+  return apiMutationRequest<{ content: Content; staledProposalIds: string[] }>(
+    `/api/v1/contents/${encodeURIComponent(input.contentId)}`,
+    {
+      method: 'PATCH',
+      includeJson: true,
+      body: JSON.stringify(body),
+    },
+  );
+}
+
 export async function getTalkPolicy(talkId: string): Promise<TalkPolicy> {
   return apiRequest<TalkPolicy>(
     `/api/v1/talks/${encodeURIComponent(talkId)}/policy`,

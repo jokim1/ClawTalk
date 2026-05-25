@@ -5339,6 +5339,60 @@ a {
   color: #64748b;
 }
 
+.talk-tab-doc-save-saving {
+  color: #64748b;
+}
+
+.talk-tab-doc-save-pending {
+  color: #b45309;
+}
+
+.talk-tab-doc-save-saved {
+  color: #15803d;
+}
+
+.talk-tab-doc-save-error {
+  color: #b91c1c;
+  font-weight: 600;
+}
+
+.talk-tab-doc-conflict {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: 0.6rem 1rem 0;
+  padding: 0.55rem 0.75rem;
+  background: #fef3c7;
+  border: 1px solid #fbbf24;
+  border-radius: 8px;
+  color: #78350f;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.talk-tab-doc-conflict-button {
+  flex: none;
+  padding: 0.35rem 0.7rem;
+  background: #fff;
+  border: 1px solid #fbbf24;
+  border-radius: 6px;
+  color: #78350f;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  line-height: 1;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease;
+}
+
+.talk-tab-doc-conflict-button:hover {
+  background: #fde68a;
+  border-color: #d97706;
+}
+
 .talk-tab-doc-body {
   flex: 1;
   min-height: 0;
@@ -5420,10 +5474,14 @@ a {
   }
 }
 
-/* Rich-text editor render — the same surface PR 4 will turn editable.
+/* Rich-text editor render — read-only and editable Content surface.
    v1 markdown subset only (paragraphs, headings, blockquotes, lists,
-   code, inline marks, links, hard breaks). */
+   code, inline marks, links, hard breaks). PR 4 added the toolbar
+   and link bubbles under `.rich-text-editor-toolbar` /
+   `.rich-text-editor-link-bubble`. */
 .rich-text-editor {
+  display: flex;
+  flex-direction: column;
   font-family:
     'IBM Plex Sans',
     -apple-system,
@@ -5433,6 +5491,186 @@ a {
   font-size: 0.98rem;
   line-height: 1.6;
   color: #1d2433;
+}
+
+.rich-text-editor-canvas {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.rich-text-editor-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.45rem 0.6rem;
+  margin-bottom: 0.85rem;
+  background: #f8fafc;
+  border: 1px solid #e3eaf5;
+  border-radius: 8px;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.rich-text-editor-toolbar-divider {
+  width: 1px;
+  height: 18px;
+  background: #d8dfec;
+  margin: 0 0.2rem;
+  display: inline-block;
+}
+
+.rich-text-editor-toolbar-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 0.45rem;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #475569;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.82rem;
+  line-height: 1;
+  transition:
+    background 120ms ease,
+    color 120ms ease,
+    border-color 120ms ease;
+}
+
+.rich-text-editor-toolbar-button:hover:not(:disabled) {
+  background: #eef2f8;
+  color: #1d2433;
+}
+
+.rich-text-editor-toolbar-button:focus-visible {
+  outline: 2px solid #2b63d9;
+  outline-offset: 1px;
+}
+
+.rich-text-editor-toolbar-button[aria-pressed='true'] {
+  background: #dbe6ff;
+  color: #1f4dba;
+  border-color: #b8caf0;
+}
+
+.rich-text-editor-toolbar-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.rich-text-editor-heading-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.rich-text-editor-heading-trigger {
+  padding: 0 0.55rem;
+}
+
+.rich-text-editor-heading-trigger-label {
+  font-weight: 600;
+}
+
+.rich-text-editor-heading-menu {
+  position: absolute;
+  z-index: 50;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 10rem;
+  padding: 0.3rem;
+  background: #fff;
+  border: 1px solid #d8dfec;
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.14);
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.rich-text-editor-heading-menu-item {
+  display: block;
+  width: 100%;
+  padding: 0.4rem 0.55rem;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.88rem;
+  color: #1d2433;
+  line-height: 1.25;
+}
+
+.rich-text-editor-heading-menu-item:hover {
+  background: #eef2f8;
+}
+
+.rich-text-editor-heading-menu-item-h1 {
+  font-size: 1.2rem;
+  font-weight: 700;
+}
+
+.rich-text-editor-heading-menu-item-h2 {
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.rich-text-editor-heading-menu-item-h3 {
+  font-size: 0.98rem;
+  font-weight: 600;
+}
+
+.rich-text-editor-heading-menu-item-h4 {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.rich-text-editor-link-bubble {
+  position: absolute;
+  z-index: 40;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.45rem;
+  background: #fff;
+  border: 1px solid #d8dfec;
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.14);
+}
+
+.rich-text-editor-link-bubble-input {
+  min-width: 14rem;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid #d8dfec;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 0.85rem;
+  background: #fff;
+  color: #1d2433;
+  outline: none;
+}
+
+.rich-text-editor-link-bubble-input:focus {
+  border-color: #2b63d9;
+}
+
+.rich-text-editor-link-bubble-url {
+  max-width: 14rem;
+  padding: 0 0.3rem;
+  font-size: 0.78rem;
+  color: #64748b;
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .rich-text-editor .ProseMirror {
