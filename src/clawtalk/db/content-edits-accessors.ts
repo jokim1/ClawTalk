@@ -45,6 +45,7 @@ export interface ContentEditRecord {
   base_content_version: number;
   target_anchor_id: string | null;
   new_markdown: string | null;
+  new_html: string | null;
   rationale: string | null;
   created_at: string;
 }
@@ -52,7 +53,7 @@ export interface ContentEditRecord {
 const EDIT_COLUMNS = `
   id, content_id, run_id, agent_id, agent_nickname,
   message_id, kind, base_content_version,
-  target_anchor_id, new_markdown, rationale, created_at
+  target_anchor_id, new_markdown, new_html, rationale, created_at
 `;
 
 function toContentEdit(row: ContentEditRecord): ContentEditRow {
@@ -67,6 +68,7 @@ function toContentEdit(row: ContentEditRecord): ContentEditRow {
     baseContentVersion: row.base_content_version,
     targetAnchorId: row.target_anchor_id,
     newMarkdown: row.new_markdown,
+    newHtml: row.new_html ?? null,
     rationale: row.rationale,
     createdAt: row.created_at,
   };
@@ -166,6 +168,10 @@ export interface InsertPendingEditInput {
   baseContentVersion: number;
   targetAnchorId: string | null;
   newMarkdown: string | null;
+  // Optional; populated by the apply handler for HTML-format docs.
+  // Exactly one of newMarkdown / newHtml is non-null per row except
+  // kind='delete' (both null) — the DB CHECK enforces it.
+  newHtml?: string | null;
   rationale: string | null;
 }
 
@@ -177,13 +183,13 @@ export async function insertPendingEdit(
     insert into public.content_edits
       (content_id, run_id, agent_id, agent_nickname, message_id,
        kind, base_content_version, target_anchor_id,
-       new_markdown, rationale)
+       new_markdown, new_html, rationale)
     values
       (${input.contentId}::uuid, ${input.runId},
        ${input.agentId}::uuid, ${input.agentNickname},
        ${input.messageId}::uuid, ${input.kind},
        ${input.baseContentVersion}, ${input.targetAnchorId},
-       ${input.newMarkdown}, ${input.rationale})
+       ${input.newMarkdown}, ${input.newHtml ?? null}, ${input.rationale})
     returning ${db.unsafe(EDIT_COLUMNS)}
   `;
   return toContentEdit(rows[0]);
@@ -194,6 +200,7 @@ export async function updatePendingEdit(input: {
   kind: ContentEditKind;
   targetAnchorId: string | null;
   newMarkdown: string | null;
+  newHtml?: string | null;
   rationale: string | null;
 }): Promise<ContentEditRow | null> {
   const db = getDbPg();
@@ -202,6 +209,7 @@ export async function updatePendingEdit(input: {
     set kind = ${input.kind},
         target_anchor_id = ${input.targetAnchorId},
         new_markdown = ${input.newMarkdown},
+        new_html = ${input.newHtml ?? null},
         rationale = ${input.rationale}
     where id = ${input.editId}::uuid
     returning ${db.unsafe(EDIT_COLUMNS)}

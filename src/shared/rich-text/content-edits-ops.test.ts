@@ -8,7 +8,9 @@ import { describe, expect, it } from 'vitest';
 import {
   ANCHOR_ATTR_KEY,
   composeBody,
+  composeBodyHtml,
   materializeEdits,
+  materializeEditsHtml,
   listPendingRunIds,
   groupEditsByRun,
   getPendingRunSummary,
@@ -31,6 +33,7 @@ function edit(overrides: Partial<ContentEditRow>): ContentEditRow {
     baseContentVersion: 1,
     targetAnchorId: null,
     newMarkdown: null,
+    newHtml: null,
     rationale: null,
     createdAt: '2026-05-26T12:00:00Z',
     ...overrides,
@@ -369,5 +372,306 @@ describe('getPendingRunSummary', () => {
 
   it('returns null for an unknown runId', () => {
     expect(getPendingRunSummary([], 'nope')).toBeNull();
+  });
+});
+
+// ── HTML compose / materialize tests (PR B) ─────────────────────────
+
+const SAMPLE_HTML =
+  '<h1 data-anchor-id="h1">Title</h1>' +
+  '<p data-anchor-id="p1">First paragraph.</p>' +
+  '<p data-anchor-id="p2">Second paragraph.</p>';
+
+describe('composeBodyHtml', () => {
+  it('returns the parsed body unchanged when no edits', () => {
+    const result = composeBodyHtml(SAMPLE_HTML, []);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.skippedEditIds).toEqual([]);
+    expect(result.html).toContain('data-anchor-id="h1"');
+    expect(result.html).toContain('First paragraph.');
+    expect(result.html).toContain('Second paragraph.');
+    expect(result.html).not.toContain('data-pending-kind');
+  });
+
+  it('annotates a pending insert after the target anchor', () => {
+    const e = edit({
+      id: 'i-1',
+      kind: 'insert',
+      targetAnchorId: 'p1',
+      newHtml: '<p>Inserted block.</p>',
+    });
+    const result = composeBodyHtml(SAMPLE_HTML, [e], {
+      generate: makeGenerator('new-'),
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.skippedEditIds).toEqual([]);
+    // Inserted block sits between p1 and p2 with pending markers. Match
+    // by structure: anchor + pending attrs in any order between the
+    // bracket pair, but the inserted text and surrounding anchors must
+    // appear in document order.
+    expect(result.html).toMatch(
+      /data-anchor-id="p1"[^>]*>First paragraph\.<\/p><p [^>]+>Inserted block\.<\/p><p[^>]*data-anchor-id="p2"/,
+    );
+    expect(result.html).toContain('data-anchor-id="new-1"');
+    expect(result.html).toContain('data-pending-kind="insert"');
+    expect(result.html).toContain('data-pending-edit-id="i-1"');
+  });
+
+  it('prepends a pending insert when target anchor is null', () => {
+    const e = edit({
+      id: 'i-top',
+      kind: 'insert',
+      targetAnchorId: null,
+      newHtml: '<p>Top block.</p>',
+    });
+    const result = composeBodyHtml(SAMPLE_HTML, [e], {
+      generate: makeGenerator('top-'),
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // First top-level child carries the new edit + appears before h1.
+    expect(result.html).toMatch(
+      /^<p [^>]*>Top block\.<\/p><h1[^>]*>Title<\/h1>/,
+    );
+    expect(result.html).toContain('data-anchor-id="top-1"');
+    expect(result.html).toContain('data-pending-kind="insert"');
+    expect(result.html).toContain('data-pending-edit-id="i-top"');
+  });
+
+  it('splits a pending replace into prior + new sibling blocks', () => {
+    const e = edit({
+      id: 'r-1',
+      kind: 'replace',
+      targetAnchorId: 'p1',
+      newHtml: '<p>New paragraph.</p>',
+    });
+    const result = composeBodyHtml(SAMPLE_HTML, [e], {
+      generate: makeGenerator('rp-'),
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Prior keeps its anchor and gets role=prior; new sibling gets role=new.
+    // Attribute order is linkedom-dependent — assert each attribute appears
+    // alongside its sibling, not in a fixed order.
+    expect(result.html).toMatch(
+      /<p [^>]*data-anchor-id="p1"[^>]*data-pending-role="prior"|data-pending-role="prior"[^>]*data-anchor-id="p1"/,
+    );
+    expect(result.html).toMatch(
+      /data-pending-edit-id="r-1"[^>]*data-pending-role="prior"|data-pending-role="prior"[^>]*data-pending-edit-id="r-1"/,
+    );
+    expect(result.html).toMatch(
+      /data-pending-edit-id="r-1"[^>]*data-pending-role="new"|data-pending-role="new"[^>]*data-pending-edit-id="r-1"/,
+    );
+    expect(result.html).toContain('New paragraph.');
+  });
+
+  it('marks a pending delete on the existing block', () => {
+    const e = edit({
+      id: 'd-1',
+      kind: 'delete',
+      targetAnchorId: 'p2',
+      newHtml: null,
+    });
+    const result = composeBodyHtml(SAMPLE_HTML, [e]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // The original p2 block carries the pending-delete marker pair.
+    expect(result.html).toMatch(
+      /<p [^>]*data-anchor-id="p2"[^>]*data-pending-kind="delete"|data-pending-kind="delete"[^>]*data-anchor-id="p2"/,
+    );
+    expect(result.html).toContain('data-pending-edit-id="d-1"');
+  });
+
+  it('bulk supersedes other edits and marks every new block as insert', () => {
+    const granular = edit({
+      id: 'g-1',
+      kind: 'insert',
+      targetAnchorId: 'p1',
+      newHtml: '<p>Ignored.</p>',
+    });
+    const bulk = edit({
+      id: 'b-1',
+      kind: 'bulk',
+      targetAnchorId: null,
+      newHtml: '<h1>Bulk title</h1><p>Bulk body.</p>',
+    });
+    const result = composeBodyHtml(SAMPLE_HTML, [granular, bulk], {
+      generate: makeGenerator('blk-'),
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.html).toContain('Bulk title');
+    expect(result.html).toContain('Bulk body.');
+    expect(result.html).not.toContain('Ignored.');
+    // Every block in the bulk output carries the pending-insert + edit id.
+    expect(result.html.match(/data-pending-kind="insert"/g)?.length ?? 0).toBe(
+      2,
+    );
+  });
+
+  it('skips edits with a missing target anchor', () => {
+    const e = edit({
+      id: 'r-bad',
+      kind: 'replace',
+      targetAnchorId: 'does-not-exist',
+      newHtml: '<p>Never seen.</p>',
+    });
+    const result = composeBodyHtml(SAMPLE_HTML, [e]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.skippedEditIds).toEqual(['r-bad']);
+    expect(result.html).not.toContain('Never seen.');
+  });
+
+  it('stamps missing top-level anchors before composing', () => {
+    const result = composeBodyHtml('<p>No anchor yet.</p>', [], {
+      generate: makeGenerator('stamp-'),
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.html).toContain('data-anchor-id="stamp-1"');
+  });
+});
+
+describe('materializeEditsHtml', () => {
+  it('returns the parsed body for no edits', () => {
+    const result = materializeEditsHtml(SAMPLE_HTML, []);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.html).not.toContain('data-pending-kind');
+    expect(result.html).toContain('Title');
+    expect(result.html).toContain('First paragraph.');
+  });
+
+  it('materializes an insert into the body (no pending markers)', () => {
+    const e = edit({
+      kind: 'insert',
+      targetAnchorId: 'p1',
+      newHtml: '<p>Accepted insert.</p>',
+    });
+    const result = materializeEditsHtml(SAMPLE_HTML, [e], {
+      generate: makeGenerator('acc-'),
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.html).toContain(
+      '<p data-anchor-id="acc-1">Accepted insert.</p>',
+    );
+    expect(result.html).not.toContain('data-pending-kind');
+  });
+
+  it('materializes a single-node replace by inheriting the target anchor', () => {
+    const e = edit({
+      kind: 'replace',
+      targetAnchorId: 'p1',
+      newHtml: '<p>Replaced.</p>',
+    });
+    const result = materializeEditsHtml(SAMPLE_HTML, [e]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.html).toContain('<p data-anchor-id="p1">Replaced.</p>');
+    expect(result.html).not.toContain('First paragraph.');
+  });
+
+  it('materializes a multi-node replace with fresh anchors', () => {
+    const e = edit({
+      kind: 'replace',
+      targetAnchorId: 'p1',
+      newHtml: '<p>First new.</p><p>Second new.</p>',
+    });
+    const result = materializeEditsHtml(SAMPLE_HTML, [e], {
+      generate: makeGenerator('mr-'),
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.html).toContain('First new.');
+    expect(result.html).toContain('Second new.');
+    expect(result.html).not.toContain('First paragraph.');
+    expect(result.html).toContain('data-anchor-id="mr-');
+  });
+
+  it('materializes a delete by dropping the target block', () => {
+    const e = edit({
+      kind: 'delete',
+      targetAnchorId: 'p2',
+      newHtml: null,
+    });
+    const result = materializeEditsHtml(SAMPLE_HTML, [e]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.html).not.toContain('Second paragraph.');
+    expect(result.html).toContain('First paragraph.');
+  });
+
+  it('materializes a bulk by replacing the whole body with fresh anchors', () => {
+    const e = edit({
+      kind: 'bulk',
+      newHtml: '<h1>Bulk H1</h1><p>Bulk para.</p>',
+    });
+    const result = materializeEditsHtml(SAMPLE_HTML, [e], {
+      generate: makeGenerator('bk-'),
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.html).toContain('Bulk H1');
+    expect(result.html).toContain('Bulk para.');
+    expect(result.html).not.toContain('Title');
+    // Fresh anchors stamped — both top-level blocks get one.
+    expect(result.html.match(/data-anchor-id="bk-/g)?.length ?? 0).toBe(2);
+  });
+
+  it('respects edit order — second edit sees the body after first', () => {
+    const insert = edit({
+      id: 'i-1',
+      kind: 'insert',
+      targetAnchorId: 'p1',
+      newHtml: '<p>Inserted.</p>',
+    });
+    const replace = edit({
+      id: 'r-1',
+      kind: 'replace',
+      targetAnchorId: 'p2',
+      newHtml: '<p>Replaced second.</p>',
+    });
+    const result = materializeEditsHtml(SAMPLE_HTML, [insert, replace]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.html).toContain('Inserted.');
+    expect(result.html).toContain('Replaced second.');
+    expect(result.html).not.toContain('Second paragraph.');
+  });
+
+  it('skips edits whose anchor is missing (no throw)', () => {
+    const e = edit({
+      kind: 'replace',
+      targetAnchorId: 'nope',
+      newHtml: '<p>Ignored.</p>',
+    });
+    const result = materializeEditsHtml(SAMPLE_HTML, [e]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.html).not.toContain('Ignored.');
+    expect(result.html).toContain('First paragraph.');
+  });
+
+  it('round-trips compose -> materialize: pending markers vanish on accept', () => {
+    const e = edit({
+      id: 'rt-1',
+      kind: 'replace',
+      targetAnchorId: 'p1',
+      newHtml: '<p>Accepted via roundtrip.</p>',
+    });
+    const composed = composeBodyHtml(SAMPLE_HTML, [e]);
+    expect(composed.ok).toBe(true);
+    if (!composed.ok) return;
+    expect(composed.html).toContain('data-pending-kind');
+    const materialized = materializeEditsHtml(SAMPLE_HTML, [e]);
+    expect(materialized.ok).toBe(true);
+    if (!materialized.ok) return;
+    expect(materialized.html).toContain('Accepted via roundtrip.');
+    expect(materialized.html).not.toContain('First paragraph.');
+    expect(materialized.html).not.toContain('data-pending-kind');
   });
 });

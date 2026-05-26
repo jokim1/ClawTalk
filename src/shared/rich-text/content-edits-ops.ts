@@ -29,6 +29,11 @@ import {
   getAnchorId,
 } from './anchor-ops.js';
 import { markdownToTiptapJson } from './markdown-to-tiptap.js';
+import { parseHTML } from 'linkedom';
+import {
+  BLOCK_ELIGIBLE_TAGS,
+  insertAnchors as insertHtmlAnchors,
+} from './html-anchors.js';
 
 // ── Edit row shape (mirror of content_edits) ─────────────────────────
 
@@ -47,10 +52,16 @@ export interface ContentEditRow {
   // For insert: the anchor to insert AFTER (null = prepend at top).
   // For bulk: null (the whole body is replaced).
   targetAnchorId: string | null;
-  // For insert/replace: the new block markdown.
-  // For bulk: the entire new body markdown.
-  // For delete: null (no new content).
+  // For markdown docs (parent content_format='markdown'): the new block
+  // markdown. For insert/replace; the entire new body for bulk; null
+  // for delete.
   newMarkdown: string | null;
+  // For HTML docs (parent content_format='html'): the new block HTML.
+  // Exactly one of newMarkdown / newHtml is non-null per row (except
+  // kind='delete', where both are null). The DB CHECK constraint in
+  // migration 0030 enforces this; consumers branch on the parent
+  // content's format to know which field to read.
+  newHtml: string | null;
   rationale: string | null;
   createdAt: string;
 }
@@ -427,3 +438,393 @@ export function getPendingRunSummary(
 // Re-export the body-anchor lookup so consumers that just need "is this
 // anchor still in the doc" don't have to import from anchor-ops too.
 export { getAnchorId };
+
+// ── HTML compose + materialize (PR B) ────────────────────────────────
+//
+// Sibling of the markdown composer above, operating on `body_html` and
+// `new_html` instead of body_markdown / new_markdown. Block targeting
+// is by `data-anchor-id` (see html-anchors.ts); pending markers land
+// as `data-pending-kind` / `data-pending-edit-id` / `data-pending-role`
+// attributes on the affected top-level blocks.
+//
+// The HTML path uses linkedom for DOM mutation so it stays
+// Workers-compatible. The markdown path above is bit-for-bit unchanged.
+
+export const PENDING_KIND_HTML_ATTR = 'data-pending-kind' as const;
+export const PENDING_EDIT_ID_HTML_ATTR = 'data-pending-edit-id' as const;
+export const PENDING_ROLE_HTML_ATTR = 'data-pending-role' as const;
+const HTML_ANCHOR_ATTR = 'data-anchor-id';
+
+export interface HtmlComposeError {
+  ok: false;
+  error: 'html_parse_failed';
+  message: string;
+}
+
+export interface HtmlComposeSuccess {
+  ok: true;
+  html: string;
+  skippedEditIds: string[];
+}
+
+export type ComposeBodyHtmlResult = HtmlComposeSuccess | HtmlComposeError;
+
+export interface MaterializeEditsHtmlSuccess {
+  ok: true;
+  html: string;
+}
+
+export type MaterializeEditsHtmlResult =
+  | MaterializeEditsHtmlSuccess
+  | HtmlComposeError;
+
+// Slim narrowing for linkedom DOM nodes — we only touch the
+// element/parent surface, no need for global DOM lib types.
+interface HtmlElementLike {
+  tagName: string | null;
+  children: HtmlElementLike[];
+  parentNode: HtmlElementLike | null;
+  nextSibling: HtmlElementLike | null;
+  innerHTML: string;
+  outerHTML: string;
+  getAttribute(name: string): string | null;
+  setAttribute(name: string, value: string): void;
+  removeAttribute(name: string): void;
+  appendChild(child: HtmlElementLike): HtmlElementLike;
+  insertBefore(
+    newNode: HtmlElementLike,
+    refNode: HtmlElementLike | null,
+  ): HtmlElementLike;
+  removeChild(child: HtmlElementLike): HtmlElementLike;
+  replaceChild(
+    newNode: HtmlElementLike,
+    oldNode: HtmlElementLike,
+  ): HtmlElementLike;
+}
+
+interface HtmlDocumentLike {
+  body: HtmlElementLike;
+  createElement(tag: string): HtmlElementLike;
+}
+
+function tagOf(element: HtmlElementLike): string {
+  return (element.tagName ?? '').toLowerCase();
+}
+
+function isBlockEligible(element: HtmlElementLike): boolean {
+  return BLOCK_ELIGIBLE_TAGS.has(tagOf(element));
+}
+
+function parseHtmlDocument(
+  html: string,
+): { ok: true; document: HtmlDocumentLike } | HtmlComposeError {
+  if (typeof html !== 'string') {
+    return {
+      ok: false,
+      error: 'html_parse_failed',
+      message: 'HTML payload must be a string.',
+    };
+  }
+  try {
+    const { document } = parseHTML(
+      `<!doctype html><html><head></head><body>${html}</body></html>`,
+    );
+    if (!document.body) {
+      return {
+        ok: false,
+        error: 'html_parse_failed',
+        message: 'Parsed HTML has no <body>.',
+      };
+    }
+    return { ok: true, document: document as unknown as HtmlDocumentLike };
+  } catch (err) {
+    return {
+      ok: false,
+      error: 'html_parse_failed',
+      message:
+        err instanceof Error
+          ? err.message
+          : 'Unknown HTML parse error from linkedom.',
+    };
+  }
+}
+
+function stampMissingTopLevelAnchors(
+  root: HtmlElementLike,
+  generate: () => string,
+): void {
+  for (const child of [...root.children]) {
+    if (!isBlockEligible(child)) continue;
+    const existing = child.getAttribute(HTML_ANCHOR_ATTR);
+    if (typeof existing === 'string' && existing.length > 0) continue;
+    child.setAttribute(HTML_ANCHOR_ATTR, generate());
+  }
+}
+
+function findTopLevelBlockByAnchor(
+  root: HtmlElementLike,
+  anchorId: string,
+): HtmlElementLike | null {
+  for (const child of root.children) {
+    if (child.getAttribute(HTML_ANCHOR_ATTR) === anchorId) return child;
+  }
+  return null;
+}
+
+function parsePayloadBlocks(
+  doc: HtmlDocumentLike,
+  payload: string,
+): HtmlElementLike[] {
+  const wrapper = doc.createElement('div');
+  wrapper.innerHTML = payload;
+  return [...wrapper.children];
+}
+
+function annotateBlock(
+  block: HtmlElementLike,
+  kind: ContentEditKind,
+  editId: string,
+  role?: 'prior' | 'new',
+): void {
+  block.setAttribute(PENDING_KIND_HTML_ATTR, kind);
+  block.setAttribute(PENDING_EDIT_ID_HTML_ATTR, editId);
+  if (role) block.setAttribute(PENDING_ROLE_HTML_ATTR, role);
+}
+
+function stampPayloadAnchors(
+  blocks: HtmlElementLike[],
+  generate: () => string,
+  inheritFirst: string | null,
+): void {
+  blocks.forEach((block, index) => {
+    if (!isBlockEligible(block)) return;
+    if (index === 0 && inheritFirst !== null && blocks.length === 1) {
+      block.setAttribute(HTML_ANCHOR_ATTR, inheritFirst);
+      return;
+    }
+    if (!block.getAttribute(HTML_ANCHOR_ATTR)) {
+      block.setAttribute(HTML_ANCHOR_ATTR, generate());
+    }
+  });
+}
+
+function insertBlocksAfter(
+  root: HtmlElementLike,
+  blocks: HtmlElementLike[],
+  target: HtmlElementLike | null,
+): void {
+  // target=null means prepend at top. Otherwise insert each block right
+  // after target, walking a moving cursor so the blocks land in input
+  // order.
+  let cursor: HtmlElementLike | null = target;
+  for (const block of blocks) {
+    if (cursor === null) {
+      const firstChild = root.children[0] ?? null;
+      root.insertBefore(block, firstChild);
+    } else {
+      root.insertBefore(block, cursor.nextSibling);
+    }
+    cursor = block;
+  }
+}
+
+function clearRoot(root: HtmlElementLike): void {
+  while (root.children.length > 0) {
+    root.removeChild(root.children[0]);
+  }
+}
+
+/**
+ * Compose body_html + pending edits into an annotated HTML body for
+ * rendering. Top-level blocks targeted by edits gain
+ * `data-pending-kind` + `data-pending-edit-id`, with replace splitting
+ * into `data-pending-role="prior"` + `data-pending-role="new"`
+ * siblings. Bulk supersedes other edits (same contract as markdown).
+ *
+ * Returns a structured parse-error envelope when linkedom can't parse
+ * either the base body or any edit payload — caller surfaces to the
+ * agent for retry rather than 500ing.
+ */
+export function composeBodyHtml(
+  bodyHtml: string,
+  edits: ContentEditRow[],
+  options: ComposeBodyOptions = {},
+): ComposeBodyHtmlResult {
+  const parsed = parseHtmlDocument(bodyHtml);
+  if (!parsed.ok) return parsed;
+  const doc = parsed.document;
+  const root = doc.body;
+  const generate = options.generate ?? freshAnchorId;
+
+  stampMissingTopLevelAnchors(root, generate);
+
+  if (edits.length === 0) {
+    return { ok: true, html: root.innerHTML, skippedEditIds: [] };
+  }
+
+  const bulk = edits.find((e) => e.kind === 'bulk');
+  if (bulk) {
+    if (bulk.newHtml === null) {
+      return { ok: true, html: root.innerHTML, skippedEditIds: [bulk.id] };
+    }
+    clearRoot(root);
+    const blocks = parsePayloadBlocks(doc, bulk.newHtml);
+    stampPayloadAnchors(blocks, generate, null);
+    for (const block of blocks) {
+      if (isBlockEligible(block)) annotateBlock(block, 'insert', bulk.id);
+      root.appendChild(block);
+    }
+    return { ok: true, html: root.innerHTML, skippedEditIds: [] };
+  }
+
+  const skipped: string[] = [];
+  for (const edit of edits) {
+    const ok = applyOneHtmlCompose(doc, root, edit, generate);
+    if (!ok) skipped.push(edit.id);
+  }
+  return { ok: true, html: root.innerHTML, skippedEditIds: skipped };
+}
+
+function applyOneHtmlCompose(
+  doc: HtmlDocumentLike,
+  root: HtmlElementLike,
+  edit: ContentEditRow,
+  generate: () => string,
+): boolean {
+  switch (edit.kind) {
+    case 'insert': {
+      if (edit.newHtml === null) return false;
+      let target: HtmlElementLike | null = null;
+      if (edit.targetAnchorId !== null) {
+        target = findTopLevelBlockByAnchor(root, edit.targetAnchorId);
+        if (target === null) return false;
+      }
+      const blocks = parsePayloadBlocks(doc, edit.newHtml);
+      stampPayloadAnchors(blocks, generate, null);
+      for (const block of blocks) {
+        if (isBlockEligible(block)) annotateBlock(block, 'insert', edit.id);
+      }
+      insertBlocksAfter(root, blocks, target);
+      return true;
+    }
+    case 'replace': {
+      if (edit.newHtml === null) return false;
+      if (edit.targetAnchorId === null) return false;
+      const target = findTopLevelBlockByAnchor(root, edit.targetAnchorId);
+      if (target === null) return false;
+      annotateBlock(target, 'replace', edit.id, 'prior');
+      const blocks = parsePayloadBlocks(doc, edit.newHtml);
+      stampPayloadAnchors(blocks, generate, null);
+      for (const block of blocks) {
+        if (isBlockEligible(block)) {
+          annotateBlock(block, 'replace', edit.id, 'new');
+        }
+      }
+      insertBlocksAfter(root, blocks, target);
+      return true;
+    }
+    case 'delete': {
+      if (edit.targetAnchorId === null) return false;
+      const target = findTopLevelBlockByAnchor(root, edit.targetAnchorId);
+      if (target === null) return false;
+      annotateBlock(target, 'delete', edit.id);
+      return true;
+    }
+    case 'bulk': {
+      // Bulk handled by the dispatcher; should never route through here.
+      return false;
+    }
+  }
+}
+
+/**
+ * Materialize a sequence of pending HTML edits into a clean HTML body.
+ * No pending markers in the output — the result is what gets persisted
+ * on accept (after the caller re-stamps anchors via `insertAnchors`
+ * + runs `sanitizeHtmlServer`).
+ *
+ * Missing target anchors are silent no-ops per edit (same contract as
+ * the markdown materializer).
+ */
+export function materializeEditsHtml(
+  bodyHtml: string,
+  edits: ContentEditRow[],
+  options: ComposeBodyOptions = {},
+): MaterializeEditsHtmlResult {
+  const parsed = parseHtmlDocument(bodyHtml);
+  if (!parsed.ok) return parsed;
+  const doc = parsed.document;
+  const root = doc.body;
+  const generate = options.generate ?? freshAnchorId;
+
+  stampMissingTopLevelAnchors(root, generate);
+
+  for (const edit of edits) {
+    applyOneHtmlMaterialize(doc, root, edit, generate);
+  }
+
+  return { ok: true, html: root.innerHTML };
+}
+
+function applyOneHtmlMaterialize(
+  doc: HtmlDocumentLike,
+  root: HtmlElementLike,
+  edit: ContentEditRow,
+  generate: () => string,
+): void {
+  switch (edit.kind) {
+    case 'insert': {
+      if (edit.newHtml === null) return;
+      let target: HtmlElementLike | null = null;
+      if (edit.targetAnchorId !== null) {
+        target = findTopLevelBlockByAnchor(root, edit.targetAnchorId);
+        if (target === null) return;
+      }
+      const blocks = parsePayloadBlocks(doc, edit.newHtml);
+      stampPayloadAnchors(blocks, generate, null);
+      insertBlocksAfter(root, blocks, target);
+      return;
+    }
+    case 'replace': {
+      if (edit.newHtml === null) return;
+      if (edit.targetAnchorId === null) return;
+      const target = findTopLevelBlockByAnchor(root, edit.targetAnchorId);
+      if (target === null) return;
+      const blocks = parsePayloadBlocks(doc, edit.newHtml);
+      stampPayloadAnchors(blocks, generate, edit.targetAnchorId);
+      const [first, ...rest] = blocks;
+      if (first) {
+        root.replaceChild(first, target);
+        insertBlocksAfter(root, rest, first);
+      } else {
+        root.removeChild(target);
+      }
+      return;
+    }
+    case 'delete': {
+      if (edit.targetAnchorId === null) return;
+      const target = findTopLevelBlockByAnchor(root, edit.targetAnchorId);
+      if (target === null) return;
+      root.removeChild(target);
+      return;
+    }
+    case 'bulk': {
+      if (edit.newHtml === null) return;
+      clearRoot(root);
+      const blocks = parsePayloadBlocks(doc, edit.newHtml);
+      // Bulk gets fresh anchors on accept to mirror the markdown path.
+      for (const block of blocks) {
+        if (isBlockEligible(block)) {
+          block.setAttribute(HTML_ANCHOR_ATTR, generate());
+        }
+        root.appendChild(block);
+      }
+      return;
+    }
+  }
+}
+
+// The idempotent stamp function from html-anchors is the canonical
+// outline-build pre-step (re-stamp anchors before extracting). Re-export
+// so callers can pull both compose + stamp from the same barrel.
+export { insertHtmlAnchors };

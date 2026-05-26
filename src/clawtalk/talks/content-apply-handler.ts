@@ -63,7 +63,7 @@ export type ToolResult = {
 const EDIT_COLUMNS_SELECT = `
   id, content_id, run_id, agent_id, agent_nickname,
   message_id, kind, base_content_version,
-  target_anchor_id, new_markdown, rationale, created_at
+  target_anchor_id, new_markdown, new_html, rationale, created_at
 `;
 
 function byteLengthOf(text: string): number {
@@ -82,6 +82,7 @@ function toEditRow(record: ContentEditRecord): ContentEditRow {
     baseContentVersion: record.base_content_version,
     targetAnchorId: record.target_anchor_id,
     newMarkdown: record.new_markdown,
+    newHtml: record.new_html ?? null,
     rationale: record.rationale,
     createdAt: record.created_at,
   };

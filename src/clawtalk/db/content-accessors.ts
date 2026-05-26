@@ -11,22 +11,27 @@
 // `src/shared/rich-text/` module: markdown → Tiptap JSON → AST
 // mutation → markdown. The anchor map is recomputed from the
 // resulting JSON. For HTML content the writer runs the shared
-// `sanitizeHtmlServer` and writes the cleaned HTML; HTML anchor
-// stamping is deferred to PR B (anchor_map_json stays `{}` for
-// HTML rows in PR A).
+// `sanitizeHtmlServer`, stamps anchors via `insertAnchors`, and
+// extracts an outline-derived anchor map so HTML edits can resolve
+// `target_anchor_id` against the same `anchor_map_json` column the
+// markdown path uses (PR B).
 
 import { getDbPg } from '../../db.js';
 import {
+  type AnchorEntry,
   type AnchorMap,
   type RichTextDocument,
   type RichTextNode,
   computeAnchorMap,
   ensureAnchorIds,
+  extractOutline,
+  insertAnchors,
   markdownToTiptapJson,
   plainTextOf,
   sanitizeHtmlServer,
   sanitizeMarkdown,
   sanitizeRichTextDocument,
+  sha256Hex,
   tiptapJsonToMarkdown,
 } from '../../shared/rich-text/index.js';
 import { emitOutboxEvent } from '../talks/outbox-emit.js';
@@ -129,6 +134,40 @@ function documentIsEmpty(doc: RichTextDocument): boolean {
   const blocks = doc.content ?? [];
   if (blocks.length === 0) return true;
   return blocks.every(nodeIsEmpty);
+}
+
+const HTML_ANCHOR_PREVIEW_MAX = 60;
+
+/**
+ * Build the `anchor_map_json` payload for an HTML body. Walks the
+ * top-level blocks via the shared outline extractor and produces the
+ * same `AnchorEntry` shape the markdown path uses — kind=tag,
+ * sort_order=index, preview=first 60 chars of plain text,
+ * content_hash=SHA-256(plain text).
+ *
+ * Caller contract: `html` must already have anchors stamped (use
+ * `insertAnchors` before calling this). Returns `null` when the HTML
+ * fails to parse — caller surfaces as a save-time error.
+ */
+export async function computeHtmlAnchorMap(
+  html: string,
+): Promise<AnchorMap | null> {
+  const outline = extractOutline(html);
+  if (!outline.ok) return null;
+  const map: AnchorMap = {};
+  for (let i = 0; i < outline.value.length; i++) {
+    const entry = outline.value[i];
+    const preview = entry.textExcerpt.slice(0, HTML_ANCHOR_PREVIEW_MAX);
+    const contentHash = await sha256Hex(entry.textExcerpt);
+    const anchorEntry: AnchorEntry = {
+      kind: entry.tag,
+      sort_order: i,
+      preview,
+      content_hash: contentHash,
+    };
+    map[entry.anchorId] = anchorEntry;
+  }
+  return map;
 }
 
 // ── content CRUD ─────────────────────────────────────────────────
