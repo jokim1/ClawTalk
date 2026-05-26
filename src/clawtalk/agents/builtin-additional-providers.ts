@@ -165,7 +165,13 @@ export const BUILTIN_ADDITIONAL_PROVIDERS: BuiltinAdditionalProvider[] = [
     baseUrl: 'https://integrate.api.nvidia.com/v1',
     authScheme: 'bearer',
     responseStartTimeoutMs: 90_000,
-    streamIdleTimeoutMs: 20_000,
+    // NVIDIA NIM serving Kimi 2.6 (and other large MoE models) has
+    // long mid-stream pauses between text and tool-use blocks — the
+    // model finishes its prose, then thinks for ~30s about the
+    // function call before emitting the tool_use delta. 20s was too
+    // tight; 60s leaves room for that transition while still catching
+    // genuine hangs well before the 300s absolute ceiling.
+    streamIdleTimeoutMs: 60_000,
     absoluteTimeoutMs: 300_000,
     models: [
       {
