@@ -64,6 +64,19 @@ describe('agent-router', () => {
     expect(ALWAYS_ALLOWED_CONTEXT_TOOLS.has('read_state')).toBe(true);
   });
 
+  it('always permits propose_content_* tools (Talk-internal Content edits)', () => {
+    // The Content tools never appear in tool_permissions_json — no
+    // tool family covers them. Without ALWAYS_ALLOWED inclusion they
+    // get silently filtered for every agent, breaking the feature.
+    expect(ALWAYS_ALLOWED_CONTEXT_TOOLS.has('propose_content_append')).toBe(
+      true,
+    );
+    expect(ALWAYS_ALLOWED_CONTEXT_TOOLS.has('propose_content_replace')).toBe(
+      true,
+    );
+    expect(ALWAYS_ALLOWED_CONTEXT_TOOLS.has('propose_content_bulk')).toBe(true);
+  });
+
   it('fails incomplete direct-http responses when the provider stops early', async () => {
     vi.mocked(streamLlmResponse).mockImplementation(async function* () {
       yield { type: 'text_delta', text: "I'll read the full content" };

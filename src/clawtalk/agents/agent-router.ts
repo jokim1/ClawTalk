@@ -139,6 +139,18 @@ export const ALWAYS_ALLOWED_CONTEXT_TOOLS = new Set([
   'read_context_source',
   'read_attachment',
   'read_state',
+  // Content-feature proposal tools — registered by context-loader only
+  // when the Talk has an attached Content doc (`hasContent === true`).
+  // They never appear in tool_permissions_json (no tool family covers
+  // them), so without this allowlist they were silently filtered out
+  // for every agent, leaving the LLM with a tool list that didn't
+  // contain them despite the system prompt naming them. The agent then
+  // honestly reported "the tools aren't in my tool set" and the user
+  // saw a refusal. Talk-internal context tools by category — always
+  // allowed alongside read_state / list_state.
+  'propose_content_append',
+  'propose_content_replace',
+  'propose_content_bulk',
 ]);
 
 const CLEAN_PROVIDER_STOP_REASONS = new Set([
