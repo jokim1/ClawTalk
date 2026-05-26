@@ -9,9 +9,11 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  buildAtRefForcedInjectionFromRows,
   buildContentOutline,
   buildSourceManifest,
   buildSourcePreview,
+  type AtRefCandidateRow,
   type SourceRow,
 } from './context-loader.js';
 import type { Content } from '../db/content-accessors.js';
@@ -308,5 +310,208 @@ describe('buildSourceManifest', () => {
     });
     const manifest = buildSourceManifest([source], false);
     expect(manifest[0].line).toContain('(content not yet available)');
+  });
+});
+
+describe('buildAtRefForcedInjectionFromRows', () => {
+  function makeRow(
+    input: Partial<AtRefCandidateRow> & {
+      source_ref: string;
+      title: string;
+    },
+  ): AtRefCandidateRow {
+    return {
+      source_ref: input.source_ref,
+      title: input.title,
+      title_slug: input.title_slug ?? null,
+      status: input.status ?? 'ready',
+      extracted_text: input.extracted_text ?? null,
+    };
+  }
+
+  it('returns null when no refs or slugs are requested', () => {
+    expect(buildAtRefForcedInjectionFromRows([], [], [])).toBeNull();
+  });
+
+  it('renders a fenced block for a single resolved @S<n> ref', () => {
+    const rows = [
+      makeRow({
+        source_ref: 'S1',
+        title: 'Investor Memo',
+        extracted_text: 'The opportunity is large.',
+      }),
+    ];
+    const out = buildAtRefForcedInjectionFromRows(rows, ['S1'], []);
+    expect(out).toContain('[S1] Investor Memo');
+    expect(out).toContain('<<<source');
+    expect(out).toContain('The opportunity is large.');
+    expect(out).toContain('source>>>');
+  });
+
+  it('resolves @<slug> when a unique ready row matches', () => {
+    const rows = [
+      makeRow({
+        source_ref: 'S3',
+        title: 'Design Notes',
+        title_slug: 'design-notes',
+        extracted_text: 'roadmap content here',
+      }),
+    ];
+    const out = buildAtRefForcedInjectionFromRows(rows, [], ['design-notes']);
+    expect(out).toContain('[S3] Design Notes');
+    expect(out).toContain('roadmap content here');
+  });
+
+  it('emits "(no such source)" for a non-existent ref', () => {
+    const out = buildAtRefForcedInjectionFromRows([], ['S99'], []);
+    expect(out).toBe('[S99] (no such source)');
+  });
+
+  it('emits "(no such source)" for a non-existent slug', () => {
+    const out = buildAtRefForcedInjectionFromRows([], [], ['ghost']);
+    expect(out).toBe('[@ghost] (no such source)');
+  });
+
+  it('emits "(content not yet available)" for a pending source', () => {
+    const rows = [
+      makeRow({
+        source_ref: 'S4',
+        title: 'Stuck URL',
+        status: 'pending',
+        extracted_text: null,
+      }),
+    ];
+    const out = buildAtRefForcedInjectionFromRows(rows, ['S4'], []);
+    expect(out).toBe('[S4] Stuck URL (content not yet available)');
+  });
+
+  it('emits "(content not yet available)" for a ready row with empty extracted_text', () => {
+    const rows = [
+      makeRow({
+        source_ref: 'S5',
+        title: 'Empty Body',
+        status: 'ready',
+        extracted_text: null,
+      }),
+    ];
+    const out = buildAtRefForcedInjectionFromRows(rows, ['S5'], []);
+    expect(out).toBe('[S5] Empty Body (content not yet available)');
+  });
+
+  it('emits ambiguity note when a slug matches two ready rows', () => {
+    const rows = [
+      makeRow({
+        source_ref: 'S1',
+        title: 'Notes',
+        title_slug: 'notes',
+        extracted_text: 'a',
+      }),
+      makeRow({
+        source_ref: 'S2',
+        title: 'Notes',
+        title_slug: 'notes',
+        extracted_text: 'b',
+      }),
+    ];
+    const out = buildAtRefForcedInjectionFromRows(rows, [], ['notes']);
+    expect(out).toContain('[@notes] (ambiguous slug');
+    expect(out).toContain('S1');
+    expect(out).toContain('S2');
+    expect(out).toContain('Use the @S<n> form instead');
+    expect(out).not.toContain('<<<source');
+  });
+
+  it('resolves a slug that matches only one READY row even when a pending row shares it', () => {
+    const rows = [
+      makeRow({
+        source_ref: 'S6',
+        title: 'Notes',
+        title_slug: 'notes',
+        status: 'ready',
+        extracted_text: 'real content',
+      }),
+      makeRow({
+        source_ref: 'S7',
+        title: 'Notes',
+        title_slug: 'notes',
+        status: 'pending',
+        extracted_text: null,
+      }),
+    ];
+    const out = buildAtRefForcedInjectionFromRows(rows, [], ['notes']);
+    expect(out).toContain('[S6] Notes');
+    expect(out).toContain('real content');
+    expect(out).not.toContain('ambiguous');
+  });
+
+  it('sanitizes control characters and backticks in source content', () => {
+    const dirty = `safe body \`code\` here\nmore`;
+    const rows = [
+      makeRow({
+        source_ref: 'S8',
+        title: 'Dirty',
+        extracted_text: dirty,
+      }),
+    ];
+    const out = buildAtRefForcedInjectionFromRows(rows, ['S8'], []);
+    expect(out).not.toBeNull();
+    // Null byte stripped.
+    expect(out).not.toContain(' ');
+    // Newline preserved (sanitizeBlockForPrompt keeps \n).
+    expect(out).toContain('more');
+    // Backticks pass through sanitizeBlockForPrompt unchanged but
+    // wouldn't break out of the <<<source ... source>>> fence anyway —
+    // the fence is intentionally non-markdown.
+    expect(out).toContain('code');
+  });
+
+  it('joins multiple resolved refs with a blank-line separator', () => {
+    const rows = [
+      makeRow({ source_ref: 'S1', title: 'One', extracted_text: 'aaa' }),
+      makeRow({ source_ref: 'S2', title: 'Two', extracted_text: 'bbb' }),
+    ];
+    const out = buildAtRefForcedInjectionFromRows(rows, ['S1', 'S2'], []);
+    expect(out).toContain('[S1] One');
+    expect(out).toContain('[S2] Two');
+    // The two fenced blocks are separated by a blank line.
+    const segments = out!.split('\n\n');
+    expect(segments.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('does not emit the same source twice when both ref and slug request it', () => {
+    const rows = [
+      makeRow({
+        source_ref: 'S1',
+        title: 'One',
+        title_slug: 'one',
+        extracted_text: 'content',
+      }),
+    ];
+    const out = buildAtRefForcedInjectionFromRows(rows, ['S1'], ['one']);
+    expect(out!.split('<<<source').length).toBe(2); // exactly one fenced block (split produces N+1 pieces)
+  });
+
+  it('truncates with a footer when total bytes exceed the 40 KB budget', () => {
+    const big = 'x'.repeat(20 * 1024); // ~20 KB per row
+    const rows: AtRefCandidateRow[] = [];
+    const refs: string[] = [];
+    for (let i = 1; i <= 5; i++) {
+      rows.push(
+        makeRow({
+          source_ref: `S${i}`,
+          title: `Big ${i}`,
+          extracted_text: big,
+        }),
+      );
+      refs.push(`S${i}`);
+    }
+    const out = buildAtRefForcedInjectionFromRows(rows, refs, []);
+    expect(out).not.toBeNull();
+    expect(out).toContain('[truncated,');
+    expect(out).toContain('more @-refs omitted]');
+    // Final size stays within 40 KB.
+    expect(new TextEncoder().encode(out!).byteLength).toBeLessThanOrEqual(
+      40 * 1024,
+    );
   });
 });

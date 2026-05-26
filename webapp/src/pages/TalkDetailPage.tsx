@@ -52,7 +52,6 @@ import {
   createTalkThread,
   createTalkChannel,
   createTalkContextRule,
-  createTalkContextSource,
   createTalkJob,
   DataConnector,
   deleteTalkChannel,
@@ -62,7 +61,6 @@ import {
   deleteTalkMessages,
   deleteTalkThread,
   deleteTalkContextRule,
-  deleteTalkContextSource,
   deleteTalkJob,
   deleteTalkStateEntry,
   detachTalkDataConnector,
@@ -95,7 +93,6 @@ import {
   patchTalkJob,
   retryTalkChannelDeliveryFailure,
   retryTalkChannelIngressFailure,
-  retryTalkContextSource,
   reviewTalkChannelInstructions,
   sendTalkMessage,
   setTalkGoal,
@@ -117,7 +114,6 @@ import {
   TalkStateEntry,
   TalkThread,
   uploadTalkAttachment,
-  uploadTalkContextSource,
   testTalkChannelBinding,
   unquarantineTalkChannelBinding,
   retryTalkChannelDeliveryFailuresCapped,
@@ -141,6 +137,12 @@ import { ExecutionDecisionSummary } from '../components/ExecutionDecisionSummary
 import { LiveResponsePanel } from '../components/LiveResponsePanel';
 import { InlineEditableTitle } from '../components/InlineEditableTitle';
 import { TalkToolsPanel } from '../components/TalkToolsPanel';
+import { SavedSourcesPanel } from '../components/SavedSourcesPanel';
+import {
+  SourceMentionPicker,
+  buildSourceMentionOptions,
+  type SourceMentionOption,
+} from '../components/SourceMentionPicker';
 import { TalkConnectorsPanel } from '../components/connectors/TalkConnectorsPanel';
 import { ThreadContextMenu } from '../components/ThreadContextMenu';
 import { ThreadRowTitleEditor } from '../components/ThreadRowTitleEditor';
@@ -2969,10 +2971,14 @@ export function TalkDetailPage({
   const [pendingEditInFlight, setPendingEditInFlight] = useState<Set<string>>(
     () => new Set(),
   );
-  // @doc mention typeahead state. Tracks the index of the live `@` in
-  // the composer draft so we can replace it with `@doc ` on selection.
-  const [docMentionState, setDocMentionState] = useState<{
+  // Composer `@`-mention typeahead. Tracks the live `@` index in the
+  // draft and the active picker selection. Opens when @ lands at a word
+  // boundary AND the Talk has an attached doc OR at least one ready
+  // saved source. The popover offers `@doc` (if applicable) plus every
+  // ready source filtered by the chars typed after `@`.
+  const [mentionState, setMentionState] = useState<{
     atIndex: number;
+    selectedIndex: number;
   } | null>(null);
   const [talkContentSaveStatus, setTalkContentSaveStatus] =
     useState<RichTextEditorSaveStatus>('idle');
@@ -3095,19 +3101,6 @@ export function TalkDetailPage({
   );
   const [goalDraft, setGoalDraft] = useState('');
   const [newRuleText, setNewRuleText] = useState('');
-  const [addSourceUrl, setAddSourceUrl] = useState('');
-  const [addSourceText, setAddSourceText] = useState('');
-  const [addSourceTitle, setAddSourceTitle] = useState('');
-  const [contextUploadingFiles, setContextUploadingFiles] = useState<
-    Array<{
-      localId: string;
-      fileName: string;
-      status: 'uploading' | 'done' | 'error';
-      error?: string;
-    }>
-  >([]);
-  const [contextDropActive, setContextDropActive] = useState(false);
-  const contextFileInputRef = useRef<HTMLInputElement>(null);
   const [channelBindings, setChannelBindings] = useState<TalkChannelBinding[]>(
     [],
   );
@@ -3986,9 +3979,6 @@ export function TalkDetailPage({
     setJobDraft(buildDefaultJobDraft());
     setGoalDraft('');
     setNewRuleText('');
-    setAddSourceTitle('');
-    setAddSourceUrl('');
-    setAddSourceText('');
     setChannelBindings([]);
     setChannelConnections([]);
     setChannelTargetInventory(buildEmptyChannelTargetInventory());
@@ -5727,139 +5717,6 @@ export function TalkDetailPage({
     }
   };
 
-  const handleAddUrlSource = async () => {
-    const trimmedUrl = addSourceUrl.trim();
-    if (!trimmedUrl) return;
-    setContextStatus({ status: 'saving' });
-    try {
-      const source = await createTalkContextSource({
-        talkId,
-        sourceType: 'url',
-        title: addSourceTitle.trim() || trimmedUrl,
-        sourceUrl: trimmedUrl,
-      });
-      setContextSources((prev) => [...prev, source]);
-      setAddSourceTitle('');
-      setAddSourceUrl('');
-      setContextStatus({ status: 'idle' });
-    } catch (err) {
-      setContextStatus({
-        status: 'error',
-        message: err instanceof Error ? err.message : 'Failed to add source.',
-      });
-    }
-  };
-
-  const handleAddTextSource = async () => {
-    const trimmedText = addSourceText.trim();
-    if (!trimmedText) return;
-    setContextStatus({ status: 'saving' });
-    try {
-      const source = await createTalkContextSource({
-        talkId,
-        sourceType: 'text',
-        title: addSourceTitle.trim() || 'Pasted text source',
-        extractedText: trimmedText,
-      });
-      setContextSources((prev) => [...prev, source]);
-      setAddSourceTitle('');
-      setAddSourceText('');
-      setContextStatus({ status: 'idle' });
-    } catch (err) {
-      setContextStatus({
-        status: 'error',
-        message:
-          err instanceof Error ? err.message : 'Failed to add text source.',
-      });
-    }
-  };
-
-  const handleContextFilesSelected = async (files: FileList | File[]) => {
-    const fileArr = Array.from(files);
-    if (fileArr.length === 0) return;
-
-    const MAX_SIZE = 10 * 1024 * 1024;
-
-    for (const file of fileArr) {
-      const localId = `upload_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-
-      // Client-side size check
-      if (file.size > MAX_SIZE) {
-        setContextUploadingFiles((prev) => [
-          ...prev,
-          {
-            localId,
-            fileName: file.name,
-            status: 'error',
-            error: 'File exceeds 10 MB limit',
-          },
-        ]);
-        continue;
-      }
-
-      setContextUploadingFiles((prev) => [
-        ...prev,
-        { localId, fileName: file.name, status: 'uploading' },
-      ]);
-
-      try {
-        const source = await uploadTalkContextSource(talkId, file);
-        setContextSources((prev) => [...prev, source]);
-        setContextUploadingFiles((prev) =>
-          prev.map((f) =>
-            f.localId === localId ? { ...f, status: 'done' as const } : f,
-          ),
-        );
-        // Remove completed entry after a short delay
-        setTimeout(() => {
-          setContextUploadingFiles((prev) =>
-            prev.filter((f) => f.localId !== localId),
-          );
-        }, 1500);
-      } catch (err) {
-        setContextUploadingFiles((prev) =>
-          prev.map((f) =>
-            f.localId === localId
-              ? {
-                  ...f,
-                  status: 'error' as const,
-                  error: err instanceof Error ? err.message : 'Upload failed',
-                }
-              : f,
-          ),
-        );
-      }
-    }
-  };
-
-  const handleDeleteSource = async (sourceId: string) => {
-    try {
-      await deleteTalkContextSource({ talkId, sourceId });
-      setContextSources((prev) => prev.filter((s) => s.id !== sourceId));
-    } catch {
-      // silent
-    }
-  };
-
-  const handleRetrySource = async (sourceId: string) => {
-    try {
-      const updated = await retryTalkContextSource({ talkId, sourceId });
-      setContextSources((prev) =>
-        prev.map((source) => (source.id === updated.id ? updated : source)),
-      );
-      setContextStatus({
-        status: 'success',
-        message: 'Retrying saved source fetch.',
-      });
-    } catch (err) {
-      setContextStatus({
-        status: 'error',
-        message:
-          err instanceof Error ? err.message : 'Failed to retry saved source.',
-      });
-    }
-  };
-
   const handleCreateJobDraft = useCallback(() => {
     setCreatingJob(true);
     setSelectedJobId(null);
@@ -7121,15 +6978,81 @@ export function TalkDetailPage({
     ],
   );
 
+  const mentionFilter = useMemo(() => {
+    if (!mentionState) return '';
+    const ta = textareaRef.current;
+    const cursor = ta?.selectionStart ?? draft.length;
+    const between = draft.slice(mentionState.atIndex + 1, cursor);
+    // The filter is only the word characters / hyphens immediately
+    // after `@`. Any whitespace ends the filter (and the mention).
+    if (/\s/.test(between)) return between.split(/\s/)[0] ?? '';
+    return between;
+  }, [draft, mentionState]);
+
+  const mentionOptions = useMemo(
+    () =>
+      buildSourceMentionOptions({
+        sources: contextSources,
+        filter: mentionFilter,
+        contentTitle: talkContent ? talkContent.title : null,
+      }),
+    [contextSources, mentionFilter, talkContent],
+  );
+
+  // Keep the highlighted index inside the valid range as the filter
+  // text shrinks/grows the option list. When options become empty we
+  // dismiss the picker so the user sees their literal `@filter` text.
+  useEffect(() => {
+    if (!mentionState) return;
+    if (mentionOptions.length === 0) {
+      setMentionState(null);
+      return;
+    }
+    if (mentionState.selectedIndex >= mentionOptions.length) {
+      setMentionState({
+        atIndex: mentionState.atIndex,
+        selectedIndex: 0,
+      });
+    }
+  }, [mentionOptions.length, mentionState]);
+
+  const insertMentionOption = useCallback(
+    (option: SourceMentionOption) => {
+      if (!mentionState) return;
+      const ta = textareaRef.current;
+      const cursor = ta?.selectionStart ?? draft.length;
+      const before = draft.slice(0, mentionState.atIndex);
+      // Everything from `@` through the cursor (including the filter
+      // chars the user typed) is replaced by the canonical insertion.
+      const after = draft.slice(cursor);
+      const inserted = option.insertion;
+      const next = before + inserted + after;
+      setDraft(next);
+      setMentionState(null);
+      requestAnimationFrame(() => {
+        const taNow = textareaRef.current;
+        if (!taNow) return;
+        taNow.focus();
+        const nextCursor = before.length + inserted.length;
+        taNow.setSelectionRange(nextCursor, nextCursor);
+      });
+    },
+    [draft, mentionState],
+  );
+
   const handleDraftChange = (value: string) => {
     setDraft(value);
     if (state.kind === 'ready' && state.sendState.status === 'error') {
       dispatch({ type: 'SEND_CLEARED' });
     }
-    // @doc trigger: open the typeahead when the user types `@` at a
-    // word boundary in a Talk that has an attached doc. The literal
-    // `@` stays in the textarea; selection replaces it with `@doc `.
-    if (talkContent) {
+    // `@` trigger: open the mention picker when the user types `@` at a
+    // word boundary AND the Talk has either an attached doc or at least
+    // one ready saved source. The literal `@` stays in the textarea;
+    // selection replaces the `@filter` slice with the canonical token.
+    const hasMentionable =
+      !!talkContent ||
+      contextSources.some((source) => source.status === 'ready');
+    if (hasMentionable) {
       const ta = textareaRef.current;
       const pos = ta?.selectionStart ?? value.length;
       const atIndex = pos - 1;
@@ -7137,31 +7060,24 @@ export function TalkDetailPage({
         const prev = atIndex > 0 ? value[atIndex - 1] : '';
         const atWordBoundary = atIndex === 0 || /\s/.test(prev);
         if (atWordBoundary) {
-          setDocMentionState({ atIndex });
+          setMentionState({ atIndex, selectedIndex: 0 });
           return;
         }
       }
     }
-    if (docMentionState !== null) setDocMentionState(null);
-  };
-
-  const insertDocMention = useCallback(() => {
-    if (!docMentionState) return;
-    const { atIndex } = docMentionState;
-    const before = draft.slice(0, atIndex);
-    const after = draft.slice(atIndex + 1);
-    const inserted = '@doc ';
-    const next = before + inserted + after;
-    setDraft(next);
-    setDocMentionState(null);
-    requestAnimationFrame(() => {
+    // Dismiss the picker if the cursor moved past the `@<filter>` span
+    // (e.g. the user inserted a space or backspaced over the `@`).
+    if (mentionState) {
       const ta = textareaRef.current;
-      if (!ta) return;
-      ta.focus();
-      const cursor = before.length + inserted.length;
-      ta.setSelectionRange(cursor, cursor);
-    });
-  }, [docMentionState, draft]);
+      const cursor = ta?.selectionStart ?? value.length;
+      if (
+        cursor <= mentionState.atIndex ||
+        value[mentionState.atIndex] !== '@'
+      ) {
+        setMentionState(null);
+      }
+    }
+  };
 
   const resizeComposerTextarea = useCallback(() => {
     const textarea = textareaRef.current;
@@ -7697,15 +7613,35 @@ export function TalkDetailPage({
   const handleComposerKeyDown = (
     event: ReactKeyboardEvent<HTMLTextAreaElement>,
   ) => {
-    if (docMentionState) {
+    if (mentionState && mentionOptions.length > 0) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        setMentionState({
+          atIndex: mentionState.atIndex,
+          selectedIndex: Math.min(
+            mentionState.selectedIndex + 1,
+            mentionOptions.length - 1,
+          ),
+        });
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        setMentionState({
+          atIndex: mentionState.atIndex,
+          selectedIndex: Math.max(mentionState.selectedIndex - 1, 0),
+        });
+        return;
+      }
       if (event.key === 'Enter' || event.key === 'Tab') {
         event.preventDefault();
-        insertDocMention();
+        const option = mentionOptions[mentionState.selectedIndex];
+        if (option) insertMentionOption(option);
         return;
       }
       if (event.key === 'Escape') {
         event.preventDefault();
-        setDocMentionState(null);
+        setMentionState(null);
         return;
       }
     }
@@ -9052,285 +8988,13 @@ export function TalkDetailPage({
                     ) : null}
                   </div>
 
-                  {/* Saved Sources */}
-                  <div className="talk-llm-card">
-                    <div className="connector-card-header">
-                      <div>
-                        <h3>Saved Sources</h3>
-                        <p className="talk-llm-meta">
-                          Files, URLs, and text snippets agents can reference.
-                          Up to 20 sources.
-                        </p>
-                      </div>
-                    </div>
-
-                    {canEditAgents ? (
-                      <>
-                        <div
-                          className={`context-source-dropzone${contextDropActive ? ' context-source-dropzone-active' : ''}`}
-                          role="button"
-                          tabIndex={0}
-                          aria-label="Upload saved source files"
-                          onClick={() => contextFileInputRef.current?.click()}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' || e.key === ' ') {
-                              e.preventDefault();
-                              contextFileInputRef.current?.click();
-                            }
-                          }}
-                          onDragOver={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setContextDropActive(true);
-                          }}
-                          onDragLeave={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setContextDropActive(false);
-                          }}
-                          onDrop={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setContextDropActive(false);
-                            if (e.dataTransfer.files.length > 0)
-                              void handleContextFilesSelected(
-                                e.dataTransfer.files,
-                              );
-                          }}
-                        >
-                          <span>Drop files here or click to browse</span>
-                          <span className="context-source-dropzone-hint">
-                            PDF, DOCX, XLSX, text, code files up to 10 MB
-                          </span>
-                        </div>
-                        <input
-                          ref={contextFileInputRef}
-                          type="file"
-                          multiple
-                          style={{ display: 'none' }}
-                          accept=".pdf,.docx,.xlsx,.pptx,.txt,.md,.csv,.html,.json,.xml,.yaml,.yml,.py,.js,.ts,.jsx,.tsx,.java,.c,.h,.cpp,.hpp,.go,.rs,.sh,.sql,.rtf,.rb,.php,.swift,.kt,.lua,.r,.toml,.ini,.cfg,.log"
-                          onChange={(e) => {
-                            if (e.target.files && e.target.files.length > 0) {
-                              void handleContextFilesSelected(e.target.files);
-                              e.target.value = '';
-                            }
-                          }}
-                        />
-                      </>
-                    ) : null}
-
-                    {contextUploadingFiles.length > 0 ? (
-                      <div className="context-source-upload-progress">
-                        {contextUploadingFiles.map((f) => (
-                          <div
-                            key={f.localId}
-                            className="context-source-upload-item"
-                          >
-                            <span>{f.fileName}</span>
-                            {f.status === 'uploading' ? (
-                              <span className="context-source-upload-status">
-                                Uploading...
-                              </span>
-                            ) : f.status === 'error' ? (
-                              <span
-                                className="context-source-upload-status"
-                                style={{ color: 'var(--danger-text, #a61b1b)' }}
-                              >
-                                {f.error || 'Failed'}
-                              </span>
-                            ) : (
-                              <span
-                                className="context-source-upload-status"
-                                style={{ color: 'green' }}
-                              >
-                                Done
-                              </span>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    ) : null}
-
-                    {contextSources.length > 0 ? (
-                      <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-                        {contextSources.map((source) => (
-                          <li key={source.id} className="context-source-item">
-                            <div className="context-source-item-row">
-                              <span className="context-source-ref">
-                                {source.sourceRef}
-                              </span>
-                              <span className="context-source-type-badge">
-                                {source.sourceType === 'file'
-                                  ? 'FILE'
-                                  : source.sourceType === 'url'
-                                    ? 'URL'
-                                    : 'TEXT'}
-                              </span>
-                              <span style={{ flex: 1 }}>{source.title}</span>
-                              {source.sourceType === 'file' &&
-                              source.fileSize != null ? (
-                                <span className="context-source-file-meta">
-                                  {source.fileSize < 1024
-                                    ? `${source.fileSize} B`
-                                    : source.fileSize < 1024 * 1024
-                                      ? `${(source.fileSize / 1024).toFixed(1)} KB`
-                                      : `${(source.fileSize / (1024 * 1024)).toFixed(1)} MB`}
-                                </span>
-                              ) : null}
-                              {source.fetchStrategy ? (
-                                <span className="context-source-file-meta">
-                                  via {source.fetchStrategy}
-                                </span>
-                              ) : null}
-                              <span
-                                style={{
-                                  fontSize: '0.75rem',
-                                  color:
-                                    source.status === 'ready'
-                                      ? 'green'
-                                      : source.status === 'failed'
-                                        ? 'red'
-                                        : 'orange',
-                                }}
-                              >
-                                {source.status}
-                              </span>
-                              {canEditAgents &&
-                              source.sourceType === 'url' &&
-                              source.status === 'failed' ? (
-                                <button
-                                  type="button"
-                                  className="secondary-btn"
-                                  onClick={() =>
-                                    void handleRetrySource(source.id)
-                                  }
-                                >
-                                  Retry
-                                </button>
-                              ) : null}
-                              {canEditAgents ? (
-                                <button
-                                  type="button"
-                                  className="secondary-btn"
-                                  onClick={() =>
-                                    void handleDeleteSource(source.id)
-                                  }
-                                  title="Remove source"
-                                  style={{
-                                    minWidth: '2rem',
-                                    padding: '0.2rem 0.4rem',
-                                  }}
-                                >
-                                  ×
-                                </button>
-                              ) : null}
-                            </div>
-                            {source.extractionError ? (
-                              <p
-                                style={{
-                                  margin: '0.35rem 0 0 0',
-                                  fontSize: '0.85rem',
-                                  color: 'var(--danger-text, #a61b1b)',
-                                }}
-                              >
-                                {source.extractionError}
-                              </p>
-                            ) : null}
-                            {source.lastFetchedAt ? (
-                              <p
-                                style={{
-                                  margin: '0.2rem 0 0 0',
-                                  fontSize: '0.75rem',
-                                  opacity: 0.65,
-                                }}
-                              >
-                                Last fetched{' '}
-                                {new Date(
-                                  source.lastFetchedAt,
-                                ).toLocaleString()}
-                              </p>
-                            ) : null}
-                          </li>
-                        ))}
-                      </ul>
-                    ) : contextUploadingFiles.length === 0 ? (
-                      <p className="page-state">No sources yet.</p>
-                    ) : null}
-
-                    {canEditAgents ? (
-                      <div style={{ marginTop: '0.75rem' }}>
-                        <div
-                          className="connector-attach-row"
-                          style={{ marginBottom: '0.5rem' }}
-                        >
-                          <label style={{ flex: 1 }}>
-                            <span className="settings-label">URL</span>
-                            <input
-                              type="url"
-                              value={addSourceUrl}
-                              onChange={(e) => setAddSourceUrl(e.target.value)}
-                              placeholder="https://example.com/docs"
-                              disabled={contextStatus.status === 'saving'}
-                              style={{ width: '100%' }}
-                            />
-                          </label>
-                          <label>
-                            <span className="settings-label">
-                              Title (optional)
-                            </span>
-                            <input
-                              type="text"
-                              value={addSourceTitle}
-                              onChange={(e) =>
-                                setAddSourceTitle(e.target.value)
-                              }
-                              placeholder="Source title"
-                              disabled={contextStatus.status === 'saving'}
-                              style={{ width: '100%' }}
-                            />
-                          </label>
-                        </div>
-                        <button
-                          type="button"
-                          className="secondary-btn"
-                          onClick={() => void handleAddUrlSource()}
-                          disabled={
-                            contextStatus.status === 'saving' ||
-                            !addSourceUrl.trim()
-                          }
-                        >
-                          Add URL
-                        </button>
-                        <label
-                          style={{ display: 'block', marginTop: '0.75rem' }}
-                        >
-                          <span className="settings-label">
-                            Paste text snippet
-                          </span>
-                          <textarea
-                            value={addSourceText}
-                            onChange={(e) => setAddSourceText(e.target.value)}
-                            placeholder="Paste notes, source excerpts, or working context here…"
-                            rows={4}
-                            disabled={contextStatus.status === 'saving'}
-                            style={{ width: '100%', resize: 'vertical' }}
-                          />
-                        </label>
-                        <button
-                          type="button"
-                          className="secondary-btn"
-                          onClick={() => void handleAddTextSource()}
-                          disabled={
-                            contextStatus.status === 'saving' ||
-                            !addSourceText.trim()
-                          }
-                          style={{ marginTop: '0.5rem' }}
-                        >
-                          Add Text
-                        </button>
-                      </div>
-                    ) : null}
-                  </div>
+                  <SavedSourcesPanel
+                    talkId={talkId}
+                    sources={contextSources}
+                    setSources={setContextSources}
+                    canEdit={canEditAgents}
+                    onUnauthorized={handleUnauthorized}
+                  />
 
                   {/* State */}
                   <div className="talk-llm-card">
@@ -10203,29 +9867,17 @@ export function TalkDetailPage({
                         </div>
                       ) : null}
 
-                      <div className="composer-input-shell">
-                        {docMentionState && talkContent ? (
-                          <div
-                            className="doc-mention-menu"
-                            role="listbox"
-                            aria-label="Mentions"
-                          >
-                            <button
-                              type="button"
-                              role="option"
-                              aria-selected="true"
-                              className="doc-mention-menu-item"
-                              onMouseDown={(event) => event.preventDefault()}
-                              onClick={insertDocMention}
-                            >
-                              <span className="doc-mention-menu-prefix">
-                                @doc
-                              </span>
-                              <span className="doc-mention-menu-title">
-                                {talkContent.title}
-                              </span>
-                            </button>
-                          </div>
+                      <div
+                        className="composer-input-shell"
+                        style={{ position: 'relative' }}
+                      >
+                        {mentionState && mentionOptions.length > 0 ? (
+                          <SourceMentionPicker
+                            options={mentionOptions}
+                            selectedIndex={mentionState.selectedIndex}
+                            onSelect={(option) => insertMentionOption(option)}
+                            onDismiss={() => setMentionState(null)}
+                          />
                         ) : null}
                         <textarea
                           ref={textareaRef}
@@ -10234,7 +9886,12 @@ export function TalkDetailPage({
                             handleDraftChange(event.target.value)
                           }
                           onKeyDown={handleComposerKeyDown}
-                          placeholder="Send a message to this thread"
+                          placeholder={
+                            talkContent ||
+                            contextSources.some((s) => s.status === 'ready')
+                              ? 'Send a message to this thread. Type @ to reference a saved source or the doc.'
+                              : 'Send a message to this thread.'
+                          }
                           rows={1}
                           maxLength={TALK_MESSAGE_MAX_CHARS}
                           disabled={

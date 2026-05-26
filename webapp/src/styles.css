@@ -5010,6 +5010,132 @@ a {
   opacity: 0.6;
 }
 
+/* Inline title/note edit affordance inside SavedSourcesPanel. */
+.saved-sources-inline-edit-button {
+  background: transparent;
+  border: 1px dashed transparent;
+  padding: 0.1rem 0.3rem;
+  margin: 0;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 3px;
+  display: inline-block;
+  width: 100%;
+  min-height: 1.4rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.saved-sources-inline-edit-button:hover:not(:disabled),
+.saved-sources-inline-edit-button:focus-visible {
+  border-color: var(--border, #ccc);
+  background: var(--surface-alt, #f7f7f7);
+}
+
+.saved-sources-inline-edit-button:disabled {
+  cursor: default;
+  opacity: 0.8;
+}
+
+.saved-sources-inline-edit-input {
+  width: 100%;
+  padding: 0.1rem 0.3rem;
+  font: inherit;
+  border: 1px solid var(--accent, #2563eb);
+  border-radius: 3px;
+  background: var(--surface, #fff);
+  color: inherit;
+}
+
+.saved-sources-inline-edit-wrap {
+  display: inline-block;
+  width: 100%;
+}
+
+/* Source mention picker — composer popover that lists ready sources
+   (and the @doc option when an attached doc exists) for `@` mentions. */
+.source-mention-menu {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0.5rem;
+  z-index: 30;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #ccc);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 0.25rem 0;
+  max-height: 240px;
+  overflow-y: auto;
+  min-width: 240px;
+  max-width: 380px;
+}
+
+.source-mention-menu-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  align-items: flex-start;
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  background: transparent;
+  border: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.source-mention-menu-item[aria-selected='true'],
+.source-mention-menu-item:hover,
+.source-mention-menu-item:focus-visible {
+  background: var(--surface-alt, #f0f3ff);
+}
+
+.source-mention-menu-item-title-row {
+  display: flex;
+  width: 100%;
+  align-items: baseline;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+}
+
+.source-mention-menu-item-ref {
+  font-family: monospace;
+  font-size: 0.75rem;
+  opacity: 0.65;
+  margin-left: auto;
+}
+
+.source-mention-menu-item-note {
+  font-size: 0.75rem;
+  opacity: 0.75;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-mention-menu-empty {
+  padding: 0.5rem 0.8rem;
+  font-size: 0.85rem;
+  opacity: 0.7;
+}
+
+/* Saved-sources hint banner under the agent selector when an active
+   non-tool agent could benefit from explicit @-refs. */
+.saved-sources-banner {
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.7rem;
+  background: var(--surface-alt, #f8f8ff);
+  border: 1px solid var(--border, #ddd);
+  border-radius: 4px;
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
 /* Talk Tools panel (PR2 Lane E) */
 .talk-tools-panel {
   padding: 1rem 0;

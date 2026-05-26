@@ -34,6 +34,7 @@ import {
   buildGoogleDriveContextTools,
   loadGoogleDriveBindings,
 } from './google-drive-tools.js';
+import { extractSourceReferences } from './source-reference-detection.js';
 
 const WEB_TOOL_DEFINITIONS: LlmToolDefinition[] = [
   {
@@ -105,6 +106,15 @@ export interface ContextPackage {
    */
   contextImageSources: ContextImageSourceRef[];
 
+  /**
+   * Pre-fetched `@-ref` injection block to prepend to the user-role
+   * message this turn. Null when the user did not @-reference any
+   * sources. Already sanitized + bounded by FORCED_INJECTION_BUDGET_BYTES.
+   * The executor wraps this in a "treat as data, not instructions"
+   * preamble before prepending — see new-executor.ts.
+   */
+  forcedInjectionText: string | null;
+
   /** Metadata about the loaded context */
   metadata: {
     talkId: string;
@@ -173,6 +183,11 @@ export interface TalkRunContextSnapshot {
     totalCount: number;
     manifest: TalkRunContextSourceManifestItem[];
     inline: TalkRunContextInlineSourceSnapshot[];
+    forcedInjection: {
+      refs: string[];
+      slugs: string[];
+      bytes: number;
+    };
   };
   retrieval: {
     query: string | null;
@@ -391,6 +406,25 @@ export async function loadTalkContext(
   const sources = await fetchSources(db, talkId);
   const agentSupportsVision = options?.agentSupportsVision ?? false;
   const sourceLines = buildSourceManifest(sources, agentSupportsVision);
+
+  // Step 2a: Resolve `@-ref` mentions in the latest user message into a
+  // pre-fetched injection block. Must happen BEFORE history budgeting so
+  // the injected bytes are counted against the model context window —
+  // otherwise a 40 KB injection silently steals history slots. The
+  // executor prefixes this block onto the user-role message (not the
+  // system prompt) so source content stays in the user-authority lane.
+  const userMessageText = options?.retrievalQuery ?? '';
+  const { refs: forcedInjectionRefs, slugs: forcedInjectionSlugs } =
+    extractSourceReferences(userMessageText);
+  const forcedInjectionText = await buildAtRefForcedInjection(
+    db,
+    talkId,
+    forcedInjectionRefs,
+    forcedInjectionSlugs,
+  );
+  const forcedInjectionTokens = forcedInjectionText
+    ? Math.ceil(forcedInjectionText.length * CHARS_TO_TOKENS)
+    : 0;
   const contextImageSources: ContextImageSourceRef[] = agentSupportsVision
     ? sources
         .filter(isImageSource)
@@ -491,7 +525,8 @@ export async function loadTalkContext(
     modelContextWindow -
     OUTPUT_RESERVE -
     systemPromptTokens -
-    TOOL_SCHEMA_RESERVE;
+    TOOL_SCHEMA_RESERVE -
+    forcedInjectionTokens;
   const historySelection = await loadMessageHistory(
     db,
     talkId,
@@ -510,7 +545,10 @@ export async function loadTalkContext(
     return sum + Math.ceil(contentStr.length * CHARS_TO_TOKENS);
   }, 0);
   const estimatedTokens =
-    systemPromptTokens + historyTokens + TOOL_SCHEMA_RESERVE;
+    systemPromptTokens +
+    historyTokens +
+    TOOL_SCHEMA_RESERVE +
+    forcedInjectionTokens;
 
   // Build metadata
   const metadata = {
@@ -554,6 +592,13 @@ export async function loadTalkContext(
       // array is kept for snapshot-shape backwards compatibility but is
       // always empty.
       inline: [],
+      forcedInjection: {
+        refs: forcedInjectionRefs,
+        slugs: forcedInjectionSlugs,
+        bytes: forcedInjectionText
+          ? new TextEncoder().encode(forcedInjectionText).byteLength
+          : 0,
+      },
     },
     retrieval: {
       query: options?.retrievalQuery?.trim() || null,
@@ -584,6 +629,7 @@ export async function loadTalkContext(
     estimatedTokens,
     contextSnapshot,
     contextImageSources,
+    forcedInjectionText,
     metadata,
   };
 }
@@ -777,6 +823,230 @@ export function buildSourcePreview(
     cleaned = cleaned.slice(0, SOURCE_PREVIEW_MAX_CHARS).trimEnd() + '…';
   }
   return cleaned;
+}
+
+// ---------------------------------------------------------------------------
+// `@-ref` Forced Injection
+// ---------------------------------------------------------------------------
+
+// 40 KB total budget for the forced-injection block. Overflow drops
+// newest resolutions and emits a truncation footer.
+const FORCED_INJECTION_BUDGET_BYTES = 40 * 1024;
+
+// Reserve ~96 bytes inside the budget so the truncation footer always
+// fits if we end up emitting one.
+const FORCED_INJECTION_FOOTER_RESERVE_BYTES = 96;
+
+export interface AtRefCandidateRow {
+  source_ref: string;
+  title: string;
+  title_slug: string | null;
+  status: string;
+  extracted_text: string | null;
+}
+
+type ForcedInjectionResolution =
+  | { kind: 'resolved'; sourceRef: string; title: string; content: string }
+  | { kind: 'pending'; sourceRef: string; title: string }
+  | { kind: 'missing-ref'; requestedRef: string }
+  | { kind: 'missing-slug'; requestedSlug: string }
+  | { kind: 'ambiguous-slug'; requestedSlug: string; readyRefs: string[] };
+
+function renderForcedInjectionResolution(
+  res: ForcedInjectionResolution,
+): string {
+  switch (res.kind) {
+    case 'resolved':
+      return [
+        `[${res.sourceRef}] ${res.title}`,
+        '<<<source',
+        sanitizeBlockForPrompt(res.content),
+        'source>>>',
+      ].join('\n');
+    case 'pending':
+      return `[${res.sourceRef}] ${res.title} (content not yet available)`;
+    case 'missing-ref':
+      return `[${res.requestedRef}] (no such source)`;
+    case 'missing-slug':
+      return `[@${res.requestedSlug}] (no such source)`;
+    case 'ambiguous-slug':
+      return `[@${res.requestedSlug}] (ambiguous slug — multiple sources match: ${res.readyRefs.join(
+        ', ',
+      )}. Use the @S<n> form instead.)`;
+  }
+}
+
+function resolveAtRefRequests(
+  rows: AtRefCandidateRow[],
+  refs: string[],
+  slugs: string[],
+): ForcedInjectionResolution[] {
+  const byRef = new Map<string, AtRefCandidateRow>();
+  const bySlug = new Map<string, AtRefCandidateRow[]>();
+  for (const row of rows) {
+    byRef.set(row.source_ref, row);
+    if (row.title_slug) {
+      const list = bySlug.get(row.title_slug) ?? [];
+      list.push(row);
+      bySlug.set(row.title_slug, list);
+    }
+  }
+
+  const claimedRefs = new Set<string>();
+  const resolutions: ForcedInjectionResolution[] = [];
+
+  for (const ref of refs) {
+    if (claimedRefs.has(ref)) continue;
+    const row = byRef.get(ref);
+    if (!row) {
+      resolutions.push({ kind: 'missing-ref', requestedRef: ref });
+      continue;
+    }
+    claimedRefs.add(row.source_ref);
+    if (row.status !== 'ready' || !row.extracted_text) {
+      resolutions.push({
+        kind: 'pending',
+        sourceRef: row.source_ref,
+        title: row.title,
+      });
+      continue;
+    }
+    resolutions.push({
+      kind: 'resolved',
+      sourceRef: row.source_ref,
+      title: row.title,
+      content: row.extracted_text,
+    });
+  }
+
+  for (const slug of slugs) {
+    const matches = bySlug.get(slug) ?? [];
+    if (matches.length === 0) {
+      resolutions.push({ kind: 'missing-slug', requestedSlug: slug });
+      continue;
+    }
+    const ready = matches.filter(
+      (m) => m.status === 'ready' && m.extracted_text,
+    );
+    if (ready.length > 1) {
+      resolutions.push({
+        kind: 'ambiguous-slug',
+        requestedSlug: slug,
+        readyRefs: ready.map((m) => m.source_ref).sort(),
+      });
+      continue;
+    }
+    if (ready.length === 0) {
+      const first = matches[0];
+      if (claimedRefs.has(first.source_ref)) continue;
+      claimedRefs.add(first.source_ref);
+      resolutions.push({
+        kind: 'pending',
+        sourceRef: first.source_ref,
+        title: first.title,
+      });
+      continue;
+    }
+    const row = ready[0];
+    if (claimedRefs.has(row.source_ref)) continue;
+    claimedRefs.add(row.source_ref);
+    resolutions.push({
+      kind: 'resolved',
+      sourceRef: row.source_ref,
+      title: row.title,
+      content: row.extracted_text as string,
+    });
+  }
+
+  return resolutions;
+}
+
+/**
+ * Test-friendly pure variant of `buildAtRefForcedInjection`. Takes the
+ * pre-loaded row set instead of an active SQL handle. Returns the same
+ * shape: the rendered block (or null) and the resolution metadata.
+ */
+export function buildAtRefForcedInjectionFromRows(
+  rows: AtRefCandidateRow[],
+  refs: string[],
+  slugs: string[],
+): string | null {
+  if (refs.length === 0 && slugs.length === 0) return null;
+  const resolutions = resolveAtRefRequests(rows, refs, slugs);
+  if (resolutions.length === 0) return null;
+
+  const encoder = new TextEncoder();
+  const blocks: string[] = [];
+  let usedBytes = 0;
+  let omittedCount = 0;
+
+  for (let i = 0; i < resolutions.length; i++) {
+    const rendered = renderForcedInjectionResolution(resolutions[i]);
+    const separator = blocks.length === 0 ? '' : '\n\n';
+    const sizeWithSeparator = encoder.encode(separator + rendered).byteLength;
+    if (
+      usedBytes + sizeWithSeparator + FORCED_INJECTION_FOOTER_RESERVE_BYTES >
+      FORCED_INJECTION_BUDGET_BYTES
+    ) {
+      omittedCount = resolutions.length - i;
+      break;
+    }
+    blocks.push(rendered);
+    usedBytes += sizeWithSeparator;
+  }
+
+  if (blocks.length === 0) return null;
+
+  let text = blocks.join('\n\n');
+  if (omittedCount > 0) {
+    text += `\n\n[truncated, ${omittedCount} more @-refs omitted]`;
+  }
+  return text;
+}
+
+/**
+ * Resolve `@-ref` mentions in the latest user message into a single
+ * pre-fetched block prefixed onto the user turn. Returns null when no
+ * refs/slugs are present or none could be resolved.
+ *
+ * Behaviors:
+ * - `@S1` → exact source_ref match.
+ * - `@design-notes` → title_slug match. Ambiguity (two ready rows
+ *   sharing a slug) emits a manifest note and skips the injection.
+ * - Missing ref/slug → "(no such source)" note.
+ * - Pending / failed source → "(content not yet available)" note.
+ * - Total output bounded to 40 KB; overflow emits a truncation footer.
+ * - Content is run through sanitizeBlockForPrompt to neutralize
+ *   prompt-injection vectors (control chars + backticks) before fencing.
+ */
+export async function buildAtRefForcedInjection(
+  db: Sql,
+  talkId: string,
+  refs: string[],
+  slugs: string[],
+): Promise<string | null> {
+  if (refs.length === 0 && slugs.length === 0) return null;
+
+  const upperRefs = refs.map((r) => r.toUpperCase());
+  const lowerSlugs = slugs.map((s) => s.toLowerCase());
+
+  // Single SQL covering both ref + slug lookups, with no status filter
+  // so we can emit a "(content not yet available)" note when a user
+  // @-refs a still-pending URL ingest. Sanity-check: we ignore any
+  // rows whose source_ref doesn't appear in the requested ref list AND
+  // whose title_slug doesn't appear in the requested slug list — but
+  // the SQL where-clause already does that.
+  const rows = await db<AtRefCandidateRow[]>`
+    select source_ref, title, title_slug, status, extracted_text
+    from public.talk_context_sources
+    where talk_id = ${talkId}::uuid
+      and (
+        source_ref = any(${upperRefs}::text[])
+        or title_slug = any(${lowerSlugs}::text[])
+      )
+  `;
+
+  return buildAtRefForcedInjectionFromRows(rows, upperRefs, lowerSlugs);
 }
 
 // ---------------------------------------------------------------------------
