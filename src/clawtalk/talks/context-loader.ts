@@ -1239,7 +1239,7 @@ function buildContextTools(
         description: [
           "Propose appending one or more new blocks to the Talk's attached document.",
           '',
-          'Anchor IDs come from THE DOC block listing in your system prompt. Pass `after_anchor_id` to insert immediately after a specific block, or `null` to prepend at the very top. The user reviews and accepts or rejects the proposal in the Talk UI — your call writes a pending proposal, not the document itself.',
+          'Anchor IDs come from THE DOC block listing in your system prompt. Pass `after_anchor_id` to insert immediately after a specific block, or omit it entirely to prepend at the very top. The user reviews and accepts or rejects the proposal in the Talk UI — your call writes a pending proposal, not the document itself.',
           '',
           'This is the correct tool when the user asks you to add to, extend, draft, or continue the doc — do NOT write the extension into chat. For per-block edits to existing prose, use `propose_content_replace` instead. Smaller proposals (one or two blocks) review better than long ones.',
         ].join('\n'),
@@ -1247,9 +1247,15 @@ function buildContextTools(
           type: 'object',
           properties: {
             after_anchor_id: {
-              type: ['string', 'null'],
+              // Single-string type (not the JSON Schema array form
+              // `['string', 'null']`) — NVIDIA NIM's Python backend
+              // crashes with `unhashable type: 'list'` when it tries
+              // to cache schemas containing array-of-types. Omitting
+              // the field means "prepend at top"; the handler accepts
+              // both undefined and empty string the same way.
+              type: 'string',
               description:
-                'Anchor ID of the block to insert AFTER, copied verbatim from THE DOC block listing. Pass null to prepend at the top.',
+                'Anchor ID of the block to insert AFTER, copied verbatim from THE DOC block listing. Omit this field to prepend at the top of the document.',
             },
             markdown: {
               type: 'string',
