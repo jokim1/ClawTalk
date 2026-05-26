@@ -4117,18 +4117,21 @@ export function TalkDetailPage({
         void refetchTalkContent();
       },
       onContentEditRunStarted: (event: TalkContentEditRunStartedEvent) => {
-        const current = talkContentRef.current;
-        if (!current || current.id !== event.contentId) return;
+        // No guard on talkContentRef — these events fire during the
+        // tx that just created the row, so the local content state may
+        // not have hydrated yet (sidebar-driven load races the
+        // WebSocket arrival). Banner state is keyed on contentId so a
+        // mismatched/stale ref doesn't corrupt anything; refetch fills
+        // in the rest.
         setPendingEditStreamingByRunId((prev) => {
           if (prev.has(event.runId)) return prev;
           const next = new Map(prev);
           next.set(event.runId, event.agentNickname ?? null);
           return next;
         });
+        void refetchTalkContent();
       },
       onContentEditRunAborted: (event: TalkContentEditRunAbortedEvent) => {
-        const current = talkContentRef.current;
-        if (!current || current.id !== event.contentId) return;
         setPendingEditStreamingByRunId((prev) => {
           if (!prev.has(event.runId)) return prev;
           const next = new Map(prev);
@@ -4137,9 +4140,10 @@ export function TalkDetailPage({
         });
       },
       onContentEditApplied: (event: TalkContentEditAppliedEvent) => {
-        const current = talkContentRef.current;
-        if (!current || current.id !== event.contentId) return;
-        // Refetch the doc so we have authoritative pending edits + body.
+        // Always refetch — the apply just created a pending row that
+        // the UI must surface. The prior `current.id !== event.contentId`
+        // guard caused a missed-update bug when the WebSocket event
+        // arrived before talkContent had hydrated.
         setPendingEditStreamingByRunId((prev) => {
           if (!prev.has(event.runId)) return prev;
           const next = new Map(prev);
@@ -4149,16 +4153,13 @@ export function TalkDetailPage({
         void refetchTalkContent();
       },
       onContentEditResolved: (event: TalkContentEditResolvedEvent) => {
-        const current = talkContentRef.current;
-        if (!current || current.id !== event.contentId) return;
-        // Drop the resolved edits from local state; refetch picks up
-        // the materialized body if the resolution was accept.
         setTalkContentPendingEdits((prev) =>
           prev.filter((edit) => !event.editIds.includes(edit.id)),
         );
-        if (event.resolution !== 'rejected') {
-          void refetchTalkContent();
-        }
+        // Refetch in all cases so the banner / body reconcile against
+        // the server-authoritative snapshot — including rejected runs
+        // (the row went away, the cached state should reflect it).
+        void refetchTalkContent();
       },
       onReplayGap: async () => {
         await resyncTalkState({ refreshThreads: true });
