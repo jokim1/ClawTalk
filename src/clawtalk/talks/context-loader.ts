@@ -1224,6 +1224,7 @@ function buildContextTools(
       ...buildGoogleDriveContextTools({
         readEnabled: googleReadEnabled,
         writeEnabled: googleWriteEnabled,
+        hasAttachedContent: hasContent,
       }),
     );
   }

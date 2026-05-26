@@ -143,6 +143,46 @@ describe('google-drive-tools — pure helpers', () => {
       });
       expect(tools).toEqual([]);
     });
+    it('does not change descriptions when hasAttachedContent is false/unset', () => {
+      const before = buildGoogleDriveContextTools({
+        readEnabled: false,
+        writeEnabled: true,
+      });
+      const updateTool = before.find(
+        (t) => t.name === 'google_docs_batch_update',
+      );
+      expect(updateTool?.description).not.toContain('@doc');
+    });
+    it('prepends an @doc disambiguation to mutation tools when hasAttachedContent is true', () => {
+      const tools = buildGoogleDriveContextTools({
+        readEnabled: true,
+        writeEnabled: true,
+        hasAttachedContent: true,
+      });
+      const create = tools.find((t) => t.name === 'google_docs_create');
+      const update = tools.find((t) => t.name === 'google_docs_batch_update');
+      const sheets = tools.find((t) => t.name === 'google_sheets_batch_update');
+      for (const tool of [create, update, sheets]) {
+        expect(tool?.description.startsWith('IMPORTANT: `@doc`')).toBe(true);
+        expect(tool?.description).toContain('propose_content_append');
+        expect(tool?.description).toContain('propose_content_replace');
+        expect(tool?.description).toContain('propose_content_bulk');
+        expect(tool?.description).toContain('never look for `@doc`');
+      }
+    });
+    it('does NOT prepend the disambiguation to read tools', () => {
+      const tools = buildGoogleDriveContextTools({
+        readEnabled: true,
+        writeEnabled: true,
+        hasAttachedContent: true,
+      });
+      const docsRead = tools.find((t) => t.name === 'google_docs_read');
+      const driveSearch = tools.find((t) => t.name === 'google_drive_search');
+      expect(docsRead?.description.startsWith('IMPORTANT: `@doc`')).toBe(false);
+      expect(driveSearch?.description.startsWith('IMPORTANT: `@doc`')).toBe(
+        false,
+      );
+    });
   });
 
   describe('buildBoundGoogleDrivePromptSection', () => {

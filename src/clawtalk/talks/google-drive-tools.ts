@@ -371,12 +371,39 @@ const WRITE_TOOL_DEFINITIONS: LlmToolDefinition[] = [
 export function buildGoogleDriveContextTools(input: {
   readEnabled: boolean;
   writeEnabled: boolean;
+  /**
+   * When the host Talk has an attached Content doc, prepend a hard
+   * disambiguation to each mutation tool's description so the agent
+   * doesn't pattern-match `@doc` to a Google Drive `bindingRef`. Kimi
+   * 2.6 in particular has a strong "doc editing = Google Docs API"
+   * prior; without this hint it ignores `propose_content_*` and
+   * hallucinates that `@doc` should have a G1-style bindingRef.
+   */
+  hasAttachedContent?: boolean;
 }): LlmToolDefinition[] {
   const tools: LlmToolDefinition[] = [];
   if (input.readEnabled) tools.push(...READ_TOOL_DEFINITIONS);
   if (input.writeEnabled) tools.push(...WRITE_TOOL_DEFINITIONS);
-  return tools;
+  if (!input.hasAttachedContent) return tools;
+  return tools.map((tool) => {
+    if (!MUTATION_TOOLS_TO_DISAMBIGUATE.has(tool.name)) return tool;
+    return {
+      ...tool,
+      description: `${ATTACHED_DOC_DISAMBIGUATION}\n\n${tool.description}`,
+    };
+  });
 }
+
+const MUTATION_TOOLS_TO_DISAMBIGUATE: ReadonlySet<string> = new Set([
+  'google_docs_create',
+  'google_docs_batch_update',
+  'google_sheets_batch_update',
+]);
+
+const ATTACHED_DOC_DISAMBIGUATION = [
+  "IMPORTANT: `@doc` in the system prompt is the Talk's ATTACHED document, NOT a Google Doc. It does not have a Google Drive `bindingRef` and never will — never look for `@doc` in your `G1`/`G2`/etc. references. To add to, replace blocks in, or rewrite `@doc`, use `propose_content_append` / `propose_content_replace` / `propose_content_bulk`.",
+  'This tool is only for separately bound EXTERNAL Google Docs/Sheets, addressed by their `G1`-style `bindingRef`. Use it only when the user explicitly asks for a Google Doc / Google Sheet action, never as a substitute for editing `@doc`.',
+].join('\n\n');
 
 // ---------------------------------------------------------------------------
 // Generic helpers
