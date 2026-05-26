@@ -224,6 +224,11 @@ export type TalkToolCallStartedEvent = {
   arguments?: Record<string, unknown> | null;
 };
 
+export type TalkToolsChangedEvent = {
+  talkId: string;
+  active: Record<string, boolean>;
+};
+
 interface TalkStreamCallbacks {
   onMessageAppended: (event: MessageAppendedEvent) => void;
   onRunStarted: (event: TalkRunStartedEvent) => void;
@@ -247,6 +252,7 @@ interface TalkStreamCallbacks {
   onContentEditApplied?: (event: TalkContentEditAppliedEvent) => void;
   onContentEditResolved?: (event: TalkContentEditResolvedEvent) => void;
   onToolCallStarted?: (event: TalkToolCallStartedEvent) => void;
+  onTalkToolsChanged?: (event: TalkToolsChangedEvent) => void;
   onReplayGap: () => void | Promise<void>;
   onStateChange?: (state: TalkStreamState) => void;
   onUnauthorized: () => void;
@@ -497,6 +503,11 @@ export function openTalkStream(input: OpenTalkStreamInput): TalkStreamHandle {
       case 'tool_call_started': {
         const payload = parseFrame<TalkToolCallStartedEvent>(frame);
         if (payload) input.onToolCallStarted?.(payload);
+        return;
+      }
+      case 'talk_tools_changed': {
+        const payload = parseFrame<TalkToolsChangedEvent>(frame);
+        if (payload) input.onTalkToolsChanged?.(payload);
         return;
       }
       case 'replay_gap': {

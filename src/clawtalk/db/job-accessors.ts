@@ -944,6 +944,22 @@ export async function createJobTriggerRun(input: {
     createdAt: currentNow,
   });
 
+  // Snapshot the active tool families at run creation (migration 0031)
+  // so the consumer reads from a frozen set even if the user toggles a
+  // chip mid-flight.
+  const activeToolFamiliesRows = await getDbPg()<
+    {
+      active_tool_families_json: Record<string, boolean> | null;
+    }[]
+  >`
+    select active_tool_families_json
+    from public.talks
+    where id = ${job.talkId}::uuid
+    limit 1
+  `;
+  const activeToolFamiliesSnapshot =
+    activeToolFamiliesRows[0]?.active_tool_families_json ?? {};
+
   const run = await createTalkRun({
     ownerId: input.ownerId,
     talkId: job.talkId,
@@ -953,6 +969,7 @@ export async function createJobTriggerRun(input: {
     triggerMessageId: message.id,
     jobId: job.id,
     targetAgentId: job.targetAgentId,
+    activeToolFamiliesSnapshot,
   });
 
   await touchTalkUpdatedAtForJob(job.talkId, currentNow);

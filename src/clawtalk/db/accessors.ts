@@ -1379,6 +1379,10 @@ export interface TalkRunRecord {
   ended_at: string | null;
   cancel_reason: string | null;
   metadata_json: Record<string, unknown> | null;
+  // Snapshot of talks.active_tool_families_json captured at run-creation.
+  // Null on rows created before migration 0031 — consumers fall back to
+  // a live read in that case.
+  active_tool_families_snapshot: Record<string, boolean> | null;
 }
 
 const TALK_RUN_COLUMNS = `id, talk_id, owner_id, thread_id, requested_by,
@@ -1387,7 +1391,7 @@ const TALK_RUN_COLUMNS = `id, talk_id, owner_id, thread_id, requested_by,
   executor_alias, executor_model, source_binding_id,
   source_external_message_id, source_thread_key, task_type, selected_mode,
   transport, timeout_phase, created_at, started_at, ended_at, cancel_reason,
-  metadata_json`;
+  metadata_json, active_tool_families_snapshot`;
 
 export async function createTalkRun(input: {
   ownerId: string;
@@ -1414,9 +1418,16 @@ export async function createTalkRun(input: {
   transport?: TalkRunTransport | null;
   timeoutPhase?: string | null;
   metadata?: Record<string, unknown> | null;
+  // Snapshot of talks.active_tool_families_json captured by the caller
+  // at run-creation time. Pre-toggle-feature callers leave this
+  // undefined; the consumer falls back to a live read.
+  activeToolFamiliesSnapshot?: Record<string, boolean> | null;
 }): Promise<TalkRunRecord> {
   const db = getDbPg();
   const metadata = input.metadata ? db.json(input.metadata as never) : null;
+  const snapshot = input.activeToolFamiliesSnapshot
+    ? db.json(input.activeToolFamiliesSnapshot as never)
+    : null;
   const rows = input.id
     ? await db<TalkRunRecord[]>`
         insert into public.talk_runs
@@ -1425,7 +1436,8 @@ export async function createTalkRun(input: {
            idempotency_key, run_kind, response_group_id, sequence_index,
            executor_alias, executor_model, source_binding_id,
            source_external_message_id, source_thread_key, task_type,
-           selected_mode, transport, timeout_phase, metadata_json)
+           selected_mode, transport, timeout_phase, metadata_json,
+           active_tool_families_snapshot)
         values
           (${input.id}::uuid, ${input.talkId}::uuid, ${input.ownerId}::uuid,
            ${input.threadId}::uuid, ${input.requestedBy}::uuid,
@@ -1447,7 +1459,8 @@ export async function createTalkRun(input: {
            ${input.selectedMode ?? null},
            ${input.transport ?? null},
            ${input.timeoutPhase ?? null},
-           ${metadata})
+           ${metadata},
+           ${snapshot})
         returning ${db.unsafe(TALK_RUN_COLUMNS)}
       `
     : await db<TalkRunRecord[]>`
@@ -1457,7 +1470,8 @@ export async function createTalkRun(input: {
            idempotency_key, run_kind, response_group_id, sequence_index,
            executor_alias, executor_model, source_binding_id,
            source_external_message_id, source_thread_key, task_type,
-           selected_mode, transport, timeout_phase, metadata_json)
+           selected_mode, transport, timeout_phase, metadata_json,
+           active_tool_families_snapshot)
         values
           (${input.talkId}::uuid, ${input.ownerId}::uuid,
            ${input.threadId}::uuid, ${input.requestedBy}::uuid,
@@ -1479,7 +1493,8 @@ export async function createTalkRun(input: {
            ${input.selectedMode ?? null},
            ${input.transport ?? null},
            ${input.timeoutPhase ?? null},
-           ${metadata})
+           ${metadata},
+           ${snapshot})
         returning ${db.unsafe(TALK_RUN_COLUMNS)}
       `;
   return rows[0];
@@ -2232,6 +2247,25 @@ export async function enqueueTalkTurnAtomic(input: {
     threadRows[0]?.title ?? null,
   );
 
+  // Snapshot the Talk's active tool families once before the fan-out so
+  // every agent in this response group sees the SAME tool set even if
+  // the user toggles a chip while the group is still streaming. This is
+  // the "queue snapshot" intent from migration 0031 — consumers in
+  // new-executor.ts read this value via getTalkRunById and pass it to
+  // planExecution as `activeFamilies`, bypassing the live read.
+  const activeToolFamiliesRows = await db<
+    {
+      active_tool_families_json: Record<string, boolean> | null;
+    }[]
+  >`
+    select active_tool_families_json
+    from public.talks
+    where id = ${input.talkId}::uuid
+    limit 1
+  `;
+  const activeToolFamiliesSnapshot =
+    activeToolFamiliesRows[0]?.active_tool_families_json ?? {};
+
   // Fan out one queued run per target agent.
   const runs: TalkRunRecord[] = [];
   for (let i = 0; i < input.targetAgentIds.length; i++) {
@@ -2247,6 +2281,7 @@ export async function enqueueTalkTurnAtomic(input: {
       idempotencyKey: i === 0 ? (input.idempotencyKey ?? null) : null,
       responseGroupId,
       sequenceIndex: sequenceIndexes[i],
+      activeToolFamiliesSnapshot,
     });
     runs.push(run);
   }

@@ -205,6 +205,28 @@ describe('buildTalkThreadEventFilter', () => {
     }
   });
 
+  describe('talk_tools_changed (Talk-level, thread-agnostic)', () => {
+    it('accepts talk_tools_changed regardless of payload threadId — chip bar is Talk-level', () => {
+      expect(
+        filter(
+          makeEvent('talk_tools_changed', {
+            talkId: 'talk-1',
+            active: { web: true },
+          }),
+        ),
+      ).toBe(true);
+      expect(
+        filter(
+          makeEvent('talk_tools_changed', {
+            talkId: 'talk-1',
+            active: { web: false },
+            threadId: 'thread-Z',
+          }),
+        ),
+      ).toBe(true);
+    });
+  });
+
   describe('tool_call_started', () => {
     it('accepts tool_call_started when threadId matches', () => {
       expect(

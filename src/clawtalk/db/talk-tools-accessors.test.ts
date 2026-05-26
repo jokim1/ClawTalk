@@ -19,8 +19,12 @@ import {
   deleteTalkResourceBinding,
   deleteUserGoogleCredential,
   getGoogleOAuthLinkRequest,
+  getTalkActiveTools,
+  getTalkAvailableFamilies,
   getUserGoogleCredential,
   listTalkResourceBindings,
+  mergeAgentToolsIntoTalkActive,
+  setTalkActiveTool,
   upsertUserGoogleCredential,
 } from './talk-tools-accessors.js';
 
@@ -296,5 +300,157 @@ describe('talk-tools-accessors-pg (postgres + RLS)', () => {
         });
       }),
     ).rejects.toThrow();
+  });
+});
+
+// ----------------------------------------------------------------------------
+// Talk active-tool families (migration 0031)
+// ----------------------------------------------------------------------------
+
+describe('talk active-tool families (postgres + RLS)', () => {
+  beforeAll(async () => {
+    await initPgDatabase();
+    await seedAuthUser(USER_A_ID, 'tools-a@clawtalk.local', 'Tools User A');
+    await seedTalk(TALK_A_ID, USER_A_ID);
+  });
+
+  afterAll(async () => {
+    const db = getDbPg();
+    await db`delete from auth.users where id = ${USER_A_ID}::uuid`;
+    await closePgDatabase();
+  });
+
+  beforeEach(async () => {
+    const db = getDbPg();
+    // Reset the Talk to default '{}' active_tool_families_json and drop any
+    // agents seeded by a prior test. Cascade clears talk_agents.
+    await db`delete from public.talks where id = ${TALK_A_ID}::uuid`;
+    await seedTalk(TALK_A_ID, USER_A_ID);
+    await db`delete from public.registered_agents where owner_id = ${USER_A_ID}::uuid`;
+  });
+
+  async function seedAgent(
+    id: string,
+    name: string,
+    toolPermissions: Record<string, boolean>,
+  ): Promise<void> {
+    const db = getDbPg();
+    await db`
+      insert into public.registered_agents
+        (id, owner_id, name, provider_id, model_id, tool_permissions_json)
+      values
+        (${id}::uuid, ${USER_A_ID}::uuid, ${name}, 'provider.anthropic',
+         'claude-opus-4-7', ${db.json(toolPermissions as never)})
+    `;
+    await db`
+      insert into public.talk_agents (talk_id, owner_id, registered_agent_id)
+      values (${TALK_A_ID}::uuid, ${USER_A_ID}::uuid, ${id}::uuid)
+    `;
+  }
+
+  it('getTalkActiveTools: returns {} for a freshly-created Talk', async () => {
+    await withUserContext(USER_A_ID, async () => {
+      const active = await getTalkActiveTools(TALK_A_ID);
+      expect(active).toEqual({});
+    });
+  });
+
+  it('setTalkActiveTool: flips a single key, leaves siblings untouched', async () => {
+    await withUserContext(USER_A_ID, async () => {
+      const afterWeb = await setTalkActiveTool(TALK_A_ID, 'web', true);
+      expect(afterWeb).toEqual({ web: true });
+
+      const afterDrive = await setTalkActiveTool(
+        TALK_A_ID,
+        'google_read',
+        true,
+      );
+      expect(afterDrive).toEqual({ web: true, google_read: true });
+
+      const afterWebOff = await setTalkActiveTool(TALK_A_ID, 'web', false);
+      expect(afterWebOff).toEqual({ web: false, google_read: true });
+
+      // Reading separately matches the last set state.
+      const fetched = await getTalkActiveTools(TALK_A_ID);
+      expect(fetched).toEqual({ web: false, google_read: true });
+    });
+  });
+
+  it('setTalkActiveTool: throws when the Talk does not exist', async () => {
+    const MISSING_ID = '0c444444-eeee-eeee-eeee-eeeeeeeeeeee';
+    await withUserContext(USER_A_ID, async () => {
+      await expect(setTalkActiveTool(MISSING_ID, 'web', true)).rejects.toThrow(
+        /not found/,
+      );
+    });
+  });
+
+  it('getTalkAvailableFamilies: union of assigned agents (true keys only)', async () => {
+    await withUserContext(USER_A_ID, async () => {
+      await seedAgent('0c444444-1111-1111-1111-aaaaaaaaaaaa', 'researcher', {
+        web: true,
+        google_read: true,
+        filesystem: false,
+      });
+      await seedAgent('0c444444-2222-2222-2222-aaaaaaaaaaaa', 'editor', {
+        shell: true,
+        google_read: true,
+      });
+
+      const families = await getTalkAvailableFamilies(TALK_A_ID);
+      // Sorted by key, deduped, `false` values excluded.
+      expect(families).toEqual(['google_read', 'shell', 'web']);
+    });
+  });
+
+  it('getTalkAvailableFamilies: returns [] for a Talk with no agents', async () => {
+    await withUserContext(USER_A_ID, async () => {
+      const families = await getTalkAvailableFamilies(TALK_A_ID);
+      expect(families).toEqual([]);
+    });
+  });
+
+  it('mergeAgentToolsIntoTalkActive: empty agent list is a no-op', async () => {
+    await withUserContext(USER_A_ID, async () => {
+      await setTalkActiveTool(TALK_A_ID, 'web', true);
+      const result = await mergeAgentToolsIntoTalkActive(TALK_A_ID, []);
+      expect(result).toEqual({ web: true });
+    });
+  });
+
+  it('mergeAgentToolsIntoTalkActive: ORs new agent capabilities in, leaves existing true/false untouched', async () => {
+    await withUserContext(USER_A_ID, async () => {
+      // Pre-existing state: web is explicitly disabled, google_read is on.
+      await setTalkActiveTool(TALK_A_ID, 'web', false);
+      await setTalkActiveTool(TALK_A_ID, 'google_read', true);
+
+      await seedAgent('0c444444-3333-3333-3333-aaaaaaaaaaaa', 'newagent', {
+        web: true,
+        gmail_read: true,
+        filesystem: false,
+      });
+
+      const merged = await mergeAgentToolsIntoTalkActive(TALK_A_ID, [
+        '0c444444-3333-3333-3333-aaaaaaaaaaaa',
+      ]);
+      // OR semantics on true keys: web flips back to true (added by agent).
+      // gmail_read newly added (true). filesystem stays absent (not true on agent).
+      // google_read stays true (preserved).
+      expect(merged).toEqual({
+        web: true,
+        google_read: true,
+        gmail_read: true,
+      });
+    });
+  });
+
+  it('mergeAgentToolsIntoTalkActive: unknown agent IDs are silently skipped', async () => {
+    await withUserContext(USER_A_ID, async () => {
+      await setTalkActiveTool(TALK_A_ID, 'web', true);
+      const merged = await mergeAgentToolsIntoTalkActive(TALK_A_ID, [
+        '0c444444-9999-9999-9999-aaaaaaaaaaaa',
+      ]);
+      expect(merged).toEqual({ web: true });
+    });
   });
 });

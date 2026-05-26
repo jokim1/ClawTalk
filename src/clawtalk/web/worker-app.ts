@@ -61,8 +61,7 @@
 //
 // NOT mounted (chassis-removed; will not return):
 //   /api/v1/main/*, /api/v1/browser/*, /api/v1/data-connectors/*,
-//   /api/v1/channel-connectors/*, /api/v1/channel-connections/*,
-//   /api/v1/talks/:talkId/tools
+//   /api/v1/channel-connectors/*, /api/v1/channel-connections/*
 //
 // The 501 catch-all at the bottom of buildApp() now only fires for
 // routes in the not-yet-mounted bucket (above) plus genuinely
@@ -234,6 +233,7 @@ import {
   updateTalkAgentsRoute,
   updateTalkPolicyRoute,
 } from './routes/talks.js';
+import { getTalkToolsRoute, updateTalkToolRoute } from './routes/talk-tools.js';
 import {
   getEffectiveToolsRoute,
   listUserToolPermissionsRoute,
@@ -1433,6 +1433,34 @@ function buildApp(): Hono<{ Variables: Variables }> {
       auth,
       talkId: talkId.value,
       agents: payload.data.agents,
+    });
+    return jsonResponse(result);
+  });
+
+  app.get('/api/v1/talks/:talkId/tools', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ userId: auth.userId, bucket: 'read' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const talkId = decodeIdParam(c, 'talkId');
+    if (!talkId.ok) return talkId.response;
+    const result = await getTalkToolsRoute({ auth, talkId: talkId.value });
+    return jsonResponse(result);
+  });
+
+  app.patch('/api/v1/talks/:talkId/tools', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ userId: auth.userId, bucket: 'write' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const csrfFail = checkCsrf(c, auth);
+    if (csrfFail) return csrfFail;
+    const talkId = decodeIdParam(c, 'talkId');
+    if (!talkId.ok) return talkId.response;
+    const payload = await readJsonBody(c);
+    if (!payload.ok) return invalidJsonResponse(c, payload.error);
+    const result = await updateTalkToolRoute({
+      auth,
+      talkId: talkId.value,
+      body: payload.data,
     });
     return jsonResponse(result);
   });

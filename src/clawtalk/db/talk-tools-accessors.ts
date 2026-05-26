@@ -504,3 +504,129 @@ export async function deleteGoogleOAuthLinkRequest(
   `;
   return rows.length > 0;
 }
+
+// ---------------------------------------------------------------------------
+// Talk active-tool families (migration 0030)
+//
+// `talks.active_tool_families_json` holds `Record<string, boolean>` keyed by
+// family slug (vocabulary from TOOL_FAMILY_MAP in agent-accessors.ts). This
+// is the per-Talk toggle layer that intersects with the agent capability
+// ceiling at effective-tools-computation time. The migration inherits
+// RLS from the existing `talks_owner` row policy.
+// ---------------------------------------------------------------------------
+
+export type TalkActiveToolFamilies = Record<string, boolean>;
+
+interface ActiveFamiliesRow {
+  active_tool_families_json: TalkActiveToolFamilies;
+}
+
+function normalizeActiveFamilies(value: unknown): TalkActiveToolFamilies {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const out: TalkActiveToolFamilies = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof raw === 'boolean') out[key] = raw;
+  }
+  return out;
+}
+
+export async function getTalkActiveTools(
+  talkId: string,
+): Promise<TalkActiveToolFamilies> {
+  const db = getDbPg();
+  const rows = await db<ActiveFamiliesRow[]>`
+    select active_tool_families_json
+    from public.talks
+    where id = ${talkId}::uuid
+    limit 1
+  `;
+  if (!rows[0]) return {};
+  return normalizeActiveFamilies(rows[0].active_tool_families_json);
+}
+
+export async function setTalkActiveTool(
+  talkId: string,
+  family: string,
+  enabled: boolean,
+): Promise<TalkActiveToolFamilies> {
+  const db = getDbPg();
+  const rows = await db<ActiveFamiliesRow[]>`
+    update public.talks
+    set active_tool_families_json = jsonb_set(
+          coalesce(active_tool_families_json, '{}'::jsonb),
+          array[${family}],
+          to_jsonb(${enabled}::boolean)
+        ),
+        updated_at = now()
+    where id = ${talkId}::uuid
+    returning active_tool_families_json
+  `;
+  if (!rows[0]) {
+    throw new Error(`setTalkActiveTool: talk ${talkId} not found`);
+  }
+  return normalizeActiveFamilies(rows[0].active_tool_families_json);
+}
+
+export async function getTalkAvailableFamilies(
+  talkId: string,
+): Promise<string[]> {
+  const db = getDbPg();
+  const rows = await db<{ family: string }[]>`
+    select distinct kv.key as family
+    from public.talk_agents ta
+    join public.registered_agents ra on ra.id = ta.registered_agent_id
+    cross join lateral jsonb_each(ra.tool_permissions_json) as kv
+    where ta.talk_id = ${talkId}::uuid
+      and kv.value = 'true'::jsonb
+    order by kv.key asc
+  `;
+  return rows.map((r) => r.family);
+}
+
+/**
+ * OR newly-added agents' `tool_permissions_json` into a Talk's
+ * `active_tool_families_json`. Used by the Talk-create + Talk-agents-
+ * update routes to keep the active set in sync with the assigned
+ * agent set WITHOUT clobbering the user's deliberate toggle-offs.
+ *
+ * Behavior:
+ *  - Only families where the agent has `true` in its capability map
+ *    get OR'd in. False / absent values are no-ops.
+ *  - The merge is in a single SQL statement — atomic per Talk row.
+ *  - Pass an empty array and this is a no-op (returns current set).
+ *
+ * Removed agents do NOT pass through here; their toggle states are
+ * preserved on `talks.active_tool_families_json` in case the agent is
+ * re-added later.
+ */
+export async function mergeAgentToolsIntoTalkActive(
+  talkId: string,
+  newAgentIds: string[],
+): Promise<TalkActiveToolFamilies> {
+  const db = getDbPg();
+  if (newAgentIds.length === 0) {
+    return await getTalkActiveTools(talkId);
+  }
+  const rows = await db<ActiveFamiliesRow[]>`
+    with addition as (
+      select coalesce(
+        jsonb_object_agg(kv.key, true) filter (where kv.value = 'true'::jsonb),
+        '{}'::jsonb
+      ) as families
+      from public.registered_agents ra
+      cross join lateral jsonb_each(ra.tool_permissions_json) as kv
+      where ra.id in ${db(newAgentIds)}
+    )
+    update public.talks
+    set active_tool_families_json =
+          coalesce(active_tool_families_json, '{}'::jsonb)
+          || (select families from addition),
+        updated_at = now()
+    where id = ${talkId}::uuid
+    returning active_tool_families_json
+  `;
+  if (!rows[0]) {
+    throw new Error(`mergeAgentToolsIntoTalkActive: talk ${talkId} not found`);
+  }
+  return normalizeActiveFamilies(rows[0].active_tool_families_json);
+}

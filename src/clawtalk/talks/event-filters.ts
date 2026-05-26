@@ -74,6 +74,11 @@ export function buildTalkThreadEventFilter(
       case 'content_edit_applied':
       case 'content_edit_resolved':
         return true;
+      // Talk-scoped tool toggles (migration 0031). The chip bar lives
+      // above the composer for every thread of the Talk, so all
+      // thread-bound subscribers need the event.
+      case 'talk_tools_changed':
+        return true;
       // `tool_call_started` carries threadId in the payload (per the
       // executor emit) so it can route to the originating thread.
       // Without the thread match, a streaming placeholder would appear

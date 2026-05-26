@@ -383,3 +383,157 @@ describe('agent-accessors-pg (postgres + RLS)', () => {
     });
   });
 });
+
+// ----------------------------------------------------------------------------
+// getEffectiveToolsForAgent — talk-aware behavior (migration 0031)
+//
+// The Talk active set intersects with the agent capability and user
+// permission, layered as: agent_capability ∩ talk_active ∩ user_permission.
+// The ALWAYS_ALLOWED bypass (agent-router.ts) is applied DOWNSTREAM of the
+// family-level enabled flag this function returns — never inside this fn.
+// ----------------------------------------------------------------------------
+
+const TALK_A_ID_AGENT = '0c111111-cccc-cccc-cccc-ccccccccc001';
+
+describe('getEffectiveToolsForAgent talk-aware (migration 0031)', () => {
+  beforeAll(async () => {
+    await initPgDatabase();
+    await seedAuthUser(USER_A_ID, 'rls-a@clawtalk.local', 'RLS User A');
+  });
+
+  afterAll(async () => {
+    const db = getDbPg();
+    await db`delete from public.talks where id = ${TALK_A_ID_AGENT}::uuid`;
+    await db`delete from auth.users where id = ${USER_A_ID}::uuid`;
+    await closePgDatabase();
+  });
+
+  beforeEach(async () => {
+    const db = getDbPg();
+    await purgeOwnerRows();
+    await db`delete from public.talks where id = ${TALK_A_ID_AGENT}::uuid`;
+    await db`
+      insert into public.talks (id, owner_id, topic_title, active_tool_families_json)
+      values (${TALK_A_ID_AGENT}::uuid, ${USER_A_ID}::uuid, 'Talk for tool-filter',
+              '{}'::jsonb)
+    `;
+  });
+
+  async function setActive(active: Record<string, boolean>): Promise<void> {
+    const db = getDbPg();
+    await db`
+      update public.talks
+      set active_tool_families_json = ${db.json(active as never)}
+      where id = ${TALK_A_ID_AGENT}::uuid
+    `;
+  }
+
+  it('no opts → behavior unchanged (agent ∩ user view)', async () => {
+    await withUserContext(USER_A_ID, async () => {
+      const agent = await createRegisteredAgent({
+        ownerId: USER_A_ID,
+        name: 'Researcher',
+        providerId: 'provider.anthropic',
+        modelId: 'claude-opus-4-7',
+        toolPermissions: { web: true, gmail_read: true },
+      });
+
+      // Even with the Talk's active set empty, omitting talkId leaves the
+      // talk intersection inactive and the result mirrors the agent map.
+      const eff = await getEffectiveToolsForAgent(agent.id);
+      expect(eff.find((e) => e.toolFamily === 'web')?.enabled).toBe(true);
+      expect(eff.find((e) => e.toolFamily === 'gmail_read')?.enabled).toBe(
+        true,
+      );
+    });
+  });
+
+  it('talkId={web:false} → web disabled regardless of agent capability', async () => {
+    await withUserContext(USER_A_ID, async () => {
+      const agent = await createRegisteredAgent({
+        ownerId: USER_A_ID,
+        name: 'Researcher',
+        providerId: 'provider.anthropic',
+        modelId: 'claude-opus-4-7',
+        toolPermissions: { web: true, gmail_read: true },
+      });
+      await setActive({ web: false, gmail_read: true });
+
+      const eff = await getEffectiveToolsForAgent(agent.id, {
+        talkId: TALK_A_ID_AGENT,
+      });
+      expect(eff.find((e) => e.toolFamily === 'web')?.enabled).toBe(false);
+      expect(eff.find((e) => e.toolFamily === 'gmail_read')?.enabled).toBe(
+        true,
+      );
+    });
+  });
+
+  it('activeFamilies snapshot wins over live talkId', async () => {
+    await withUserContext(USER_A_ID, async () => {
+      const agent = await createRegisteredAgent({
+        ownerId: USER_A_ID,
+        name: 'Researcher',
+        providerId: 'provider.anthropic',
+        modelId: 'claude-opus-4-7',
+        toolPermissions: { web: true },
+      });
+      // Live state has web on, snapshot has it off → snapshot wins.
+      await setActive({ web: true });
+
+      const eff = await getEffectiveToolsForAgent(agent.id, {
+        talkId: TALK_A_ID_AGENT,
+        activeFamilies: { web: false },
+      });
+      expect(eff.find((e) => e.toolFamily === 'web')?.enabled).toBe(false);
+    });
+  });
+
+  it('talkId missing in DB → empty active set, intersection drops everything except connectors-style families', async () => {
+    await withUserContext(USER_A_ID, async () => {
+      const agent = await createRegisteredAgent({
+        ownerId: USER_A_ID,
+        name: 'Researcher',
+        providerId: 'provider.anthropic',
+        modelId: 'claude-opus-4-7',
+        toolPermissions: { web: true, gmail_read: true },
+      });
+
+      const eff = await getEffectiveToolsForAgent(agent.id, {
+        talkId: '0c111111-9999-9999-9999-999999999999',
+      });
+      // Missing Talk resolves to {} active set — every family becomes disabled
+      // by the intersection, including connectors (no special-casing).
+      for (const family of eff) {
+        expect(family.enabled).toBe(false);
+      }
+    });
+  });
+
+  it('connectors: gated only on agent ∩ talk-active (no per-tool user check exists)', async () => {
+    await withUserContext(USER_A_ID, async () => {
+      const agent = await createRegisteredAgent({
+        ownerId: USER_A_ID,
+        name: 'Connectors agent',
+        providerId: 'provider.anthropic',
+        modelId: 'claude-opus-4-7',
+        toolPermissions: { connectors: true },
+      });
+      await setActive({ connectors: true });
+
+      const eff = await getEffectiveToolsForAgent(agent.id, {
+        talkId: TALK_A_ID_AGENT,
+      });
+      const connectors = eff.find((e) => e.toolFamily === 'connectors');
+      expect(connectors?.enabled).toBe(true);
+      // Toggling Talk-active off for connectors disables the family.
+      await setActive({ connectors: false });
+      const eff2 = await getEffectiveToolsForAgent(agent.id, {
+        talkId: TALK_A_ID_AGENT,
+      });
+      expect(eff2.find((e) => e.toolFamily === 'connectors')?.enabled).toBe(
+        false,
+      );
+    });
+  });
+});
