@@ -191,10 +191,15 @@ export function RichTextEditor({
       savingRef.current = false;
       // A keystroke during the in-flight save left the buffer ahead of
       // what we just persisted — schedule another save so we catch up.
-      if (
-        autosaveRef.current &&
-        pendingMarkdownRef.current !== lastSavedMarkdownRef.current
-      ) {
+      // Compare against the pre-save snapshot (`next`), NOT against
+      // `lastSavedMarkdownRef` (which holds the server's canonical body
+      // and may drift from the editor's client-side serialization for
+      // round-trip-stable but byte-different forms, e.g. trailing
+      // newlines or anchor encoding). Comparing to `lastSavedMarkdownRef`
+      // here caused an idle-doc save loop where every PATCH scheduled
+      // the next PATCH because server canonical ≠ editor serialization,
+      // even with zero user input.
+      if (autosaveRef.current && pendingMarkdownRef.current !== next) {
         scheduleSave();
       }
     }
