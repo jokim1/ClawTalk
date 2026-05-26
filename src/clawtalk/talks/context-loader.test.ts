@@ -65,8 +65,10 @@ describe('buildContentOutline', () => {
     expect(outline.indexOf('aaaa11112222')).toBeLessThan(
       outline.indexOf('bbbb11112222'),
     );
-    expect(outline).toContain('propose_content_append');
-    expect(outline).toContain('propose_content_replace');
+    // The direct-edit redesign renames the tool; legacy propose_* tools
+    // remain registered during the migration (see context-loader's tool
+    // list) but the directive points the agent at apply_content_edit.
+    expect(outline).toContain('apply_content_edit');
   });
 
   it('respects the byte budget by truncating from the bottom at block boundaries', () => {
@@ -101,8 +103,7 @@ describe('buildContentOutline', () => {
     const outline = buildContentOutline(content);
     expect(outline).toContain('**The Doc');
     expect(outline).toContain('"Empty Doc"');
-    expect(outline).toContain('propose_content_append');
-    expect(outline).toContain('propose_content_replace');
+    expect(outline).toContain('apply_content_edit');
   });
 
   it('strips ASCII control characters from inlined block content', () => {
@@ -123,7 +124,7 @@ describe('buildContentOutline', () => {
     expect(outline).toContain('do NOT write substantive new prose into chat');
   });
 
-  // Kimi 2.6 refused to call propose_content_append when the user asked
+  // Kimi 2.6 refused to call the doc-edit tool when the user asked
   // "can you add a summary paragraph at the end to @doc" — it read the
   // rhetorical "can you?" as a capability inquiry and replied with text
   // explaining what it would do. These assertions lock in the prompt
@@ -144,8 +145,6 @@ describe('buildContentOutline', () => {
     });
     const outline = buildContentOutline(content);
     expect(outline).toContain('NEVER narrate your capabilities');
-    expect(outline).toContain(
-      'I cannot directly edit @doc because it is not a bound Google Doc',
-    );
+    expect(outline).toContain('I cannot directly edit @doc');
   });
 });

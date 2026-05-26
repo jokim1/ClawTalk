@@ -39,17 +39,23 @@ import {
 } from 'react';
 
 import {
+  composeBody,
   ensureAnchorIds,
   isAllowedRichTextLinkUrl,
   markdownToTiptapJson,
   normalizeRichTextLinkUrl,
   tiptapJsonToMarkdown,
+  type ContentEditRow,
 } from '../../../../src/shared/rich-text/index.js';
 import { ApiError, patchContent, type Content } from '../../lib/api';
 import {
   AnchorIdExtension,
   makeTransformPasted,
+  registerPendingBlockEditedCallback,
 } from './anchor-id-extension';
+import { PendingReplaceWrapperExtension } from './PendingReplaceWrapperExtension';
+import { PendingChangeGutter } from './PendingChangeGutter';
+import { PendingChangeTray } from './PendingChangeTray';
 
 export type RichTextEditorSaveStatus =
   | 'idle'
@@ -63,11 +69,24 @@ export type RichTextEditorAutosave = {
   bodyVersion: number;
   onSaved: (result: {
     content: Content;
-    staledProposalIds: string[];
+    acceptedPendingEditIds?: string[];
   }) => void;
   onConflict: () => void;
   onError: (error: Error) => void;
   onStatusChange?: (status: RichTextEditorSaveStatus) => void;
+  // Per-block implicit accept (plan D2): when the user types inside a
+  // pending-edit block, the editor's onPendingBlockEdited fires, the
+  // editId is queued, and the next autosave PATCH includes them.
+  acceptPendingEditsOnSave?: () => string[];
+  consumeAcceptedPendingEditIds?: (ids: string[]) => void;
+};
+
+export type RichTextEditorPendingEditsProps = {
+  pendingEdits: ContentEditRow[];
+  inFlightEditIds: Set<string>;
+  onAccept: (editId: string) => void;
+  onReject: (editId: string) => void;
+  onBlockEdited?: (editId: string) => void;
 };
 
 type RichTextEditorProps = {
@@ -75,6 +94,7 @@ type RichTextEditorProps = {
   editable?: boolean;
   placeholder?: string;
   autosave?: RichTextEditorAutosave;
+  pendingEdits?: RichTextEditorPendingEditsProps;
 };
 
 const SAVE_DEBOUNCE_MS = 800;
@@ -84,16 +104,23 @@ export function RichTextEditor({
   editable = false,
   placeholder,
   autosave,
+  pendingEdits,
 }: RichTextEditorProps): JSX.Element {
   const initialContent = useMemo(
-    () => ensureAnchorIds(markdownToTiptapJson(bodyMarkdown)),
-    // Initial-only; subsequent body updates re-run via the effect below
-    // so the editor instance keeps its selection/cursor state.
+    () =>
+      pendingEdits && pendingEdits.pendingEdits.length > 0
+        ? ensureAnchorIds(
+            composeBody(bodyMarkdown, pendingEdits.pendingEdits).doc,
+          )
+        : ensureAnchorIds(markdownToTiptapJson(bodyMarkdown)),
+    // Initial-only; subsequent body / pending-edits updates re-run via
+    // the effect below so the editor instance keeps its selection.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
 
   const transformPasted = useMemo(() => makeTransformPasted(), []);
+  const canvasRef = useRef<HTMLDivElement>(null);
 
   // Autosave plumbing. Refs guard against React closure staleness in
   // the editor's onUpdate callback — useEditor reads its options once
@@ -123,7 +150,9 @@ export function RichTextEditor({
     if (!cfg) return;
     if (savingRef.current) return;
     const next = pendingMarkdownRef.current;
-    if (next === lastSavedMarkdownRef.current) {
+    const acceptIds = cfg.acceptPendingEditsOnSave?.() ?? [];
+    const sameBody = next === lastSavedMarkdownRef.current;
+    if (sameBody && acceptIds.length === 0) {
       reportStatus('saved');
       return;
     }
@@ -133,11 +162,18 @@ export function RichTextEditor({
       const result = await patchContent({
         contentId: cfg.contentId,
         expectedVersion: bodyVersionRef.current,
-        bodyMarkdown: next,
+        bodyMarkdown: sameBody ? undefined : next,
+        acceptPendingEditIds: acceptIds.length > 0 ? acceptIds : undefined,
       });
-      lastSavedMarkdownRef.current = next;
+      lastSavedMarkdownRef.current = result.content.bodyMarkdown;
       bodyVersionRef.current = result.content.bodyVersion;
       cfg.onSaved(result);
+      if (
+        result.acceptedPendingEditIds &&
+        result.acceptedPendingEditIds.length > 0
+      ) {
+        cfg.consumeAcceptedPendingEditIds?.(result.acceptedPendingEditIds);
+      }
       if (pendingMarkdownRef.current === next) {
         reportStatus('saved');
       } else {
@@ -196,6 +232,7 @@ export function RichTextEditor({
         placeholder: placeholder ?? '',
       }),
       AnchorIdExtension,
+      PendingReplaceWrapperExtension,
     ],
     immediatelyRender: false,
     editorProps: {
@@ -219,18 +256,46 @@ export function RichTextEditor({
   });
 
   // Sync the editor when the parent hands us new markdown that isn't
-  // the version we just emitted — i.e. a remote refetch landed.
+  // the version we just emitted, OR when the pending-edits list changes
+  // (run start / accept / reject). The render-time composer overlays
+  // pending edits onto the doc body inside the editor.
+  const pendingEditsFingerprint = useMemo(() => {
+    if (!pendingEdits || pendingEdits.pendingEdits.length === 0) return '';
+    return pendingEdits.pendingEdits.map((e) => `${e.id}:${e.kind}`).join('|');
+  }, [pendingEdits]);
+
   useEffect(() => {
     if (!editor) return;
-    if (bodyMarkdown === lastSavedMarkdownRef.current) return;
-    if (bodyMarkdown === pendingMarkdownRef.current) {
-      // server echoed back exactly what's already in the editor;
-      // align the last-saved baseline so we don't auto-save it again.
+    const remoteBodyChanged = bodyMarkdown !== lastSavedMarkdownRef.current;
+    const echoedSelf = bodyMarkdown === pendingMarkdownRef.current;
+    const pendingChanged = pendingEditsFingerprint !== '';
+
+    if (!remoteBodyChanged && !pendingChanged) return;
+
+    if (!remoteBodyChanged && pendingChanged) {
+      // Body unchanged, but pending edits shifted — re-compose to reflect.
+      const composed =
+        pendingEdits && pendingEdits.pendingEdits.length > 0
+          ? composeBody(bodyMarkdown, pendingEdits.pendingEdits).doc
+          : markdownToTiptapJson(bodyMarkdown);
+      editor.commands.setContent(ensureAnchorIds(composed), {
+        emitUpdate: false,
+      });
+      return;
+    }
+
+    if (echoedSelf && !pendingChanged) {
       lastSavedMarkdownRef.current = bodyMarkdown;
       return;
     }
-    const nextJson = ensureAnchorIds(markdownToTiptapJson(bodyMarkdown));
-    editor.commands.setContent(nextJson, { emitUpdate: false });
+
+    const composed =
+      pendingEdits && pendingEdits.pendingEdits.length > 0
+        ? composeBody(bodyMarkdown, pendingEdits.pendingEdits).doc
+        : markdownToTiptapJson(bodyMarkdown);
+    editor.commands.setContent(ensureAnchorIds(composed), {
+      emitUpdate: false,
+    });
     lastSavedMarkdownRef.current = bodyMarkdown;
     pendingMarkdownRef.current = bodyMarkdown;
     if (saveTimerRef.current) {
@@ -238,7 +303,17 @@ export function RichTextEditor({
       saveTimerRef.current = null;
     }
     reportStatus('saved');
-  }, [bodyMarkdown, editor, reportStatus]);
+  }, [bodyMarkdown, editor, pendingEdits, pendingEditsFingerprint, reportStatus]);
+
+  // Forward the global pending-block-edited fire-and-forget event to
+  // the consumer-supplied callback. We register at module level so
+  // anchor-id-extension's plugin observer can broadcast without each
+  // editor instance plumbing its own option.
+  useEffect(() => {
+    const cb = pendingEdits?.onBlockEdited;
+    if (!cb) return;
+    return registerPendingBlockEditedCallback((editId) => cb(editId));
+  }, [pendingEdits?.onBlockEdited]);
 
   useEffect(() => {
     if (!editor) return;
@@ -294,7 +369,7 @@ export function RichTextEditor({
           onLinkButtonClick={handleLinkButtonClick}
         />
       ) : null}
-      <div className="rich-text-editor-canvas">
+      <div className="rich-text-editor-canvas" ref={canvasRef}>
         <EditorContent editor={editor} />
         {editor && editable ? (
           <>
@@ -306,6 +381,24 @@ export function RichTextEditor({
             <LinkHoverBubble
               editor={editor}
               isLinkInputOpen={isLinkInputOpen}
+            />
+          </>
+        ) : null}
+        {pendingEdits && pendingEdits.pendingEdits.length > 0 ? (
+          <>
+            <PendingChangeGutter
+              containerRef={canvasRef}
+              pendingEdits={pendingEdits.pendingEdits}
+              inFlightEditIds={pendingEdits.inFlightEditIds}
+              onAccept={pendingEdits.onAccept}
+              onReject={pendingEdits.onReject}
+            />
+            <PendingChangeTray
+              containerRef={canvasRef}
+              pendingEdits={pendingEdits.pendingEdits}
+              inFlightEditIds={pendingEdits.inFlightEditIds}
+              onAccept={pendingEdits.onAccept}
+              onReject={pendingEdits.onReject}
             />
           </>
         ) : null}

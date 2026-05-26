@@ -34,10 +34,14 @@ import { Fragment, type Node as PMNode, Slice } from '@tiptap/pm/model';
 
 import {
   ANCHOR_ATTR_KEY,
+  PENDING_EDIT_ID_ATTR,
+  PENDING_KIND_ATTR,
   freshAnchorId,
 } from '../../../../src/shared/rich-text/index.js';
 
 const ANCHOR_HTML_ATTR = 'data-anchor-id';
+const PENDING_KIND_HTML_ATTR = 'data-pending-kind';
+const PENDING_EDIT_ID_HTML_ATTR = 'data-pending-edit-id';
 
 function setAnchorOnNode(node: PMNode, anchorId: string): PMNode {
   return node.type.create(
@@ -64,6 +68,32 @@ function blockNodeMissingAnchor(node: PMNode): boolean {
   if (node.type.name === 'doc') return false;
   const value = node.attrs?.[ANCHOR_ATTR_KEY];
   return typeof value !== 'string' || value.length === 0;
+}
+
+// Module-level callback registry for pending-edit observers. The Tiptap
+// Extension API doesn't give us per-instance options on Extension.create
+// without rewriting the upper config, so we register handlers via a
+// setter the editor mount point calls in a useEffect.
+type PendingBlockEditedCallback = (editId: string) => void;
+const pendingBlockEditedCallbacks = new Set<PendingBlockEditedCallback>();
+
+export function registerPendingBlockEditedCallback(
+  cb: PendingBlockEditedCallback,
+): () => void {
+  pendingBlockEditedCallbacks.add(cb);
+  return () => {
+    pendingBlockEditedCallbacks.delete(cb);
+  };
+}
+
+function firePendingBlockEdited(editId: string): void {
+  for (const cb of pendingBlockEditedCallbacks) {
+    try {
+      cb(editId);
+    } catch {
+      // best-effort fan-out
+    }
+  }
 }
 
 export const AnchorIdExtension = Extension.create({
@@ -97,6 +127,25 @@ export const AnchorIdExtension = Extension.create({
               return { [ANCHOR_HTML_ATTR]: value };
             },
           },
+          [PENDING_KIND_ATTR]: {
+            default: null,
+            parseHTML: (element) => element.getAttribute(PENDING_KIND_HTML_ATTR),
+            renderHTML: (attributes) => {
+              const value = attributes[PENDING_KIND_ATTR];
+              if (typeof value !== 'string' || value.length === 0) return {};
+              return { [PENDING_KIND_HTML_ATTR]: value };
+            },
+          },
+          [PENDING_EDIT_ID_ATTR]: {
+            default: null,
+            parseHTML: (element) =>
+              element.getAttribute(PENDING_EDIT_ID_HTML_ATTR),
+            renderHTML: (attributes) => {
+              const value = attributes[PENDING_EDIT_ID_ATTR];
+              if (typeof value !== 'string' || value.length === 0) return {};
+              return { [PENDING_EDIT_ID_HTML_ATTR]: value };
+            },
+          },
         },
       },
     ];
@@ -120,9 +169,41 @@ export const AnchorIdExtension = Extension.create({
           return modified ? tr : null;
         },
       }),
+      // Detect user edits inside a pending-edit block and fire the
+      // observer callback (per-block implicit accept — plan D2/D4).
+      new Plugin({
+        key: new PluginKey('pendingEditObserver'),
+        appendTransaction: (transactions, oldState, newState) => {
+          const editsTouched = new Set<string>();
+          const userMutated = transactions.some(
+            (tr) => tr.docChanged && tr.getMeta('addToHistory') !== false,
+          );
+          if (!userMutated) return null;
+          // Walk new state to find blocks still carrying pending edit
+          // attrs whose textContent changed from the old state.
+          newState.doc.descendants((node, pos) => {
+            const editId = node.attrs?.[PENDING_EDIT_ID_ATTR];
+            if (typeof editId !== 'string' || editId.length === 0) return;
+            const oldNode = oldState.doc.nodeAt(pos);
+            if (!oldNode) {
+              editsTouched.add(editId);
+              return;
+            }
+            if (oldNode.textContent !== node.textContent) {
+              editsTouched.add(editId);
+            }
+          });
+          if (editsTouched.size === 0) return null;
+          // Fire after current tick so observers can call back into the
+          // editor without ProseMirror complaining.
+          queueMicrotask(() => {
+            for (const id of editsTouched) firePendingBlockEdited(id);
+          });
+          return null;
+        },
+      }),
     ];
   },
-
 });
 
 export function makeTransformPasted(): (slice: Slice) => Slice {

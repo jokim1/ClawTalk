@@ -63,14 +63,16 @@ export function buildTalkThreadEventFilter(
         return isStringArray(payload.threadIds)
           ? payload.threadIds.includes(threadId)
           : false;
-      // Content-feature events: doc/proposal updates are scoped to the
-      // Talk-level Content (1:1 with the Talk), not to any individual
-      // thread — every thread of the Talk needs to see them so the
-      // ProposalCard renders inline regardless of which thread the
-      // tool-call originated in.
+      // Content-feature events: doc body + pending-edit updates are
+      // scoped to the Talk-level Content (1:1 with the Talk), not to any
+      // individual thread — every thread of the Talk needs to see them
+      // so the pending-edit banner renders inline regardless of which
+      // thread the tool-call originated in.
       case 'content_updated':
-      case 'content_proposal_created':
-      case 'content_proposal_stale':
+      case 'content_edit_run_started':
+      case 'content_edit_run_aborted':
+      case 'content_edit_applied':
+      case 'content_edit_resolved':
         return true;
       // `tool_call_started` carries threadId in the payload (per the
       // executor emit) so it can route to the originating thread.

@@ -180,14 +180,16 @@ describe('buildTalkThreadEventFilter', () => {
   describe('Content-feature events (Talk-level, thread-agnostic)', () => {
     for (const event_type of [
       'content_updated',
-      'content_proposal_created',
-      'content_proposal_stale',
+      'content_edit_run_started',
+      'content_edit_run_aborted',
+      'content_edit_applied',
+      'content_edit_resolved',
     ]) {
       it(`accepts ${event_type} regardless of payload threadId`, () => {
         // Content is 1:1 with the Talk, not the thread — every thread
         // of the Talk needs to receive these updates so the doc pane +
-        // ProposalCard render correctly no matter which thread the
-        // tool-call originated in.
+        // pending-edit banner render correctly no matter which thread
+        // the tool-call originated in.
         expect(filter(makeEvent(event_type, { contentId: 'content-1' }))).toBe(
           true,
         );

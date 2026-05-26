@@ -1,8 +1,8 @@
 // Detect whether the latest user turn is asking the agent to EDIT the
 // Talk's attached document, as opposed to discuss / evaluate / summarize
-// it in chat. When intent matches, the executor sets `tool_choice` to
-// require a tool call on the LLM request so the model can't reply in
-// chat — it has to pick one of the `propose_content_*` tools.
+// it in chat. Used by the executor to (a) emit content_edit_run_started/
+// run_aborted banner events around the apply turn and (b) by talks.ts
+// to force serial routing when multiple agents are addressed.
 //
 // Conservative design: the cost of a false positive (forcing a tool
 // call on a valid analysis request) is worse than the cost of a false

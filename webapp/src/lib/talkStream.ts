@@ -177,18 +177,36 @@ export type TalkContentUpdatedEvent = {
   appliedAnchorIds?: string[];
 };
 
-export type TalkContentProposalCreatedEvent = {
+export type TalkContentEditRunStartedEvent = {
   contentId: string;
-  proposalId: string;
-  messageId: string | null;
-  afterAnchorId: string | null;
+  runId: string;
   agentId: string | null;
+  agentNickname: string | null;
 };
 
-export type TalkContentProposalStaleEvent = {
+export type TalkContentEditRunAbortedEvent = {
   contentId: string;
-  proposalId: string;
-  reason: string;
+  runId: string;
+  reason: 'no_apply_call' | 'tool_error' | 'agent_refusal' | string;
+};
+
+export type TalkContentEditAppliedEvent = {
+  contentId: string;
+  runId: string;
+  editIds: string[];
+  agentId?: string | null;
+  agentNickname?: string | null;
+  messageId?: string | null;
+  collapsedEditId?: string;
+};
+
+export type TalkContentEditResolvedEvent = {
+  contentId: string;
+  runId: string;
+  editIds: string[];
+  resolution: 'accepted' | 'rejected' | 'auto-accepted';
+  reason?: string;
+  version?: number;
 };
 
 export type TalkToolCallStartedEvent = {
@@ -224,8 +242,10 @@ interface TalkStreamCallbacks {
   onBrowserBlocked?: (event: TalkBrowserBlockedEvent) => void;
   onBrowserUnblocked?: (event: TalkBrowserUnblockedEvent) => void;
   onContentUpdated?: (event: TalkContentUpdatedEvent) => void;
-  onContentProposalCreated?: (event: TalkContentProposalCreatedEvent) => void;
-  onContentProposalStale?: (event: TalkContentProposalStaleEvent) => void;
+  onContentEditRunStarted?: (event: TalkContentEditRunStartedEvent) => void;
+  onContentEditRunAborted?: (event: TalkContentEditRunAbortedEvent) => void;
+  onContentEditApplied?: (event: TalkContentEditAppliedEvent) => void;
+  onContentEditResolved?: (event: TalkContentEditResolvedEvent) => void;
   onToolCallStarted?: (event: TalkToolCallStartedEvent) => void;
   onReplayGap: () => void | Promise<void>;
   onStateChange?: (state: TalkStreamState) => void;
@@ -454,14 +474,24 @@ export function openTalkStream(input: OpenTalkStreamInput): TalkStreamHandle {
         if (payload) input.onContentUpdated?.(payload);
         return;
       }
-      case 'content_proposal_created': {
-        const payload = parseFrame<TalkContentProposalCreatedEvent>(frame);
-        if (payload) input.onContentProposalCreated?.(payload);
+      case 'content_edit_run_started': {
+        const payload = parseFrame<TalkContentEditRunStartedEvent>(frame);
+        if (payload) input.onContentEditRunStarted?.(payload);
         return;
       }
-      case 'content_proposal_stale': {
-        const payload = parseFrame<TalkContentProposalStaleEvent>(frame);
-        if (payload) input.onContentProposalStale?.(payload);
+      case 'content_edit_run_aborted': {
+        const payload = parseFrame<TalkContentEditRunAbortedEvent>(frame);
+        if (payload) input.onContentEditRunAborted?.(payload);
+        return;
+      }
+      case 'content_edit_applied': {
+        const payload = parseFrame<TalkContentEditAppliedEvent>(frame);
+        if (payload) input.onContentEditApplied?.(payload);
+        return;
+      }
+      case 'content_edit_resolved': {
+        const payload = parseFrame<TalkContentEditResolvedEvent>(frame);
+        if (payload) input.onContentEditResolved?.(payload);
         return;
       }
       case 'tool_call_started': {

@@ -376,7 +376,7 @@ export function buildGoogleDriveContextTools(input: {
    * disambiguation to each mutation tool's description so the agent
    * doesn't pattern-match `@doc` to a Google Drive `bindingRef`. Kimi
    * 2.6 in particular has a strong "doc editing = Google Docs API"
-   * prior; without this hint it ignores `propose_content_*` and
+   * prior; without this hint it ignores `apply_content_edit` and
    * hallucinates that `@doc` should have a G1-style bindingRef.
    */
   hasAttachedContent?: boolean;
@@ -401,7 +401,7 @@ const MUTATION_TOOLS_TO_DISAMBIGUATE: ReadonlySet<string> = new Set([
 ]);
 
 const ATTACHED_DOC_DISAMBIGUATION = [
-  "IMPORTANT: `@doc` in the system prompt is the Talk's ATTACHED document, NOT a Google Doc. It does not have a Google Drive `bindingRef` and never will — never look for `@doc` in your `G1`/`G2`/etc. references. To add to, replace blocks in, or rewrite `@doc`, use `propose_content_append` / `propose_content_replace` / `propose_content_bulk`.",
+  "IMPORTANT: `@doc` in the system prompt is the Talk's ATTACHED document, NOT a Google Doc. It does not have a Google Drive `bindingRef` and never will — never look for `@doc` in your `G1`/`G2`/etc. references. To add to, replace blocks in, or rewrite `@doc`, use `apply_content_edit`.",
   'This tool is only for separately bound EXTERNAL Google Docs/Sheets, addressed by their `G1`-style `bindingRef`. Use it only when the user explicitly asks for a Google Doc / Google Sheet action, never as a substitute for editing `@doc`.',
 ].join('\n\n');
 

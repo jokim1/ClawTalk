@@ -1272,35 +1272,28 @@ export async function getTalk(talkId: string): Promise<Talk> {
   return envelope.talk;
 }
 
-export type ContentProposalSummary = {
+export type ContentEditSummary = {
   id: string;
   contentId: string;
-  proposedByRunId: string | null;
-  proposedByAgentId: string | null;
-  proposedByMessageId: string | null;
-  kind: 'append' | 'replace' | 'bulk';
-  afterAnchorId: string | null;
-  targetAnchorId: string | null;
-  insertedMarkdown: string;
-  rationale: string | null;
-  status: 'pending' | 'accepted' | 'rejected' | 'stale';
-  statusReason: string | null;
+  runId: string;
+  agentId: string | null;
+  agentNickname: string | null;
+  messageId: string | null;
+  kind: 'insert' | 'replace' | 'delete' | 'bulk';
   baseContentVersion: number;
-  baseAnchorContentHash: string | null;
-  appliedAnchorIds: string[];
-  driftDetected: boolean;
+  targetAnchorId: string | null;
+  newMarkdown: string | null;
+  rationale: string | null;
   createdAt: string;
-  resolvedAt: string | null;
-  resolvedByUserId: string | null;
 };
 
 export async function getTalkContent(talkId: string): Promise<{
   content: Content | null;
-  pendingProposals: ContentProposalSummary[];
+  pendingEdits: ContentEditSummary[];
 }> {
   return apiRequest<{
     content: Content | null;
-    pendingProposals: ContentProposalSummary[];
+    pendingEdits: ContentEditSummary[];
   }>(`/api/v1/talks/${encodeURIComponent(talkId)}/content`);
 }
 
@@ -1324,7 +1317,8 @@ export async function patchContent(input: {
   expectedVersion: number;
   bodyMarkdown?: string;
   title?: string;
-}): Promise<{ content: Content; staledProposalIds: string[] }> {
+  acceptPendingEditIds?: string[];
+}): Promise<{ content: Content; acceptedPendingEditIds?: string[] }> {
   const body: Record<string, unknown> = {
     expectedVersion: input.expectedVersion,
   };
@@ -1334,43 +1328,30 @@ export async function patchContent(input: {
   if (typeof input.title === 'string') {
     body.title = input.title;
   }
-  return apiMutationRequest<{ content: Content; staledProposalIds: string[] }>(
-    `/api/v1/contents/${encodeURIComponent(input.contentId)}`,
-    {
-      method: 'PATCH',
-      includeJson: true,
-      body: JSON.stringify(body),
-    },
-  );
-}
-
-export async function getContentProposal(input: {
-  contentId: string;
-  proposalId: string;
-}): Promise<ContentProposalSummary> {
-  const envelope = await apiRequest<{ proposal: ContentProposalSummary }>(
-    `/api/v1/contents/${encodeURIComponent(input.contentId)}/proposals/${encodeURIComponent(input.proposalId)}`,
-  );
-  return envelope.proposal;
-}
-
-export async function acceptContentProposal(input: {
-  contentId: string;
-  proposalId: string;
-  expectedContentVersion: number;
-}): Promise<{
-  content: Content;
-  proposal: ContentProposalSummary;
-  driftDetected: boolean;
-  staledSiblingProposalIds: string[];
-}> {
+  if (Array.isArray(input.acceptPendingEditIds)) {
+    body.acceptPendingEditIds = input.acceptPendingEditIds;
+  }
   return apiMutationRequest<{
     content: Content;
-    proposal: ContentProposalSummary;
-    driftDetected: boolean;
-    staledSiblingProposalIds: string[];
+    acceptedPendingEditIds?: string[];
+  }>(`/api/v1/contents/${encodeURIComponent(input.contentId)}`, {
+    method: 'PATCH',
+    includeJson: true,
+    body: JSON.stringify(body),
+  });
+}
+
+export async function acceptContentEdit(input: {
+  contentId: string;
+  editId: string;
+  expectedContentVersion: number;
+}): Promise<{ content: Content; editId: string; runId: string }> {
+  return apiMutationRequest<{
+    content: Content;
+    editId: string;
+    runId: string;
   }>(
-    `/api/v1/contents/${encodeURIComponent(input.contentId)}/proposals/${encodeURIComponent(input.proposalId)}/accept`,
+    `/api/v1/contents/${encodeURIComponent(input.contentId)}/edits/${encodeURIComponent(input.editId)}/accept`,
     {
       method: 'POST',
       includeJson: true,
@@ -1381,12 +1362,12 @@ export async function acceptContentProposal(input: {
   );
 }
 
-export async function rejectContentProposal(input: {
+export async function rejectContentEdit(input: {
   contentId: string;
-  proposalId: string;
-}): Promise<{ proposal: ContentProposalSummary }> {
-  return apiMutationRequest<{ proposal: ContentProposalSummary }>(
-    `/api/v1/contents/${encodeURIComponent(input.contentId)}/proposals/${encodeURIComponent(input.proposalId)}/reject`,
+  editId: string;
+}): Promise<{ editId: string; runId: string }> {
+  return apiMutationRequest<{ editId: string; runId: string }>(
+    `/api/v1/contents/${encodeURIComponent(input.contentId)}/edits/${encodeURIComponent(input.editId)}/reject`,
     {
       method: 'POST',
       includeJson: true,
@@ -1394,6 +1375,42 @@ export async function rejectContentProposal(input: {
     },
   );
 }
+
+export async function acceptContentEditRun(input: {
+  contentId: string;
+  runId: string;
+  expectedContentVersion: number;
+}): Promise<{ content: Content; runId: string; editIds: string[] }> {
+  return apiMutationRequest<{
+    content: Content;
+    runId: string;
+    editIds: string[];
+  }>(
+    `/api/v1/contents/${encodeURIComponent(input.contentId)}/runs/${encodeURIComponent(input.runId)}/accept`,
+    {
+      method: 'POST',
+      includeJson: true,
+      body: JSON.stringify({
+        expectedContentVersion: input.expectedContentVersion,
+      }),
+    },
+  );
+}
+
+export async function rejectContentEditRun(input: {
+  contentId: string;
+  runId: string;
+}): Promise<{ runId: string; editIds: string[] }> {
+  return apiMutationRequest<{ runId: string; editIds: string[] }>(
+    `/api/v1/contents/${encodeURIComponent(input.contentId)}/runs/${encodeURIComponent(input.runId)}/reject`,
+    {
+      method: 'POST',
+      includeJson: true,
+      body: '{}',
+    },
+  );
+}
+
 
 export async function getTalkPolicy(talkId: string): Promise<TalkPolicy> {
   return apiRequest<TalkPolicy>(

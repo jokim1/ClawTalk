@@ -23,6 +23,14 @@
 
   /* Muted body text — matches existing .message-pending-copy */
   --color-muted: #5a6987;
+
+  /* Pending-edit color tokens (direct-edit redesign, content feature).
+     Bounded to pending-state UI in the doc pane — do not leak into
+     other surfaces. #c1272d on white = ~5.95:1, passes WCAG AA. */
+  --pending-red: #c1272d;
+  --pending-strikethrough: #999999;
+  --pending-banner-bg: #fafbfd;
+  --pending-banner-border: #e1e6f0;
 }
 
 * {
@@ -6232,4 +6240,247 @@ a {
 .message + .proposal-card,
 .proposal-card + .proposal-card {
   margin-top: 0.4rem;
+}
+
+/* ─── Direct-edit redesign (content feature) ───────────────────────── */
+
+/* Banner above the doc body when an agent has pending edits. */
+.agent-edit-run-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--pending-banner-bg);
+  border: 1px solid var(--pending-banner-border);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  margin-bottom: 0.5rem;
+}
+.agent-edit-run-banner-info {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+  flex: 1;
+}
+.agent-edit-run-banner-monogram {
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #2d8f8a;
+  color: #fff;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.agent-edit-run-banner-title {
+  font-weight: 500;
+  color: #1d2433;
+}
+.agent-edit-run-banner-counts,
+.agent-edit-run-banner-rationale {
+  color: var(--color-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-edit-run-banner-actions {
+  display: flex;
+  gap: 0.4rem;
+  flex-shrink: 0;
+}
+.agent-edit-run-banner-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.3rem 0.6rem;
+  border-radius: 4px;
+  background: transparent;
+  border: 1px solid var(--pending-banner-border);
+  color: #1d2433;
+  font-size: 0.8rem;
+  cursor: pointer;
+  min-height: 32px;
+}
+.agent-edit-run-banner-button:hover:not(:disabled) {
+  background: #ffffff;
+}
+.agent-edit-run-banner-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.agent-edit-run-banner-button--primary {
+  background: #2d8f8a;
+  color: #ffffff;
+  border-color: #2d8f8a;
+}
+.agent-edit-run-banner-button--primary:hover:not(:disabled) {
+  background: #267a76;
+  border-color: #267a76;
+}
+.agent-edit-run-banner-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--pending-banner-border);
+  border-top-color: #2d8f8a;
+  border-radius: 50%;
+  animation: pending-spinner-rotate 0.8s linear infinite;
+}
+@keyframes pending-spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-edit-run-banner-spinner {
+    animation: none;
+  }
+}
+
+/* Inline pending edit text colors (annotated by composeBody). */
+.rich-text-editor [data-pending-kind='insert'],
+.rich-text-editor [data-pending-kind='insert'] * {
+  color: var(--pending-red);
+}
+.rich-text-editor [data-pending-kind='delete'],
+.rich-text-editor [data-pending-kind='delete'] * {
+  color: var(--pending-red);
+  text-decoration: line-through;
+}
+.rich-text-editor .pending-replace-wrapper {
+  border-left: 2px solid var(--pending-banner-border);
+  padding-left: 0.5rem;
+  margin: 0.25rem 0;
+}
+.rich-text-editor .pending-replace-wrapper [role='prior'],
+.rich-text-editor .pending-replace-wrapper > :first-child {
+  color: var(--pending-strikethrough);
+  text-decoration: line-through;
+}
+.rich-text-editor .pending-replace-wrapper > :not(:first-child),
+.rich-text-editor .pending-replace-wrapper [role='new'] {
+  color: var(--pending-red);
+}
+
+/* Per-change gutter overlay (desktop). */
+.pending-change-gutter {
+  position: absolute;
+  top: 0;
+  right: -3.25rem;
+  width: 3rem;
+  pointer-events: none;
+}
+.pending-change-gutter-row {
+  position: absolute;
+  right: 0;
+  display: flex;
+  gap: 0.25rem;
+  pointer-events: auto;
+}
+.pending-change-gutter-button {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  align-items: center;
+  justify-content: center;
+  background: #ffffff;
+  border: 1px solid var(--pending-banner-border);
+  color: #1d2433;
+  cursor: pointer;
+  padding: 0;
+}
+.pending-change-gutter-button:hover:not(:disabled) {
+  background: #f4f6fb;
+}
+.pending-change-gutter-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.pending-change-gutter-button--accept {
+  color: #1f713f;
+}
+.pending-change-gutter-button--reject {
+  color: var(--pending-red);
+}
+@media (max-width: 767px) {
+  .pending-change-gutter {
+    display: none;
+  }
+}
+
+/* Mobile floating action tray. */
+.pending-change-tray {
+  display: none;
+  position: fixed;
+  left: 50%;
+  bottom: 1rem;
+  transform: translateX(-50%);
+  z-index: 50;
+  background: #ffffff;
+  border: 1px solid var(--pending-banner-border);
+  border-radius: 28px;
+  padding: 0.4rem;
+  gap: 0.25rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+@media (max-width: 767px) {
+  .pending-change-tray {
+    display: inline-flex;
+  }
+}
+.pending-change-tray-button {
+  display: inline-flex;
+  width: 44px;
+  height: 44px;
+  border-radius: 22px;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: #1d2433;
+}
+.pending-change-tray-button:hover:not(:disabled) {
+  background: #f4f6fb;
+}
+.pending-change-tray-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.pending-change-tray-button--accept {
+  color: #1f713f;
+}
+.pending-change-tray-button--reject {
+  color: var(--pending-red);
+}
+
+/* Forced-serial pill below the user's @doc-edit message. */
+.forced-serial-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.2rem 0.5rem;
+  background: var(--pending-banner-bg);
+  border: 1px solid var(--pending-banner-border);
+  border-radius: 12px;
+  font-size: 0.75rem;
+  color: var(--color-muted);
+  margin-top: 0.3rem;
+}
+
+/* First-time onboarding tooltip. */
+.pending-edit-tooltip {
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.75rem;
+  background: #fff8e6;
+  border: 1px solid #f0d590;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  color: #6e5a3b;
 }
