@@ -25,7 +25,6 @@ import {
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 
 import {
-  acceptContentProposal,
   AgentProviderCard,
   AiAgentsPageData,
   attachTalkDataConnector,
@@ -38,7 +37,6 @@ import {
   ChannelTargetListPage,
   Content,
   ContentEditSummary,
-  ContentProposalSummary,
   ContentSidebarItem,
   ContextGoal,
   ContextRule,
@@ -63,7 +61,6 @@ import {
   detachTalkDataConnector,
   getAiAgents,
   getDataConnectors,
-  getContentProposal,
   getTalk,
   getTalkAgents,
   getTalkContent,
@@ -89,7 +86,6 @@ import {
   patchTalkContextRule,
   patchTalkMetadata,
   patchTalkJob,
-  rejectContentProposal,
   retryTalkChannelDeliveryFailure,
   retryTalkChannelIngressFailure,
   retryTalkContextSource,
@@ -147,33 +143,7 @@ import {
 import { linkifyText } from '../lib/linkifyText';
 import { displayThreadTitle } from '../lib/threadTitles';
 import { openTalkStream } from '../lib/talkStream';
-import {
-  RichTextEditor,
-  type RichTextEditorSaveStatus,
-} from '../components/rich-text/RichTextEditor';
-import {
-  getToolCard,
-  toolNameForProposal,
-} from '../components/proposal-card/tool-card-registry';
-import {
-  type ProposalCardAgent,
-  type ProposalCardProps,
-  type ProposalCardState,
-  type ProposalCardTargetPreview,
-} from '../components/proposal-card/ProposalCard';
-import {
-  computeAnchorMap,
-  ensureAnchorIds,
-  findBlockIndexByAnchor,
-  getAnchorId,
-  insertAfterAnchor,
-  markdownToTiptapJson,
-  plainTextOf,
-  replaceBlockByAnchor,
-  sanitizeRichTextDocument,
-  tiptapJsonToMarkdown,
-  type RichTextNode,
-} from '../../../src/shared/rich-text/index.js';
+import { type RichTextEditorSaveStatus } from '../components/rich-text/RichTextEditor';
 import type {
   TalkBrowserBlockedEvent,
   TalkBrowserUnblockedEvent,
@@ -182,10 +152,7 @@ import type {
   TalkContentEditResolvedEvent,
   TalkContentEditRunAbortedEvent,
   TalkContentEditRunStartedEvent,
-  TalkContentProposalCreatedEvent,
-  TalkContentProposalStaleEvent,
   TalkContentUpdatedEvent,
-  TalkToolCallStartedEvent,
   TalkHistoryEditedEvent,
   TalkProgressUpdateEvent,
   TalkResponseDeltaEvent,
@@ -336,49 +303,7 @@ type TalkTimelineEntry =
       timestamp: number;
       sortOrder: number;
       run: RunView;
-    }
-  | {
-      kind: 'proposal';
-      key: string;
-      timestamp: number;
-      sortOrder: number;
-      proposalId: string;
-    }
-  | {
-      kind: 'proposal-streaming';
-      key: string;
-      timestamp: number;
-      sortOrder: number;
-      runId: string;
-      toolName: string;
-      agentId: string | null;
-      agentNickname: string | null;
     };
-
-const PROPOSAL_CARD_COLOR_TOKENS = [
-  'green-500',
-  'blue-500',
-  'red-500',
-  'amber-500',
-  'teal-500',
-] as const;
-
-function colorTokenForAgentId(agentId: string | null): string {
-  if (!agentId) return PROPOSAL_CARD_COLOR_TOKENS[0];
-  let hash = 0;
-  for (let i = 0; i < agentId.length; i++) {
-    hash = (hash * 31 + agentId.charCodeAt(i)) >>> 0;
-  }
-  return PROPOSAL_CARD_COLOR_TOKENS[hash % PROPOSAL_CARD_COLOR_TOKENS.length];
-}
-
-function monogramForLabel(label: string): string {
-  const trimmed = label.trim();
-  if (!trimmed) return '?';
-  const first = trimmed.codePointAt(0);
-  if (first === undefined) return '?';
-  return String.fromCodePoint(first).toUpperCase();
-}
 
 type ThreadListState = {
   threads: TalkThread[];
@@ -2996,34 +2921,6 @@ export function TalkDetailPage({
   const [talkContentSaveStatus, setTalkContentSaveStatus] =
     useState<RichTextEditorSaveStatus>('idle');
   const [talkContentConflict, setTalkContentConflict] = useState(false);
-  // Content proposals (PR 6). Agents propose via
-  // `propose_content_append`; the card renders inline in the chat
-  // timeline as the visible end of the tool-call lifecycle.
-  const [proposalsById, setProposalsById] = useState<
-    Record<string, ContentProposalSummary>
-  >({});
-  const [streamingProposalsByRunId, setStreamingProposalsByRunId] = useState<
-    Record<
-      string,
-      {
-        runId: string;
-        toolName: string;
-        agentId: string | null;
-        agentNickname: string | null;
-        startedAt: number;
-      }
-    >
-  >({});
-  const [acceptInFlightProposalIds, setAcceptInFlightProposalIds] = useState<
-    Set<string>
-  >(() => new Set());
-  // data-just-inserted attribute lives on DOM nodes inserted by an
-  // accepted proposal so the green-fade highlight can play. We track
-  // anchor IDs in component state so the effect that flips the attr to
-  // false runs after render.
-  const [justInsertedAnchorIds, setJustInsertedAnchorIds] = useState<
-    string[]
-  >([]);
   const talkContentRef = useRef<Content | null>(null);
   const talkContentSaveStatusRef = useRef<RichTextEditorSaveStatus>('idle');
   useEffect(() => {
@@ -3032,54 +2929,6 @@ export function TalkDetailPage({
   useEffect(() => {
     talkContentSaveStatusRef.current = talkContentSaveStatus;
   }, [talkContentSaveStatus]);
-  // Reset proposal state when switching talks (mirrors content reset).
-  useEffect(() => {
-    setProposalsById({});
-    setStreamingProposalsByRunId({});
-    setAcceptInFlightProposalIds(new Set());
-    setJustInsertedAnchorIds([]);
-  }, [talkId]);
-
-  // "Accept moment" green-fade highlight. When justInsertedAnchorIds
-  // changes, find the matching blocks in the editor's DOM and stamp
-  // data-just-inserted="true". A 1200ms later CSS transition fades the
-  // background back to neutral; we flip the attribute to "false" then
-  // clear it so a future accept-in-place can run the transition again.
-  useEffect(() => {
-    if (justInsertedAnchorIds.length === 0) return;
-    const editorEl = document.querySelector('.rich-text-editor .ProseMirror');
-    if (!editorEl) return;
-    const escape = (value: string): string =>
-      typeof window !== 'undefined' &&
-      typeof window.CSS !== 'undefined' &&
-      typeof window.CSS.escape === 'function'
-        ? window.CSS.escape(value)
-        : value.replace(/"/g, '\\"');
-    const targets: HTMLElement[] = [];
-    for (const anchorId of justInsertedAnchorIds) {
-      const node = editorEl.querySelector(
-        `[data-anchor-id="${escape(anchorId)}"]`,
-      );
-      if (node instanceof HTMLElement) targets.push(node);
-    }
-    if (targets.length === 0) return;
-    for (const node of targets) node.setAttribute('data-just-inserted', 'true');
-    const offTimer = window.setTimeout(() => {
-      for (const node of targets) {
-        if (node.isConnected) node.setAttribute('data-just-inserted', 'false');
-      }
-    }, 1200);
-    const clearTimer = window.setTimeout(() => {
-      for (const node of targets) {
-        if (node.isConnected) node.removeAttribute('data-just-inserted');
-      }
-      setJustInsertedAnchorIds([]);
-    }, 2600);
-    return () => {
-      window.clearTimeout(offTimer);
-      window.clearTimeout(clearTimer);
-    };
-  }, [justInsertedAnchorIds, talkContent?.bodyVersion]);
   const [chatRatio, setChatRatio] = useState(0.5);
   const [isNarrowViewport, setIsNarrowViewport] = useState(() => {
     if (typeof window === 'undefined') return false;
@@ -3335,44 +3184,6 @@ export function TalkDetailPage({
       const payload = await getTalkContent(talkId);
       setTalkContent(payload.content);
       setTalkContentPendingEdits(payload.pendingEdits ?? []);
-      const serverPendingIds = new Set(
-        payload.pendingProposals.map((p) => p.id),
-      );
-      // Reconcile cross-client state: a proposal that's no longer in
-      // the server's pending list must have been accepted, rejected,
-      // or staled by another tab. Fetch its current state so the local
-      // store matches.
-      const stalePendingLocalIds: string[] = [];
-      setProposalsById((prev) => {
-        const next = { ...prev };
-        for (const proposal of payload.pendingProposals) {
-          next[proposal.id] = proposal;
-        }
-        for (const [id, proposal] of Object.entries(prev)) {
-          if (proposal.status === 'pending' && !serverPendingIds.has(id)) {
-            stalePendingLocalIds.push(id);
-          }
-        }
-        return next;
-      });
-      if (payload.content && stalePendingLocalIds.length > 0) {
-        const contentId = payload.content.id;
-        await Promise.all(
-          stalePendingLocalIds.map((proposalId) =>
-            getContentProposal({ contentId, proposalId })
-              .then((proposal) => {
-                setProposalsById((prev) => ({
-                  ...prev,
-                  [proposalId]: proposal,
-                }));
-              })
-              .catch(() => {
-                // Best effort — leave the local card in place if the
-                // server can't tell us its state right now.
-              }),
-          ),
-        );
-      }
       setTalkContentError(null);
       return payload.content;
     } catch (err) {
@@ -3397,13 +3208,6 @@ export function TalkDetailPage({
         if (cancelled) return;
         setTalkContent(payload.content);
         setTalkContentPendingEdits(payload.pendingEdits ?? []);
-        setProposalsById((prev) => {
-          const next = { ...prev };
-          for (const proposal of payload.pendingProposals) {
-            next[proposal.id] = proposal;
-          }
-          return next;
-        });
       })
       .catch((err) => {
         if (cancelled) return;
@@ -4239,16 +4043,6 @@ export function TalkDetailPage({
           responseGroupId: event.responseGroupId,
           sequenceIndex: event.sequenceIndex,
         });
-        // Drop any streaming proposal placeholders for this run — the
-        // proposal event would have arrived first if it was going to,
-        // and a completed run with no proposal means the tool call
-        // didn't produce one.
-        setStreamingProposalsByRunId((prev) => {
-          if (!(event.runId in prev)) return prev;
-          const next = { ...prev };
-          delete next[event.runId];
-          return next;
-        });
       },
       onRunFailed: (event: TalkRunFailedEvent) => {
         if (event.talkId !== talkId) return;
@@ -4266,12 +4060,6 @@ export function TalkDetailPage({
           responseGroupId: event.responseGroupId,
           sequenceIndex: event.sequenceIndex,
         });
-        setStreamingProposalsByRunId((prev) => {
-          if (!(event.runId in prev)) return prev;
-          const next = { ...prev };
-          delete next[event.runId];
-          return next;
-        });
       },
       onRunCancelled: (event: TalkRunCancelledEvent) => {
         if (event.talkId !== talkId) return;
@@ -4279,17 +4067,6 @@ export function TalkDetailPage({
           type: 'RUN_CANCELLED_BATCH',
           runIds: event.runIds,
           cancelledBy: event.cancelledBy,
-        });
-        setStreamingProposalsByRunId((prev) => {
-          let mutated = false;
-          const next = { ...prev };
-          for (const runId of event.runIds) {
-            if (runId in next) {
-              delete next[runId];
-              mutated = true;
-            }
-          }
-          return mutated ? next : prev;
         });
       },
       onHistoryEdited: (event: TalkHistoryEditedEvent) => {
@@ -4339,52 +4116,6 @@ export function TalkDetailPage({
         }
         void refetchTalkContent();
       },
-      onContentProposalCreated: (
-        event: TalkContentProposalCreatedEvent,
-      ) => {
-        const current = talkContentRef.current;
-        if (!current || current.id !== event.contentId) return;
-        // Drop the streaming placeholder for this proposal's run (if
-        // any). Lookup is by runId; the proposal carries
-        // proposedByRunId server-side, which the API echoes.
-        void getContentProposal({
-          contentId: event.contentId,
-          proposalId: event.proposalId,
-        })
-          .then((proposal) => {
-            setProposalsById((prev) => ({ ...prev, [proposal.id]: proposal }));
-            if (proposal.proposedByRunId) {
-              setStreamingProposalsByRunId((prev) => {
-                if (!(proposal.proposedByRunId! in prev)) return prev;
-                const next = { ...prev };
-                delete next[proposal.proposedByRunId!];
-                return next;
-              });
-            }
-          })
-          .catch((err) => {
-            if (err instanceof UnauthorizedError) {
-              onUnauthorized();
-            }
-          });
-      },
-      onContentProposalStale: (event: TalkContentProposalStaleEvent) => {
-        const current = talkContentRef.current;
-        if (!current || current.id !== event.contentId) return;
-        setProposalsById((prev) => {
-          const existing = prev[event.proposalId];
-          if (!existing) return prev;
-          if (existing.status !== 'pending') return prev;
-          return {
-            ...prev,
-            [event.proposalId]: {
-              ...existing,
-              status: 'stale',
-              statusReason: event.reason ?? null,
-            },
-          };
-        });
-      },
       onContentEditRunStarted: (event: TalkContentEditRunStartedEvent) => {
         const current = talkContentRef.current;
         if (!current || current.id !== event.contentId) return;
@@ -4428,26 +4159,6 @@ export function TalkDetailPage({
         if (event.resolution !== 'rejected') {
           void refetchTalkContent();
         }
-      },
-      onToolCallStarted: (event: TalkToolCallStartedEvent) => {
-        if (event.talkId !== talkId) return;
-        // Only render placeholders for tools that have a card. The
-        // registry is the source of truth (Liveblocks pattern: generic
-        // tool-call card lookup).
-        if (!getToolCard(event.toolName)) return;
-        setStreamingProposalsByRunId((prev) => {
-          if (prev[event.runId]) return prev;
-          return {
-            ...prev,
-            [event.runId]: {
-              runId: event.runId,
-              toolName: event.toolName,
-              agentId: event.agentId ?? null,
-              agentNickname: event.agentNickname ?? null,
-              startedAt: Date.now(),
-            },
-          };
-        });
       },
       onReplayGap: async () => {
         await resyncTalkState({ refreshThreads: true });
@@ -4525,13 +4236,6 @@ export function TalkDetailPage({
     accessRole === 'owner' || accessRole === 'admin' || accessRole === 'editor';
   const canEditJobs = canEditAgents;
   const canEditDoc = canEditAgents;
-  // Accept buttons are disabled while the editor has unsaved keystrokes
-  // (per plan § Accept-while-typing race). Watched here so every
-  // ProposalCard prop derives from the same source.
-  const editorIsDirty =
-    talkContentSaveStatus === 'pending' ||
-    talkContentSaveStatus === 'saving' ||
-    talkContentSaveStatus === 'error';
 
   const canManageTalkConnectors =
     accessRole === 'owner' || accessRole === 'admin';
@@ -4607,292 +4311,6 @@ export function TalkDetailPage({
         return acc;
       }, {}),
     [effectiveAgents],
-  );
-
-  const handleAcceptProposal = useCallback(
-    async (proposalId: string) => {
-      const proposal = proposalsById[proposalId];
-      const content = talkContentRef.current;
-      if (!proposal || !content) return;
-      if (proposal.status !== 'pending') return;
-      if (acceptInFlightProposalIds.has(proposalId)) return;
-      if (editorIsDirty) return;
-      if (talkContentConflict) return;
-
-      // Mark in-flight first so the UI disables Accept immediately.
-      setAcceptInFlightProposalIds((prev) => {
-        const next = new Set(prev);
-        next.add(proposalId);
-        return next;
-      });
-
-      // Optimistic mutation (per Liveblocks § "Optimistic mutations as
-      // the default" + T21): apply the proposal's patch to the local
-      // doc state right away. The editor reacts to the new
-      // bodyMarkdown via its sync effect; the green-fade highlight is
-      // driven by data-just-inserted on the new block(s). Replace
-      // proposals splice-replace by anchor; append proposals splice
-      // after the anchor.
-      const previousContent = content;
-      const previousProposal = proposal;
-      try {
-        if (proposal.kind === 'bulk') {
-          // Bulk replaces the whole body. Build a fresh stamped doc
-          // from the proposal markdown so anchors line up with what the
-          // server will compute on the authoritative path.
-          const newBodyDoc = ensureAnchorIds(
-            markdownToTiptapJson(proposal.insertedMarkdown),
-          );
-          const newBodyMarkdown = tiptapJsonToMarkdown(newBodyDoc);
-          const newAnchorMap = await computeAnchorMap(newBodyDoc);
-          const appliedAnchorIds = (newBodyDoc.content ?? [])
-            .map((node) => (node.attrs?.dataAnchorId ?? null) as string | null)
-            .filter((id): id is string => id !== null);
-          setTalkContent({
-            ...content,
-            bodyMarkdown: newBodyMarkdown,
-            bodyVersion: content.bodyVersion + 1,
-            anchorMap: newAnchorMap,
-          });
-          // Don't fire the green-fade highlight for bulk — flashing the
-          // whole doc green is more noise than signal.
-          setJustInsertedAnchorIds([]);
-          void appliedAnchorIds;
-        } else {
-          const currentDoc = ensureAnchorIds(
-            markdownToTiptapJson(content.bodyMarkdown),
-          );
-          const insertedDoc = markdownToTiptapJson(proposal.insertedMarkdown);
-          const insertedNodes: RichTextNode[] = insertedDoc.content ?? [];
-          const patchResult =
-            proposal.kind === 'replace' && proposal.targetAnchorId
-              ? replaceBlockByAnchor({
-                  doc: currentDoc,
-                  targetAnchorId: proposal.targetAnchorId,
-                  replacementNodes: insertedNodes,
-                })
-              : insertAfterAnchor({
-                  doc: currentDoc,
-                  afterAnchorId: proposal.afterAnchorId,
-                  insertedNodes,
-                });
-          if (!('kind' in patchResult)) {
-            const nextDoc = patchResult.doc;
-            const nextMarkdown = tiptapJsonToMarkdown(nextDoc);
-            const nextAnchorMap = await computeAnchorMap(nextDoc);
-            setTalkContent({
-              ...content,
-              bodyMarkdown: nextMarkdown,
-              bodyVersion: content.bodyVersion + 1,
-              anchorMap: nextAnchorMap,
-            });
-            setJustInsertedAnchorIds(patchResult.appliedAnchorIds);
-          }
-        }
-      } catch {
-        // Optimistic step is best-effort. If it throws, fall back to
-        // the server's authoritative response.
-      }
-
-      try {
-        const response = await acceptContentProposal({
-          contentId: content.id,
-          proposalId,
-          expectedContentVersion: previousContent.bodyVersion,
-        });
-        setTalkContent(response.content);
-        setProposalsById((prev) => {
-          const next = { ...prev, [proposalId]: response.proposal };
-          // Same-target replace siblings were auto-staled server-side;
-          // reflect that in the local store so the cards repaint.
-          for (const id of response.staledSiblingProposalIds ?? []) {
-            const existing = next[id];
-            if (existing && existing.status === 'pending') {
-              next[id] = {
-                ...existing,
-                status: 'stale' as const,
-                statusReason: 'target_replaced',
-              };
-            }
-          }
-          return next;
-        });
-        // Keep the highlight on the inserted anchors the server settled
-        // on (these may differ from the optimistic IDs).
-        if (response.proposal.appliedAnchorIds.length > 0) {
-          setJustInsertedAnchorIds(response.proposal.appliedAnchorIds);
-        }
-      } catch (err) {
-        // Rollback the optimistic state.
-        setTalkContent(previousContent);
-        setJustInsertedAnchorIds([]);
-        if (err instanceof UnauthorizedError) {
-          onUnauthorized();
-          return;
-        }
-        if (err instanceof ApiError) {
-          if (err.code === 'version_conflict') {
-            setTalkContentConflict(true);
-            void refetchTalkContent();
-            return;
-          }
-          if (
-            err.code === 'proposal_stale' ||
-            err.code === 'anchor_missing'
-          ) {
-            setProposalsById((prev) => ({
-              ...prev,
-              [proposalId]: {
-                ...previousProposal,
-                status: 'stale' as const,
-                statusReason: err.code ?? null,
-              },
-            }));
-            return;
-          }
-          if (err.code === 'proposal_already_resolved') {
-            void getContentProposal({
-              contentId: content.id,
-              proposalId,
-            }).then((proposalSummary) => {
-              setProposalsById((prev) => ({
-                ...prev,
-                [proposalId]: proposalSummary,
-              }));
-            });
-            return;
-          }
-          if (err.code === 'doc_size_limit') {
-            setTalkContentError(err.message);
-            return;
-          }
-        }
-        setTalkContentError(
-          err instanceof Error ? err.message : 'Failed to accept proposal.',
-        );
-      } finally {
-        setAcceptInFlightProposalIds((prev) => {
-          if (!prev.has(proposalId)) return prev;
-          const next = new Set(prev);
-          next.delete(proposalId);
-          return next;
-        });
-      }
-    },
-    [
-      acceptInFlightProposalIds,
-      editorIsDirty,
-      onUnauthorized,
-      proposalsById,
-      refetchTalkContent,
-      talkContentConflict,
-    ],
-  );
-
-  const handleRejectProposal = useCallback(
-    async (proposalId: string) => {
-      const proposal = proposalsById[proposalId];
-      const content = talkContentRef.current;
-      if (!proposal || !content) return;
-      if (proposal.status !== 'pending') return;
-      try {
-        const response = await rejectContentProposal({
-          contentId: content.id,
-          proposalId,
-        });
-        setProposalsById((prev) => ({
-          ...prev,
-          [proposalId]: response.proposal,
-        }));
-      } catch (err) {
-        if (err instanceof UnauthorizedError) {
-          onUnauthorized();
-          return;
-        }
-        if (
-          err instanceof ApiError &&
-          err.code === 'proposal_already_resolved'
-        ) {
-          void getContentProposal({
-            contentId: content.id,
-            proposalId,
-          }).then((proposalSummary) => {
-            setProposalsById((prev) => ({
-              ...prev,
-              [proposalId]: proposalSummary,
-            }));
-          });
-          return;
-        }
-        setTalkContentError(
-          err instanceof Error ? err.message : 'Failed to reject proposal.',
-        );
-      }
-    },
-    [onUnauthorized, proposalsById],
-  );
-
-  const handleCopyProposalMarkdown = useCallback(
-    async (proposalId: string) => {
-      const proposal = proposalsById[proposalId];
-      if (!proposal) return;
-      try {
-        if (typeof navigator !== 'undefined' && navigator.clipboard) {
-          await navigator.clipboard.writeText(proposal.insertedMarkdown);
-        }
-      } catch {
-        // Clipboard write may fail in non-secure contexts; surface
-        // nothing — the markdown is visible in the preview either way.
-      }
-    },
-    [proposalsById],
-  );
-
-  const resolveProposalAgent = useCallback(
-    (agentId: string | null, nickname?: string | null): ProposalCardAgent => {
-      const agentRecord = agentId
-        ? agents.find((entry) => entry.id === agentId)
-        : null;
-      const label =
-        agentLabelById[agentId ?? ''] ||
-        agentRecord?.nickname ||
-        nickname ||
-        'Agent';
-      return {
-        id: agentId,
-        label,
-        monogram: monogramForLabel(label),
-        colorToken: colorTokenForAgentId(agentId),
-      };
-    },
-    [agents, agentLabelById],
-  );
-
-  const buildProposalTargetPreview = useCallback(
-    (anchorId: string): ProposalCardTargetPreview => {
-      const current = talkContentRef.current;
-      if (!current) return null;
-      try {
-        const parsed = sanitizeRichTextDocument(
-          markdownToTiptapJson(current.bodyMarkdown),
-        );
-        const stamped = ensureAnchorIds(parsed);
-        const idx = findBlockIndexByAnchor(stamped, anchorId);
-        if (idx === -1) return null;
-        const node = stamped.content[idx];
-        if (!node) return null;
-        const ownAnchor = getAnchorId(node) ?? anchorId;
-        const rawText = plainTextOf(node);
-        return {
-          anchorId: ownAnchor,
-          kind: node.type ?? null,
-          text: rawText.replace(/\s+/g, ' ').trim(),
-        };
-      } catch {
-        return null;
-      }
-    },
-    [],
   );
 
   const orchestrationMode: TalkOrchestrationMode =
@@ -5391,58 +4809,6 @@ export function TalkDetailPage({
               run,
             };
           }),
-        ...Object.values(proposalsById)
-          .filter(
-            (proposal) =>
-              !talkContent || proposal.contentId === talkContent.id,
-          )
-          .map((proposal, index) => {
-            // Anchor on the assistant message that emitted the tool call
-            // when known; fall back to proposal.createdAt. The +1ms nudge
-            // keeps the card visually below the anchor message.
-            const message = proposal.proposedByMessageId
-              ? state.messages.find(
-                  (m) => m.id === proposal.proposedByMessageId,
-                )
-              : undefined;
-            const anchorMs =
-              (message ? Date.parse(message.createdAt) : 0) ||
-              Date.parse(proposal.createdAt) ||
-              0;
-            return {
-              kind: 'proposal' as const,
-              key: `proposal-${proposal.id}`,
-              timestamp: anchorMs + 1,
-              sortOrder:
-                state.messages.length + liveResponses.length + 100 + index,
-              proposalId: proposal.id,
-            };
-          }),
-        ...Object.values(streamingProposalsByRunId)
-          .filter((entry) => {
-            // Hide the streaming placeholder once a proposal lands for
-            // the same run.
-            return !Object.values(proposalsById).some(
-              (proposal) => proposal.proposedByRunId === entry.runId,
-            );
-          })
-          .map((entry, index) => {
-            const run = state.runsById[entry.runId];
-            const anchorIso =
-              run?.startedAt || run?.createdAt || new Date(entry.startedAt).toISOString();
-            const anchorMs = Date.parse(anchorIso) || entry.startedAt;
-            return {
-              kind: 'proposal-streaming' as const,
-              key: `proposal-streaming-${entry.runId}`,
-              timestamp: anchorMs + 2,
-              sortOrder:
-                state.messages.length + liveResponses.length + 200 + index,
-              runId: entry.runId,
-              toolName: entry.toolName,
-              agentId: entry.agentId,
-              agentNickname: entry.agentNickname,
-            };
-          }),
       ].sort(
         (left, right) =>
           left.timestamp - right.timestamp || left.sortOrder - right.sortOrder,
@@ -5451,11 +4817,8 @@ export function TalkDetailPage({
       activeThreadId,
       liveResponses,
       orderedGroupSizesById,
-      proposalsById,
       state.messages,
       state.runsById,
-      streamingProposalsByRunId,
-      talkContent,
     ],
   );
   const activeRound = useMemo(
@@ -10296,83 +9659,6 @@ export function TalkDetailPage({
                               />
                             </article>
                           ) : null;
-                        }
-
-                        if (entry.kind === 'proposal-streaming') {
-                          const Card = getToolCard(entry.toolName);
-                          if (!Card) return null;
-                          const agent = resolveProposalAgent(
-                            entry.agentId,
-                            entry.agentNickname,
-                          );
-                          const props: ProposalCardProps = {
-                            agent,
-                            state: {
-                              kind: 'streaming',
-                              toolName: entry.toolName,
-                            },
-                          };
-                          return <Card key={entry.key} {...props} />;
-                        }
-
-                        if (entry.kind === 'proposal') {
-                          const proposal = proposalsById[entry.proposalId];
-                          if (!proposal) return null;
-                          const Card = getToolCard(
-                            toolNameForProposal(proposal),
-                          );
-                          if (!Card) return null;
-                          const agent = resolveProposalAgent(
-                            proposal.proposedByAgentId,
-                            null,
-                          );
-                          const inFlight = acceptInFlightProposalIds.has(
-                            proposal.id,
-                          );
-                          let cardState: ProposalCardState;
-                          if (proposal.status === 'pending') {
-                            const targetPreview =
-                              proposal.kind === 'replace' &&
-                              proposal.targetAnchorId
-                                ? buildProposalTargetPreview(
-                                    proposal.targetAnchorId,
-                                  )
-                                : null;
-                            cardState = {
-                              kind: 'pending',
-                              proposal,
-                              acceptInFlight: inFlight,
-                              acceptDisabled:
-                                editorIsDirty || talkContentConflict,
-                              acceptDisabledReason: editorIsDirty
-                                ? 'Saving edits…'
-                                : talkContentConflict
-                                  ? 'Reload the document before accepting'
-                                  : undefined,
-                              targetPreview,
-                            };
-                          } else if (proposal.status === 'accepted') {
-                            cardState = {
-                              kind: 'accepted',
-                              proposal,
-                              driftDetected: proposal.driftDetected,
-                            };
-                          } else if (proposal.status === 'rejected') {
-                            cardState = { kind: 'rejected', proposal };
-                          } else {
-                            cardState = { kind: 'stale', proposal };
-                          }
-                          const props: ProposalCardProps = {
-                            agent,
-                            state: cardState,
-                            onAccept: () =>
-                              void handleAcceptProposal(proposal.id),
-                            onReject: () =>
-                              void handleRejectProposal(proposal.id),
-                            onCopyMarkdown: () =>
-                              void handleCopyProposalMarkdown(proposal.id),
-                          };
-                          return <Card key={entry.key} {...props} />;
                         }
 
                         const { response } = entry;

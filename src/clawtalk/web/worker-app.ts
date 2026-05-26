@@ -168,14 +168,11 @@ import {
 import {
   acceptContentEditRoute,
   acceptContentEditRunRoute,
-  acceptContentProposalRoute,
   createTalkContentRoute,
-  getContentProposalRoute,
   getTalkContentRoute,
   patchContentRoute,
   rejectContentEditRoute,
   rejectContentEditRunRoute,
-  rejectContentProposalRoute,
 } from './routes/talk-contents.js';
 import {
   createTalkThreadRoute,
@@ -1538,57 +1535,6 @@ function buildApp(): Hono<{ Variables: Variables }> {
     });
     return jsonResponse(result);
   });
-
-  app.get('/api/v1/contents/:contentId/proposals/:proposalId', async (c) => {
-    const auth = c.get('auth');
-    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'read' });
-    if (!rl.allowed) return rateLimitedResponse(c, rl);
-    const result = await getContentProposalRoute({
-      auth,
-      contentId: c.req.param('contentId'),
-      proposalId: c.req.param('proposalId'),
-    });
-    return jsonResponse(result);
-  });
-
-  app.post(
-    '/api/v1/contents/:contentId/proposals/:proposalId/accept',
-    async (c) => {
-      const auth = c.get('auth');
-      const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
-      if (!rl.allowed) return rateLimitedResponse(c, rl);
-      const csrfFail = checkCsrf(c, auth);
-      if (csrfFail) return csrfFail;
-      const payload = await readJsonBody<{ expectedContentVersion?: unknown }>(
-        c,
-      );
-      if (!payload.ok) return invalidJsonResponse(c, payload.error);
-      const result = await acceptContentProposalRoute({
-        auth,
-        contentId: c.req.param('contentId'),
-        proposalId: c.req.param('proposalId'),
-        expectedContentVersion: payload.data.expectedContentVersion,
-      });
-      return jsonResponse(result);
-    },
-  );
-
-  app.post(
-    '/api/v1/contents/:contentId/proposals/:proposalId/reject',
-    async (c) => {
-      const auth = c.get('auth');
-      const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
-      if (!rl.allowed) return rateLimitedResponse(c, rl);
-      const csrfFail = checkCsrf(c, auth);
-      if (csrfFail) return csrfFail;
-      const result = await rejectContentProposalRoute({
-        auth,
-        contentId: c.req.param('contentId'),
-        proposalId: c.req.param('proposalId'),
-      });
-      return jsonResponse(result);
-    },
-  );
 
   // Pending-edit routes (edit-log architecture, direct-edit redesign).
   app.post('/api/v1/contents/:contentId/edits/:editId/accept', async (c) => {

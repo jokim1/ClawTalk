@@ -64,20 +64,10 @@ describe('agent-router', () => {
     expect(ALWAYS_ALLOWED_CONTEXT_TOOLS.has('read_state')).toBe(true);
   });
 
-  it('always permits propose_content_* tools (Talk-internal Content edits)', () => {
-    // The Content tools never appear in tool_permissions_json — no
-    // tool family covers them. Without ALWAYS_ALLOWED inclusion they
-    // get silently filtered for every agent, breaking the feature.
-    expect(ALWAYS_ALLOWED_CONTEXT_TOOLS.has('propose_content_append')).toBe(
-      true,
-    );
-    expect(ALWAYS_ALLOWED_CONTEXT_TOOLS.has('propose_content_replace')).toBe(
-      true,
-    );
-    expect(ALWAYS_ALLOWED_CONTEXT_TOOLS.has('propose_content_bulk')).toBe(true);
-  });
-
-  it('always permits apply_content_edit (direct-edit redesign)', () => {
+  it('always permits apply_content_edit (Talk-internal Content edits)', () => {
+    // The Content tool never appears in tool_permissions_json — no
+    // tool family covers it. Without ALWAYS_ALLOWED inclusion it gets
+    // silently filtered for every agent, breaking the feature.
     expect(ALWAYS_ALLOWED_CONTEXT_TOOLS.has('apply_content_edit')).toBe(true);
   });
 

@@ -179,11 +179,6 @@ async function executeBrowserTool(
   throw new Error('Browser tool is disabled (chassis removed).');
 }
 import { executeGoogleDriveTalkTool } from './google-drive-tools.js';
-import {
-  executeProposeContentAppend,
-  executeProposeContentBulk,
-  executeProposeContentReplace,
-} from './content-tool-handlers.js';
 import { executeApplyContentEdit } from './content-apply-handler.js';
 import { isContentEditIntent } from './content-edit-intent.js';
 import { getContentByTalkId } from '../db/content-accessors.js';
@@ -951,36 +946,6 @@ export function buildToolExecutor(
         jobPolicy: jobPolicy
           ? { allowExternalMutation: jobPolicy.allowExternalMutation }
           : null,
-      });
-    }
-
-    if (toolName === 'propose_content_append') {
-      return executeProposeContentAppend({
-        talkId,
-        userId,
-        runId,
-        agentId: agentId ?? null,
-        args,
-      });
-    }
-
-    if (toolName === 'propose_content_replace') {
-      return executeProposeContentReplace({
-        talkId,
-        userId,
-        runId,
-        agentId: agentId ?? null,
-        args,
-      });
-    }
-
-    if (toolName === 'propose_content_bulk') {
-      return executeProposeContentBulk({
-        talkId,
-        userId,
-        runId,
-        agentId: agentId ?? null,
-        args,
       });
     }
 
@@ -2253,26 +2218,18 @@ export class CleanTalkExecutor implements TalkExecutor {
         contextPackage.contextImageSources,
       );
 
-      // Content edit-intent gate. If the latest user turn matches
-      // `@doc` + an edit verb, force the agent to call a tool on the
-      // first iteration so it can't reply in chat with "I cannot
-      // edit @doc" or otherwise refuse to fire the edit tool.
-      // Fires when either the new apply tool OR the legacy propose tools
-      // are registered — coexist during the redesign rollout.
-      const proposeToolsRegistered = (contextPackage.contextTools ?? []).some(
-        (tool) =>
-          tool.name === 'propose_content_append' ||
-          tool.name === 'propose_content_replace' ||
-          tool.name === 'propose_content_bulk',
-      );
+      // Content edit-intent gate (plan locked decision #11): the
+      // tool_choice=required gate is removed. Trust the system-prompt
+      // directive to steer the agent at apply_content_edit. Manual
+      // cross-provider smoke (verification step 12) is the regression
+      // signal — restore the gate in a follow-up PR if a provider
+      // regresses.
       const applyToolRegistered = (contextPackage.contextTools ?? []).some(
         (tool) => tool.name === 'apply_content_edit',
       );
       const editIntentDetected = isContentEditIntent(
         orderedStep.userMessageText ?? '',
       );
-      const forceToolUseOnFirstIteration =
-        (proposeToolsRegistered || applyToolRegistered) && editIntentDetected;
 
       // Track whether the agent called `apply_content_edit` this turn so
       // we can emit `content_edit_run_aborted` if the turn ends without
@@ -2323,7 +2280,6 @@ export class CleanTalkExecutor implements TalkExecutor {
             }
           },
           executeToolCall: wrappedToolExecutor,
-          forceToolUseOnFirstIteration,
         },
       );
 

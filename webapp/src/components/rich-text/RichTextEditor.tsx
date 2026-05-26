@@ -69,7 +69,6 @@ export type RichTextEditorAutosave = {
   bodyVersion: number;
   onSaved: (result: {
     content: Content;
-    staledProposalIds: string[];
     acceptedPendingEditIds?: string[];
   }) => void;
   onConflict: () => void;

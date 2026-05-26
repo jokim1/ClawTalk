@@ -1,17 +1,12 @@
 import { withUserContext } from '../../../db.js';
 import {
   CONTENT_BODY_BYTE_LIMIT,
-  acceptProposal,
   createContent,
   getContentById,
   getContentByTalkId,
-  getProposalById,
   getTalkForUser,
-  listPendingProposalsByContentId,
-  rejectProposal,
   updateContentBody,
   type Content,
-  type ContentProposal,
 } from '../../db/index.js';
 import {
   acceptPendingEdit,
@@ -79,38 +74,6 @@ function anchorMissing(anchorId: string): RouteResult<never> {
   };
 }
 
-function proposalStale(proposalId: string): RouteResult<never> {
-  return {
-    statusCode: 410,
-    body: {
-      ok: false,
-      error: {
-        code: 'proposal_stale',
-        message:
-          'The target block was removed before this proposal could be applied.',
-        details: { proposalId, status: 'stale' },
-      },
-    },
-  };
-}
-
-function proposalAlreadyResolved(
-  proposalId: string,
-  status: string,
-): RouteResult<never> {
-  return {
-    statusCode: 410,
-    body: {
-      ok: false,
-      error: {
-        code: 'proposal_already_resolved',
-        message: `Proposal is already ${status}.`,
-        details: { proposalId, status },
-      },
-    },
-  };
-}
-
 function docSizeLimit(wouldBeBytes: number): RouteResult<never> {
   return {
     statusCode: 413,
@@ -134,7 +97,6 @@ export async function getTalkContentRoute(input: {
 }): Promise<
   RouteResult<{
     content: Content | null;
-    pendingProposals: ContentProposal[];
     pendingEdits: ContentEditRow[];
   }>
 > {
@@ -146,19 +108,13 @@ export async function getTalkContentRoute(input: {
     if (!content) {
       return {
         statusCode: 200,
-        body: {
-          ok: true,
-          data: { content: null, pendingProposals: [], pendingEdits: [] },
-        },
+        body: { ok: true, data: { content: null, pendingEdits: [] } },
       };
     }
-    const [pendingProposals, pendingEdits] = await Promise.all([
-      listPendingProposalsByContentId(content.id),
-      getPendingEditsByContent(content.id),
-    ]);
+    const pendingEdits = await getPendingEditsByContent(content.id);
     return {
       statusCode: 200,
-      body: { ok: true, data: { content, pendingProposals, pendingEdits } },
+      body: { ok: true, data: { content, pendingEdits } },
     };
   });
 }
@@ -223,7 +179,6 @@ export async function patchContentRoute(input: {
 }): Promise<
   RouteResult<{
     content: Content;
-    staledProposalIds: string[];
     acceptedPendingEditIds: string[];
   }>
 > {
@@ -310,7 +265,6 @@ export async function patchContentRoute(input: {
             ok: true,
             data: {
               content: refreshed,
-              staledProposalIds: [],
               acceptedPendingEditIds: acceptedEditIds,
             },
           },
@@ -341,7 +295,6 @@ export async function patchContentRoute(input: {
           ok: true,
           data: {
             content: result.content,
-            staledProposalIds: result.staledProposalIds,
             acceptedPendingEditIds: acceptedEditIds,
           },
         },
@@ -350,117 +303,6 @@ export async function patchContentRoute(input: {
       const message =
         error instanceof Error ? error.message : 'Failed to update content.';
       return badRequest('invalid_content', message);
-    }
-  });
-}
-
-export async function getContentProposalRoute(input: {
-  auth: AuthContext;
-  contentId: string;
-  proposalId: string;
-}): Promise<RouteResult<{ proposal: ContentProposal }>> {
-  return await withUserContext(input.auth.userId, async () => {
-    const content = await getContentById(input.contentId);
-    if (!content) return notFound('Content not found.');
-    const proposal = await getProposalById(input.proposalId);
-    if (!proposal || proposal.contentId !== input.contentId) {
-      return notFound('Proposal not found.');
-    }
-    return {
-      statusCode: 200,
-      body: { ok: true, data: { proposal } },
-    };
-  });
-}
-
-export async function acceptContentProposalRoute(input: {
-  auth: AuthContext;
-  contentId: string;
-  proposalId: string;
-  expectedContentVersion?: unknown;
-}): Promise<
-  RouteResult<{
-    content: Content;
-    proposal: ContentProposal;
-    driftDetected: boolean;
-    staledSiblingProposalIds: string[];
-  }>
-> {
-  return await withUserContext(input.auth.userId, async () => {
-    const content = await getContentById(input.contentId);
-    if (!content) return notFound('Content not found.');
-    if (!(await canEditTalk(content.talkId))) {
-      return forbidden('You do not have permission to edit this talk.');
-    }
-
-    const expected =
-      typeof input.expectedContentVersion === 'number'
-        ? input.expectedContentVersion
-        : undefined;
-
-    const result = await acceptProposal({
-      contentId: input.contentId,
-      proposalId: input.proposalId,
-      userId: input.auth.userId,
-      expectedContentVersion: expected,
-    });
-
-    switch (result.kind) {
-      case 'not_found':
-        return notFound('Proposal not found.');
-      case 'proposal_already_resolved':
-        return proposalAlreadyResolved(input.proposalId, result.status);
-      case 'proposal_stale':
-        return proposalStale(input.proposalId);
-      case 'anchor_missing':
-        return anchorMissing(result.anchorId);
-      case 'version_conflict':
-        return versionConflict(result.currentVersion);
-      case 'doc_size_limit':
-        return docSizeLimit(result.wouldBeBytes);
-      case 'ok':
-        return {
-          statusCode: 200,
-          body: {
-            ok: true,
-            data: {
-              content: result.content,
-              proposal: result.proposal,
-              driftDetected: result.driftDetected,
-              staledSiblingProposalIds: result.staledSiblingProposalIds,
-            },
-          },
-        };
-    }
-  });
-}
-
-export async function rejectContentProposalRoute(input: {
-  auth: AuthContext;
-  contentId: string;
-  proposalId: string;
-}): Promise<RouteResult<{ proposal: ContentProposal }>> {
-  return await withUserContext(input.auth.userId, async () => {
-    const content = await getContentById(input.contentId);
-    if (!content) return notFound('Content not found.');
-    if (!(await canEditTalk(content.talkId))) {
-      return forbidden('You do not have permission to edit this talk.');
-    }
-
-    const result = await rejectProposal({
-      proposalId: input.proposalId,
-      userId: input.auth.userId,
-    });
-    switch (result.kind) {
-      case 'not_found':
-        return notFound('Proposal not found.');
-      case 'proposal_already_resolved':
-        return proposalAlreadyResolved(input.proposalId, result.status);
-      case 'ok':
-        return {
-          statusCode: 200,
-          body: { ok: true, data: { proposal: result.proposal } },
-        };
     }
   });
 }

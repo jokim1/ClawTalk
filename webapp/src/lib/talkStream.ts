@@ -177,20 +177,6 @@ export type TalkContentUpdatedEvent = {
   appliedAnchorIds?: string[];
 };
 
-export type TalkContentProposalCreatedEvent = {
-  contentId: string;
-  proposalId: string;
-  messageId: string | null;
-  afterAnchorId: string | null;
-  agentId: string | null;
-};
-
-export type TalkContentProposalStaleEvent = {
-  contentId: string;
-  proposalId: string;
-  reason: string;
-};
-
 export type TalkContentEditRunStartedEvent = {
   contentId: string;
   runId: string;
@@ -256,8 +242,6 @@ interface TalkStreamCallbacks {
   onBrowserBlocked?: (event: TalkBrowserBlockedEvent) => void;
   onBrowserUnblocked?: (event: TalkBrowserUnblockedEvent) => void;
   onContentUpdated?: (event: TalkContentUpdatedEvent) => void;
-  onContentProposalCreated?: (event: TalkContentProposalCreatedEvent) => void;
-  onContentProposalStale?: (event: TalkContentProposalStaleEvent) => void;
   onContentEditRunStarted?: (event: TalkContentEditRunStartedEvent) => void;
   onContentEditRunAborted?: (event: TalkContentEditRunAbortedEvent) => void;
   onContentEditApplied?: (event: TalkContentEditAppliedEvent) => void;
@@ -488,16 +472,6 @@ export function openTalkStream(input: OpenTalkStreamInput): TalkStreamHandle {
       case 'content_updated': {
         const payload = parseFrame<TalkContentUpdatedEvent>(frame);
         if (payload) input.onContentUpdated?.(payload);
-        return;
-      }
-      case 'content_proposal_created': {
-        const payload = parseFrame<TalkContentProposalCreatedEvent>(frame);
-        if (payload) input.onContentProposalCreated?.(payload);
-        return;
-      }
-      case 'content_proposal_stale': {
-        const payload = parseFrame<TalkContentProposalStaleEvent>(frame);
-        if (payload) input.onContentProposalStale?.(payload);
         return;
       }
       case 'content_edit_run_started': {

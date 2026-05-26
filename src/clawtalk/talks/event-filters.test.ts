@@ -180,8 +180,6 @@ describe('buildTalkThreadEventFilter', () => {
   describe('Content-feature events (Talk-level, thread-agnostic)', () => {
     for (const event_type of [
       'content_updated',
-      'content_proposal_created',
-      'content_proposal_stale',
       'content_edit_run_started',
       'content_edit_run_aborted',
       'content_edit_applied',

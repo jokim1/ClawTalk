@@ -1232,74 +1232,6 @@ function buildContextTools(
   if (hasContent) {
     tools.push(
       {
-        name: 'propose_content_append',
-        description: [
-          "Propose appending one or more new blocks to the Talk's attached document.",
-          '',
-          'Anchor IDs come from THE DOC block listing in your system prompt. Pass `after_anchor_id` to insert immediately after a specific block, or omit it entirely to prepend at the very top. The user reviews and accepts or rejects the proposal in the Talk UI — your call writes a pending proposal, not the document itself.',
-          '',
-          'This is the correct tool when the user asks you to add to, extend, draft, or continue the doc — do NOT write the extension into chat. For per-block edits to existing prose, use `propose_content_replace` instead. Smaller proposals (one or two blocks) review better than long ones.',
-        ].join('\n'),
-        inputSchema: {
-          type: 'object',
-          properties: {
-            after_anchor_id: {
-              // Single-string type (not the JSON Schema array form
-              // `['string', 'null']`) — NVIDIA NIM's Python backend
-              // crashes with `unhashable type: 'list'` when it tries
-              // to cache schemas containing array-of-types. Omitting
-              // the field means "prepend at top"; the handler accepts
-              // both undefined and empty string the same way.
-              type: 'string',
-              description:
-                'Anchor ID of the block to insert AFTER, copied verbatim from THE DOC block listing. Omit this field to prepend at the top of the document.',
-            },
-            markdown: {
-              type: 'string',
-              description:
-                'The new block(s) as GitHub-flavored markdown. Keep it tight — one or two blocks reviews better than a wall of text.',
-            },
-            rationale: {
-              type: 'string',
-              description:
-                "Optional one-sentence explanation shown on the proposal card so the user knows why you're suggesting this block.",
-            },
-          },
-          required: ['markdown'],
-        },
-      },
-      {
-        name: 'propose_content_replace',
-        description: [
-          "Propose replacing a single existing block in the Talk's attached document with new markdown.",
-          '',
-          'Anchor IDs come from THE DOC block listing in your system prompt. `target_anchor_id` MUST be an anchor that exists in the current document — copy it verbatim from the listing. The replacement `markdown` can be one or more blocks; if you supply multiple blocks they substitute the single target block as a sequence. The user reviews and accepts or rejects the proposal in the Talk UI — your call writes a pending proposal, not the document itself.',
-          '',
-          'This is the correct tool when the user asks you to rewrite, edit, fix, polish, shorten, or otherwise modify ONE EXISTING PART of the doc — do NOT write the rewrite into chat. For brand-new content that does not replace anything, use `propose_content_append`. For sweeping changes spanning three or more blocks or the whole document, use `propose_content_bulk` so the user only has to approve once.',
-        ].join('\n'),
-        inputSchema: {
-          type: 'object',
-          properties: {
-            target_anchor_id: {
-              type: 'string',
-              description:
-                'Anchor ID of the block to REPLACE, copied verbatim from THE DOC block listing. Must exist in the current document.',
-            },
-            markdown: {
-              type: 'string',
-              description:
-                "The replacement block(s) as GitHub-flavored markdown. Replaces the target block's contents wholesale; structure as one or two blocks for easier review.",
-            },
-            rationale: {
-              type: 'string',
-              description:
-                "Optional one-sentence explanation shown on the proposal card so the user knows why you're suggesting this rewrite.",
-            },
-          },
-          required: ['target_anchor_id', 'markdown'],
-        },
-      },
-      {
         name: 'apply_content_edit',
         description: [
           "Edit the Talk's attached document directly. Your edit applies immediately as a *pending* change the user can Accept or Reject from the doc pane — there is no propose step, no card to wait on.",
@@ -1340,37 +1272,6 @@ function buildContextTools(
             },
           },
           required: ['kind'],
-        },
-      },
-      {
-        name: 'propose_content_bulk',
-        description: [
-          "Propose replacing the ENTIRE body of the Talk's attached document with a new version — the right tool for sweeping rewrites where three or more blocks are changing, a whole section is being restructured, or the user said something like 'rewrite the doc' or 'redo the whole thing'.",
-          '',
-          'The `markdown` argument is the COMPLETE new document body (not a delta). Include every block you want in the final doc — anything you leave out is gone. `summary` is one short sentence describing what changed at a high level; this is the only preview the user sees on the approval card (no per-block diff is rendered), so make it specific (e.g. "Tighten sections 2-3 and add a closing call-to-action" beats "Improvements"). On accept, the user\'s entire body is replaced; any pending append/replace proposals on this doc auto-stale because they were authored against the old text.',
-          '',
-          'Prefer `propose_content_replace` when only one block needs to change. Prefer `propose_content_append` when adding without replacing. Use `propose_content_bulk` ONLY when the edit genuinely spans the whole doc — it has the largest blast radius and the user will be reviewing a single summary line, not a block-by-block diff.',
-        ].join('\n'),
-        inputSchema: {
-          type: 'object',
-          properties: {
-            markdown: {
-              type: 'string',
-              description:
-                'The COMPLETE new document body as GitHub-flavored markdown. This is a full replacement, not a delta — anything not included is removed.',
-            },
-            summary: {
-              type: 'string',
-              description:
-                "One specific sentence describing what changed (e.g. 'Tighten sections 2-3 and add a closing CTA'). This is the user-facing preview on the approval card; no per-block diff is shown, so be precise.",
-            },
-            rationale: {
-              type: 'string',
-              description:
-                'Optional longer explanation appended to the summary on the card. Use when "summary" alone undersells why the rewrite is worth approving.',
-            },
-          },
-          required: ['markdown', 'summary'],
         },
       },
     );
