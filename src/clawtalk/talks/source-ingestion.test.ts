@@ -16,7 +16,11 @@ vi.mock('../../logger.js', () => ({
   },
 }));
 
-import { ingestUrlSource, SourceIngestionError } from './source-ingestion.js';
+import {
+  extractTextFromHtml,
+  ingestUrlSource,
+  SourceIngestionError,
+} from './source-ingestion.js';
 
 describe('source-ingestion', () => {
   const updateExtraction = vi.fn();
@@ -187,5 +191,76 @@ describe('source-ingestion', () => {
       'http: fetch_error: Network down',
     );
     expect(payload.extractionError).toContain('browser: Browser failed');
+  });
+});
+
+describe('extractTextFromHtml', () => {
+  it('extracts plain text from a normal HTML body', () => {
+    const html =
+      '<html><body><h1>Title</h1><p>First paragraph.</p><p>Second paragraph.</p></body></html>';
+    const text = extractTextFromHtml(html);
+    expect(text).toContain('Title');
+    expect(text).toContain('First paragraph.');
+    expect(text).toContain('Second paragraph.');
+  });
+
+  it('decodes HTML entities including &apos;', () => {
+    const html = '<p>It&apos;s 5&#39;clock &amp; we&#39;re late.</p>';
+    expect(extractTextFromHtml(html)).toBe("It's 5'clock & we're late.");
+  });
+
+  it('strips script and style blocks without leaking their contents', () => {
+    const html =
+      '<html><head><style>body { color: red; }</style><script>alert(1)</script></head><body><p>Body text.</p></body></html>';
+    const text = extractTextFromHtml(html);
+    expect(text).toContain('Body text.');
+    expect(text).not.toContain('color: red');
+    expect(text).not.toContain('alert(1)');
+  });
+
+  it('expands iframe srcdoc HTML so email-archive bodies are extracted', () => {
+    // ConvertKit / Mailchimp archive pages wrap the real email body in
+    // an iframe whose `srcdoc` attribute is HTML-encoded HTML. The
+    // outer page only contributes a wrapper title; the body lives
+    // inside the srcdoc value.
+    const html = [
+      '<html><body>',
+      '<div class="email-archive">',
+      '<h2>Outer wrapper title</h2>',
+      "<iframe srcdoc='&lt;html&gt;&lt;body&gt;&lt;p&gt;Real email body paragraph.&lt;/p&gt;&lt;p&gt;Second body line.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;'></iframe>",
+      '</div>',
+      '</body></html>',
+    ].join('');
+    const text = extractTextFromHtml(html);
+    expect(text).toContain('Outer wrapper title');
+    expect(text).toContain('Real email body paragraph.');
+    expect(text).toContain('Second body line.');
+  });
+
+  it('handles iframe srcdoc with no closing </iframe> tag', () => {
+    const html =
+      "<iframe srcdoc='&lt;p&gt;Body via self-closing iframe.&lt;/p&gt;'>";
+    expect(extractTextFromHtml(html)).toContain(
+      'Body via self-closing iframe.',
+    );
+  });
+
+  it('handles iframe srcdoc with double-quoted attribute value', () => {
+    const html =
+      '<iframe srcdoc="&lt;p&gt;Body via double-quoted srcdoc.&lt;/p&gt;"></iframe>';
+    expect(extractTextFromHtml(html)).toContain(
+      'Body via double-quoted srcdoc.',
+    );
+  });
+
+  it('strips scripts/styles that live inside an expanded srcdoc', () => {
+    // After srcdoc inlining the decoded HTML re-enters the pipeline, so
+    // its scripts and styles should also be removed.
+    const html =
+      "<iframe srcdoc='&lt;style&gt;a{}&lt;/style&gt;&lt;script&gt;alert(2)&lt;/script&gt;&lt;p&gt;Visible body.&lt;/p&gt;'></iframe>";
+    const text = extractTextFromHtml(html);
+    expect(text).toContain('Visible body.');
+    expect(text).not.toContain('alert(2)');
+    expect(text).not.toContain('a{}');
   });
 });

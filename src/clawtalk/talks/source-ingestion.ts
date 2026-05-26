@@ -439,12 +439,40 @@ export async function safeFetchUrl(inputUrl: string): Promise<FetchResult> {
 // Text extraction
 // ---------------------------------------------------------------------------
 
+function decodeHtmlEntities(input: string): string {
+  return input
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) =>
+      String.fromCodePoint(parseInt(hex, 16)),
+    )
+    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(parseInt(dec, 10)));
+}
+
 /**
  * Extracts plain text from HTML by stripping tags and normalizing whitespace.
  * Simple regex-based approach for v1 — no DOM parser needed.
  */
 export function extractTextFromHtml(html: string): string {
   let text = html;
+
+  // Inline `<iframe srcdoc='...'>` content BEFORE stripping tags. Email
+  // archive pages (ConvertKit, Mailchimp archive views) wrap the actual
+  // body in `<iframe srcdoc='&lt;html&gt;...&lt;/html&gt;'>` where the
+  // attribute value is HTML-encoded HTML. Without this expansion, the
+  // generic tag-strip below removes the iframe and the attribute value
+  // with it, leaving only the wrapper page's `<h2>` title. The replaced
+  // content re-enters the pipeline as HTML so its scripts/styles/tags
+  // are stripped on the same pass.
+  text = text.replace(
+    /<iframe\b[^>]*\bsrcdoc=(["'])([\s\S]*?)\1[^>]*>(?:[\s\S]*?<\/iframe>)?/gi,
+    (_match, _quote, encoded: string) => `\n${decodeHtmlEntities(encoded)}\n`,
+  );
 
   // Remove script and style blocks
   text = text.replace(/<script[\s\S]*?<\/script>/gi, ' ');
@@ -461,17 +489,7 @@ export function extractTextFromHtml(html: string): string {
   text = text.replace(/<[^>]+>/g, ' ');
 
   // Decode common HTML entities
-  text = text
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) =>
-      String.fromCodePoint(parseInt(hex, 16)),
-    )
-    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(parseInt(dec, 10)));
+  text = decodeHtmlEntities(text);
 
   // Collapse whitespace
   text = text.replace(/[ \t]+/g, ' ');
