@@ -188,8 +188,8 @@ describe('buildTalkThreadEventFilter', () => {
       it(`accepts ${event_type} regardless of payload threadId`, () => {
         // Content is 1:1 with the Talk, not the thread — every thread
         // of the Talk needs to receive these updates so the doc pane +
-        // ProposalCard render correctly no matter which thread the
-        // tool-call originated in.
+        // pending-edit banner render correctly no matter which thread
+        // the tool-call originated in.
         expect(filter(makeEvent(event_type, { contentId: 'content-1' }))).toBe(
           true,
         );

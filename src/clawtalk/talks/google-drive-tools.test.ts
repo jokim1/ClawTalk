@@ -164,9 +164,7 @@ describe('google-drive-tools — pure helpers', () => {
       const sheets = tools.find((t) => t.name === 'google_sheets_batch_update');
       for (const tool of [create, update, sheets]) {
         expect(tool?.description.startsWith('IMPORTANT: `@doc`')).toBe(true);
-        expect(tool?.description).toContain('propose_content_append');
-        expect(tool?.description).toContain('propose_content_replace');
-        expect(tool?.description).toContain('propose_content_bulk');
+        expect(tool?.description).toContain('apply_content_edit');
         expect(tool?.description).toContain('never look for `@doc`');
       }
     });

@@ -124,7 +124,7 @@ describe('buildContentOutline', () => {
     expect(outline).toContain('do NOT write substantive new prose into chat');
   });
 
-  // Kimi 2.6 refused to call propose_content_append when the user asked
+  // Kimi 2.6 refused to call the doc-edit tool when the user asked
   // "can you add a summary paragraph at the end to @doc" — it read the
   // rhetorical "can you?" as a capability inquiry and replied with text
   // explaining what it would do. These assertions lock in the prompt

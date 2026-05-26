@@ -458,9 +458,9 @@ export async function loadTalkContext(
   // Step 3: Build connector tools (currently empty stub)
   const connectorTools = buildConnectorTools(talkId, options?.jobPolicy);
 
-  // Content document (PR 5): outline + propose_content_append tool are
-  // gated on the Talk actually having an attached doc. One per Talk by
-  // schema, so this is at most one row.
+  // Content document: outline + apply_content_edit tool are gated on
+  // the Talk actually having an attached doc. One per Talk by schema,
+  // so this is at most one row.
   const content = await getContentByTalkId(talkId);
   const contentOutline = content ? buildContentOutline(content) : null;
 
@@ -784,13 +784,13 @@ function sanitizeBlockForPrompt(text: string): string {
  *
  * Each block is rendered inline as its full plain-text content,
  * prefixed with `<!-- anchor:<id> -->` so the agent can copy the
- * anchor ID verbatim into a `propose_content_*` call. Blocks are
+ * anchor ID verbatim into an `apply_content_edit` call. Blocks are
  * emitted in document order. If the cumulative size would exceed the
  * byte budget, truncation happens at a block boundary and a
- * `[… N more blocks omitted; ask the user to narrow scope]` footer
- * is appended. The 60-char preview previously stored here was too
- * coarse for replace proposals — agents need the actual prose they're
- * being asked to rewrite, not its first sentence.
+ * `[… N more blocks omitted; ask the user to narrow scope]` footer is
+ * appended. The 60-char preview previously stored here was too coarse
+ * for replace edits — agents need the actual prose they're being asked
+ * to rewrite, not its first sentence.
  */
 export function buildContentOutline(
   content: Content,
@@ -821,7 +821,7 @@ export function buildContentOutline(
     '',
     'Call the tool as many times as you need in one turn — every edit you make this turn is grouped into one pending edit run the user accepts or rejects as a single unit. Smaller, targeted edits review better than one giant bulk; reserve bulk for when most of the doc actually changes.',
     '',
-    'When `@doc` appears in the latest user turn AND the request is to change the document (add, append, extend, draft, continue, rewrite, edit, fix, polish, expand, shorten, delete, etc.), you MUST call `apply_content_edit` — do NOT write substantive new prose into chat as a workaround, and do NOT use the legacy `propose_content_*` tools (they are being removed). Rhetorical questions count as instructions: "Can you add a summary?", "Could you fix the intro?", "Want to rewrite this section?" are all explicit edit requests.',
+    'When `@doc` appears in the latest user turn AND the request is to change the document (add, append, extend, draft, continue, rewrite, edit, fix, polish, expand, shorten, delete, etc.), you MUST call `apply_content_edit` — do NOT write substantive new prose into chat as a workaround. Rhetorical questions count as instructions: "Can you add a summary?", "Could you fix the intro?", "Want to rewrite this section?" are all explicit edit requests.',
     '',
     'NEVER narrate your capabilities ("I can only modify through tools", "I cannot directly edit @doc", etc.). Your reply in chat for an edit request should be a single short acknowledgement after the call ("Replaced paragraph 2 and added a closing CTA — review in the doc pane.") OR a clarifying question only if the request is genuinely ambiguous.',
   ].join('\n');

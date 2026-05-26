@@ -60,7 +60,10 @@ async function purge(): Promise<void> {
   await seedTalk(TALK_B_ID, USER_B_ID);
 }
 
-async function seedDoc(ownerId: string, talkId: string): Promise<{
+async function seedDoc(
+  ownerId: string,
+  talkId: string,
+): Promise<{
   contentId: string;
   bodyVersion: number;
   anchors: { h1: string; p1: string; p2: string };
@@ -359,7 +362,9 @@ describe('content-edits-accessors (postgres + RLS)', () => {
       expect(pending.length).toBe(1);
       expect(pending[0].runId).toBe('run-2');
       const sql = getDbPg();
-      const fetched = await sql<{ body_markdown: string; body_version: number }[]>`
+      const fetched = await sql<
+        { body_markdown: string; body_version: number }[]
+      >`
         select body_markdown, body_version
         from public.contents where id = ${contentId}::uuid
       `;
@@ -467,4 +472,3 @@ describe('content-edits-accessors (postgres + RLS)', () => {
     });
   });
 });
-
