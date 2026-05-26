@@ -456,8 +456,12 @@ async function tryResolveContainerExecutionPlan(input: {
 export async function planExecution(
   agent: RegisteredAgentRecord,
   _userId: string,
+  opts?: {
+    talkId?: string;
+    activeFamilies?: Record<string, boolean>;
+  },
 ): Promise<ExecutionPlan> {
-  const effectiveTools = await getEffectiveToolsForAgent(agent.id);
+  const effectiveTools = await getEffectiveToolsForAgent(agent.id, opts);
   const browserEnabled = effectiveTools.some(
     (tool) => tool.toolFamily === 'browser' && tool.enabled,
   );
@@ -579,8 +583,12 @@ export async function planExecution(
 export async function planMainExecution(
   agent: RegisteredAgentRecord,
   _userId: string,
+  opts?: {
+    talkId?: string;
+    activeFamilies?: Record<string, boolean>;
+  },
 ): Promise<MainExecutionPlan> {
-  const effectiveTools = await getEffectiveToolsForAgent(agent.id);
+  const effectiveTools = await getEffectiveToolsForAgent(agent.id, opts);
   const browserEnabled = effectiveTools.some(
     (tool) => tool.toolFamily === 'browser' && tool.enabled,
   );

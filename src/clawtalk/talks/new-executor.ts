@@ -2025,9 +2025,8 @@ export class CleanTalkExecutor implements TalkExecutor {
     };
 
     try {
-      const existingRunMetadata = parseRunMetadata(
-        (await getTalkRunById(input.runId))?.metadata_json,
-      );
+      const runRecord = await getTalkRunById(input.runId);
+      const existingRunMetadata = parseRunMetadata(runRecord?.metadata_json);
       const runMetadata = { ...existingRunMetadata };
       const browserResumeSection =
         buildBrowserResumeSection(existingRunMetadata);
@@ -2043,7 +2042,18 @@ export class CleanTalkExecutor implements TalkExecutor {
       const activeAgent = resolved.agent;
       const modelContextWindow = await getModelContextWindow(activeAgent);
       const jobPolicy = await buildTalkJobExecutionPolicy(input.jobId);
-      const plan = await planExecution(activeAgent, input.requestedBy);
+      // Prefer the snapshot captured at run-creation (migration 0031) —
+      // a multi-agent response group must see the same tool set even if
+      // the user toggles a chip mid-stream. Fall back to a live `talkId`
+      // read for runs created before the column existed (null snapshot).
+      const planOpts = runRecord?.active_tool_families_snapshot
+        ? { activeFamilies: runRecord.active_tool_families_snapshot }
+        : { talkId: input.talkId };
+      const plan = await planExecution(
+        activeAgent,
+        input.requestedBy,
+        planOpts,
+      );
       const multiAgentExecutionNote = buildMultiAgentExecutionNote({
         responseGroupId: input.responseGroupId,
         currentAgentNickname: resolved.nickname,

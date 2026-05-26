@@ -11,6 +11,7 @@ import {
   type AgentProviderCard,
   UnauthorizedError,
 } from '../lib/api';
+import { TOOL_FAMILY_GROUPS, TOOL_NAMES } from '../lib/tool-families';
 
 type Props = {
   providers: AgentProviderCard[];
@@ -47,36 +48,6 @@ function buildDefaultRegisteredAgentToolPermissions(): Record<string, boolean> {
     messaging: true,
   };
 }
-
-const TOOL_FAMILY_GROUPS = {
-  'Heavy tools (Claude container)': [
-    'shell',
-    'filesystem',
-    'browser',
-  ],
-  'Web tools': ['web'],
-  Connectors: ['connectors'],
-  'Google Workspace': [
-    'google_read',
-    'google_write',
-    'gmail_read',
-    'gmail_send',
-  ],
-  Messaging: ['messaging'],
-};
-
-const TOOL_NAMES: Record<string, string> = {
-  shell: 'Shell',
-  filesystem: 'Filesystem',
-  browser: 'Browser',
-  web: 'Web',
-  connectors: 'Connectors',
-  google_read: 'Google Read',
-  google_write: 'Google Write',
-  gmail_read: 'Gmail Read',
-  gmail_send: 'Gmail Send',
-  messaging: 'Messaging',
-};
 
 function generateDraftId(): string {
   return 'draft-' + Math.random().toString(36).substring(2, 11);
@@ -697,7 +668,7 @@ function AgentForm({
       </label>
 
       <div className="agent-form-field-full agent-form-tools-section">
-        <span className="agent-form-tools-title">Tool Permissions</span>
+        <span className="agent-form-tools-title">Tool capabilities</span>
 
         {isNonClaudeProvider && (
           <div className="agent-form-warning">

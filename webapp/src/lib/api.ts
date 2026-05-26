@@ -714,38 +714,6 @@ export type TalkRunContextSnapshot = {
   estimatedTokens: number;
 };
 
-export type ToolRegistryEntry = {
-  id: string;
-  family:
-    | 'saved_sources'
-    | 'attachments'
-    | 'web'
-    | 'gmail'
-    | 'google_drive'
-    | 'google_docs'
-    | 'google_sheets'
-    | 'data_connectors';
-  displayName: string;
-  description: string | null;
-  enabled: boolean;
-  installStatus: 'installed' | 'disabled' | 'unconfigured';
-  healthStatus: 'healthy' | 'degraded' | 'unavailable';
-  authRequirements: Record<string, unknown> | null;
-  mutatesExternalState: boolean;
-  requiresBinding: boolean;
-  defaultGrant: boolean;
-  sortOrder: number;
-  updatedAt: string;
-  updatedBy: string | null;
-};
-
-export type TalkToolGrant = {
-  toolId: string;
-  enabled: boolean;
-  updatedAt: string;
-  updatedBy: string | null;
-};
-
 export type TalkResourceBinding = {
   id: string;
   kind:
@@ -778,38 +746,6 @@ export type GooglePickerSession = {
   oauthToken: string;
   developerKey: string;
   appId: string;
-};
-
-export type EffectiveToolAccessState =
-  | 'available'
-  | 'unavailable_due_to_route'
-  | 'unavailable_due_to_identity'
-  | 'unavailable_due_to_pending_scopes'
-  | 'unavailable_due_to_scope'
-  | 'unavailable_due_to_config'
-  | 'unavailable_due_to_missing_resource';
-
-export type TalkToolAccessByAgent = {
-  agentId: string;
-  nickname: string;
-  sourceKind: 'claude_default' | 'provider';
-  providerId: string | null;
-  modelId: string | null;
-  toolAccess: Array<{
-    toolId: string;
-    state: EffectiveToolAccessState;
-  }>;
-};
-
-export type TalkTools = {
-  talkId: string;
-  registry: ToolRegistryEntry[];
-  grants: TalkToolGrant[];
-  bindings: TalkResourceBinding[];
-  googleAccount: UserGoogleAccount;
-  summary: string[];
-  warnings: string[];
-  effectiveAccess: TalkToolAccessByAgent[];
 };
 
 export type TalkAuditEntry = {
@@ -1674,26 +1610,6 @@ export async function getTalkRunContext(input: {
   return envelope.contextSnapshot;
 }
 
-export async function getTalkTools(talkId: string): Promise<TalkTools> {
-  return apiRequest<TalkTools>(
-    `/api/v1/talks/${encodeURIComponent(talkId)}/tools`,
-  );
-}
-
-export async function updateTalkTools(input: {
-  talkId: string;
-  grants: Array<{ toolId: string; enabled: boolean }>;
-}): Promise<TalkTools> {
-  return apiMutationRequest<TalkTools>(
-    `/api/v1/talks/${encodeURIComponent(input.talkId)}/tools/grants`,
-    {
-      method: 'PUT',
-      includeJson: true,
-      body: JSON.stringify({ grants: input.grants }),
-    },
-  );
-}
-
 export async function getTalkResources(input: {
   talkId: string;
 }): Promise<{ talkId: string; bindings: TalkResourceBinding[] }> {
@@ -2004,6 +1920,37 @@ export async function updateTalkAgents(input: {
     body: JSON.stringify({ agents: input.agents }),
   });
   return envelope.agents;
+}
+
+// Talk-scoped tool toggles (migration 0031).
+export interface TalkToolsState {
+  talkId: string;
+  active: Record<string, boolean>;
+  available: string[];
+}
+
+export async function getTalkTools(talkId: string): Promise<TalkToolsState> {
+  return apiRequest<TalkToolsState>(
+    `/api/v1/talks/${encodeURIComponent(talkId)}/tools`,
+  );
+}
+
+export async function updateTalkTool(input: {
+  talkId: string;
+  family: string;
+  enabled: boolean;
+}): Promise<TalkToolsState> {
+  return apiMutationRequest<TalkToolsState>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/tools`,
+    {
+      method: 'PATCH',
+      includeJson: true,
+      body: JSON.stringify({
+        family: input.family,
+        enabled: input.enabled,
+      }),
+    },
+  );
 }
 
 export async function getAiAgents(): Promise<AiAgentsPageData> {

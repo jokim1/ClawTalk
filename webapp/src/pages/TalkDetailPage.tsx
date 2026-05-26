@@ -143,6 +143,7 @@ import {
   buildSourceMentionOptions,
   type SourceMentionOption,
 } from '../components/SourceMentionPicker';
+import { ToolChipsBar } from '../components/ToolChipsBar';
 import { TalkConnectorsPanel } from '../components/connectors/TalkConnectorsPanel';
 import { ThreadContextMenu } from '../components/ThreadContextMenu';
 import { ThreadRowTitleEditor } from '../components/ThreadRowTitleEditor';
@@ -2971,6 +2972,10 @@ export function TalkDetailPage({
   const [pendingEditInFlight, setPendingEditInFlight] = useState<Set<string>>(
     () => new Set(),
   );
+  // Bumped each time a `talk_tools_changed` event arrives. Triggers
+  // ToolChipsBar to refetch its active set so chip state syncs across
+  // tabs without us threading the payload through.
+  const [toolsRefreshKey, setToolsRefreshKey] = useState(0);
   // Composer `@`-mention typeahead. Tracks the live `@` index in the
   // draft and the active picker selection. Opens when @ lands at a word
   // boundary AND the Talk has an attached doc OR at least one ready
@@ -4499,6 +4504,14 @@ export function TalkDetailPage({
         // the server-authoritative snapshot — including rejected runs
         // (the row went away, the cached state should reflect it).
         void refetchTalkContent();
+      },
+      onTalkToolsChanged: () => {
+        // Cross-tab sync: another tab toggled a tool chip. Bumping
+        // refreshKey causes ToolChipsBar to refetch and reflect the
+        // post-toggle active set. The event filter at
+        // src/clawtalk/talks/event-filters.ts allowlists this event
+        // for thread-scoped subscriptions (T7).
+        setToolsRefreshKey((k) => k + 1);
       },
       onReplayGap: async () => {
         await resyncTalkState({ refreshThreads: true });
@@ -9783,6 +9796,11 @@ export function TalkDetailPage({
 
                       <div ref={endRef} />
                     </div>
+
+                    <ToolChipsBar
+                      talkId={talkId}
+                      refreshKey={toolsRefreshKey}
+                    />
 
                     <form
                       className="composer talk-workspace-composer"

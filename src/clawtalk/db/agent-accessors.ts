@@ -490,9 +490,30 @@ export interface EffectiveToolAccess {
  * Compute effective tools for an agent given the *caller's* permissions.
  * Inside withUserContext the auth.uid() bound to the tx is implicitly the
  * permissions owner — no userId param needed.
+ *
+ * `opts.talkId` adds the Talk-active intersection: a tool family is enabled
+ * only if the agent has the capability AND the Talk currently has the family
+ * toggled on. Live read from `talks.active_tool_families_json`. Pass
+ * `opts.activeFamilies` instead to use an explicit snapshot (e.g. queue
+ * consumer reading from the enqueued message — keeps a multi-agent response
+ * group on a frozen tool set even if the user toggles mid-stream). Pass
+ * neither for settings-side calls that just want the agent ∩ user view.
+ *
+ * Connectors note: the `connectors` family has no runtime tool ids, so the
+ * user-permission per-tool loop is a no-op for it. Connector access is
+ * effectively gated only on agent ∩ talk-active (no per-tool user check).
+ *
+ * The ALWAYS_ALLOWED bypass (agent-router.ts:137) layers ABOVE this result —
+ * tools in that set are NEVER filtered out by this function, since this
+ * function returns family-level enabled flags and the bypass applies after
+ * the tool-list is assembled downstream.
  */
 export async function getEffectiveToolsForAgent(
   agentId: string,
+  opts?: {
+    talkId?: string;
+    activeFamilies?: Record<string, boolean>;
+  },
 ): Promise<EffectiveToolAccess[]> {
   const agent = await getRegisteredAgent(agentId);
   if (!agent) return [];
@@ -501,12 +522,18 @@ export async function getEffectiveToolsForAgent(
   const userPermissions = await listUserToolPermissions();
   const userPermissionMap = new Map(userPermissions.map((p) => [p.toolId, p]));
 
+  const talkActive = await resolveActiveFamilies(opts);
+
   const result: EffectiveToolAccess[] = [];
   for (const [family, tools] of Object.entries(TOOL_FAMILY_MAP)) {
     const agentEnabled = agentPermissions[family] === true;
     const runtimeTools = tools.length > 0 ? [...tools] : [];
 
-    let enabled = agentEnabled;
+    // Agent ∩ talk active. When talkActive is null the call is settings-side
+    // (no Talk context) and the intersection collapses to agentEnabled.
+    const talkEnabled =
+      talkActive === null ? true : talkActive[family] === true;
+    let enabled = agentEnabled && talkEnabled;
     let requiresApproval = false;
     if (enabled && runtimeTools.length > 0) {
       for (const tool of runtimeTools) {
@@ -528,6 +555,28 @@ export async function getEffectiveToolsForAgent(
     });
   }
   return result;
+}
+
+async function resolveActiveFamilies(opts?: {
+  talkId?: string;
+  activeFamilies?: Record<string, boolean>;
+}): Promise<Record<string, boolean> | null> {
+  // Explicit snapshot wins (queue consumer reading enqueued message).
+  if (opts?.activeFamilies !== undefined) return opts.activeFamilies;
+  if (!opts?.talkId) return null;
+  const db = getDbPg();
+  const rows = await db<
+    { active_tool_families_json: Record<string, boolean> }[]
+  >`
+    select active_tool_families_json
+    from public.talks
+    where id = ${opts.talkId}::uuid
+    limit 1
+  `;
+  if (!rows[0]) return {};
+  const raw = rows[0].active_tool_families_json;
+  if (!raw || typeof raw !== 'object') return {};
+  return raw;
 }
 
 // ---------------------------------------------------------------------------
