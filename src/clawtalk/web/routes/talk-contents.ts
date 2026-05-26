@@ -13,6 +13,15 @@ import {
   type Content,
   type ContentProposal,
 } from '../../db/index.js';
+import {
+  acceptPendingEdit,
+  acceptPendingRun,
+  getPendingEditById,
+  getPendingEditsByContent,
+  rejectPendingEdit,
+  rejectPendingRun,
+} from '../../db/content-edits-accessors.js';
+import type { ContentEditRow } from '../../../shared/rich-text/index.js';
 import { canEditTalk } from '../middleware/acl.js';
 import { ApiEnvelope, AuthContext } from '../types.js';
 
@@ -123,7 +132,11 @@ export async function getTalkContentRoute(input: {
   auth: AuthContext;
   talkId: string;
 }): Promise<
-  RouteResult<{ content: Content | null; pendingProposals: ContentProposal[] }>
+  RouteResult<{
+    content: Content | null;
+    pendingProposals: ContentProposal[];
+    pendingEdits: ContentEditRow[];
+  }>
 > {
   return await withUserContext(input.auth.userId, async () => {
     const talk = await getTalkForUser(input.talkId);
@@ -133,13 +146,19 @@ export async function getTalkContentRoute(input: {
     if (!content) {
       return {
         statusCode: 200,
-        body: { ok: true, data: { content: null, pendingProposals: [] } },
+        body: {
+          ok: true,
+          data: { content: null, pendingProposals: [], pendingEdits: [] },
+        },
       };
     }
-    const pendingProposals = await listPendingProposalsByContentId(content.id);
+    const [pendingProposals, pendingEdits] = await Promise.all([
+      listPendingProposalsByContentId(content.id),
+      getPendingEditsByContent(content.id),
+    ]);
     return {
       statusCode: 200,
-      body: { ok: true, data: { content, pendingProposals } },
+      body: { ok: true, data: { content, pendingProposals, pendingEdits } },
     };
   });
 }
@@ -200,7 +219,14 @@ export async function patchContentRoute(input: {
   expectedVersion?: unknown;
   bodyMarkdown?: unknown;
   title?: unknown;
-}): Promise<RouteResult<{ content: Content; staledProposalIds: string[] }>> {
+  acceptPendingEditIds?: unknown;
+}): Promise<
+  RouteResult<{
+    content: Content;
+    staledProposalIds: string[];
+    acceptedPendingEditIds: string[];
+  }>
+> {
   return await withUserContext(input.auth.userId, async () => {
     if (
       typeof input.expectedVersion !== 'number' ||
@@ -212,13 +238,23 @@ export async function patchContentRoute(input: {
         'PATCH requires a positive integer expectedVersion.',
       );
     }
+
+    const requestedAcceptIds: string[] = Array.isArray(
+      input.acceptPendingEditIds,
+    )
+      ? input.acceptPendingEditIds.filter(
+          (id): id is string => typeof id === 'string' && id.length > 0,
+        )
+      : [];
+
     if (
       typeof input.bodyMarkdown !== 'string' &&
-      typeof input.title !== 'string'
+      typeof input.title !== 'string' &&
+      requestedAcceptIds.length === 0
     ) {
       return badRequest(
         'empty_patch',
-        'PATCH must include bodyMarkdown and/or title.',
+        'PATCH must include bodyMarkdown, title, or acceptPendingEditIds.',
       );
     }
 
@@ -229,10 +265,62 @@ export async function patchContentRoute(input: {
     }
 
     try {
+      // Per-block implicit accept: materialize any pending edits the
+      // client says the user typed over BEFORE we apply the bodyMarkdown
+      // update so the base body the autosave PATCH writes against is
+      // already up-to-date. Each acceptPendingEdit call CAS-bumps the
+      // body, so iterate sequentially and advance the expectedVersion.
+      let runningVersion = input.expectedVersion;
+      const acceptedEditIds: string[] = [];
+      for (const editId of requestedAcceptIds) {
+        const acceptResult = await acceptPendingEdit({
+          editId,
+          userId: input.auth.userId,
+          expectedContentVersion: runningVersion,
+        });
+        if (acceptResult.kind === 'not_found') {
+          // Sibling auto-accept may have cleared the row already; ignore.
+          continue;
+        }
+        if (acceptResult.kind === 'version_conflict') {
+          return versionConflict(acceptResult.currentVersion);
+        }
+        if (acceptResult.kind === 'doc_size_limit') {
+          return docSizeLimit(acceptResult.wouldBeBytes);
+        }
+        if (acceptResult.kind === 'anchor_missing') {
+          return anchorMissing(acceptResult.anchorId);
+        }
+        runningVersion = acceptResult.content.bodyVersion;
+        acceptedEditIds.push(acceptResult.editId);
+      }
+
+      // Decide whether the autosave PATCH itself needs to fire — if the
+      // client only sent acceptPendingEditIds (no body / title change),
+      // we're done after the materializations above.
+      const wantsBodyUpdate =
+        typeof input.bodyMarkdown === 'string' ||
+        typeof input.title === 'string';
+      if (!wantsBodyUpdate) {
+        const refreshed = await getContentById(input.contentId);
+        if (!refreshed) return notFound('Content not found.');
+        return {
+          statusCode: 200,
+          body: {
+            ok: true,
+            data: {
+              content: refreshed,
+              staledProposalIds: [],
+              acceptedPendingEditIds: acceptedEditIds,
+            },
+          },
+        };
+      }
+
       const result = await updateContentBody({
         contentId: input.contentId,
         ownerId: input.auth.userId,
-        expectedVersion: input.expectedVersion,
+        expectedVersion: runningVersion,
         bodyMarkdown:
           typeof input.bodyMarkdown === 'string'
             ? input.bodyMarkdown
@@ -254,6 +342,7 @@ export async function patchContentRoute(input: {
           data: {
             content: result.content,
             staledProposalIds: result.staledProposalIds,
+            acceptedPendingEditIds: acceptedEditIds,
           },
         },
       };
@@ -371,6 +460,177 @@ export async function rejectContentProposalRoute(input: {
         return {
           statusCode: 200,
           body: { ok: true, data: { proposal: result.proposal } },
+        };
+    }
+  });
+}
+
+// ── Pending-edit accept/reject routes (edit-log architecture) ────────
+
+export async function acceptContentEditRoute(input: {
+  auth: AuthContext;
+  contentId: string;
+  editId: string;
+  expectedContentVersion?: unknown;
+}): Promise<
+  RouteResult<{ content: Content; editId: string; runId: string }>
+> {
+  return await withUserContext(input.auth.userId, async () => {
+    const content = await getContentById(input.contentId);
+    if (!content) return notFound('Content not found.');
+    if (!(await canEditTalk(content.talkId))) {
+      return forbidden('You do not have permission to edit this talk.');
+    }
+
+    const expected =
+      typeof input.expectedContentVersion === 'number'
+        ? input.expectedContentVersion
+        : undefined;
+
+    const result = await acceptPendingEdit({
+      editId: input.editId,
+      userId: input.auth.userId,
+      expectedContentVersion: expected,
+    });
+    switch (result.kind) {
+      case 'not_found':
+        return notFound('Pending edit not found.');
+      case 'version_conflict':
+        return versionConflict(result.currentVersion);
+      case 'doc_size_limit':
+        return docSizeLimit(result.wouldBeBytes);
+      case 'anchor_missing':
+        return anchorMissing(result.anchorId);
+      case 'ok':
+        return {
+          statusCode: 200,
+          body: {
+            ok: true,
+            data: {
+              content: result.content,
+              editId: result.editId,
+              runId: result.runId,
+            },
+          },
+        };
+    }
+  });
+}
+
+export async function rejectContentEditRoute(input: {
+  auth: AuthContext;
+  contentId: string;
+  editId: string;
+}): Promise<RouteResult<{ editId: string; runId: string }>> {
+  return await withUserContext(input.auth.userId, async () => {
+    const content = await getContentById(input.contentId);
+    if (!content) return notFound('Content not found.');
+    if (!(await canEditTalk(content.talkId))) {
+      return forbidden('You do not have permission to edit this talk.');
+    }
+
+    // Authorize: the edit must belong to this content.
+    const edit = await getPendingEditById(input.editId);
+    if (!edit) return notFound('Pending edit not found.');
+    if (edit.contentId !== input.contentId) {
+      return notFound('Pending edit not found.');
+    }
+
+    const result = await rejectPendingEdit({
+      editId: input.editId,
+      userId: input.auth.userId,
+    });
+    switch (result.kind) {
+      case 'not_found':
+        return notFound('Pending edit not found.');
+      case 'ok':
+        return {
+          statusCode: 200,
+          body: {
+            ok: true,
+            data: { editId: result.editId, runId: result.runId },
+          },
+        };
+    }
+  });
+}
+
+export async function acceptContentEditRunRoute(input: {
+  auth: AuthContext;
+  contentId: string;
+  runId: string;
+  expectedContentVersion?: unknown;
+}): Promise<
+  RouteResult<{ content: Content; runId: string; editIds: string[] }>
+> {
+  return await withUserContext(input.auth.userId, async () => {
+    const content = await getContentById(input.contentId);
+    if (!content) return notFound('Content not found.');
+    if (!(await canEditTalk(content.talkId))) {
+      return forbidden('You do not have permission to edit this talk.');
+    }
+
+    const expected =
+      typeof input.expectedContentVersion === 'number'
+        ? input.expectedContentVersion
+        : undefined;
+
+    const result = await acceptPendingRun({
+      contentId: input.contentId,
+      runId: input.runId,
+      userId: input.auth.userId,
+      expectedContentVersion: expected,
+    });
+    switch (result.kind) {
+      case 'not_found':
+        return notFound('Pending edit run not found.');
+      case 'version_conflict':
+        return versionConflict(result.currentVersion);
+      case 'doc_size_limit':
+        return docSizeLimit(result.wouldBeBytes);
+      case 'ok':
+        return {
+          statusCode: 200,
+          body: {
+            ok: true,
+            data: {
+              content: result.content,
+              runId: result.runId,
+              editIds: result.editIds,
+            },
+          },
+        };
+    }
+  });
+}
+
+export async function rejectContentEditRunRoute(input: {
+  auth: AuthContext;
+  contentId: string;
+  runId: string;
+}): Promise<RouteResult<{ runId: string; editIds: string[] }>> {
+  return await withUserContext(input.auth.userId, async () => {
+    const content = await getContentById(input.contentId);
+    if (!content) return notFound('Content not found.');
+    if (!(await canEditTalk(content.talkId))) {
+      return forbidden('You do not have permission to edit this talk.');
+    }
+
+    const result = await rejectPendingRun({
+      contentId: input.contentId,
+      runId: input.runId,
+      userId: input.auth.userId,
+    });
+    switch (result.kind) {
+      case 'not_found':
+        return notFound('Pending edit run not found.');
+      case 'ok':
+        return {
+          statusCode: 200,
+          body: {
+            ok: true,
+            data: { runId: result.runId, editIds: result.editIds },
+          },
         };
     }
   });

@@ -166,11 +166,15 @@ import {
   runTalkJobNowRoute,
 } from './routes/talk-jobs.js';
 import {
+  acceptContentEditRoute,
+  acceptContentEditRunRoute,
   acceptContentProposalRoute,
   createTalkContentRoute,
   getContentProposalRoute,
   getTalkContentRoute,
   patchContentRoute,
+  rejectContentEditRoute,
+  rejectContentEditRunRoute,
   rejectContentProposalRoute,
 } from './routes/talk-contents.js';
 import {
@@ -1521,6 +1525,7 @@ function buildApp(): Hono<{ Variables: Variables }> {
       expectedVersion?: unknown;
       bodyMarkdown?: unknown;
       title?: unknown;
+      acceptPendingEditIds?: unknown;
     }>(c);
     if (!payload.ok) return invalidJsonResponse(c, payload.error);
     const result = await patchContentRoute({
@@ -1529,6 +1534,7 @@ function buildApp(): Hono<{ Variables: Variables }> {
       expectedVersion: payload.data.expectedVersion,
       bodyMarkdown: payload.data.bodyMarkdown,
       title: payload.data.title,
+      acceptPendingEditIds: payload.data.acceptPendingEditIds,
     });
     return jsonResponse(result);
   });
@@ -1583,6 +1589,79 @@ function buildApp(): Hono<{ Variables: Variables }> {
       return jsonResponse(result);
     },
   );
+
+  // Pending-edit routes (edit-log architecture, direct-edit redesign).
+  app.post(
+    '/api/v1/contents/:contentId/edits/:editId/accept',
+    async (c) => {
+      const auth = c.get('auth');
+      const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+      if (!rl.allowed) return rateLimitedResponse(c, rl);
+      const csrfFail = checkCsrf(c, auth);
+      if (csrfFail) return csrfFail;
+      const payload = await readJsonBody<{ expectedContentVersion?: unknown }>(
+        c,
+      );
+      if (!payload.ok) return invalidJsonResponse(c, payload.error);
+      const result = await acceptContentEditRoute({
+        auth,
+        contentId: c.req.param('contentId'),
+        editId: c.req.param('editId'),
+        expectedContentVersion: payload.data.expectedContentVersion,
+      });
+      return jsonResponse(result);
+    },
+  );
+
+  app.post(
+    '/api/v1/contents/:contentId/edits/:editId/reject',
+    async (c) => {
+      const auth = c.get('auth');
+      const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+      if (!rl.allowed) return rateLimitedResponse(c, rl);
+      const csrfFail = checkCsrf(c, auth);
+      if (csrfFail) return csrfFail;
+      const result = await rejectContentEditRoute({
+        auth,
+        contentId: c.req.param('contentId'),
+        editId: c.req.param('editId'),
+      });
+      return jsonResponse(result);
+    },
+  );
+
+  app.post('/api/v1/contents/:contentId/runs/:runId/accept', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const csrfFail = checkCsrf(c, auth);
+    if (csrfFail) return csrfFail;
+    const payload = await readJsonBody<{ expectedContentVersion?: unknown }>(
+      c,
+    );
+    if (!payload.ok) return invalidJsonResponse(c, payload.error);
+    const result = await acceptContentEditRunRoute({
+      auth,
+      contentId: c.req.param('contentId'),
+      runId: c.req.param('runId'),
+      expectedContentVersion: payload.data.expectedContentVersion,
+    });
+    return jsonResponse(result);
+  });
+
+  app.post('/api/v1/contents/:contentId/runs/:runId/reject', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const csrfFail = checkCsrf(c, auth);
+    if (csrfFail) return csrfFail;
+    const result = await rejectContentEditRunRoute({
+      auth,
+      contentId: c.req.param('contentId'),
+      runId: c.req.param('runId'),
+    });
+    return jsonResponse(result);
+  });
 
   // ── talk-context.ts: goal + rules + state + sources ──────────
   app.get('/api/v1/talks/:talkId/context', async (c) => {
