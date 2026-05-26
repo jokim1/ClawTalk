@@ -7,7 +7,6 @@ import {
   useNavigate,
 } from 'react-router-dom';
 
-import { AvatarMenu } from './components/AvatarMenu';
 import { ClawTalkMark } from './components/ClawTalkMark';
 import { ClawTalkSidebar } from './components/ClawTalkSidebar';
 import { SignInView } from './components/SignInView';
@@ -744,11 +743,6 @@ export function App() {
           >
             ?
           </a>
-          <AvatarMenu
-            user={auth.user}
-            onSignOut={handleSignOut}
-            signOutBusy={signOutBusy}
-          />
         </div>
       </header>
       {!sidebarCollapsed ? (
