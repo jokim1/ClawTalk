@@ -77,6 +77,10 @@ describe('agent-router', () => {
     expect(ALWAYS_ALLOWED_CONTEXT_TOOLS.has('propose_content_bulk')).toBe(true);
   });
 
+  it('always permits apply_content_edit (direct-edit redesign)', () => {
+    expect(ALWAYS_ALLOWED_CONTEXT_TOOLS.has('apply_content_edit')).toBe(true);
+  });
+
   it('fails incomplete direct-http responses when the provider stops early', async () => {
     vi.mocked(streamLlmResponse).mockImplementation(async function* () {
       yield { type: 'text_delta', text: "I'll read the full content" };

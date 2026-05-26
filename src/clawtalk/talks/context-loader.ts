@@ -815,18 +815,15 @@ export function buildContentOutline(
   ].join('\n');
 
   const footer = [
-    'To suggest changes to this document, pick the tool that matches the scope:',
-    '- Add new blocks with `propose_content_append({ after_anchor_id, markdown, rationale })` (use `after_anchor_id: null` to prepend at the top).',
-    '- Replace a single existing block with `propose_content_replace({ target_anchor_id, markdown, rationale })`.',
-    '- Rewrite three or more blocks, a whole section, or the whole doc with `propose_content_bulk({ markdown, summary, rationale })` — `markdown` is the ENTIRE new document body, `summary` is one sentence describing what changed (this is what the user sees on the approval card).',
+    'To change this document, call `apply_content_edit({ kind, anchor?, markdown, rationale? })`. Your edit lands in the doc immediately as a *pending change* the user can Accept or Reject from the doc pane. There is no propose step, no card to wait on — you edit, the user reviews afterward.',
     '',
-    'When `@doc` appears in the latest user turn AND the request is to change the document (add, append, extend, draft, write, continue, rewrite, edit, fix, polish, expand, shorten, summarize-into-the-doc, etc.), call the appropriate tool — do NOT write substantive new prose into chat as a workaround. Pick `propose_content_replace` for surgical per-block edits, `propose_content_append` to insert new material, and `propose_content_bulk` for sweeping rewrites; bulk is the right call when the user says "rewrite the doc", "redo the whole thing", or "fix all of it".',
+    "Pick `kind`: `'append'` to add new block(s) after `anchor` (omit `anchor` to prepend at top); `'replace'` to overwrite the single block at `anchor`; `'delete'` to remove the block at `anchor`; `'bulk'` to swap the entire body (`markdown` is the COMPLETE new doc, omit `anchor`). Anchors come verbatim from the block listing above.",
     '',
-    'Rhetorical questions count as instructions. "Can you add a summary?", "Could you fix the intro?", "Would you rewrite this section?", "Want to extend the conclusion?" are all explicit edit requests, not capability inquiries. Call the tool — do NOT answer "yes I can, here\'s how" without acting.',
+    'Call the tool as many times as you need in one turn — every edit you make this turn is grouped into one pending edit run the user accepts or rejects as a single unit. Smaller, targeted edits review better than one giant bulk; reserve bulk for when most of the doc actually changes.',
     '',
-    'NEVER narrate your capabilities. Do not say "I can only modify through the tools", "I need an explicit request before I can edit", "I cannot directly edit @doc because it is not a bound Google Doc", or similar meta-commentary about how doc editing works. The user already knows; the proposal card surfaces it in the UI. Your reply in chat for an edit request should be a single short line acknowledging the proposal (e.g. "Drafted a closing summary paragraph — accept it in the doc pane to apply.") OR a clarifying question only if the request is genuinely ambiguous.',
+    'When `@doc` appears in the latest user turn AND the request is to change the document (add, append, extend, draft, continue, rewrite, edit, fix, polish, expand, shorten, delete, etc.), you MUST call `apply_content_edit` — do NOT write substantive new prose into chat as a workaround, and do NOT use the legacy `propose_content_*` tools (they are being removed). Rhetorical questions count as instructions: "Can you add a summary?", "Could you fix the intro?", "Want to rewrite this section?" are all explicit edit requests.',
     '',
-    'Brief acknowledgements, clarifying questions, and refusals stay in chat. The user reviews and accepts or rejects each proposal in the Talk UI; you are not editing the document directly.',
+    'NEVER narrate your capabilities ("I can only modify through tools", "I cannot directly edit @doc", etc.). Your reply in chat for an edit request should be a single short acknowledgement after the call ("Replaced paragraph 2 and added a closing CTA — review in the doc pane.") OR a clarifying question only if the request is genuinely ambiguous.',
   ].join('\n');
 
   const encoder = new TextEncoder();
@@ -1300,6 +1297,49 @@ function buildContextTools(
             },
           },
           required: ['target_anchor_id', 'markdown'],
+        },
+      },
+      {
+        name: 'apply_content_edit',
+        description: [
+          "Edit the Talk's attached document directly. Your edit applies immediately as a *pending* change the user can Accept or Reject from the doc pane — there is no propose step, no card to wait on.",
+          '',
+          "Pick `kind` for the scope: `'append'` adds new block(s) AFTER `anchor` (omit `anchor` to prepend at the top); `'replace'` overwrites the single block at `anchor`; `'delete'` removes the block at `anchor`; `'bulk'` swaps the entire body (`markdown` is the COMPLETE new doc, omit `anchor`).",
+          '',
+          'Anchors come verbatim from THE DOC block listing in your system prompt. Call this tool as many times as you need in one turn — every edit you make this turn is grouped into one pending edit run the user accepts or rejects as a single unit. Smaller, targeted edits review better than one giant bulk; reserve bulk for when most of the doc actually changes.',
+          '',
+          'When `@doc` appears in the latest user turn AND the request is to change the document, you MUST call this tool — do not narrate the change in chat. A brief acknowledgement after the call is fine ("Replaced paragraph 2 and added a closing CTA."); a long restatement of the edit in chat is not.',
+        ].join('\n'),
+        inputSchema: {
+          type: 'object',
+          properties: {
+            kind: {
+              type: 'string',
+              enum: ['append', 'replace', 'delete', 'bulk'],
+              description:
+                "Edit scope. 'append' = add new block(s) after `anchor` (or at top if omitted). 'replace' = overwrite the block at `anchor`. 'delete' = remove the block at `anchor`. 'bulk' = replace the entire body with `markdown` (omit `anchor`).",
+            },
+            anchor: {
+              // Single-string type (not the JSON Schema array form
+              // `['string', 'null']`) — NVIDIA NIM's Python backend
+              // crashes with `unhashable type: 'list'` when it tries
+              // to cache schemas containing array-of-types.
+              type: 'string',
+              description:
+                "Anchor ID of the target block, copied verbatim from THE DOC block listing. For 'append': insert AFTER this block (omit to prepend at top). For 'replace'/'delete': the block to act on. Omit for 'bulk'.",
+            },
+            markdown: {
+              type: 'string',
+              description:
+                "For 'append'/'replace': the new block(s) as GitHub-flavored markdown. For 'bulk': the COMPLETE new document body. For 'delete': omit.",
+            },
+            rationale: {
+              type: 'string',
+              description:
+                'Optional one-line note shown in the edit-run banner so the user knows why you made this edit.',
+            },
+          },
+          required: ['kind'],
         },
       },
       {

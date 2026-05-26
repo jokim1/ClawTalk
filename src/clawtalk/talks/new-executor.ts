@@ -184,7 +184,10 @@ import {
   executeProposeContentBulk,
   executeProposeContentReplace,
 } from './content-tool-handlers.js';
+import { executeApplyContentEdit } from './content-apply-handler.js';
 import { isContentEditIntent } from './content-edit-intent.js';
+import { getContentByTalkId } from '../db/content-accessors.js';
+import { emitOutboxEvent } from './outbox-emit.js';
 async function executeContainerAgentTurn(
   ..._args: unknown[]
 ): Promise<ContainerTurnResultStub> {
@@ -591,6 +594,8 @@ export function buildToolExecutor(
   jobPolicy?: TalkJobExecutionPolicy | null,
   effectiveTools?: EffectiveToolAccess[],
   agentId?: string | null,
+  agentNickname?: string | null,
+  triggerMessageId?: string | null,
 ) {
   let connectorCache: Map<string, TalkRunConnectorRecord> | null = null;
   const enabledToolFamilies = new Set(
@@ -975,6 +980,18 @@ export function buildToolExecutor(
         userId,
         runId,
         agentId: agentId ?? null,
+        args,
+      });
+    }
+
+    if (toolName === 'apply_content_edit') {
+      return executeApplyContentEdit({
+        talkId,
+        userId,
+        runId,
+        agentId: agentId ?? null,
+        agentNickname: agentNickname ?? null,
+        messageId: triggerMessageId ?? null,
         args,
       });
     }
@@ -2191,6 +2208,8 @@ export class CleanTalkExecutor implements TalkExecutor {
         jobPolicy,
         scopedEffectiveTools,
         activeAgent.id,
+        resolved.nickname,
+        input.triggerMessageId,
       );
       const currentAttachmentRows = await listMessageAttachmentRecords(
         input.triggerMessageId,
@@ -2237,18 +2256,54 @@ export class CleanTalkExecutor implements TalkExecutor {
       // Content edit-intent gate. If the latest user turn matches
       // `@doc` + an edit verb, force the agent to call a tool on the
       // first iteration so it can't reply in chat with "I cannot
-      // edit @doc" or otherwise refuse to fire propose_content_*.
-      // Only fire when propose_content_* is in the tool list — i.e.
-      // the Talk has a Content attached and tools are registered.
+      // edit @doc" or otherwise refuse to fire the edit tool.
+      // Fires when either the new apply tool OR the legacy propose tools
+      // are registered — coexist during the redesign rollout.
       const proposeToolsRegistered = (contextPackage.contextTools ?? []).some(
         (tool) =>
           tool.name === 'propose_content_append' ||
           tool.name === 'propose_content_replace' ||
           tool.name === 'propose_content_bulk',
       );
+      const applyToolRegistered = (contextPackage.contextTools ?? []).some(
+        (tool) => tool.name === 'apply_content_edit',
+      );
+      const editIntentDetected = isContentEditIntent(
+        orderedStep.userMessageText ?? '',
+      );
       const forceToolUseOnFirstIteration =
-        proposeToolsRegistered &&
-        isContentEditIntent(orderedStep.userMessageText ?? '');
+        (proposeToolsRegistered || applyToolRegistered) && editIntentDetected;
+
+      // Track whether the agent called `apply_content_edit` this turn so
+      // we can emit `content_edit_run_aborted` if the turn ends without
+      // it firing. Wraps the toolExecutor on the edit path only.
+      const trackApplyRun = applyToolRegistered && editIntentDetected;
+      let applyCalledInRun = false;
+      const wrappedToolExecutor = trackApplyRun
+        ? (toolName: string, args: Record<string, unknown>) => {
+            if (toolName === 'apply_content_edit') applyCalledInRun = true;
+            return toolExecutor(toolName, args);
+          }
+        : toolExecutor;
+
+      let editContentId: string | null = null;
+      if (trackApplyRun) {
+        const editContent = await getContentByTalkId(input.talkId);
+        if (editContent) {
+          editContentId = editContent.id;
+          await emitOutboxEvent({
+            topic: `talk:${input.talkId}`,
+            eventType: 'content_edit_run_started',
+            payload: {
+              contentId: editContent.id,
+              runId: input.runId,
+              agentId: activeAgent.id,
+              agentNickname: resolved.nickname,
+            },
+            ownerIds: [editContent.ownerId],
+          });
+        }
+      }
 
       const result = await executeWithAgent(
         activeAgent.id,
@@ -2267,10 +2322,26 @@ export class CleanTalkExecutor implements TalkExecutor {
               emitTalkEvent(mappedEvent);
             }
           },
-          executeToolCall: toolExecutor,
+          executeToolCall: wrappedToolExecutor,
           forceToolUseOnFirstIteration,
         },
       );
+
+      if (trackApplyRun && editContentId && !applyCalledInRun) {
+        const editContent = await getContentByTalkId(input.talkId);
+        if (editContent) {
+          await emitOutboxEvent({
+            topic: `talk:${input.talkId}`,
+            eventType: 'content_edit_run_aborted',
+            payload: {
+              contentId: editContent.id,
+              runId: input.runId,
+              reason: 'no_apply_call',
+            },
+            ownerIds: [editContent.ownerId],
+          });
+        }
+      }
 
       return {
         content: result.content,

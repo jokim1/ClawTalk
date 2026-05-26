@@ -61,6 +61,8 @@ import {
 import { MAX_ATTACHMENTS_PER_MESSAGE } from '../../talks/attachment-extraction.js';
 import { canEditTalk } from '../middleware/acl.js';
 import { AuthContext, ApiEnvelope } from '../types.js';
+import { getContentByTalkId } from '../../db/content-accessors.js';
+import { isContentEditIntent } from '../../talks/content-edit-intent.js';
 
 const TALK_BROWSER_EXECUTION_SETUP_MESSAGE =
   "Browser access is not configured for this agent. Configure the agent's execution credentials in AI Agents before retrying. For Claude agents, run `claude login` and import subscription auth, or add an Anthropic API key.";
@@ -1847,6 +1849,7 @@ export async function enqueueTalkChat(input: {
       executorAlias: string | null;
       executorModel: string | null;
     }>;
+    forcedSerialReason?: 'doc_edit_intent' | null;
   }>;
 }> {
   const content = input.content.trim();
@@ -1933,8 +1936,22 @@ export async function enqueueTalkChat(input: {
               id: a.agentId,
               nickname: a.nickname || a.agentName,
             }));
+    // Parallel + `@doc` edit-verb override: force serial routing so a
+    // multi-agent fan-out doesn't race on the same edit-log. The doc is
+    // 1:1 with the Talk, so concurrent agent edits would otherwise
+    // auto-accept each other's pending runs mid-stream.
+    const docEditIntent = isContentEditIntent(content);
+    const hasAttachedDoc = docEditIntent
+      ? (await getContentByTalkId(input.talkId)) !== null
+      : false;
+    const forceSerialForDocEdit =
+      docEditIntent && hasAttachedDoc && selectedAgents.length > 1;
     const orderedRunSet =
-      talk.orchestration_mode === 'ordered' && selectedAgents.length > 1;
+      forceSerialForDocEdit ||
+      (talk.orchestration_mode === 'ordered' && selectedAgents.length > 1);
+    const forcedSerialReason: 'doc_edit_intent' | null = forceSerialForDocEdit
+      ? 'doc_edit_intent'
+      : null;
 
     if (selectedAgents.length === 0) {
       return {
@@ -2073,6 +2090,7 @@ export async function enqueueTalkChat(input: {
             executorAlias: run.executor_alias,
             executorModel: run.executor_model,
           })),
+          forcedSerialReason,
         },
       },
     };
