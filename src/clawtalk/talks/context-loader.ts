@@ -205,10 +205,7 @@ const RETRIEVAL_SECTION_RESERVE = 1200; // Tokens reserved for targeted retrieva
 // bottom on really long docs. Read-block tool is the v2 escape hatch.
 const CONTENT_OUTLINE_BUDGET_BYTES = 20_480;
 const CHARS_TO_TOKENS = 0.25; // Simple estimation: 1 char ≈ 0.25 tokens
-const SMALL_SOURCE_THRESHOLD = 250; // Max tokens to inline a source
 const MAX_RETRIEVED_STATE_ENTRIES = 3;
-const MAX_RETRIEVED_SOURCE_ITEMS = 3;
-const MAX_RETRIEVED_SOURCE_CHARS = 500;
 
 const STOPWORDS = new Set([
   'a',
@@ -419,11 +416,11 @@ export async function loadTalkContext(
     excludedStateKeys: new Set(
       stateSnapshot.includedEntries.map((entry) => entry.key),
     ),
-    excludedSourceRefs: new Set(
-      sourceLines
-        .filter((source) => source.inlineContent)
-        .map((source) => source.ref),
-    ),
+    // Sources are never inlined into the system prompt anymore — every
+    // source is read-on-demand via `read_source(ref)`. Pass an empty
+    // exclusion set so buildRetrievedContext sees the full source list
+    // (though its source-retrieval path is now a no-op too).
+    excludedSourceRefs: new Set<string>(),
     budgetTokens: RETRIEVAL_SECTION_RESERVE,
   });
   // D4 — always advertise: emit the Bound Drive Resources prompt section
@@ -553,12 +550,10 @@ export async function loadTalkContext(
         sourceUrl: source.sourceUrl,
         fileName: source.fileName,
       })),
-      inline: sourceLines
-        .filter((source) => source.inlineContent)
-        .map((source) => ({
-          ref: source.ref,
-          text: source.inlineContent!,
-        })),
+      // No sources are inlined in the index-only manifest; the inline
+      // array is kept for snapshot-shape backwards compatibility but is
+      // always empty.
+      inline: [],
     },
     retrieval: {
       query: options?.retrievalQuery?.trim() || null,
@@ -631,11 +626,13 @@ async function fetchSummary(db: Sql, talkId: string): Promise<string | null> {
 // Step 2: Build Source Manifest
 // ---------------------------------------------------------------------------
 
-interface SourceRow {
+export interface SourceRow {
   id: string;
   source_ref: string;
   source_type: string;
   title: string;
+  title_slug: string | null;
+  note: string | null;
   source_url: string | null;
   file_name: string | null;
   file_size: number | string | null;
@@ -652,6 +649,8 @@ async function fetchSources(db: Sql, talkId: string): Promise<SourceRow[]> {
       source_ref,
       source_type,
       title,
+      title_slug,
+      note,
       source_url,
       file_name,
       file_size,
@@ -679,7 +678,7 @@ function isImageSource(row: SourceRow): boolean {
   );
 }
 
-function buildSourceManifest(
+export function buildSourceManifest(
   sources: SourceRow[],
   agentSupportsVision: boolean,
 ): Array<{
@@ -689,33 +688,44 @@ function buildSourceManifest(
   sourceUrl: string | null;
   fileName: string | null;
   line: string;
-  inlineContent: string | null;
 }> {
   return sources.map((source) => {
-    // Use the stable source_ref from the DB (e.g., "S1", "S4")
     const ref = source.source_ref;
 
-    // Build the source reference line (e.g., "[S1] Title - URL")
-    let refLine = `[${ref}] ${source.title}`;
+    // Image sources: render with vision-aware suffix; no preview (the
+    // text is binary).
     if (isImageSource(source)) {
       const fileLabel = source.file_name ? ` ${source.file_name}` : '';
-      refLine += agentSupportsVision
+      const suffix = agentSupportsVision
         ? ` (image —${fileLabel}; attached to this turn)`
         : ` (image —${fileLabel}; hidden, this agent's model lacks vision)`;
-    } else if (source.source_type === 'url' && source.source_url) {
-      refLine += ` - ${source.source_url}`;
-    } else if (source.source_type === 'file' && source.file_name) {
-      refLine += ` (${source.file_name})`;
+      return {
+        ref,
+        title: source.title,
+        sourceType: source.source_type,
+        sourceUrl: source.source_url,
+        fileName: source.file_name,
+        line: `[${ref}] ${source.title}${suffix}`,
+      };
     }
 
-    // For small text sources, inline the content
-    let inlineContent: string | null = null;
-    if (
-      source.source_type === 'text' &&
-      source.extracted_text &&
-      source.extracted_text.length * CHARS_TO_TOKENS < SMALL_SOURCE_THRESHOLD
-    ) {
-      inlineContent = source.extracted_text;
+    // Index-only manifest line:
+    //   [S1] Title (note text) — url-or-filename — preview: "first 200 chars…"
+    // The note and locator and preview clauses are each omitted when empty.
+    const parts: string[] = [`[${ref}] ${source.title}`];
+    if (source.note && source.note.trim().length > 0) {
+      parts[0] += ` (${source.note.trim()})`;
+    }
+    if (source.source_type === 'url' && source.source_url) {
+      parts.push(source.source_url);
+    } else if (source.source_type === 'file' && source.file_name) {
+      parts.push(source.file_name);
+    }
+    const preview = buildSourcePreview(source.extracted_text);
+    if (preview) {
+      parts.push(`preview: "${preview}"`);
+    } else if (source.source_type !== 'text' || !source.extracted_text) {
+      parts.push('(content not yet available)');
     }
 
     return {
@@ -724,10 +734,49 @@ function buildSourceManifest(
       sourceType: source.source_type,
       sourceUrl: source.source_url,
       fileName: source.file_name,
-      line: refLine,
-      inlineContent,
+      line: parts.join(' — '),
     };
   });
+}
+
+const SOURCE_PREVIEW_MAX_CHARS = 200;
+
+/**
+ * Build a one-line preview from the head of `extracted_text` for the
+ * source manifest. Collapses whitespace, strips control characters and
+ * backticks, then truncates to 200 chars with an ellipsis. Returns null
+ * when there's nothing to preview.
+ */
+export function buildSourcePreview(
+  extractedText: string | null,
+): string | null {
+  if (!extractedText) return null;
+  let cleaned = '';
+  for (let i = 0; i < extractedText.length; i++) {
+    const code = extractedText.charCodeAt(i);
+    // Collapse all whitespace (newlines, tabs, etc.) to single spaces.
+    if (code === 0x09 || code === 0x0a || code === 0x0d || code === 0x20) {
+      if (cleaned.length > 0 && cleaned[cleaned.length - 1] !== ' ') {
+        cleaned += ' ';
+      }
+      continue;
+    }
+    // Drop other control chars + DEL.
+    if (code < 0x20 || code === 0x7f) continue;
+    // Escape backticks so the preview can't break out of a code fence.
+    if (code === 0x60) {
+      cleaned += "'";
+      continue;
+    }
+    cleaned += extractedText[i];
+    if (cleaned.length >= SOURCE_PREVIEW_MAX_CHARS + 1) break;
+  }
+  cleaned = cleaned.trim();
+  if (cleaned.length === 0) return null;
+  if (cleaned.length > SOURCE_PREVIEW_MAX_CHARS) {
+    cleaned = cleaned.slice(0, SOURCE_PREVIEW_MAX_CHARS).trimEnd() + '…';
+  }
+  return cleaned;
 }
 
 // ---------------------------------------------------------------------------
@@ -899,7 +948,6 @@ function assembleSystemPrompt(
     sourceUrl: string | null;
     fileName: string | null;
     line: string;
-    inlineContent: string | null;
   }>,
   contentOutline: string | null,
   boundGoogleDriveResources: string | null,
@@ -951,15 +999,9 @@ function assembleSystemPrompt(
 
   if (sourceLines.length > 0) {
     const manifestLines = sourceLines.map((s) => s.line);
-    parts.push(`**Sources:**\n${manifestLines.join('\n')}`);
-
-    // Append inline content
-    const inlineBlocks = sourceLines
-      .filter((s) => s.inlineContent)
-      .map((s) => `\n[${s.ref}] Content:\n${s.inlineContent}`);
-    if (inlineBlocks.length > 0) {
-      parts.push(inlineBlocks.join('\n'));
-    }
+    parts.push(
+      `**Sources:**\n${manifestLines.join('\n')}\n\nThe preview after each source is the first 200 chars of its extracted text. Call \`read_source(ref)\` to load the full content of a source when relevant — don't guess the rest from the title or preview.`,
+    );
   }
 
   if (boundGoogleDriveResources) {
@@ -1081,9 +1123,9 @@ function buildContextTools(
 ): LlmToolDefinition[] {
   const tools: LlmToolDefinition[] = [
     {
-      name: 'read_context_source',
+      name: 'read_source',
       description:
-        'Read the content of a context source by its stable ref (e.g., S1, S2)',
+        'Read the full extracted text of a saved source by its stable ref (e.g. S1, S2). The Sources manifest in the system prompt gives you a one-line preview per source — call this tool when the preview suggests the source is relevant and you need its full content. Do not guess the rest from the title or preview.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1313,30 +1355,6 @@ function scoreMatch(
   return score;
 }
 
-function buildExcerpt(
-  text: string,
-  preferredTerms: string[],
-  maxChars: number,
-): string {
-  const normalized = text.replace(/\s+/g, ' ').trim();
-  if (normalized.length <= maxChars) {
-    return normalized;
-  }
-
-  const lower = normalized.toLowerCase();
-  const matchIndex = preferredTerms
-    .map((term) => lower.indexOf(term))
-    .find((index) => index >= 0);
-  if (typeof matchIndex !== 'number' || matchIndex < 0) {
-    return `${normalized.slice(0, maxChars).trim()}…`;
-  }
-
-  const start = Math.max(0, matchIndex - Math.floor(maxChars / 3));
-  const end = Math.min(normalized.length, start + maxChars);
-  const excerpt = normalized.slice(start, end).trim();
-  return `${start > 0 ? '…' : ''}${excerpt}${end < normalized.length ? '…' : ''}`;
-}
-
 function buildRetrievedContext(input: {
   query: string | null;
   personaRole: TalkPersonaRole | null;
@@ -1397,40 +1415,10 @@ function buildRetrievedContext(input: {
     .sort((left, right) => right.score - left.score)
     .slice(0, MAX_RETRIEVED_STATE_ENTRIES);
 
-  const sourceCandidates = input.sources
-    .filter(
-      (source) =>
-        !input.excludedSourceRefs.has(source.source_ref) &&
-        typeof source.extracted_text === 'string' &&
-        source.extracted_text.trim().length > 0,
-    )
-    .map((source) => ({
-      source,
-      score: scoreMatch(
-        [
-          source.title,
-          source.source_url,
-          source.file_name,
-          source.extracted_text,
-        ]
-          .filter(Boolean)
-          .join(' '),
-        queryTerms,
-        roleTerms,
-      ),
-    }))
-    .filter((entry) => entry.score > 0)
-    .sort((left, right) => right.score - left.score)
-    .slice(0, MAX_RETRIEVED_SOURCE_ITEMS)
-    .map(({ source }) => ({
-      ref: source.source_ref,
-      title: source.title,
-      excerpt: buildExcerpt(
-        source.extracted_text!,
-        [...queryTerms, ...roleTerms],
-        MAX_RETRIEVED_SOURCE_CHARS,
-      ),
-    }));
+  // Keyword-RAG over sources is disabled. The index-only manifest carries
+  // a per-source preview; full content is fetched via `read_source(ref)`
+  // on demand. State retrieval below is unchanged.
+  const sourceCandidates: TalkRunContextRetrievedSourceSnapshot[] = [];
 
   if (stateCandidates.length === 0 && sourceCandidates.length === 0) {
     return {
@@ -1461,14 +1449,8 @@ function buildRetrievedContext(input: {
     usedTokens += lineTokens;
   }
 
-  for (const source of sourceCandidates) {
-    const block = `- Source [${source.ref}] ${source.title}: ${source.excerpt}`;
-    const blockTokens = estimateTokens(block);
-    if (usedTokens + blockTokens > input.budgetTokens) break;
-    keptSourceEntries.push(source);
-    parts.push(block);
-    usedTokens += blockTokens;
-  }
+  // Source retrieval loop intentionally removed — sourceCandidates is
+  // always empty in the index-only world.
 
   return {
     promptText:

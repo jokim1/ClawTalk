@@ -37,6 +37,7 @@ import {
   loadAttachmentFile,
   saveAttachmentFile,
 } from '../../talks/attachment-storage.js';
+import { createDefaultTalkContextSourceIngestionService } from '../../talks/source-ingestion.js';
 import { canEditTalk } from '../middleware/acl.js';
 import { ApiEnvelope, AuthContext } from '../types.js';
 
@@ -429,6 +430,14 @@ export async function createTalkContextSourceRoute(input: {
           sourceType === 'text' ? (input.extractedText?.trim() ?? null) : null,
         createdBy: input.auth.userId,
       });
+      // Kick off URL fetch in the background. The ingestion service is
+      // a side-effecting fire-and-forget pattern; the route returns
+      // immediately with status='pending' and the frontend polls until
+      // the row flips to 'ready' or 'failed'.
+      if (sourceType === 'url' && source.sourceUrl) {
+        const ingestion = createDefaultTalkContextSourceIngestionService();
+        ingestion.enqueueUrlSource(source.id, source.sourceUrl);
+      }
       return {
         statusCode: 201,
         body: { ok: true, data: { source } },
@@ -561,6 +570,11 @@ export async function retryTalkContextSourceRoute(input: {
       input.talkId,
     );
     if (!source) return notFoundResponse('Source not found.');
+
+    if (source.sourceUrl) {
+      const ingestion = createDefaultTalkContextSourceIngestionService();
+      ingestion.enqueueUrlSource(source.id, source.sourceUrl);
+    }
 
     return {
       statusCode: 200,

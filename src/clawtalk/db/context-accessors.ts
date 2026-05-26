@@ -87,6 +87,7 @@ export interface TalkContextSourceRecord {
   source_ref: string;
   source_type: ContextSourceType;
   title: string;
+  title_slug: string | null;
   note: string | null;
   sort_order: number;
   status: ContextSourceStatus;
@@ -142,6 +143,7 @@ export interface ContextSourceSnapshot {
   sourceRef: string;
   sourceType: ContextSourceType;
   title: string;
+  titleSlug: string | null;
   note: string | null;
   sortOrder: number;
   status: ContextSourceStatus;
@@ -209,6 +211,7 @@ function toSourceSnapshot(row: TalkContextSourceRecord): ContextSourceSnapshot {
     sourceRef: row.source_ref,
     sourceType: row.source_type,
     title: row.title,
+    titleSlug: row.title_slug,
     note: row.note,
     sortOrder: row.sort_order,
     status: row.status,
@@ -647,16 +650,32 @@ async function allocateSourceRef(talkId: string): Promise<string> {
 // ---------------------------------------------------------------------------
 
 const SOURCE_COLUMNS = `id, talk_id, owner_id, source_ref, source_type, title,
-  note, sort_order, status, source_url, file_name, file_size, mime_type,
-  storage_key, extracted_text, extracted_at, last_fetched_at, extraction_error,
-  fetch_strategy, is_truncated, created_at, updated_at, created_by`;
+  title_slug, note, sort_order, status, source_url, file_name, file_size,
+  mime_type, storage_key, extracted_text, extracted_at, last_fetched_at,
+  extraction_error, fetch_strategy, is_truncated, created_at, updated_at,
+  created_by`;
+
+/**
+ * Convert a title into a stable slug for `@<slug>` references. Lowercase,
+ * replace runs of non-alphanumeric chars with a single dash, then trim
+ * leading/trailing dashes. Empty result → null (manifest renderer falls
+ * back to the stable `S<n>` ref). Slug uniqueness is NOT enforced at the
+ * DB level; ambiguity is handled at @-ref injection time.
+ */
+export function slugify(title: string): string | null {
+  const slug = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return slug.length > 0 ? slug : null;
+}
 
 export async function listTalkContextSources(
   talkId: string,
 ): Promise<ContextSourceSnapshot[]> {
   const db = getDbPg();
   const rows = await db<TalkContextSourceRecord[]>`
-    select id, talk_id, owner_id, source_ref, source_type, title, note,
+    select id, talk_id, owner_id, source_ref, source_type, title, title_slug, note,
            sort_order, status, source_url, file_name, file_size, mime_type,
            storage_key, extracted_text, extracted_at, last_fetched_at,
            extraction_error, fetch_strategy, is_truncated, created_at,
@@ -686,7 +705,7 @@ export async function getTalkContextSourceById(
 ): Promise<ContextSourceSnapshot | undefined> {
   const db = getDbPg();
   const rows = await db<TalkContextSourceRecord[]>`
-    select id, talk_id, owner_id, source_ref, source_type, title, note,
+    select id, talk_id, owner_id, source_ref, source_type, title, title_slug, note,
            sort_order, status, source_url, file_name, file_size, mime_type,
            storage_key, extracted_text, extracted_at, last_fetched_at,
            extraction_error, fetch_strategy, is_truncated, created_at,
@@ -704,7 +723,7 @@ export async function getTalkContextSourceByRef(
 ): Promise<ContextSourceWithContent | undefined> {
   const db = getDbPg();
   const rows = await db<TalkContextSourceRecord[]>`
-    select id, talk_id, owner_id, source_ref, source_type, title, note,
+    select id, talk_id, owner_id, source_ref, source_type, title, title_slug, note,
            sort_order, status, source_url, file_name, file_size, mime_type,
            storage_key, extracted_text, extracted_at, last_fetched_at,
            extraction_error, fetch_strategy, is_truncated, created_at,
@@ -767,20 +786,21 @@ export async function createTalkContextSource(input: {
   `;
   const rows = await db<TalkContextSourceRecord[]>`
     insert into public.talk_context_sources
-      (talk_id, owner_id, source_ref, source_type, title, note, sort_order,
-       status, source_url, file_name, file_size, mime_type, storage_key,
-       extracted_text, extracted_at, extraction_error, is_truncated,
-       created_by)
+      (talk_id, owner_id, source_ref, source_type, title, title_slug, note,
+       sort_order, status, source_url, file_name, file_size, mime_type,
+       storage_key, extracted_text, extracted_at, extraction_error,
+       is_truncated, created_by)
     values
       (${input.talkId}::uuid, ${input.ownerId}::uuid, ${sourceRef},
-       ${input.sourceType}, ${title}, ${input.note?.trim() || null},
+       ${input.sourceType}, ${title}, ${slugify(title)},
+       ${input.note?.trim() || null},
        ${(maxOrder[0]?.max_order ?? -1) + 1}, ${status},
        ${input.sourceUrl ?? null}, ${input.fileName ?? null},
        ${input.fileSize ?? null}, ${input.mimeType ?? null},
        ${input.storageKey ?? null}, ${extractedText}, ${extractedAt},
        ${input.extractionError ?? null}, ${isTruncated},
        ${input.createdBy}::uuid)
-    returning id, talk_id, owner_id, source_ref, source_type, title, note,
+    returning id, talk_id, owner_id, source_ref, source_type, title, title_slug, note,
               sort_order, status, source_url, file_name, file_size, mime_type,
               storage_key, extracted_text, extracted_at, last_fetched_at,
               extraction_error, fetch_strategy, is_truncated, created_at,
@@ -799,7 +819,7 @@ export async function patchTalkContextSource(input: {
 }): Promise<ContextSourceSnapshot | undefined> {
   const db = getDbPg();
   const existingRows = await db<TalkContextSourceRecord[]>`
-    select id, talk_id, owner_id, source_ref, source_type, title, note,
+    select id, talk_id, owner_id, source_ref, source_type, title, title_slug, note,
            sort_order, status, source_url, file_name, file_size, mime_type,
            storage_key, extracted_text, extracted_at, last_fetched_at,
            extraction_error, fetch_strategy, is_truncated, created_at,
@@ -831,6 +851,7 @@ export async function patchTalkContextSource(input: {
     const rows = await db<TalkContextSourceRecord[]>`
       update public.talk_context_sources
       set title = ${nextTitle},
+          title_slug = ${slugify(nextTitle)},
           note = ${nextNote},
           sort_order = ${nextOrder},
           extracted_text = ${text},
@@ -839,7 +860,7 @@ export async function patchTalkContextSource(input: {
           status = 'ready',
           updated_at = now()
       where id = ${input.sourceId}::uuid
-      returning id, talk_id, owner_id, source_ref, source_type, title, note,
+      returning id, talk_id, owner_id, source_ref, source_type, title, title_slug, note,
                 sort_order, status, source_url, file_name, file_size, mime_type,
                 storage_key, extracted_text, extracted_at, last_fetched_at,
                 extraction_error, fetch_strategy, is_truncated, created_at,
@@ -851,11 +872,12 @@ export async function patchTalkContextSource(input: {
   const rows = await db<TalkContextSourceRecord[]>`
     update public.talk_context_sources
     set title = ${nextTitle},
+        title_slug = ${slugify(nextTitle)},
         note = ${nextNote},
         sort_order = ${nextOrder},
         updated_at = now()
     where id = ${input.sourceId}::uuid
-    returning id, talk_id, owner_id, source_ref, source_type, title, note,
+    returning id, talk_id, owner_id, source_ref, source_type, title, title_slug, note,
               sort_order, status, source_url, file_name, file_size, mime_type,
               storage_key, extracted_text, extracted_at, last_fetched_at,
               extraction_error, fetch_strategy, is_truncated, created_at,
@@ -921,7 +943,7 @@ export async function markTalkContextSourcePending(
         extraction_error = null,
         updated_at = now()
     where id = ${sourceId}::uuid and talk_id = ${talkId}::uuid
-    returning id, talk_id, owner_id, source_ref, source_type, title, note,
+    returning id, talk_id, owner_id, source_ref, source_type, title, title_slug, note,
               sort_order, status, source_url, file_name, file_size, mime_type,
               storage_key, extracted_text, extracted_at, last_fetched_at,
               extraction_error, fetch_strategy, is_truncated, created_at,
@@ -936,7 +958,7 @@ export async function getContextSourceWithContent(
 ): Promise<ContextSourceWithContent | undefined> {
   const db = getDbPg();
   const rows = await db<TalkContextSourceRecord[]>`
-    select id, talk_id, owner_id, source_ref, source_type, title, note,
+    select id, talk_id, owner_id, source_ref, source_type, title, title_slug, note,
            sort_order, status, source_url, file_name, file_size, mime_type,
            storage_key, extracted_text, extracted_at, last_fetched_at,
            extraction_error, fetch_strategy, is_truncated, created_at,

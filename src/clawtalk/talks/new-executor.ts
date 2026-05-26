@@ -612,7 +612,7 @@ export function buildToolExecutor(
     toolName: string,
     args: Record<string, unknown>,
   ): Promise<{ result: string; isError?: boolean }> => {
-    if (toolName === 'read_context_source') {
+    if (toolName === 'read_source') {
       const ref = args.sourceRef as string | undefined;
       if (!ref) {
         return { result: 'Error: sourceRef parameter required', isError: true };

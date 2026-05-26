@@ -8,9 +8,38 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { buildContentOutline } from './context-loader.js';
+import {
+  buildContentOutline,
+  buildSourceManifest,
+  buildSourcePreview,
+  type SourceRow,
+} from './context-loader.js';
 import type { Content } from '../db/content-accessors.js';
 import type { AnchorMap } from '../../shared/rich-text/index.js';
+
+function makeSource(
+  input: Partial<SourceRow> & {
+    source_ref: string;
+    source_type: string;
+    title: string;
+  },
+): SourceRow {
+  return {
+    id: `id-${input.source_ref}`,
+    source_ref: input.source_ref,
+    source_type: input.source_type,
+    title: input.title,
+    title_slug: input.title_slug ?? null,
+    note: input.note ?? null,
+    source_url: input.source_url ?? null,
+    file_name: input.file_name ?? null,
+    file_size: input.file_size ?? null,
+    mime_type: input.mime_type ?? null,
+    storage_key: input.storage_key ?? null,
+    extracted_text: input.extracted_text ?? null,
+    status: input.status ?? 'ready',
+  };
+}
 
 function makeContent(input: {
   title?: string;
@@ -146,5 +175,136 @@ describe('buildContentOutline', () => {
     const outline = buildContentOutline(content);
     expect(outline).toContain('NEVER narrate your capabilities');
     expect(outline).toContain('I cannot directly edit @doc');
+  });
+});
+
+describe('buildSourcePreview', () => {
+  it('returns null for empty/null input', () => {
+    expect(buildSourcePreview(null)).toBeNull();
+    expect(buildSourcePreview('')).toBeNull();
+    expect(buildSourcePreview('   \n\n  ')).toBeNull();
+  });
+
+  it('collapses whitespace and newlines into single spaces', () => {
+    const preview = buildSourcePreview('hello\n\n  world\t\tagain');
+    expect(preview).toBe('hello world again');
+  });
+
+  it('strips control characters', () => {
+    const dirty = `clean${String.fromCharCode(0, 7, 0x7f)}body`;
+    expect(buildSourcePreview(dirty)).toBe('cleanbody');
+  });
+
+  it('escapes backticks so the preview cannot break out of a code fence', () => {
+    expect(buildSourcePreview('hello `code` world')).toBe("hello 'code' world");
+  });
+
+  it('truncates to 200 chars with an ellipsis', () => {
+    const long = 'a'.repeat(500);
+    const preview = buildSourcePreview(long);
+    expect(preview).not.toBeNull();
+    expect(preview!.endsWith('…')).toBe(true);
+    expect(preview!.length).toBeLessThanOrEqual(201);
+  });
+
+  it('does not append ellipsis when text fits', () => {
+    expect(buildSourcePreview('short text')).toBe('short text');
+  });
+});
+
+describe('buildSourceManifest', () => {
+  // REGRESSION (iron rule): the inline-if-small heuristic is gone. A
+  // small text source must NOT inline its full content into the system
+  // prompt — only the manifest preview line appears.
+  it('does NOT inline small text source content', () => {
+    const source = makeSource({
+      source_ref: 'S1',
+      source_type: 'text',
+      title: 'Tiny',
+      extracted_text:
+        'this is small enough that the old heuristic would have inlined it',
+    });
+    const manifest = buildSourceManifest([source], false);
+    expect(manifest).toHaveLength(1);
+    // No inlineContent field exists on the manifest shape anymore.
+    expect(
+      (manifest[0] as unknown as Record<string, unknown>).inlineContent,
+    ).toBeUndefined();
+    // The preview is bounded; the full text length appears only inside the preview clause.
+    expect(manifest[0].line).toContain('[S1] Tiny');
+    expect(manifest[0].line).toContain('preview:');
+  });
+
+  it('emits a URL manifest line with note + url + preview', () => {
+    const source = makeSource({
+      source_ref: 'S2',
+      source_type: 'url',
+      title: 'Design Notes',
+      note: 'product roadmap',
+      source_url: 'https://example.com/notes',
+      extracted_text:
+        'The roadmap for Q4 covers retention, monetization, and onboarding.',
+    });
+    const manifest = buildSourceManifest([source], false);
+    expect(manifest[0].line).toBe(
+      '[S2] Design Notes (product roadmap) — https://example.com/notes — preview: "The roadmap for Q4 covers retention, monetization, and onboarding."',
+    );
+  });
+
+  it('emits a file manifest line with filename + preview, no note clause when note is null', () => {
+    const source = makeSource({
+      source_ref: 'S3',
+      source_type: 'file',
+      title: 'Spec',
+      file_name: 'spec.pdf',
+      extracted_text: 'Section 1: introduction. Section 2: design.',
+    });
+    const manifest = buildSourceManifest([source], false);
+    expect(manifest[0].line).toBe(
+      '[S3] Spec — spec.pdf — preview: "Section 1: introduction. Section 2: design."',
+    );
+  });
+
+  it('emits a text manifest line with just title + preview (no locator)', () => {
+    const source = makeSource({
+      source_ref: 'S4',
+      source_type: 'text',
+      title: 'Note',
+      extracted_text: 'snippet body',
+    });
+    const manifest = buildSourceManifest([source], false);
+    expect(manifest[0].line).toBe('[S4] Note — preview: "snippet body"');
+  });
+
+  it('emits image manifest line with vision-aware suffix; no preview', () => {
+    const source = makeSource({
+      source_ref: 'S5',
+      source_type: 'file',
+      title: 'Mockup',
+      file_name: 'mockup.png',
+      mime_type: 'image/png',
+    });
+    const visionOn = buildSourceManifest([source], true);
+    expect(visionOn[0].line).toContain(
+      '(image — mockup.png; attached to this turn)',
+    );
+    expect(visionOn[0].line).not.toContain('preview:');
+
+    const visionOff = buildSourceManifest([source], false);
+    expect(visionOff[0].line).toContain(
+      "hidden, this agent's model lacks vision",
+    );
+  });
+
+  it('emits "(content not yet available)" when a non-text source has no extracted_text', () => {
+    const source = makeSource({
+      source_ref: 'S6',
+      source_type: 'url',
+      title: 'Empty',
+      source_url: 'https://example.com',
+      extracted_text: null,
+    });
+    const manifest = buildSourceManifest([source], false);
+    expect(manifest[0].line).toContain('(content not yet available)');
   });
 });
