@@ -10077,14 +10077,13 @@ export function TalkDetailPage({
                             >
                               <ComposerAttachIcon />
                             </button>
-                            {canEditAgents ? (
+                            {canEditAgents && activeRound ? (
                               <button
                                 type="button"
                                 className="composer-icon-btn composer-cancel-btn"
                                 onClick={handleCancelRuns}
                                 disabled={
-                                  state.cancelState.status === 'posting' ||
-                                  !activeRound
+                                  state.cancelState.status === 'posting'
                                 }
                                 aria-label="Cancel Runs"
                                 title={
