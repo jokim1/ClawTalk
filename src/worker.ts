@@ -20,6 +20,7 @@
 // → retry (up to wrangler.toml's max_retries=3 then DLQ); return →
 // ack.
 
+import type { ExecutionContext } from 'hono';
 import { type RequestExecutionContext, withRequestScopedDb } from './db.js';
 import { logger } from './logger.js';
 import { getWorkerApp } from './clawtalk/web/worker-app.js';
@@ -40,10 +41,12 @@ export interface Env {
   ASSETS: { fetch: (request: Request) => Promise<Response> };
   JWKS_CACHE: KVNamespace;
   ATTACHMENTS: R2Bucket;
+  CONTENT_IMAGES: R2Bucket;
   TALK_RUN_QUEUE: Queue;
   USER_EVENT_HUB: UserEventHubNamespace;
   SUPABASE_PROJECT_URL: string;
   DB_EVENT_HUB_URL: string;
+  APP_ORIGIN: string;
 }
 
 // Minimal KVNamespace + Queue types — pulled inline to avoid forcing
@@ -83,9 +86,11 @@ interface R2Object {
   key: string;
   size: number;
   httpMetadata?: { contentType?: string };
+  httpEtag: string;
 }
 interface R2ObjectBody extends R2Object {
   arrayBuffer(): Promise<ArrayBuffer>;
+  body: ReadableStream<Uint8Array>;
 }
 
 interface UserEventHubNamespace {
@@ -137,7 +142,7 @@ export default {
   async fetch(
     request: Request,
     env: Env,
-    ctx: RequestExecutionContext,
+    ctx: ExecutionContext,
   ): Promise<Response> {
     const url = new URL(request.url);
 
@@ -155,7 +160,7 @@ export default {
           TALK_RUN_QUEUE: env.TALK_RUN_QUEUE,
           ATTACHMENTS: env.ATTACHMENTS,
         },
-        async () => getWorkerApp().fetch(request, env),
+        async () => getWorkerApp().fetch(request, env, ctx),
       );
     } catch (err) {
       console.error(

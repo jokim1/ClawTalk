@@ -54,6 +54,7 @@ import {
   makeTransformPasted,
   registerPendingBlockEditedCallback,
 } from './anchor-id-extension';
+import { ContentImageUploaderExtension } from './ContentImageUploaderPlugin';
 import { PendingReplaceWrapperExtension } from './PendingReplaceWrapperExtension';
 import { PendingChangeGutter } from './PendingChangeGutter';
 import { PendingChangeTray } from './PendingChangeTray';
@@ -259,6 +260,16 @@ export function RichTextEditor({
       }),
       AnchorIdExtension,
       PendingReplaceWrapperExtension,
+      // Inline image upload: rewrites pasted <img> srcs to a placeholder
+      // with a `#cu-<id>` marker, fires the upload, then swaps src to
+      // the same-origin /api/v1/content-images URL. Failures swap to a
+      // failed-icon. onToast is console.warn for now — the webapp has
+      // no central toast surface yet; revisit when one lands.
+      ContentImageUploaderExtension.configure({
+        onToast: (message) => {
+          console.warn('[content-image]', message);
+        },
+      }),
     ],
     immediatelyRender: false,
     editorProps: {
@@ -329,7 +340,13 @@ export function RichTextEditor({
       saveTimerRef.current = null;
     }
     reportStatus('saved');
-  }, [bodyMarkdown, editor, pendingEdits, pendingEditsFingerprint, reportStatus]);
+  }, [
+    bodyMarkdown,
+    editor,
+    pendingEdits,
+    pendingEditsFingerprint,
+    reportStatus,
+  ]);
 
   // Forward the global pending-block-edited fire-and-forget event to
   // the consumer-supplied callback. We register at module level so
@@ -504,9 +521,7 @@ function HeadingDropdown({
   }, [open]);
 
   const activeLevel = activeHeadingLevel(editor);
-  const triggerLabel = activeLevel
-    ? `H${activeLevel}`
-    : 'Normal';
+  const triggerLabel = activeLevel ? `H${activeLevel}` : 'Normal';
 
   const runCommand = useCallback(
     (action: (chain: ReturnType<Editor['chain']>) => void) => {
@@ -681,9 +696,10 @@ function LinkCreationBubble({
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const savedSelectionRef = useRef<{ from: number; to: number } | null>(null);
-  const [position, setPosition] = useState<{ top: number; left: number } | null>(
-    null,
-  );
+  const [position, setPosition] = useState<{
+    top: number;
+    left: number;
+  } | null>(null);
 
   useEffect(() => {
     if (!isOpen) {
@@ -888,10 +904,7 @@ function LinkHoverBubble({
         </>
       ) : (
         <>
-          <span
-            className="rich-text-editor-link-bubble-url"
-            title={state.href}
-          >
+          <span className="rich-text-editor-link-bubble-url" title={state.href}>
             {truncateUrl(state.href)}
           </span>
           <button

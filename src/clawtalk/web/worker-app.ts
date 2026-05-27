@@ -13,6 +13,10 @@
 //                                     Supabase /auth/v1/token
 //   POST /api/v1/auth/logout        — best-effort Supabase logout +
 //                                     always clear cookies
+//   GET  /api/v1/content-images/:key — rich-text inline image bytes
+//                                     (content-addressed key gates
+//                                     access; <img src> needs to load
+//                                     without cookies for CDN cache)
 //
 // Authed surfaces (requireAuthMiddleware verifies eb_at via JWKS in
 // Worker mode, or honors CLAWTALK_DEV_STUB_ENABLED in Node mode):
@@ -86,6 +90,10 @@ import {
 import { handleAuthCallback } from './routes/auth-callback.js';
 import { handleAuthLogout } from './routes/auth-logout.js';
 import { handleAuthRefresh } from './routes/auth-refresh.js';
+import {
+  getContentImageHandler,
+  postContentImageHandler,
+} from './routes/content-images.js';
 import {
   talkEventsUpgradeRoute,
   userEventsUpgradeRoute,
@@ -321,6 +329,15 @@ function buildApp(): Hono<{ Variables: Variables }> {
   // OAuth. Returns the same shape the Node entry returned.
   app.get('/api/v1/auth/config', (c) =>
     c.json({ ok: true, data: { devMode: false } }),
+  );
+  // Content-images GET is public — the 128-bit content-addressed key
+  // gates access; browsers need to load <img src> without cookies for
+  // the CDN cache to work. POST is auth-gated per-route below.
+  app.get('/api/v1/content-images/:key', getContentImageHandler);
+  app.post(
+    '/api/v1/content-images',
+    requireAuthMiddleware,
+    postContentImageHandler,
   );
 
   // ── Auth gate for every cloud-ready surface ──────────────────

@@ -76,6 +76,18 @@ id = "6fc09c6972224a32971b573a8628e5de"
 binding = "ATTACHMENTS"
 bucket_name = "clawtalk-attachments"
 
+# ─── R2 — inline content images (rich-text editor) ────────────────────
+#
+# Backs the rich-text editor's image upload/paste flow. Images are
+# stored under `ci/{sha256}.{ext}` keys and served same-origin through
+# /api/v1/content-images/:key — never via R2.dev or a custom domain.
+#
+# Create via:
+#   wrangler r2 bucket create clawtalk-content-images
+[[r2_buckets]]
+binding = "CONTENT_IMAGES"
+bucket_name = "clawtalk-content-images"
+
 # ─── Queues — multi-agent run dispatch ────────────────────────────────
 #
 # Create via:
@@ -189,6 +201,11 @@ PUBLIC_MODE = "true"
 WEB_SECURE_COOKIES = "true"
 TRUSTED_PROXY_MODE = "cloudflare"
 CLAWTALK_ALLOWED_ORIGINS = "https://clawtalk.jokim1.workers.dev,https://clawtalk.app"
+# Content-image upload Origin allowlist. Comma-separated; union covers
+# prod + local dev. Browsers set Origin from the page URL, so listing
+# localhost here doesn't expand attack surface (evil.com can't forge
+# Origin: http://localhost:*).
+APP_ORIGIN = "https://clawtalk.app,http://localhost:5173,http://localhost:8788"
 SUPABASE_PROJECT_URL = "https://llklxclnredhtpxmhyea.supabase.co"
 GOOGLE_OAUTH_REDIRECT_URI = "https://clawtalk.app/api/v1/auth/google/callback"
 SLACK_OAUTH_REDIRECT_URI = "https://clawtalk.app/api/v1/auth/slack/callback"

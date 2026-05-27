@@ -3529,6 +3529,38 @@ export async function deleteTalkAttachment(
   );
 }
 
+export type ContentImageUploadPayload =
+  | { dataUrl: string }
+  | { sourceUrl: string };
+
+export type ContentImageUploadResult = {
+  url: string;
+  key: string;
+};
+
+// Upload an inline content image to the CONTENT_IMAGES R2 bucket via
+// POST /api/v1/content-images. Backs the rich-text editor's
+// ContentImageUploaderPlugin: dataUrl for clipboard pastes, sourceUrl
+// for rehosting an external image the editor saw during a paste.
+//
+// The optional AbortSignal is forwarded straight to fetch, so the
+// caller can cancel an in-flight upload (plugin destroy / route
+// navigation) and the request will throw an AbortError.
+export async function uploadContentImage(
+  payload: ContentImageUploadPayload,
+  options?: { signal?: AbortSignal },
+): Promise<ContentImageUploadResult> {
+  return apiMutationRequest<ContentImageUploadResult>(
+    '/api/v1/content-images',
+    {
+      method: 'POST',
+      includeJson: true,
+      body: JSON.stringify(payload),
+      signal: options?.signal,
+    },
+  );
+}
+
 export async function cancelTalkRuns(
   talkId: string,
   threadId?: string | null,

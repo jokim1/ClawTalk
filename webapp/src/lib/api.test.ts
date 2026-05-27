@@ -659,6 +659,129 @@ describe('api auth retry behavior', () => {
   });
 });
 
+describe('uploadContentImage', () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    Object.defineProperty(document, 'cookie', {
+      configurable: true,
+      get() {
+        return cookieValue;
+      },
+      set(value: string) {
+        cookieValue = value;
+      },
+    });
+    cookieValue = 'cr_csrf_token=test-csrf-token';
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('returns { url, key } on 200 envelope', async () => {
+    const captured: { path: string; init?: RequestInit }[] = [];
+    vi.stubGlobal(
+      'fetch',
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        captured.push({ path: normalizePath(input), init });
+        return jsonResponse(200, {
+          ok: true,
+          data: {
+            url: '/api/v1/content-images/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png',
+            key: 'ci/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png',
+          },
+        });
+      },
+    );
+
+    const api = await loadApiModule();
+    const result = await api.uploadContentImage({
+      dataUrl: 'data:image/png;base64,AAAA',
+    });
+
+    expect(result).toEqual({
+      url: '/api/v1/content-images/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png',
+      key: 'ci/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png',
+    });
+    expect(captured).toHaveLength(1);
+    expect(captured[0].path).toBe('/api/v1/content-images');
+    expect(captured[0].init?.method).toBe('POST');
+    const headers = readHeaders(captured[0].init);
+    expect(headers['content-type']).toBe('application/json');
+    expect(headers['x-csrf-token']).toBe('test-csrf-token');
+    expect(captured[0].init?.body).toBe(
+      JSON.stringify({ dataUrl: 'data:image/png;base64,AAAA' }),
+    );
+  });
+
+  it('forwards an AbortSignal to fetch', async () => {
+    let received: AbortSignal | null | undefined;
+    vi.stubGlobal(
+      'fetch',
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        received = init?.signal;
+        return jsonResponse(200, {
+          ok: true,
+          data: { url: '/x.png', key: 'ci/x.png' },
+        });
+      },
+    );
+
+    const controller = new AbortController();
+    const api = await loadApiModule();
+    await api.uploadContentImage(
+      { dataUrl: 'data:image/png;base64,AAAA' },
+      { signal: controller.signal },
+    );
+
+    expect(received).toBe(controller.signal);
+  });
+
+  it('throws ApiError with the upstream error code on 400', async () => {
+    vi.stubGlobal('fetch', async () =>
+      jsonResponse(400, {
+        ok: false,
+        error: {
+          code: 'unsupported_mime',
+          message: 'Image MIME could not be detected from bytes',
+        },
+      }),
+    );
+
+    const api = await loadApiModule();
+    await expect(
+      api.uploadContentImage({ dataUrl: 'data:image/png;base64,AAAA' }),
+    ).rejects.toMatchObject({
+      name: 'ApiError',
+      status: 400,
+      code: 'unsupported_mime',
+    });
+  });
+
+  it('accepts a sourceUrl payload variant', async () => {
+    const captured: { body?: BodyInit | null }[] = [];
+    vi.stubGlobal(
+      'fetch',
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        captured.push({ body: init?.body });
+        return jsonResponse(200, {
+          ok: true,
+          data: { url: '/y.png', key: 'ci/y.png' },
+        });
+      },
+    );
+
+    const api = await loadApiModule();
+    await api.uploadContentImage({
+      sourceUrl: 'https://lh3.googleusercontent.com/x',
+    });
+    expect(captured[0].body).toBe(
+      JSON.stringify({ sourceUrl: 'https://lh3.googleusercontent.com/x' }),
+    );
+  });
+});
+
 async function loadApiModule() {
   vi.resetModules();
   return import('./api');
