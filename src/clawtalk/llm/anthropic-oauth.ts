@@ -25,7 +25,7 @@ export const ANTHROPIC_OAUTH_SCOPES = [
 export const ANTHROPIC_VERSION_HEADER = '2023-06-01';
 // Claude Code release version; Anthropic's OAuth routing layer
 // validates the user-agent format. Bump alongside Claude Code releases.
-export const ANTHROPIC_CLAUDE_CODE_VERSION = '2.1.113';
+export const ANTHROPIC_CLAUDE_CODE_VERSION = '2.1.152';
 // Required identity prefix on OAuth-backed requests. Without it
 // Anthropic returns a minimal-body 429.
 export const ANTHROPIC_CLAUDE_CODE_SYSTEM_PREFIX =
