@@ -260,6 +260,16 @@ export const MAX_PDF_DOCUMENT_BYTES = 12 * 1024 * 1024;
 // Start conservative at 1 to keep cost + heap predictable; lift later
 // once production telemetry confirms safe room.
 export const MAX_AUTO_ATTACH_PDF_COUNT = 1;
+
+// Cumulative cap across ALL PDF document blocks attached on one turn
+// (auto + @-ref forced). Hard ceiling against the Anthropic 32 MB
+// total-request-payload limit and the Cloudflare Workers 128 MB
+// per-isolate heap. PR #439 shipped the per-source cap but missed this
+// cumulative one — @-ref'd second PDF could push 2 × 12 MiB raw to
+// ~32 MiB base64 + JSON.stringify materialization → isolate killed →
+// queue retry-storm. PDFs that don't fit fall back to text injection
+// (with a manifest note explaining why) instead of attaching.
+export const MAX_TOTAL_PDF_PAYLOAD_BYTES = 24 * 1024 * 1024;
 // 20KB budget for the inlined doc — large enough to give the agent the
 // actual prose it's being asked to edit, while truncating from the
 // bottom on really long docs. Read-block tool is the v2 escape hatch.
@@ -494,20 +504,63 @@ export async function loadTalkContext(
   const userMessageText = options?.retrievalQuery ?? '';
   const { refs: forcedInjectionRefs, slugs: forcedInjectionSlugs } =
     extractSourceReferences(userMessageText);
-  const atRefResult = await buildAtRefForcedInjection(
+
+  // Step 2b: resolve refs WITHOUT rendering so the cumulative-payload
+  // guard can mutate displaced pdf-document resolutions into
+  // pdf-too-large (text fallback) BEFORE the text is rendered. Honest
+  // signal to the agent — no "pages attached" claim when the PDF was
+  // actually budget-dropped.
+  const atRefRows = await fetchAtRefCandidateRows(
     db,
     talkId,
     forcedInjectionRefs,
     forcedInjectionSlugs,
+  );
+  const upperRefs = forcedInjectionRefs.map((r) => r.toUpperCase());
+  const lowerSlugs = forcedInjectionSlugs.map((s) => s.toLowerCase());
+  const atRefResolutions = resolveAtRefRequestsForRender(
+    atRefRows,
+    upperRefs,
+    lowerSlugs,
     {
       agentSupportsDocuments,
       perSourceMaxBytes: MAX_PDF_DOCUMENT_BYTES,
     },
   );
-  const forcedInjectionText = atRefResult.text;
-  const forcedAttachedPdfRefs = new Set(
-    atRefResult.forcedPdfDocuments.map((row) => row.source_ref),
+
+  // Step 2c: cumulative payload guard. Forced (@-ref'd) PDFs first —
+  // user's explicit intent wins over auto-attach. Each resolution
+  // gets a budget check; anything that would push the cumulative
+  // total above MAX_TOTAL_PDF_PAYLOAD_BYTES is downgraded to
+  // pdf-too-large with its row.extracted_text as a text-fallback
+  // body. Tracks the accepted forced refs so the auto-attach selector
+  // below can deduct the spent budget.
+  let payloadBudgetRemaining = MAX_TOTAL_PDF_PAYLOAD_BYTES;
+  const acceptedForcedRefs = new Set<string>();
+  const finalResolutions: ForcedInjectionResolution[] = atRefResolutions.map(
+    (res) => {
+      if (res.kind !== 'pdf-document') return res;
+      const size = rowFileSizeBytesAt(res.row);
+      if (size > payloadBudgetRemaining) {
+        return {
+          kind: 'pdf-too-large',
+          sourceRef: res.sourceRef,
+          title: res.title,
+          maxBytes: MAX_TOTAL_PDF_PAYLOAD_BYTES,
+          fallbackText: res.row.extracted_text,
+        };
+      }
+      payloadBudgetRemaining -= size;
+      acceptedForcedRefs.add(res.sourceRef);
+      return res;
+    },
   );
+  const forcedInjectionText =
+    renderForcedInjectionResolutions(finalResolutions);
+  const acceptedForcedPdfRows: AtRefCandidateRow[] = [];
+  for (const res of finalResolutions) {
+    if (res.kind === 'pdf-document') acceptedForcedPdfRows.push(res.row);
+  }
   const forcedInjectionTokens = forcedInjectionText
     ? Math.ceil(forcedInjectionText.length * CHARS_TO_TOKENS)
     : 0;
@@ -527,9 +580,11 @@ export async function loadTalkContext(
     : [];
 
   // Dedupe by source_ref; force-attached wins over auto-selection so
-  // the executor only loads each PDF once. Forced refs append after
-  // auto refs to preserve the user's explicit ordering in the @-ref
-  // list (auto-attached PDF first, then any extra @-refs).
+  // the executor only loads each PDF once. Auto-attach also obeys the
+  // remaining cumulative budget (forced reservations already deducted
+  // above) so the worst case is bounded against the Workers 128 MB
+  // per-isolate heap and the Anthropic 32 MB total-request-payload cap.
+  const droppedAutoRefs = new Set<string>();
   const contextDocumentSources: ContextDocumentSourceRef[] =
     agentSupportsDocuments
       ? (() => {
@@ -537,11 +592,17 @@ export async function loadTalkContext(
           const seen = new Set<string>();
           for (const row of eligiblePdfSources) {
             if (!autoAttachedPdfRefs.has(row.source_ref)) continue;
-            if (forcedAttachedPdfRefs.has(row.source_ref)) continue;
+            if (acceptedForcedRefs.has(row.source_ref)) continue;
+            const size = rowFileSizeBytes(row);
+            if (size > payloadBudgetRemaining) {
+              droppedAutoRefs.add(row.source_ref);
+              continue;
+            }
             out.push(toContextDocumentSourceRef(row, false));
             seen.add(row.source_ref);
+            payloadBudgetRemaining -= size;
           }
-          for (const row of atRefResult.forcedPdfDocuments) {
+          for (const row of acceptedForcedPdfRows) {
             if (seen.has(row.source_ref)) continue;
             out.push(toContextDocumentSourceRef(row, true));
             seen.add(row.source_ref);
@@ -550,10 +611,15 @@ export async function loadTalkContext(
         })()
       : [];
 
+  const forcedAttachedPdfRefs = acceptedForcedRefs;
+  const finalAutoAttachedRefs = new Set(
+    [...autoAttachedPdfRefs].filter((ref) => !droppedAutoRefs.has(ref)),
+  );
   const pdfManifestState: PdfManifestState = {
     agentSupportsDocuments,
-    autoAttachedRefs: autoAttachedPdfRefs,
+    autoAttachedRefs: finalAutoAttachedRefs,
     forceAttachedRefs: forcedAttachedPdfRefs,
+    displacedByPayloadRefs: droppedAutoRefs,
   };
   const sourceLines = buildSourceManifest(
     sources,
@@ -892,6 +958,14 @@ export interface PdfManifestState {
   agentSupportsDocuments: boolean;
   autoAttachedRefs: Set<string>;
   forceAttachedRefs: Set<string>;
+  /**
+   * Refs that would have been auto-attached but were dropped by the
+   * cumulative payload guard (forced @-refs filled the budget first).
+   * Manifest renders a "(displaced by other PDFs attached this turn)"
+   * suffix instead of the default "(text-only this turn; @S<n> to
+   * attach pages)" since @-ref'ing won't help.
+   */
+  displacedByPayloadRefs?: Set<string>;
 }
 
 export function buildSourceManifest(
@@ -938,6 +1012,7 @@ export function buildSourceManifest(
     if (isPdfSource(source)) {
       const sizeBytes = rowFileSizeBytes(source);
       const tooBig = sizeBytes > MAX_PDF_DOCUMENT_BYTES;
+      const displaced = pdfState.displacedByPayloadRefs?.has(ref) ?? false;
       let suffix: string;
       if (!pdfState.agentSupportsDocuments) {
         suffix =
@@ -950,6 +1025,8 @@ export function buildSourceManifest(
         suffix = ' (PDF — pages attached to this turn via @-ref)';
       } else if (pdfState.autoAttachedRefs.has(ref)) {
         suffix = ' (PDF — pages attached to this turn)';
+      } else if (displaced) {
+        suffix = ` (PDF — text-only this turn; displaced by other @-ref'd PDFs filling the per-turn payload budget)`;
       } else {
         suffix = ` (PDF — text-only this turn; @${ref} to attach pages)`;
       }
@@ -1298,31 +1375,22 @@ export interface AtRefForcedInjectionResult {
 }
 
 /**
- * Test-friendly pure variant of `buildAtRefForcedInjection`. Takes the
- * pre-loaded row set instead of an active SQL handle. Returns both the
- * rendered text block and the PDF rows that should be hydrated as
- * native document blocks.
+ * Render a resolution list into the prefix text block. Shared by the
+ * convenience flow (`buildAtRefForcedInjectionFromRows`) and the
+ * cumulative-payload path in `loadTalkContext` (which resolves,
+ * applies a doc-block budget across forced + auto PDFs, mutates
+ * displaced forced PDFs into pdf-too-large resolutions, then renders).
+ *
+ * Exported for the cumulative-payload guard.
  */
-export function buildAtRefForcedInjectionFromRows(
-  rows: AtRefCandidateRow[],
-  refs: string[],
-  slugs: string[],
-  options: AtRefResolveOptions = {},
-): AtRefForcedInjectionResult {
-  if (refs.length === 0 && slugs.length === 0) {
-    return { text: null, forcedPdfDocuments: [] };
-  }
-  const resolutions = resolveAtRefRequests(rows, refs, slugs, options);
-  if (resolutions.length === 0) {
-    return { text: null, forcedPdfDocuments: [] };
-  }
-
+export function renderForcedInjectionResolutions(
+  resolutions: ForcedInjectionResolution[],
+): string | null {
+  if (resolutions.length === 0) return null;
   const encoder = new TextEncoder();
   const blocks: string[] = [];
   let usedBytes = 0;
   let omittedCount = 0;
-  const forcedPdfDocuments: AtRefCandidateRow[] = [];
-
   for (let i = 0; i < resolutions.length; i++) {
     const rendered = renderForcedInjectionResolution(resolutions[i]);
     const separator = blocks.length === 0 ? '' : '\n\n';
@@ -1336,25 +1404,55 @@ export function buildAtRefForcedInjectionFromRows(
     }
     blocks.push(rendered);
     usedBytes += sizeWithSeparator;
-    if (resolutions[i].kind === 'pdf-document') {
-      forcedPdfDocuments.push(
-        (
-          resolutions[i] as Extract<
-            ForcedInjectionResolution,
-            { kind: 'pdf-document' }
-          >
-        ).row,
-      );
-    }
   }
-
-  if (blocks.length === 0) {
-    return { text: null, forcedPdfDocuments };
-  }
-
+  if (blocks.length === 0) return null;
   let text = blocks.join('\n\n');
   if (omittedCount > 0) {
     text += `\n\n[truncated, ${omittedCount} more @-refs omitted]`;
+  }
+  return text;
+}
+
+/**
+ * Phase-1 of the @-ref flow: resolve refs + slugs to a flat
+ * resolution list without rendering. The cumulative-payload guard in
+ * loadTalkContext walks the result, mutates pdf-document resolutions
+ * that would exceed `MAX_TOTAL_PDF_PAYLOAD_BYTES` into pdf-too-large
+ * (text fallback), then calls `renderForcedInjectionResolutions`.
+ */
+export function resolveAtRefRequestsForRender(
+  rows: AtRefCandidateRow[],
+  refs: string[],
+  slugs: string[],
+  options: AtRefResolveOptions = {},
+): ForcedInjectionResolution[] {
+  if (refs.length === 0 && slugs.length === 0) return [];
+  return resolveAtRefRequests(rows, refs, slugs, options);
+}
+
+/**
+ * Test-friendly pure variant of `buildAtRefForcedInjection`. Takes the
+ * pre-loaded row set instead of an active SQL handle. Returns both the
+ * rendered text block and the PDF rows that should be hydrated as
+ * native document blocks.
+ *
+ * Note: this convenience flow does NOT apply the cumulative
+ * `MAX_TOTAL_PDF_PAYLOAD_BYTES` guard — that lives in loadTalkContext
+ * where the auto-attach selection also lives. Callers that need
+ * cumulative budgeting should use `resolveAtRefRequestsForRender` +
+ * `renderForcedInjectionResolutions` directly.
+ */
+export function buildAtRefForcedInjectionFromRows(
+  rows: AtRefCandidateRow[],
+  refs: string[],
+  slugs: string[],
+  options: AtRefResolveOptions = {},
+): AtRefForcedInjectionResult {
+  const resolutions = resolveAtRefRequestsForRender(rows, refs, slugs, options);
+  const text = renderForcedInjectionResolutions(resolutions);
+  const forcedPdfDocuments: AtRefCandidateRow[] = [];
+  for (const res of resolutions) {
+    if (res.kind === 'pdf-document') forcedPdfDocuments.push(res.row);
   }
   return { text, forcedPdfDocuments };
 }
@@ -1384,17 +1482,40 @@ export async function buildAtRefForcedInjection(
   if (refs.length === 0 && slugs.length === 0) {
     return { text: null, forcedPdfDocuments: [] };
   }
-
   const upperRefs = refs.map((r) => r.toUpperCase());
   const lowerSlugs = slugs.map((s) => s.toLowerCase());
+  const rows = await fetchAtRefCandidateRows(db, talkId, refs, slugs);
+  return buildAtRefForcedInjectionFromRows(
+    rows,
+    upperRefs,
+    lowerSlugs,
+    options,
+  );
+}
 
-  // Single SQL covering both ref + slug lookups, with no status filter
-  // so we can emit a "(content not yet available)" note when a user
-  // @-refs a still-pending URL ingest. Includes the columns the PDF
-  // routing path needs (mime_type, storage_key, file_size, file_name)
-  // so resolveSingleRowForRef can decide between text injection and
-  // native document attach without a second query.
-  const rows = await db<AtRefCandidateRow[]>`
+/**
+ * Fetch the candidate-source rows for an @-ref turn. Single SQL
+ * covering both ref + slug lookups; no status filter so the renderer
+ * can emit "(content not yet available)" for still-pending URL ingests.
+ * Includes the columns the PDF routing path needs (mime_type,
+ * storage_key, file_size, file_name) so the resolver can decide
+ * between text injection and native document attach without a second
+ * query.
+ *
+ * Exported because loadTalkContext needs the rows separately to apply
+ * the cumulative MAX_TOTAL_PDF_PAYLOAD_BYTES guard between phase-1
+ * resolution and phase-2 rendering.
+ */
+export async function fetchAtRefCandidateRows(
+  db: Sql,
+  talkId: string,
+  refs: string[],
+  slugs: string[],
+): Promise<AtRefCandidateRow[]> {
+  if (refs.length === 0 && slugs.length === 0) return [];
+  const upperRefs = refs.map((r) => r.toUpperCase());
+  const lowerSlugs = slugs.map((s) => s.toLowerCase());
+  return await db<AtRefCandidateRow[]>`
     select
       id,
       source_ref,
@@ -1416,13 +1537,6 @@ export async function buildAtRefForcedInjection(
         or title_slug = any(${lowerSlugs}::text[])
       )
   `;
-
-  return buildAtRefForcedInjectionFromRows(
-    rows,
-    upperRefs,
-    lowerSlugs,
-    options,
-  );
 }
 
 // ---------------------------------------------------------------------------

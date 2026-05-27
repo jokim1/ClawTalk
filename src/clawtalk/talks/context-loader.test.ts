@@ -13,6 +13,9 @@ import {
   buildContentOutline,
   buildSourceManifest,
   buildSourcePreview,
+  renderForcedInjectionResolutions,
+  resolveAtRefRequestsForRender,
+  MAX_TOTAL_PDF_PAYLOAD_BYTES,
   type AtRefCandidateRow,
   type SourceRow,
 } from './context-loader.js';
@@ -666,5 +669,106 @@ describe('buildAtRefForcedInjectionFromRows', () => {
     expect(result.text).toContain('exceeds 12 MB attach cap');
     expect(result.text).toContain('fallback excerpt');
     expect(result.forcedPdfDocuments).toHaveLength(0);
+  });
+});
+
+describe('cumulative-payload guard (resolveAtRefRequestsForRender + render)', () => {
+  function makePdfRow(input: {
+    source_ref: string;
+    title: string;
+    sizeBytes: number;
+    extracted_text?: string;
+  }): AtRefCandidateRow {
+    return {
+      id: `id-${input.source_ref}`,
+      source_ref: input.source_ref,
+      title: input.title,
+      title_slug: null,
+      status: 'ready',
+      extracted_text: input.extracted_text ?? 'fallback',
+      mime_type: 'application/pdf',
+      storage_key: `attachments/talk-1/${input.source_ref}.pdf`,
+      file_size: input.sizeBytes,
+      file_name: `${input.source_ref}.pdf`,
+      source_type: 'file',
+      source_url: null,
+      updated_at: '2026-05-26T00:00:00Z',
+    };
+  }
+
+  it('downgrades pdf-document resolutions whose cumulative size exceeds the per-turn budget', () => {
+    // Three 10 MB PDFs; cumulative budget is MAX_TOTAL_PDF_PAYLOAD_BYTES
+    // (24 MiB). #1 and #2 fit (~20 MB); #3 (10 MB) would push to ~30 MB
+    // and gets downgraded to pdf-too-large with the row's extracted_text
+    // as a fallback body.
+    const rows = [
+      makePdfRow({
+        source_ref: 'S1',
+        title: 'Deck One',
+        sizeBytes: 10 * 1024 * 1024,
+        extracted_text: 'deck one text',
+      }),
+      makePdfRow({
+        source_ref: 'S2',
+        title: 'Deck Two',
+        sizeBytes: 10 * 1024 * 1024,
+        extracted_text: 'deck two text',
+      }),
+      makePdfRow({
+        source_ref: 'S3',
+        title: 'Deck Three',
+        sizeBytes: 10 * 1024 * 1024,
+        extracted_text: 'deck three text',
+      }),
+    ];
+
+    const resolutions = resolveAtRefRequestsForRender(
+      rows,
+      ['S1', 'S2', 'S3'],
+      [],
+      {
+        agentSupportsDocuments: true,
+        perSourceMaxBytes: 12 * 1024 * 1024,
+      },
+    );
+
+    // Apply the same cumulative guard the loader applies.
+    let remaining = MAX_TOTAL_PDF_PAYLOAD_BYTES;
+    const finalResolutions = resolutions.map((res) => {
+      if (res.kind !== 'pdf-document') return res;
+      const size =
+        typeof res.row.file_size === 'string'
+          ? Number(res.row.file_size) || 0
+          : (res.row.file_size ?? 0);
+      if (size > remaining) {
+        return {
+          kind: 'pdf-too-large' as const,
+          sourceRef: res.sourceRef,
+          title: res.title,
+          maxBytes: MAX_TOTAL_PDF_PAYLOAD_BYTES,
+          fallbackText: res.row.extracted_text,
+        };
+      }
+      remaining -= size;
+      return res;
+    });
+
+    expect(finalResolutions[0].kind).toBe('pdf-document');
+    expect(finalResolutions[1].kind).toBe('pdf-document');
+    expect(finalResolutions[2].kind).toBe('pdf-too-large');
+
+    const text = renderForcedInjectionResolutions(finalResolutions);
+    expect(text).not.toBeNull();
+    expect(text).toContain('[S1] Deck One');
+    expect(text).toContain('[S2] Deck Two');
+    // S3 was downgraded — should render as text fallback, not "pages attached".
+    expect(text).toContain('[S3] Deck Three');
+    expect(text).toContain('deck three text');
+    expect(text).toContain('exceeds 24 MB attach cap');
+    // Both pages-attached forced PDFs only have the manifest note in
+    // their resolution body (no <<<source fence); only the fallback
+    // S3 should have <<<source.
+    const fenceCount = text!.split('<<<source').length - 1;
+    expect(fenceCount).toBe(1);
   });
 });
