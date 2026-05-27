@@ -2310,41 +2310,49 @@ export class CleanTalkExecutor implements TalkExecutor {
         }
       }
 
-      const result = await executeWithAgent(
-        activeAgent.id,
-        {
-          ...context,
-          history: directHistory,
-        },
-        directUserMessage,
-        {
-          runId: input.runId,
-          userId: input.requestedBy,
-          signal,
-          emit: (event: ExecutionEvent) => {
-            const mappedEvent = mapExecutionEvent(event, input, resolved);
-            if (mappedEvent) {
-              emitTalkEvent(mappedEvent);
-            }
+      // Wrap the executor call in try/finally so the run_aborted emit
+      // ALWAYS fires on the edit-intent path when no apply_content_edit
+      // happened — including the executor crashing or being aborted
+      // mid-flight. Without this, the client banner "X is editing…"
+      // gets stuck forever because no terminal event ever lands.
+      let result: Awaited<ReturnType<typeof executeWithAgent>>;
+      try {
+        result = await executeWithAgent(
+          activeAgent.id,
+          {
+            ...context,
+            history: directHistory,
           },
-          executeToolCall: wrappedToolExecutor,
-          forceToolUseOnFirstIteration,
-        },
-      );
-
-      if (trackApplyRun && editContentId && !applyCalledInRun) {
-        const editContent = await getContentByTalkId(input.talkId);
-        if (editContent) {
-          await emitOutboxEvent({
-            topic: `talk:${input.talkId}`,
-            eventType: 'content_edit_run_aborted',
-            payload: {
-              contentId: editContent.id,
-              runId: input.runId,
-              reason: 'no_apply_call',
+          directUserMessage,
+          {
+            runId: input.runId,
+            userId: input.requestedBy,
+            signal,
+            emit: (event: ExecutionEvent) => {
+              const mappedEvent = mapExecutionEvent(event, input, resolved);
+              if (mappedEvent) {
+                emitTalkEvent(mappedEvent);
+              }
             },
-            ownerIds: [editContent.ownerId],
-          });
+            executeToolCall: wrappedToolExecutor,
+            forceToolUseOnFirstIteration,
+          },
+        );
+      } finally {
+        if (trackApplyRun && editContentId && !applyCalledInRun) {
+          const editContent = await getContentByTalkId(input.talkId);
+          if (editContent) {
+            await emitOutboxEvent({
+              topic: `talk:${input.talkId}`,
+              eventType: 'content_edit_run_aborted',
+              payload: {
+                contentId: editContent.id,
+                runId: input.runId,
+                reason: 'no_apply_call',
+              },
+              ownerIds: [editContent.ownerId],
+            });
+          }
         }
       }
 

@@ -2969,6 +2969,15 @@ export function TalkDetailPage({
   >([]);
   const [pendingEditStreamingByRunId, setPendingEditStreamingByRunId] =
     useState<Map<string, string | null>>(() => new Map());
+  // Sidecar timestamps so the streaming-banner TTL sweep can age out
+  // stuck entries when the server never emits a terminal event (e.g.,
+  // an executor crash that bypasses the `content_edit_run_aborted`
+  // emit). Kept as a ref — the periodic sweep uses it but no UI reads
+  // it directly. Always kept in sync with `pendingEditStreamingByRunId`
+  // — every add to the map writes here, every remove deletes here.
+  const pendingEditStreamingStartedAtRef = useRef<Map<string, number>>(
+    new Map(),
+  );
   const [pendingEditInFlight, setPendingEditInFlight] = useState<Set<string>>(
     () => new Set(),
   );
@@ -3267,8 +3276,40 @@ export function TalkDetailPage({
     setTalkContentSaveStatus('idle');
     setTalkContentPendingEdits([]);
     setPendingEditStreamingByRunId(new Map());
+    pendingEditStreamingStartedAtRef.current.clear();
     setPendingEditInFlight(new Set());
   }, [talkId]);
+
+  // TTL sweep for the streaming-banner map. The server normally emits
+  // `content_edit_run_aborted` when the agent finishes a turn without
+  // calling apply_content_edit, but an executor crash mid-turn can
+  // bypass that emit and leave the banner stuck on "X is editing…"
+  // forever. Sweep every 15s and drop entries older than the TTL.
+  useEffect(() => {
+    const STREAMING_TTL_MS = 90_000;
+    const interval = setInterval(() => {
+      const now = Date.now();
+      const stale: string[] = [];
+      for (const [runId, startedAt] of pendingEditStreamingStartedAtRef.current) {
+        if (now - startedAt > STREAMING_TTL_MS) stale.push(runId);
+      }
+      if (stale.length === 0) return;
+      setPendingEditStreamingByRunId((prev) => {
+        let next: Map<string, string | null> | null = null;
+        for (const runId of stale) {
+          if (prev.has(runId)) {
+            if (next === null) next = new Map(prev);
+            next.delete(runId);
+          }
+        }
+        return next ?? prev;
+      });
+      for (const runId of stale) {
+        pendingEditStreamingStartedAtRef.current.delete(runId);
+      }
+    }, 15_000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Combined doc-pane state lifecycle: hydrate once per thread, decide
   // the initial HTML mode (Preview unless empty-HTML doc with no
@@ -4459,6 +4500,7 @@ export function TalkDetailPage({
           next.set(event.runId, event.agentNickname ?? null);
           return next;
         });
+        pendingEditStreamingStartedAtRef.current.set(event.runId, Date.now());
         void refetchTalkContent();
       },
       onContentEditRunAborted: (event: TalkContentEditRunAbortedEvent) => {
@@ -4468,6 +4510,7 @@ export function TalkDetailPage({
           next.delete(event.runId);
           return next;
         });
+        pendingEditStreamingStartedAtRef.current.delete(event.runId);
       },
       onContentEditApplied: (event: TalkContentEditAppliedEvent) => {
         // Always refetch — the apply just created a pending row that
@@ -4480,6 +4523,7 @@ export function TalkDetailPage({
           next.delete(event.runId);
           return next;
         });
+        pendingEditStreamingStartedAtRef.current.delete(event.runId);
         // First AI edit on an empty HTML doc auto-flips Source ➜
         // Preview so the user immediately sees the rendered result.
         // Sticky: each doc id only flips once per page mount.
