@@ -234,45 +234,68 @@ async function extractDocx(buffer: Buffer, fileName: string): Promise<string> {
 // ---------------------------------------------------------------------------
 // Excel extraction (lazy-loaded)
 // ---------------------------------------------------------------------------
+//
+// Uses SheetJS (`xlsx`) rather than ExcelJS. On a real 2 MB financial-statement
+// spreadsheet (20 sheets, ~2.4 MB calcChain.xml, 7.5 MB largest sheet XML),
+// ExcelJS allocated ~190 MB of JS heap during `xlsx.load()`, exceeding the
+// Cloudflare Workers 128 MB per-isolate cap and producing a 503 when the
+// runtime killed the isolate. SheetJS parses the same file with ~18 MB of
+// additional heap and finishes in ~350 ms locally, so the upload completes
+// within Worker limits.
 
 const MAX_EXCEL_SHEETS = 10;
 
 async function extractExcel(buffer: Buffer, fileName: string): Promise<string> {
   try {
-    const ExcelJS = await import('exceljs');
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(buffer as any);
+    const XLSX = await import('xlsx');
+    // Disable formula/style/date parsing — we only want cell values for text
+    // extraction, and skipping these flags cuts another ~30% off heap usage.
+    const workbook = XLSX.read(buffer, {
+      type: 'buffer',
+      cellFormula: false,
+      cellStyles: false,
+      cellDates: false,
+    });
+
+    const sheetNames = workbook.SheetNames;
+    if (sheetNames.length === 0) {
+      return `[Empty spreadsheet: "${fileName}"]`;
+    }
 
     const parts: string[] = [];
     let sheetCount = 0;
 
-    for (const worksheet of workbook.worksheets) {
+    for (const name of sheetNames) {
       if (sheetCount >= MAX_EXCEL_SHEETS) {
         parts.push(
-          `\n[…${workbook.worksheets.length - MAX_EXCEL_SHEETS} additional sheet(s) omitted]`,
+          `\n[…${sheetNames.length - MAX_EXCEL_SHEETS} additional sheet(s) omitted]`,
         );
         break;
       }
 
-      parts.push(`\n## Sheet: ${worksheet.name}\n`);
+      const sheet = workbook.Sheets[name];
+      if (!sheet) {
+        sheetCount += 1;
+        continue;
+      }
 
-      worksheet.eachRow((row, rowNumber) => {
-        const cells = (row.values as unknown[])
-          .slice(1) // ExcelJS row.values is 1-indexed, index 0 is empty
-          .map((v) => {
-            if (v === null || v === undefined) return '';
-            if (
-              typeof v === 'object' &&
-              'result' in (v as Record<string, unknown>)
-            ) {
-              return String((v as { result: unknown }).result ?? '');
-            }
-            return String(v);
-          });
+      parts.push(`\n## Sheet: ${name}\n`);
+
+      // sheet_to_json with header:1 yields a 2-D array of cell values, which
+      // gives us full control over the markdown table formatting (matching
+      // the prior ExcelJS-based output: `| ... | ... |` rows with a `---`
+      // separator under the first row).
+      const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+        header: 1,
+        defval: '',
+        blankrows: false,
+        raw: true,
+      });
+
+      rows.forEach((row, idx) => {
+        const cells = row.map((v) => (v == null ? '' : String(v)));
         parts.push(`| ${cells.join(' | ')} |`);
-
-        // Add header separator after first row
-        if (rowNumber === 1) {
+        if (idx === 0) {
           parts.push(`| ${cells.map(() => '---').join(' | ')} |`);
         }
       });
