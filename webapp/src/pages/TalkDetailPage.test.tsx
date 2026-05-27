@@ -2368,13 +2368,15 @@ describe('TalkDetailPage', () => {
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
   });
 
-  it('allows image sends for Main when registered agent (Codex GPT-5.4) is vision-capable', async () => {
-    // PR G regression guard: the Primary "Agent" chip stores modelId=null on
-    // the TalkAgent row. Main can be ANY registered agent (Joseph's is
-    // GPT-5.4 via ChatGPT Codex Subscription, not Claude). The vision
-    // capability must come from the registered_agents row's (providerId,
-    // modelId), not aiAgents.defaultClaudeModelId. PR #457 routed through
-    // defaultClaudeModelId and falsely blocked Codex Main image sends.
+  it('allows image sends for Main when the registered agent reports supportsVision=true (e.g. Codex GPT-5.4) even if its model is absent from additionalProviders', async () => {
+    // PR H reproduces Joseph's prod bug: Main = GPT-5.4 via Codex
+    // Subscription, gpt-5.4 IS seeded in llm_provider_models but the
+    // composer guard was still firing. The frontend had been recomputing
+    // vision capability from additionalProviders.modelSuggestions, which
+    // can miss for any number of reasons. The guard now trusts the
+    // registered agent's supportsVision (backend ground truth from
+    // resolveModelCapabilities). The fixture's additionalProviders has
+    // NO codex entry — proving we no longer need it.
     installTalkDetailFetch({
       messages: [],
       runs: [],
@@ -2398,46 +2400,9 @@ describe('TalkDetailPage', () => {
           name: 'GPT5.4',
           providerId: 'provider.openai_codex',
           modelId: 'gpt-5.4',
+          supportsVision: true,
         }),
       ],
-      aiAgents: {
-        ...buildAiAgentsData(),
-        additionalProviders: [
-          {
-            id: 'provider.openai_codex',
-            name: 'ChatGPT Codex (Subscription)',
-            providerKind: 'openai',
-            credentialMode: 'subscription_only',
-            apiFormat: 'openai_chat_completions',
-            baseUrl: 'https://chatgpt.com/backend-api/codex',
-            authScheme: 'bearer',
-            enabled: true,
-            hasCredential: true,
-            credentialHint: '••••CDX',
-            verificationStatus: 'verified',
-            lastVerifiedAt: '2026-03-06T00:00:00.000Z',
-            lastVerificationError: null,
-            workspaceHasCredential: false,
-            workspaceCredentialHint: null,
-            workspaceVerificationStatus: 'missing',
-            workspaceLastVerifiedAt: null,
-            workspaceLastVerificationError: null,
-            hasPersonalSubscription: true,
-            personalSubscriptionExpiresAt: null,
-            hasWorkspaceSubscription: false,
-            workspaceSubscriptionExpiresAt: null,
-            modelSuggestions: [
-              {
-                modelId: 'gpt-5.4',
-                displayName: 'GPT-5.4',
-                contextWindowTokens: 128_000,
-                defaultMaxOutputTokens: 8_192,
-                supportsVision: true,
-              },
-            ],
-          },
-        ],
-      },
       onUploadAttachment: (formData) => {
         const file = formData.get('file');
         if (!(file instanceof File)) {
@@ -2473,16 +2438,15 @@ describe('TalkDetailPage', () => {
     ).toBeNull();
   });
 
-  it('still blocks image sends for Main when the registered agent is missing or non-vision', async () => {
-    // Negative case: if registeredAgentsById has no entry for the Main
-    // agent (loading flash, stale catalog) the guard returns false rather
-    // than silently advertising vision. Same path as the load-state flash.
+  it('blocks image sends for Main when the registered agent reports supportsVision=false', async () => {
+    // Negative case for PR H: registered agent's supportsVision flag is
+    // the authoritative signal for the Main slot. False → banner fires.
     installTalkDetailFetch({
       messages: [],
       runs: [],
       talkAgents: [
         buildTalkAgent({
-          id: 'agent-orphan',
+          id: 'agent-main',
           nickname: 'Agent',
           sourceKind: 'claude_default',
           role: 'assistant',
@@ -2494,7 +2458,15 @@ describe('TalkDetailPage', () => {
           modelDisplayName: null,
         }),
       ],
-      registeredAgents: [],
+      registeredAgents: [
+        buildRegisteredAgent({
+          id: 'agent-main',
+          name: 'NonVisionMain',
+          providerId: 'provider.nvidia',
+          modelId: 'moonshotai/kimi-k2.6',
+          supportsVision: false,
+        }),
+      ],
       onUploadAttachment: (formData) => {
         const file = formData.get('file');
         if (!(file instanceof File)) {
@@ -4321,6 +4293,7 @@ function buildRegisteredAgent(
       ready: true,
       message: 'Main will use direct HTTP.',
     },
+    supportsVision: input.supportsVision ?? false,
   };
 }
 

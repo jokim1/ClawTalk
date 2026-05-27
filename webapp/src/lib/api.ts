@@ -2060,6 +2060,10 @@ export type RegisteredAgent = {
     ready: boolean;
     message: string;
   };
+  // Backend ground truth from resolveModelCapabilities. Used by the
+  // composer's image-attachment guard for the Main slot, where the
+  // TalkAgent row stores modelId=null.
+  supportsVision: boolean;
 };
 
 export async function listRegisteredAgents(): Promise<RegisteredAgent[]> {
