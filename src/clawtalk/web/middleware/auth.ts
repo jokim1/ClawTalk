@@ -43,7 +43,12 @@ export async function authenticateRequestPg(
   if (env) {
     // Worker mode — strict JWT verification, no fallback.
     maybeWarnAboutWorkerDevStub();
-    const ebAt = parseCookieHeader(headers.cookie)[ACCESS_TOKEN_COOKIE];
+    // Bearer header wins over the cookie so CLI/script clients
+    // (e.g. scripts/latency-bench.ts) can authenticate against the
+    // same JWKS-verified Supabase access tokens the SPA uses.
+    const bearer = parseBearerHeader(headers.authorization);
+    const ebAt =
+      bearer ?? parseCookieHeader(headers.cookie)[ACCESS_TOKEN_COOKIE];
     if (!ebAt) return { kind: 'unauthorized', reason: 'missing' };
     const result = await verifyJwt(ebAt, env);
     if (result.kind === 'expired') {
@@ -96,6 +101,12 @@ export function authChallengeHeader(reason: AuthFailureReason): string {
     return 'Bearer error="invalid_token"';
   }
   return 'Bearer';
+}
+
+function parseBearerHeader(value: string | undefined): string | null {
+  if (!value) return null;
+  const match = /^Bearer\s+(\S+)/i.exec(value);
+  return match ? match[1] : null;
 }
 
 function devStubEnabled(): boolean {

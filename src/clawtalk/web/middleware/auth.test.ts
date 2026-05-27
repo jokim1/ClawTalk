@@ -201,6 +201,52 @@ describe('authenticateRequestPg — Worker mode', () => {
     );
     expect(result).toEqual({ kind: 'unauthorized', reason: 'invalid' });
   });
+
+  it('verifies Authorization: Bearer <jwt> when the cookie is absent', async () => {
+    const kv = new FakeKv();
+    kv.primeWith({ keys: [publicJwk] });
+    const env = buildEnv(kv);
+    const jwt = await mintJwt({
+      sub: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+    });
+    const result = await authenticateRequestPg(
+      { authorization: `Bearer ${jwt}` },
+      env,
+    );
+    if (result.kind !== 'authenticated') {
+      throw new Error(`expected authenticated, got ${result.kind}`);
+    }
+    expect(result.auth.userId).toBe('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb');
+  });
+
+  it('Authorization: Bearer wins over a stale cookie', async () => {
+    const kv = new FakeKv();
+    kv.primeWith({ keys: [publicJwk] });
+    const env = buildEnv(kv);
+    const jwt = await mintJwt({
+      sub: 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+    });
+    const result = await authenticateRequestPg(
+      {
+        authorization: `Bearer ${jwt}`,
+        cookie: `${ACCESS_TOKEN_COOKIE}=garbage-cookie-value`,
+      },
+      env,
+    );
+    if (result.kind !== 'authenticated') {
+      throw new Error(`expected authenticated, got ${result.kind}`);
+    }
+    expect(result.auth.userId).toBe('cccccccc-cccc-cccc-cccc-cccccccccccc');
+  });
+
+  it('ignores Authorization headers that are not Bearer', async () => {
+    const env = buildEnv();
+    const result = await authenticateRequestPg(
+      { authorization: 'Basic dXNlcjpwYXNz' },
+      env,
+    );
+    expect(result).toEqual({ kind: 'unauthorized', reason: 'missing' });
+  });
 });
 
 describe('authenticateRequestPg — Node mode (env=null)', () => {
