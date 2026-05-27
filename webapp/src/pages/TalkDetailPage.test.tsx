@@ -3855,6 +3855,67 @@ describe('TalkDetailPage', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('resolves to the localStorage-saved thread when the URL has no ?thread= param', async () => {
+    window.localStorage.setItem('clawtalk.lastThread:talk-1', 'thread-saved');
+    installTalkDetailFetch({
+      threads: [
+        buildThread({
+          id: DEFAULT_THREAD_ID,
+          title: 'Default thread',
+          isDefault: true,
+          lastMessageAt: '2026-03-06T02:00:00.000Z',
+        }),
+        buildThread({
+          id: 'thread-saved',
+          title: 'Saved thread',
+          lastMessageAt: '2026-03-06T01:00:00.000Z',
+        }),
+      ],
+    });
+    renderDetailPage('/app/talks/talk-1');
+
+    // Even though the default thread is most-recent-by-activity, the
+    // routing effect prefers the localStorage-saved thread.
+    const savedButton = await screen.findByRole('button', {
+      name: /saved thread/i,
+    });
+    await waitFor(() =>
+      expect(savedButton.className).toContain('talk-thread-item-active'),
+    );
+    const defaultButton = screen.getByRole('button', {
+      name: /default thread/i,
+    });
+    expect(defaultButton.className).not.toContain('talk-thread-item-active');
+  });
+
+  it('falls back to threads[0] when the localStorage-saved thread no longer exists', async () => {
+    window.localStorage.setItem('clawtalk.lastThread:talk-1', 'thread-deleted');
+    installTalkDetailFetch({
+      threads: [
+        buildThread({
+          id: DEFAULT_THREAD_ID,
+          title: 'Default thread',
+          isDefault: true,
+          lastMessageAt: '2026-03-06T02:00:00.000Z',
+        }),
+        buildThread({
+          id: 'thread-other',
+          title: 'Other thread',
+          lastMessageAt: '2026-03-06T01:00:00.000Z',
+        }),
+      ],
+    });
+    renderDetailPage('/app/talks/talk-1');
+
+    // Saved thread is gone — falls through to the most-recent fallback.
+    const defaultButton = await screen.findByRole('button', {
+      name: /default thread/i,
+    });
+    await waitFor(() =>
+      expect(defaultButton.className).toContain('talk-thread-item-active'),
+    );
+  });
+
   it('clears the doc pane when switching from a thread that has a doc to a sibling that does not', async () => {
     const user = userEvent.setup();
     const NO_DOC_THREAD_ID = 'thread-no-doc';
@@ -3910,9 +3971,7 @@ describe('TalkDetailPage', () => {
     // The doc pane should unmount because the new thread has no doc row
     // in the sidebar.
     await waitFor(() =>
-      expect(
-        screen.queryByLabelText('Talk document'),
-      ).not.toBeInTheDocument(),
+      expect(screen.queryByLabelText('Talk document')).not.toBeInTheDocument(),
     );
   });
 });
