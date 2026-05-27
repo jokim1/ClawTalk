@@ -2368,6 +2368,128 @@ describe('TalkDetailPage', () => {
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
   });
 
+  it('allows image sends for Main when its TalkAgent.modelId is null but defaultClaudeModelId is vision-capable', async () => {
+    // Repro for PR F Fix 2: the Primary "Agent" chip stores modelId=null on
+    // the TalkAgent row; its effective model is aiAgents.defaultClaudeModelId.
+    // Pre-fix, talkAgentSupportsVision short-circuited on the null modelId
+    // and falsely flashed the banner. The fixture must explicitly null out
+    // modelId — the default builder sets it to 'claude-sonnet-4-6'.
+    installTalkDetailFetch({
+      messages: [],
+      runs: [],
+      talkAgents: [
+        buildTalkAgent({
+          id: 'agent-claude',
+          nickname: 'Agent',
+          sourceKind: 'claude_default',
+          role: 'assistant',
+          isPrimary: true,
+          displayOrder: 0,
+          health: 'ready',
+          providerId: null,
+          modelId: null,
+          modelDisplayName: null,
+        }),
+      ],
+      aiAgents: {
+        ...buildAiAgentsData(),
+        defaultClaudeModelId: 'claude-opus-4-6',
+      },
+      onUploadAttachment: (formData) => {
+        const file = formData.get('file');
+        if (!(file instanceof File)) {
+          throw new Error('Expected file in attachment upload payload');
+        }
+        return buildMessageAttachment({
+          id: 'att-image',
+          fileName: file.name,
+          fileSize: file.size,
+          mimeType: file.type,
+          extractionStatus: 'ready',
+        });
+      },
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+    const composer = await screen.findByPlaceholderText(
+      'Send a message to this thread.',
+    );
+    const workspace = composer.closest('.talk-workspace');
+    if (!workspace) {
+      throw new Error('Expected talk workspace wrapper');
+    }
+
+    const file = new File([Uint8Array.from([1, 2, 3])], 'diagram.png', {
+      type: 'image/png',
+    });
+    fireEvent.drop(workspace, { dataTransfer: createFileDataTransfer([file]) });
+
+    expect(await screen.findByAltText('diagram.png')).toBeTruthy();
+    expect(
+      screen.queryByText(/does not support image attachments/),
+    ).toBeNull();
+  });
+
+  it('still blocks image sends for Main when defaultClaudeModelId is unset', async () => {
+    // Negative case for PR F Fix 2: the substitution must NOT mask a
+    // misconfigured/loading aiAgents.defaultClaudeModelId. An empty string
+    // should keep the banner firing rather than silently advertising vision.
+    installTalkDetailFetch({
+      messages: [],
+      runs: [],
+      talkAgents: [
+        buildTalkAgent({
+          id: 'agent-claude',
+          nickname: 'Agent',
+          sourceKind: 'claude_default',
+          role: 'assistant',
+          isPrimary: true,
+          displayOrder: 0,
+          health: 'ready',
+          providerId: null,
+          modelId: null,
+          modelDisplayName: null,
+        }),
+      ],
+      aiAgents: {
+        ...buildAiAgentsData(),
+        defaultClaudeModelId: '',
+      },
+      onUploadAttachment: (formData) => {
+        const file = formData.get('file');
+        if (!(file instanceof File)) {
+          throw new Error('Expected file in attachment upload payload');
+        }
+        return buildMessageAttachment({
+          id: 'att-image',
+          fileName: file.name,
+          fileSize: file.size,
+          mimeType: file.type,
+          extractionStatus: 'ready',
+        });
+      },
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+    const composer = await screen.findByPlaceholderText(
+      'Send a message to this thread.',
+    );
+    const workspace = composer.closest('.talk-workspace');
+    if (!workspace) {
+      throw new Error('Expected talk workspace wrapper');
+    }
+
+    const file = new File([Uint8Array.from([1, 2, 3])], 'diagram.png', {
+      type: 'image/png',
+    });
+    fireEvent.drop(workspace, { dataTransfer: createFileDataTransfer([file]) });
+
+    const guardrail = await screen.findByText(
+      /does not support image attachments/,
+    );
+    expect(guardrail).toBeTruthy();
+  });
+
   it('renders concurrent live responses as separate streaming bubbles', async () => {
     installTalkDetailFetch();
 

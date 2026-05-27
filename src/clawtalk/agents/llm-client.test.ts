@@ -24,7 +24,56 @@ const openaiProvider: LlmProviderConfig = {
   authScheme: 'bearer',
 };
 
+const geminiProvider: LlmProviderConfig = {
+  providerId: 'provider.gemini',
+  baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+  apiFormat: 'openai_chat_completions',
+  authScheme: 'bearer',
+};
+
 const messages: LlmMessage[] = [{ role: 'user', content: 'hi' }];
+
+describe('buildOpenAiRequest — max_tokens vs max_completion_tokens', () => {
+  // OpenAI's reasoning-family models (gpt-5-*, o1, o3) hard-reject `max_tokens`.
+  // Other providers using the OpenAI-compat wire format still expect the old
+  // name. Assert ABSENCE of the wrong field too — emitting both keeps tests
+  // green but still 400s in prod.
+  it('emits max_completion_tokens (and NOT max_tokens) for provider.openai + gpt-5-mini', () => {
+    const req = buildOpenAiRequest(
+      openaiProvider,
+      'gpt-5-mini',
+      messages,
+      undefined,
+      1024,
+    );
+    expect(req.max_completion_tokens).toBe(1024);
+    expect(req.max_tokens).toBeUndefined();
+  });
+
+  it('emits max_tokens (and NOT max_completion_tokens) for provider.gemini + gemini-2.5-flash', () => {
+    const req = buildOpenAiRequest(
+      geminiProvider,
+      'gemini-2.5-flash',
+      messages,
+      undefined,
+      1024,
+    );
+    expect(req.max_tokens).toBe(1024);
+    expect(req.max_completion_tokens).toBeUndefined();
+  });
+
+  it('emits max_tokens (and NOT max_completion_tokens) for provider.nvidia + kimi-k2.6', () => {
+    const req = buildOpenAiRequest(
+      nvidiaProvider,
+      'moonshotai/kimi-k2.6',
+      messages,
+      undefined,
+      1024,
+    );
+    expect(req.max_tokens).toBe(1024);
+    expect(req.max_completion_tokens).toBeUndefined();
+  });
+});
 
 describe('buildOpenAiRequest — moonshot thinking-disabled allowlist', () => {
   it('adds thinking:disabled for kimi-k2.6 on NVIDIA', () => {

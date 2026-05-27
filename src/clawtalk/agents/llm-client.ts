@@ -695,6 +695,15 @@ const MOONSHOT_NO_THINKING: ReadonlySet<string> = new Set([
   'moonshotai/kimi-k2.6',
 ]);
 
+// OpenAI's reasoning-family models (gpt-5-*, o1, o3) hard-reject `max_tokens`
+// with 400 "Use 'max_completion_tokens' instead." Other providers that share
+// the OpenAI chat-completions wire format (Gemini, NVIDIA) still expect the
+// old name, so we key on providerId rather than modelId. Extend this helper
+// if an OpenAI-compat layer ever adds a model needing the new param.
+function usesMaxCompletionTokensParam(provider: LlmProviderConfig): boolean {
+  return provider.providerId === 'provider.openai';
+}
+
 /**
  * Convert LlmMessage[] to OpenAI format.
  */
@@ -707,7 +716,8 @@ export function buildOpenAiRequest(
   forceToolUse: boolean = false,
 ): {
   model: string;
-  max_tokens: number;
+  max_tokens?: number;
+  max_completion_tokens?: number;
   messages: OpenAiMessage[];
   tools?: OpenAiToolDefinition[];
   tool_choice?: 'auto' | 'required' | 'none';
@@ -767,9 +777,13 @@ export function buildOpenAiRequest(
   }
 
   const hasTools = !!(tools && tools.length > 0);
+  const maxTokens = maxOutputTokens || 1024;
+  const maxTokensField = usesMaxCompletionTokensParam(provider)
+    ? { max_completion_tokens: maxTokens }
+    : { max_tokens: maxTokens };
   return {
     model: modelId,
-    max_tokens: maxOutputTokens || 1024,
+    ...maxTokensField,
     messages: conversationMessages,
     ...(hasTools
       ? {

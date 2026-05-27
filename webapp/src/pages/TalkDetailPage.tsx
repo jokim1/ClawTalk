@@ -2409,8 +2409,18 @@ function talkAgentSupportsVision(
   agent: Pick<TalkAgent, 'sourceKind' | 'providerId' | 'modelId'>,
   aiAgents: AiAgentsPageData | null,
 ): boolean {
-  const modelId = agent.modelId?.trim();
-  if (!modelId) return false;
+  // The Primary "Agent" chip (sourceKind === 'claude_default') stores
+  // modelId=null on the TalkAgent record; its effective model comes from
+  // aiAgents.defaultClaudeModelId. Substitute before the suggestion lookup
+  // so the supportsVision contract on claudeModelSuggestions is still
+  // honored (rather than trusting sourceKind alone, which would mask
+  // a stale/loading/misconfigured aiAgentsData).
+  const effectiveModelId =
+    agent.modelId?.trim() ||
+    (agent.sourceKind === 'claude_default'
+      ? aiAgents?.defaultClaudeModelId?.trim() || null
+      : null);
+  if (!effectiveModelId) return false;
 
   const suggestions = getModelSuggestionsForSource({
     sourceKind: agent.sourceKind,
@@ -2418,7 +2428,7 @@ function talkAgentSupportsVision(
     aiAgents,
   });
   return suggestions.some(
-    (entry) => entry.modelId === modelId && entry.supportsVision,
+    (entry) => entry.modelId === effectiveModelId && entry.supportsVision,
   );
 }
 
