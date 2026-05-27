@@ -2407,43 +2407,41 @@ function getModelSuggestionsForSource(input: {
 
 function talkAgentSupportsVision(
   agent: Pick<TalkAgent, 'sourceKind' | 'providerId' | 'modelId'>,
-  registeredAgent: Pick<RegisteredAgent, 'providerId' | 'modelId'> | undefined,
+  registeredAgent:
+    | Pick<RegisteredAgent, 'providerId' | 'modelId' | 'supportsVision'>
+    | undefined,
   aiAgents: AiAgentsPageData | null,
 ): boolean {
+  // Main slot (modelId=null on the TalkAgent row): trust the registered
+  // agent's supportsVision, which is the backend's ground truth from
+  // resolveModelCapabilities. Avoids the modelSuggestions lookup, which
+  // can miss for subscription providers whose curated rows aren't
+  // materialized as suggestions (e.g. Codex's gpt-5.4).
+  if (!agent.modelId?.trim()) {
+    return registeredAgent?.supportsVision === true;
+  }
+
   if (!aiAgents) return false;
 
-  // Provider-pinned agents (sourceKind 'provider') carry their own
-  // (providerId, modelId) on the TalkAgent row. The Main slot
-  // (sourceKind 'claude_default') stores modelId=null and the real
-  // (provider, model) lives on the registered_agents row — Main can be
-  // ANY registered agent (Claude, GPT-5.4 via Codex Subscription, etc.),
-  // not necessarily Anthropic.
-  const effectiveProviderId =
-    agent.providerId ?? registeredAgent?.providerId ?? null;
-  const effectiveModelId =
-    agent.modelId?.trim() || registeredAgent?.modelId?.trim() || null;
-  if (!effectiveProviderId || !effectiveModelId) return false;
-
-  // additionalProviders carries vision metadata for every backend
-  // provider, including Anthropic. claudeModelSuggestions is a dedicated
-  // mirror for the top-of-page Main Claude UI; fall back to it for
-  // Anthropic in case the additionalProviders list ever filters it out.
+  // Provider-pinned agents (TalkAgent row has its own modelId): look up
+  // vision capability via the provider's modelSuggestions. Fall back to
+  // the registered agent's supportsVision when the suggestion list misses.
   const provider = aiAgents.additionalProviders.find(
-    (entry) => entry.id === effectiveProviderId,
+    (entry) => entry.id === agent.providerId,
   );
   if (provider) {
     const model = provider.modelSuggestions.find(
-      (entry) => entry.modelId === effectiveModelId,
+      (entry) => entry.modelId === agent.modelId,
     );
     if (model) return model.supportsVision === true;
   }
-  if (effectiveProviderId === 'provider.anthropic') {
+  if (agent.providerId === 'provider.anthropic') {
     const claudeModel = aiAgents.claudeModelSuggestions.find(
-      (entry) => entry.modelId === effectiveModelId,
+      (entry) => entry.modelId === agent.modelId,
     );
     if (claudeModel) return claudeModel.supportsVision === true;
   }
-  return false;
+  return registeredAgent?.supportsVision === true;
 }
 
 function buildAutoNicknameBase(input: {

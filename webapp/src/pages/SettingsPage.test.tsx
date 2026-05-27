@@ -489,6 +489,7 @@ function buildRegisteredAgents(): RegisteredAgent[] {
         ready: true,
         message: 'Main will use Anthropic direct HTTP with an API key.',
       },
+      supportsVision: true,
     },
   ];
 }

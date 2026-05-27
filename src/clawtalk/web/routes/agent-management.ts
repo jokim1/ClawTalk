@@ -18,6 +18,7 @@ import {
   setMainAgentId,
 } from '../../agents/agent-registry.js';
 import { TALK_EXECUTOR_ANTHROPIC_API_KEY } from '../../config.js';
+import { modelSupportsVision } from '../../llm/capabilities.js';
 import type { ApiEnvelope, AuthContext } from '../types.js';
 
 // ---------------------------------------------------------------------------
@@ -43,6 +44,15 @@ type ExecutionPreview = {
 
 export type RegisteredAgentApiSnapshot = RegisteredAgentSnapshot & {
   executionPreview: ExecutionPreview;
+  // Vision capability is the agent's ground truth — sourced from
+  // `resolveModelCapabilities(providerId, modelId)` on the backend. The
+  // frontend uses this for the composer's image-attachment guard on the
+  // Main slot, where the TalkAgent row stores modelId=null and the
+  // additionalProviders model lookup misses for subscription providers
+  // whose curated model row isn't materialized into modelSuggestions
+  // (e.g. Codex's gpt-5.4 capability is true even when the suggestion
+  // list omits it).
+  supportsVision: boolean;
 };
 
 function isAdminLike(role: string): boolean {
@@ -120,6 +130,7 @@ async function toApiSnapshot(
   return {
     ...toAgentSnapshot(record),
     executionPreview: await buildExecutionPreview(record),
+    supportsVision: modelSupportsVision(record.provider_id, record.model_id),
   };
 }
 
