@@ -150,6 +150,26 @@ new_sqlite_classes = ["UserEventHub"]
 #     credentials. Migration 0006 (which revokes outbox SELECT from
 #     `authenticated`) must NOT apply until this secret is set.
 #
+#   wrangler secret put GOOGLE_OAUTH_CLIENT_ID
+#   wrangler secret put GOOGLE_OAUTH_CLIENT_SECRET
+#     Google OAuth app credentials. Create the OAuth client at
+#     console.cloud.google.com/apis/credentials → "OAuth 2.0 Client IDs"
+#     with the redirect URI matching GOOGLE_OAUTH_REDIRECT_URI declared
+#     in [vars] below. Required for any Google sign-in / Drive / Docs
+#     flow on the Worker.
+#
+#   wrangler secret put GOOGLE_PICKER_API_KEY
+#   wrangler secret put GOOGLE_PICKER_APP_ID
+#     Google Picker SDK credentials, required for the "Add file/folder
+#     from Drive" buttons in the Talk Context tab. Without these the
+#     `buildGooglePickerSession` service throws google_picker_not_configured
+#     and the UI shows "Google Picker is not configured on this server."
+#     - API_KEY: Cloud Console → Credentials → "API key", restricted to
+#       the Google Picker API (enable it first under "Library").
+#     - APP_ID: the GCP project NUMBER (all digits), NOT the project ID.
+#       Find it on the Cloud Console dashboard or in any OAuth client
+#       JSON. Must be the same GCP project as the OAuth client above.
+#
 #   wrangler secret put SLACK_CLIENT_ID
 #   wrangler secret put SLACK_CLIENT_SECRET
 #     Slack OAuth app credentials. Create the app at api.slack.com/apps,
