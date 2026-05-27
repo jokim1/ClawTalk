@@ -2407,29 +2407,43 @@ function getModelSuggestionsForSource(input: {
 
 function talkAgentSupportsVision(
   agent: Pick<TalkAgent, 'sourceKind' | 'providerId' | 'modelId'>,
+  registeredAgent: Pick<RegisteredAgent, 'providerId' | 'modelId'> | undefined,
   aiAgents: AiAgentsPageData | null,
 ): boolean {
-  // The Primary "Agent" chip (sourceKind === 'claude_default') stores
-  // modelId=null on the TalkAgent record; its effective model comes from
-  // aiAgents.defaultClaudeModelId. Substitute before the suggestion lookup
-  // so the supportsVision contract on claudeModelSuggestions is still
-  // honored (rather than trusting sourceKind alone, which would mask
-  // a stale/loading/misconfigured aiAgentsData).
-  const effectiveModelId =
-    agent.modelId?.trim() ||
-    (agent.sourceKind === 'claude_default'
-      ? aiAgents?.defaultClaudeModelId?.trim() || null
-      : null);
-  if (!effectiveModelId) return false;
+  if (!aiAgents) return false;
 
-  const suggestions = getModelSuggestionsForSource({
-    sourceKind: agent.sourceKind,
-    providerId: agent.providerId,
-    aiAgents,
-  });
-  return suggestions.some(
-    (entry) => entry.modelId === effectiveModelId && entry.supportsVision,
+  // Provider-pinned agents (sourceKind 'provider') carry their own
+  // (providerId, modelId) on the TalkAgent row. The Main slot
+  // (sourceKind 'claude_default') stores modelId=null and the real
+  // (provider, model) lives on the registered_agents row — Main can be
+  // ANY registered agent (Claude, GPT-5.4 via Codex Subscription, etc.),
+  // not necessarily Anthropic.
+  const effectiveProviderId =
+    agent.providerId ?? registeredAgent?.providerId ?? null;
+  const effectiveModelId =
+    agent.modelId?.trim() || registeredAgent?.modelId?.trim() || null;
+  if (!effectiveProviderId || !effectiveModelId) return false;
+
+  // additionalProviders carries vision metadata for every backend
+  // provider, including Anthropic. claudeModelSuggestions is a dedicated
+  // mirror for the top-of-page Main Claude UI; fall back to it for
+  // Anthropic in case the additionalProviders list ever filters it out.
+  const provider = aiAgents.additionalProviders.find(
+    (entry) => entry.id === effectiveProviderId,
   );
+  if (provider) {
+    const model = provider.modelSuggestions.find(
+      (entry) => entry.modelId === effectiveModelId,
+    );
+    if (model) return model.supportsVision === true;
+  }
+  if (effectiveProviderId === 'provider.anthropic') {
+    const claudeModel = aiAgents.claudeModelSuggestions.find(
+      (entry) => entry.modelId === effectiveModelId,
+    );
+    if (claudeModel) return claudeModel.supportsVision === true;
+  }
+  return false;
 }
 
 function buildAutoNicknameBase(input: {
@@ -4863,9 +4877,19 @@ export function TalkDetailPage({
       pendingImageAttachments.length === 0
         ? []
         : selectedTargetAgents.filter(
-            (agent) => !talkAgentSupportsVision(agent, aiAgentsData),
+            (agent) =>
+              !talkAgentSupportsVision(
+                agent,
+                registeredAgentsById.get(agent.id),
+                aiAgentsData,
+              ),
           ),
-    [aiAgentsData, pendingImageAttachments.length, selectedTargetAgents],
+    [
+      aiAgentsData,
+      pendingImageAttachments.length,
+      registeredAgentsById,
+      selectedTargetAgents,
+    ],
   );
   const composerGuardrailMessage = useMemo(() => {
     if (selectedUnavailableAgents.length > 0) {

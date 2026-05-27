@@ -2368,18 +2368,19 @@ describe('TalkDetailPage', () => {
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
   });
 
-  it('allows image sends for Main when its TalkAgent.modelId is null but defaultClaudeModelId is vision-capable', async () => {
-    // Repro for PR F Fix 2: the Primary "Agent" chip stores modelId=null on
-    // the TalkAgent row; its effective model is aiAgents.defaultClaudeModelId.
-    // Pre-fix, talkAgentSupportsVision short-circuited on the null modelId
-    // and falsely flashed the banner. The fixture must explicitly null out
-    // modelId — the default builder sets it to 'claude-sonnet-4-6'.
+  it('allows image sends for Main when registered agent (Codex GPT-5.4) is vision-capable', async () => {
+    // PR G regression guard: the Primary "Agent" chip stores modelId=null on
+    // the TalkAgent row. Main can be ANY registered agent (Joseph's is
+    // GPT-5.4 via ChatGPT Codex Subscription, not Claude). The vision
+    // capability must come from the registered_agents row's (providerId,
+    // modelId), not aiAgents.defaultClaudeModelId. PR #457 routed through
+    // defaultClaudeModelId and falsely blocked Codex Main image sends.
     installTalkDetailFetch({
       messages: [],
       runs: [],
       talkAgents: [
         buildTalkAgent({
-          id: 'agent-claude',
+          id: 'agent-main',
           nickname: 'Agent',
           sourceKind: 'claude_default',
           role: 'assistant',
@@ -2391,9 +2392,51 @@ describe('TalkDetailPage', () => {
           modelDisplayName: null,
         }),
       ],
+      registeredAgents: [
+        buildRegisteredAgent({
+          id: 'agent-main',
+          name: 'GPT5.4',
+          providerId: 'provider.openai_codex',
+          modelId: 'gpt-5.4',
+        }),
+      ],
       aiAgents: {
         ...buildAiAgentsData(),
-        defaultClaudeModelId: 'claude-opus-4-6',
+        additionalProviders: [
+          {
+            id: 'provider.openai_codex',
+            name: 'ChatGPT Codex (Subscription)',
+            providerKind: 'openai',
+            credentialMode: 'subscription_only',
+            apiFormat: 'openai_chat_completions',
+            baseUrl: 'https://chatgpt.com/backend-api/codex',
+            authScheme: 'bearer',
+            enabled: true,
+            hasCredential: true,
+            credentialHint: '••••CDX',
+            verificationStatus: 'verified',
+            lastVerifiedAt: '2026-03-06T00:00:00.000Z',
+            lastVerificationError: null,
+            workspaceHasCredential: false,
+            workspaceCredentialHint: null,
+            workspaceVerificationStatus: 'missing',
+            workspaceLastVerifiedAt: null,
+            workspaceLastVerificationError: null,
+            hasPersonalSubscription: true,
+            personalSubscriptionExpiresAt: null,
+            hasWorkspaceSubscription: false,
+            workspaceSubscriptionExpiresAt: null,
+            modelSuggestions: [
+              {
+                modelId: 'gpt-5.4',
+                displayName: 'GPT-5.4',
+                contextWindowTokens: 128_000,
+                defaultMaxOutputTokens: 8_192,
+                supportsVision: true,
+              },
+            ],
+          },
+        ],
       },
       onUploadAttachment: (formData) => {
         const file = formData.get('file');
@@ -2430,16 +2473,16 @@ describe('TalkDetailPage', () => {
     ).toBeNull();
   });
 
-  it('still blocks image sends for Main when defaultClaudeModelId is unset', async () => {
-    // Negative case for PR F Fix 2: the substitution must NOT mask a
-    // misconfigured/loading aiAgents.defaultClaudeModelId. An empty string
-    // should keep the banner firing rather than silently advertising vision.
+  it('still blocks image sends for Main when the registered agent is missing or non-vision', async () => {
+    // Negative case: if registeredAgentsById has no entry for the Main
+    // agent (loading flash, stale catalog) the guard returns false rather
+    // than silently advertising vision. Same path as the load-state flash.
     installTalkDetailFetch({
       messages: [],
       runs: [],
       talkAgents: [
         buildTalkAgent({
-          id: 'agent-claude',
+          id: 'agent-orphan',
           nickname: 'Agent',
           sourceKind: 'claude_default',
           role: 'assistant',
@@ -2451,10 +2494,7 @@ describe('TalkDetailPage', () => {
           modelDisplayName: null,
         }),
       ],
-      aiAgents: {
-        ...buildAiAgentsData(),
-        defaultClaudeModelId: '',
-      },
+      registeredAgents: [],
       onUploadAttachment: (formData) => {
         const file = formData.get('file');
         if (!(file instanceof File)) {
