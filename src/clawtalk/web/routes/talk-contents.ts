@@ -79,13 +79,14 @@ function anchorMissing(anchorId: string): RouteResult<never> {
 }
 
 function docSizeLimit(wouldBeBytes: number): RouteResult<never> {
+  const mb = (n: number): string => (n / 1_000_000).toFixed(1);
   return {
     statusCode: 413,
     body: {
       ok: false,
       error: {
         code: 'doc_size_limit',
-        message: 'Document body exceeds the size limit.',
+        message: `Document body is ${mb(wouldBeBytes)} MB; the limit is ${mb(CONTENT_BODY_BYTE_LIMIT)} MB. Inline base64 images from pasted screenshots are the usual cause — host them externally and reference by URL, or split the doc.`,
         details: {
           limitBytes: CONTENT_BODY_BYTE_LIMIT,
           wouldBeBytes,

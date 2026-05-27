@@ -36,7 +36,12 @@ import {
 } from '../../shared/rich-text/index.js';
 import { emitOutboxEvent } from '../talks/outbox-emit.js';
 
-export const CONTENT_BODY_BYTE_LIMIT = 512_000;
+// 10 MB — enough for ~20 medium-sized inline base64 images that arrive
+// from a Google Docs paste. Postgres TEXT handles this fine; the LLM
+// outline path already truncates to its own 20 KB budget so a large
+// body doesn't blow the agent context. v2 follow-up: upload image data
+// URLs to R2 on paste so the body stays text-only.
+export const CONTENT_BODY_BYTE_LIMIT = 10_000_000;
 
 export type ContentFormat = 'markdown' | 'html';
 
