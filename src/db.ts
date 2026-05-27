@@ -414,6 +414,88 @@ export async function withRequestScopedDb<T>(
 }
 
 /**
+ * Like `withUserContext`, but opens the inner transaction with
+ * `BEGIN ISOLATION LEVEL REPEATABLE READ` so a multi-statement snapshot
+ * reads a consistent view of the database. Used by the
+ * `/api/v1/talks/:talkId/snapshot` endpoint where the composed accessors
+ * must agree on a single point-in-time view.
+ *
+ * Postgres requires the isolation level to be set on `BEGIN`, not as a
+ * later `SET TRANSACTION` — once any statement runs inside the tx, the
+ * isolation level is locked. The shared `withUserContext` opens its tx
+ * without an isolation argument; this helper opens its own with the
+ * argument and otherwise mirrors the same role downgrade, claims setup,
+ * F7 notify-queue handling, and re-entrancy guard.
+ *
+ * Re-entrancy with a same-userId outer context reuses that tx as-is — the
+ * outer's isolation wins, since switching isolation mid-tx is not
+ * permitted. Callers that need REPEATABLE READ must therefore be the
+ * outermost user-context for the request.
+ *
+ * The tx is intentionally NOT marked READ ONLY: accessors composed by the
+ * snapshot path (e.g., `listTalkThreads` → `getOrCreateDefaultThread`)
+ * issue heal-on-read INSERTs that would error under READ ONLY. The
+ * load-bearing isolation guarantee here is REPEATABLE READ, which still
+ * holds for the rest of the composed reads. Add READ ONLY if and when the
+ * heal-on-read paths move out of the snapshot tx.
+ */
+export async function withUserContextIsolated<T>(
+  userId: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const existing = userContextStorage.getStore();
+  if (existing) {
+    if (existing.userId !== userId) {
+      throw new Error(
+        `withUserContextIsolated re-entered with a different userId (outer=${existing.userId}, inner=${userId}); cross-user nesting is a caller bug`,
+      );
+    }
+    return fn();
+  }
+  const requestScope = requestScopedDbStorage.getStore();
+  const db = requestScope?.sql ?? nodeScopedDb;
+  if (!db) throw new Error('Postgres database not initialized');
+  const claims = JSON.stringify({ sub: userId, role: 'authenticated' });
+  const isolation = 'isolation level repeatable read';
+
+  const outerQueue = notifyQueueStorage.getStore();
+  if (outerQueue) {
+    return db.begin(isolation, async (tx) => {
+      await tx`set local role authenticated`;
+      await tx`select set_config('request.jwt.claims', ${claims}, true)`;
+      return userContextStorage.run({ tx, userId }, fn);
+    }) as Promise<T>;
+  }
+
+  const queue: NotifyQueueEntry[] = [];
+  return notifyQueueStorage.run(queue, () =>
+    (
+      db.begin(isolation, async (tx) => {
+        await tx`set local role authenticated`;
+        await tx`select set_config('request.jwt.claims', ${claims}, true)`;
+        return userContextStorage.run({ tx, userId }, fn);
+      }) as Promise<T>
+    ).then((result) => {
+      if (queue.length > 0) {
+        const env = requestScope?.env ?? null;
+        const ctx = requestScope?.ctx ?? null;
+        const flush = flushNotifyQueue(queue, env).catch((err) => {
+          console.error('[notify-queue] post-commit flush failed', err);
+        });
+        if (ctx) {
+          ctx.waitUntil(flush);
+        } else {
+          flush.catch(() => {
+            /* unhandled-rejection guard for Node fallback */
+          });
+        }
+      }
+      return result;
+    }),
+  );
+}
+
+/**
  * Durable-Object mode — accessors invoked from inside a DO see the
  * caller-supplied `sql` via `getDbPg()`.
  */

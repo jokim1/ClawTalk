@@ -1132,7 +1132,7 @@ export interface TalkMessageRecord {
   sequence_in_run: number | null;
 }
 
-const TALK_MESSAGE_COLUMNS = `id, talk_id, thread_id, owner_id, role, content,
+export const TALK_MESSAGE_COLUMNS = `id, talk_id, thread_id, owner_id, role, content,
   created_by, created_at, run_id, metadata_json, sequence_in_run`;
 
 export async function createTalkMessage(input: {
@@ -1424,7 +1424,7 @@ export interface TalkRunRecord {
   credential_kind_snapshot: 'api_key' | 'subscription' | null;
 }
 
-const TALK_RUN_COLUMNS = `id, talk_id, owner_id, thread_id, requested_by,
+export const TALK_RUN_COLUMNS = `id, talk_id, owner_id, thread_id, requested_by,
   status, trigger_message_id, job_id, target_agent_id, agent_id,
   idempotency_key, run_kind, response_group_id, sequence_index,
   executor_alias, executor_model, source_binding_id,

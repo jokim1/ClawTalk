@@ -233,6 +233,7 @@ import {
   updateTalkAgentsRoute,
   updateTalkPolicyRoute,
 } from './routes/talks.js';
+import { getTalkSnapshotRoute } from './routes/talk-snapshot.js';
 import { getTalkToolsRoute, updateTalkToolRoute } from './routes/talk-tools.js';
 import {
   getEffectiveToolsRoute,
@@ -1361,6 +1362,21 @@ function buildApp(): Hono<{ Variables: Variables }> {
       threadId,
       limit: limit ?? undefined,
       beforeCreatedAt,
+    });
+    return jsonResponse(result);
+  });
+
+  app.get('/api/v1/talks/:talkId/snapshot', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'read' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const talkId = decodeIdParam(c, 'talkId');
+    if (!talkId.ok) return talkId.response;
+    const threadId = (c.req.query('threadId') || '').trim() || undefined;
+    const result = await getTalkSnapshotRoute({
+      auth,
+      talkId: talkId.value,
+      threadId,
     });
     return jsonResponse(result);
   });
