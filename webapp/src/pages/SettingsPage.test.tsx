@@ -39,7 +39,8 @@ describe('SettingsPage', () => {
     ).toBeTruthy();
   });
 
-  it('opens the API Keys tab via ?tab=api-keys and renders both Workspace and Personal sections', async () => {
+  it('opens the API Keys tab via ?tab=api-keys, defaults to Personal, and surfaces Workspace via sub-tab', async () => {
+    const user = userEvent.setup();
     installSettingsFetch();
 
     render(
@@ -53,29 +54,36 @@ describe('SettingsPage', () => {
       </MemoryRouter>,
     );
 
-    await screen.findByRole('heading', { name: 'Workspace API Keys' });
+    // Personal is the default sub-tab — Workspace heading isn't on the
+    // page until the user clicks the Workspace tab.
+    await screen.findByRole('heading', { name: 'Personal API Keys' });
     expect(
-      screen.getByRole('heading', { name: 'Personal API Keys' }),
-    ).toBeTruthy();
-    // One card per provider in each section, so four providers means
-    // eight cards total.
-    expect(
-      screen.getAllByRole('heading', { name: 'Claude (Anthropic)' }),
-    ).toHaveLength(2);
+      screen.queryByRole('heading', { name: 'Workspace API Keys' }),
+    ).toBeNull();
 
-    const anthropicCards = screen
+    const personalCards = screen
       .getAllByRole('heading', { name: 'Claude (Anthropic)' })
       .map((heading) => heading.closest('article'))
       .filter((node): node is HTMLElement => node !== null);
-    expect(anthropicCards).toHaveLength(2);
-    for (const card of anthropicCards) {
-      expect(within(card).getByPlaceholderText('sk-ant-...')).toBeTruthy();
-      expect(
-        within(card).getByRole('link', {
-          name: /Get key from Anthropic Console/i,
-        }),
-      ).toBeTruthy();
-    }
+    expect(personalCards).toHaveLength(1);
+    expect(
+      within(personalCards[0]).getByPlaceholderText('sk-ant-...'),
+    ).toBeTruthy();
+
+    await user.click(screen.getByRole('tab', { name: 'Workspace' }));
+    await screen.findByRole('heading', { name: 'Workspace API Keys' });
+    expect(
+      screen.queryByRole('heading', { name: 'Personal API Keys' }),
+    ).toBeNull();
+
+    const workspaceCards = screen
+      .getAllByRole('heading', { name: 'Claude (Anthropic)' })
+      .map((heading) => heading.closest('article'))
+      .filter((node): node is HTMLElement => node !== null);
+    expect(workspaceCards).toHaveLength(1);
+    expect(
+      within(workspaceCards[0]).getByPlaceholderText('sk-ant-...'),
+    ).toBeTruthy();
   });
 
   it('saves a Personal API key with scope=user', async () => {
@@ -136,6 +144,9 @@ describe('SettingsPage', () => {
       </MemoryRouter>,
     );
 
+    // Personal is the default sub-tab — switch to Workspace first.
+    await screen.findByRole('heading', { name: 'Personal API Keys' });
+    await user.click(screen.getByRole('tab', { name: 'Workspace' }));
     await screen.findByRole('heading', { name: 'Workspace API Keys' });
     const workspaceSection = screen
       .getByRole('heading', { name: 'Workspace API Keys' })

@@ -1003,6 +1003,35 @@ a {
   gap: 1rem;
 }
 
+.settings-subtabs {
+  display: inline-flex;
+  gap: 0.25rem;
+  padding: 0.25rem;
+  background: #eef2fb;
+  border-radius: 10px;
+  align-self: start;
+}
+
+.settings-subtab {
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  padding: 0.4rem 0.9rem;
+  color: #5d6882;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.settings-subtab:hover {
+  color: #1f2a44;
+}
+
+.settings-subtab-active {
+  background: #ffffff;
+  color: #1f2a44;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
 .settings-card {
   border: 1px solid #dde4f2;
   border-radius: 12px;

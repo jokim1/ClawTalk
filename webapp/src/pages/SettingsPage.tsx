@@ -527,6 +527,8 @@ function draftKey(scope: ProviderCredentialScope, providerId: string): string {
   return `${scope}:${providerId}`;
 }
 
+type ApiKeysSubTab = 'personal' | 'workspace';
+
 function ApiKeysTab({
   onUnauthorized,
   userRole,
@@ -541,6 +543,11 @@ function ApiKeysTab({
   const [notice, setNotice] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, ProviderDraft>>({});
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  // Personal first — that's where members spend most of their time. Admins
+  // still get the workspace tab; non-admins see it read-only (the existing
+  // ProviderCredentialCard already enforces canManage=isAdmin for workspace
+  // scope).
+  const [subTab, setSubTab] = useState<ApiKeysSubTab>('personal');
 
   useEffect(() => {
     let cancelled = false;
@@ -766,82 +773,113 @@ function ApiKeysTab({
         </div>
       ) : null}
 
-      <section className="settings-card">
-        <h2>Workspace API Keys</h2>
-        <p className="settings-copy">
-          Workspace-shared keys are visible to every member and used when a
-          member hasn't supplied a personal key of their own.{' '}
-          {isAdmin
-            ? 'Set them here as the workspace admin.'
-            : 'Only workspace admins can change these.'}
-        </p>
+      <div className="settings-subtabs" role="tablist" aria-label="API keys scope">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={subTab === 'personal'}
+          className={
+            subTab === 'personal'
+              ? 'settings-subtab settings-subtab-active'
+              : 'settings-subtab'
+          }
+          onClick={() => setSubTab('personal')}
+        >
+          Personal
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={subTab === 'workspace'}
+          className={
+            subTab === 'workspace'
+              ? 'settings-subtab settings-subtab-active'
+              : 'settings-subtab'
+          }
+          onClick={() => setSubTab('workspace')}
+        >
+          Workspace
+        </button>
+      </div>
 
-        {providers.length === 0 ? (
+      {subTab === 'personal' ? (
+        <section className="settings-card" role="tabpanel">
+          <h2>Personal API Keys</h2>
           <p className="settings-copy">
-            No providers are enabled for this workspace.
+            Personal keys override the workspace key when set. Use these when
+            you want to bill against your own provider account.
           </p>
-        ) : (
-          <div className="talk-llm-card-list">
-            {providers.map((provider) => (
-              <ProviderCredentialCard
-                key={`workspace:${provider.id}`}
-                scope="workspace"
-                provider={provider}
-                draft={
-                  drafts[draftKey('workspace', provider.id)] ||
-                  emptyDraft(provider, 'workspace')
-                }
-                canManage={isAdmin}
-                busySave={busyKey === `save:workspace:${provider.id}`}
-                busyVerify={busyKey === `verify:workspace:${provider.id}`}
-                onDraftChange={(patch) =>
-                  updateDraft('workspace', provider.id, patch)
-                }
-                onSave={() => void handleSave(provider.id, 'workspace')}
-                onClear={() => void handleClear(provider.id, 'workspace')}
-                onVerify={() => void handleVerify(provider.id, 'workspace')}
-              />
-            ))}
-          </div>
-        )}
-      </section>
 
-      <section className="settings-card">
-        <h2>Personal API Keys</h2>
-        <p className="settings-copy">
-          Personal keys override the workspace key when set. Use these when you
-          want to bill against your own provider account.
-        </p>
-
-        {providers.length === 0 ? (
+          {providers.length === 0 ? (
+            <p className="settings-copy">
+              No providers are enabled for this workspace.
+            </p>
+          ) : (
+            <div className="talk-llm-card-list">
+              {providers.map((provider) => (
+                <ProviderCredentialCard
+                  key={`user:${provider.id}`}
+                  scope="user"
+                  provider={provider}
+                  draft={
+                    drafts[draftKey('user', provider.id)] ||
+                    emptyDraft(provider, 'user')
+                  }
+                  canManage
+                  busySave={busyKey === `save:user:${provider.id}`}
+                  busyVerify={busyKey === `verify:user:${provider.id}`}
+                  onDraftChange={(patch) =>
+                    updateDraft('user', provider.id, patch)
+                  }
+                  onSave={() => void handleSave(provider.id, 'user')}
+                  onClear={() => void handleClear(provider.id, 'user')}
+                  onVerify={() => void handleVerify(provider.id, 'user')}
+                />
+              ))}
+            </div>
+          )}
+        </section>
+      ) : (
+        <section className="settings-card" role="tabpanel">
+          <h2>Workspace API Keys</h2>
           <p className="settings-copy">
-            No providers are enabled for this workspace.
+            Workspace-shared keys are visible to every member and used when a
+            member hasn't supplied a personal key of their own.{' '}
+            {isAdmin
+              ? 'Set them here as the workspace admin.'
+              : 'Only workspace admins can change these.'}
           </p>
-        ) : (
-          <div className="talk-llm-card-list">
-            {providers.map((provider) => (
-              <ProviderCredentialCard
-                key={`user:${provider.id}`}
-                scope="user"
-                provider={provider}
-                draft={
-                  drafts[draftKey('user', provider.id)] ||
-                  emptyDraft(provider, 'user')
-                }
-                canManage
-                busySave={busyKey === `save:user:${provider.id}`}
-                busyVerify={busyKey === `verify:user:${provider.id}`}
-                onDraftChange={(patch) =>
-                  updateDraft('user', provider.id, patch)
-                }
-                onSave={() => void handleSave(provider.id, 'user')}
-                onClear={() => void handleClear(provider.id, 'user')}
-                onVerify={() => void handleVerify(provider.id, 'user')}
-              />
-            ))}
-          </div>
-        )}
-      </section>
+
+          {providers.length === 0 ? (
+            <p className="settings-copy">
+              No providers are enabled for this workspace.
+            </p>
+          ) : (
+            <div className="talk-llm-card-list">
+              {providers.map((provider) => (
+                <ProviderCredentialCard
+                  key={`workspace:${provider.id}`}
+                  scope="workspace"
+                  provider={provider}
+                  draft={
+                    drafts[draftKey('workspace', provider.id)] ||
+                    emptyDraft(provider, 'workspace')
+                  }
+                  canManage={isAdmin}
+                  busySave={busyKey === `save:workspace:${provider.id}`}
+                  busyVerify={busyKey === `verify:workspace:${provider.id}`}
+                  onDraftChange={(patch) =>
+                    updateDraft('workspace', provider.id, patch)
+                  }
+                  onSave={() => void handleSave(provider.id, 'workspace')}
+                  onClear={() => void handleClear(provider.id, 'workspace')}
+                  onVerify={() => void handleVerify(provider.id, 'workspace')}
+                />
+              ))}
+            </div>
+          )}
+        </section>
+      )}
     </>
   );
 }
