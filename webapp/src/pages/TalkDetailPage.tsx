@@ -154,6 +154,10 @@ import {
   getContentSplitRatio,
   setContentSplitRatio,
 } from '../lib/contentSplitRatio';
+import {
+  getLastThreadForTalk,
+  setLastThreadForTalk,
+} from '../lib/lastThreadForTalk';
 import { linkifyText } from '../lib/linkifyText';
 import { displayThreadTitle } from '../lib/threadTitles';
 import { openTalkStream } from '../lib/talkStream';
@@ -3203,6 +3207,14 @@ export function TalkDetailPage({
     threadSnapshotVersionRef.current += 1;
   }, [activeThreadId]);
 
+  // Persist the active thread per-Talk so that clicking the Talk again
+  // (sidebar or direct URL without ?thread=) lands the user back on the
+  // thread they last used.
+  useEffect(() => {
+    if (!talkId || !activeThreadId) return;
+    setLastThreadForTalk(talkId, activeThreadId);
+  }, [activeThreadId, talkId]);
+
   const ruleSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
   );
@@ -4128,11 +4140,23 @@ export function TalkDetailPage({
       setActiveThreadId(null);
       return;
     }
-    const validThreadId =
+    // Resolution order: URL ?thread= → saved-last-thread for this Talk
+    // (localStorage) → most-recent-by-activity (threads[0]). Saved id is
+    // dropped if the thread no longer exists.
+    let validThreadId: string | null = null;
+    if (
       requestedThreadId &&
       threadState.threads.some((thread) => thread.id === requestedThreadId)
-        ? requestedThreadId
-        : threadState.threads[0]?.id || null;
+    ) {
+      validThreadId = requestedThreadId;
+    } else {
+      const saved = getLastThreadForTalk(talkId);
+      if (saved && threadState.threads.some((thread) => thread.id === saved)) {
+        validThreadId = saved;
+      } else {
+        validThreadId = threadState.threads[0]?.id || null;
+      }
+    }
     if (!validThreadId) return;
     if (requestedThreadId !== validThreadId) {
       navigate(buildThreadHref(talkId, validThreadId, currentTab), {
