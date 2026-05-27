@@ -46,28 +46,40 @@ export function isAllowedRichTextLinkUrl(value: string): boolean {
 }
 
 // Image-src normalizer. Permits the same http/https schemes as the link
-// normalizer PLUS `data:image/*` so inline screenshots paste from the
-// clipboard without an upload round-trip. Anything else is rejected by
-// returning '' — the caller drops the image node entirely.
+// normalizer PLUS `data:image/*` (for clipboard pastes pre-upload) PLUS
+// the same-origin `/api/v1/content-images/<hash>.<ext>` path served by
+// the Worker after upload. Anything else returns '' so the caller drops
+// the image node.
 //
-// `data:` is allowed only when the media-type starts with `image/` so a
-// pasted `data:text/html` payload can't smuggle markup into the editor.
+// `data:` is allowed only for raster image types we accept on upload —
+// svg+xml carries XSS risk (inline <script>) and avif isn't in the
+// upload MIME allowlist, so both are excluded here as well.
 const SAFE_IMAGE_DATA_MIME_RE =
-  /^data:image\/(png|jpeg|jpg|gif|webp|svg\+xml|avif)(;[^,]*)?,/i;
+  /^data:image\/(png|jpeg|jpg|gif|webp)(;[^,]*)?,/i;
+
+// Same-origin content-image path. Hash is 32 hex chars (sha256 first 16
+// bytes), extension is one of the upload-allowed raster types. An
+// optional URL fragment is preserved verbatim so the ProseMirror
+// uploader plugin's `#cu-…` / `#cf-…` upload-state markers round-trip
+// through the sanitizer.
+const CONTENT_IMAGE_PATH_RE =
+  /^\/api\/v1\/content-images\/[a-f0-9]{32}\.(png|jpe?g|gif|webp)(#.*)?$/i;
 
 export function normalizeRichTextImageSrc(value: string): string {
   const trimmed = value.trim();
   if (!trimmed) return '';
 
-  // data: URIs are explicitly allowed for image MIME types only.
   if (trimmed.toLowerCase().startsWith('data:')) {
     return SAFE_IMAGE_DATA_MIME_RE.test(trimmed) ? trimmed : '';
   }
 
-  // For http(s), reuse the link normalizer but loosen mailto rejection
-  // (irrelevant for images anyway — mailto: as image src would be
-  // dropped by the URL parser). Relative URLs are still rejected because
-  // ClawTalk doesn't serve images from its own origin yet.
+  if (CONTENT_IMAGE_PATH_RE.test(trimmed)) {
+    return trimmed;
+  }
+
+  // http(s) absolute URLs (including absolute content-image URLs on
+  // clawtalk.app) fall through to the link normalizer. All other
+  // relative paths are rejected.
   return normalizeRichTextLinkUrl(trimmed);
 }
 
