@@ -3888,6 +3888,39 @@ describe('TalkDetailPage', () => {
     expect(defaultButton.className).not.toContain('talk-thread-item-active');
   });
 
+  it('persists the resolved thread for the current talk on initial render', async () => {
+    installTalkDetailFetch({
+      threads: [
+        buildThread({
+          id: DEFAULT_THREAD_ID,
+          title: 'Default thread',
+          isDefault: true,
+          lastMessageAt: '2026-03-06T02:00:00.000Z',
+        }),
+        buildThread({
+          id: 'thread-explicit',
+          title: 'Explicit thread',
+          lastMessageAt: '2026-03-06T01:00:00.000Z',
+        }),
+      ],
+    });
+    renderDetailPage('/app/talks/talk-1/talk?thread=thread-explicit');
+
+    // Wait until the URL-resolved thread is the active one.
+    const explicitButton = await screen.findByRole('button', {
+      name: /explicit thread/i,
+    });
+    await waitFor(() =>
+      expect(explicitButton.className).toContain('talk-thread-item-active'),
+    );
+
+    // The routing-resolution effect must have keyed the save under
+    // talk-1 — the current talk — never under some other talkId.
+    expect(window.localStorage.getItem('clawtalk.lastThread:talk-1')).toBe(
+      'thread-explicit',
+    );
+  });
+
   it('falls back to threads[0] when the localStorage-saved thread no longer exists', async () => {
     window.localStorage.setItem('clawtalk.lastThread:talk-1', 'thread-deleted');
     installTalkDetailFetch({

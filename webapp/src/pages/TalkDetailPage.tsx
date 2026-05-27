@@ -3207,14 +3207,6 @@ export function TalkDetailPage({
     threadSnapshotVersionRef.current += 1;
   }, [activeThreadId]);
 
-  // Persist the active thread per-Talk so that clicking the Talk again
-  // (sidebar or direct URL without ?thread=) lands the user back on the
-  // thread they last used.
-  useEffect(() => {
-    if (!talkId || !activeThreadId) return;
-    setLastThreadForTalk(talkId, activeThreadId);
-  }, [activeThreadId, talkId]);
-
   const ruleSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
   );
@@ -4166,6 +4158,11 @@ export function TalkDetailPage({
     if (activeThreadId !== validThreadId) {
       setActiveThreadId(validThreadId);
     }
+    // Persist the (talkId, threadId) pairing here — this is the only
+    // place we know threadState has been loaded for the CURRENT talkId,
+    // so a sidebar click to another Talk can't race a stale activeThreadId
+    // into the wrong key.
+    setLastThreadForTalk(talkId, validThreadId);
   }, [
     activeThreadId,
     currentTab,
