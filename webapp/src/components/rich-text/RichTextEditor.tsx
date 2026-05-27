@@ -10,6 +10,7 @@
 // pipeline so a round-trip is a no-op.
 
 import { type Editor, EditorContent, useEditor } from '@tiptap/react';
+import Image from '@tiptap/extension-image';
 import Link from '@tiptap/extension-link';
 import Placeholder from '@tiptap/extension-placeholder';
 import StarterKit from '@tiptap/starter-kit';
@@ -231,6 +232,20 @@ export function RichTextEditor({
         HTMLAttributes: {
           rel: 'noopener noreferrer nofollow',
           target: '_blank',
+        },
+      }),
+      // Image extension — accepts `<img>` tags via Tiptap's built-in
+      // HTML-to-node converter on paste, and round-trips with the
+      // markdown serializer as `![alt](url)`. `inline: false` keeps
+      // images as block-level placements (matches markdown semantics
+      // where `![](url)` on its own line is a block image).
+      Image.configure({
+        inline: false,
+        allowBase64: true,
+        HTMLAttributes: {
+          // Loading=lazy avoids blocking page render when a paste
+          // contains many CDN URLs.
+          loading: 'lazy',
         },
       }),
       Placeholder.configure({
