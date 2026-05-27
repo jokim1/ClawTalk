@@ -138,9 +138,21 @@ function LiveResponsePanelImpl(props: LiveResponsePanelProps): JSX.Element {
     state === 'completed' || state === 'failed' || state === 'cancelled';
   const elapsedMs = now - response.queuedAt;
   const elapsedLabel = formatElapsed(elapsedMs);
-  const pillLabel = pillLabelForState(state);
+  // Override the pill label to surface CF Queues retry attempts when the
+  // queue handler has emitted a `talk_run_retrying` event. Only swap
+  // while the run is still queued — once it goes running/terminal, the
+  // retry counter is no longer the most informative thing to show.
+  const isRetrying =
+    state === 'queued' &&
+    typeof response.retryAttempt === 'number' &&
+    response.retryAttempt > 0;
+  const pillLabel = isRetrying
+    ? `Retrying ${response.retryAttempt}/${response.retryMaxRetries ?? 3}`
+    : pillLabelForState(state);
   const pillClass = pillClassForState(state);
-  const body = bodyFallback(state, response);
+  const body = isRetrying
+    ? `Waiting on retry ${response.retryAttempt}/${response.retryMaxRetries ?? 3}…`
+    : bodyFallback(state, response);
   const { display: displayLabel, full: fullLabel } = truncateNickname(
     agentLabel,
   );

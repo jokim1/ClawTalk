@@ -47,6 +47,11 @@ import { emitOutboxEventOutsideTx } from './outbox-emit.js';
 
 export interface ProcessTalkRunMessageInput {
   runId: string;
+  // Delivery attempt count from CF Queues (1 on first delivery, 2 on
+  // first retry, ...). When > 1 we emit a `talk_run_retrying` outbox
+  // event so the UI can swap "Queued" for "Retrying N/maxRetries".
+  attempts?: number;
+  maxRetries?: number;
   // Test seam — defaults to a fresh CleanTalkExecutor per invocation.
   executor?: TalkExecutor;
   // Test seam — cancellation poll interval; production default is 500ms.
@@ -79,6 +84,32 @@ const DEFAULT_CANCEL_POLL_MS = 500;
 export async function processTalkRunMessage(
   input: ProcessTalkRunMessageInput,
 ): Promise<void> {
+  // Retry visibility: when this is a redelivery (attempts > 1), emit a
+  // `talk_run_retrying` outbox event so the UI can swap the stale
+  // "Queued · 2:30" badge for "Retrying N/maxRetries". We look the row
+  // up out-of-tx with getTalkRunById to get talk_id/owner_id for the
+  // event payload; if the row is gone (run was deleted mid-retry), skip
+  // the emit and let markRunRunning's not_found path ack normally.
+  if (input.attempts !== undefined && input.attempts > 1) {
+    const runRow = await getTalkRunById(input.runId);
+    if (runRow) {
+      const maxRetries = input.maxRetries ?? 3;
+      const retryAttempt = Math.min(input.attempts - 1, maxRetries);
+      await emitOutboxEventOutsideTx({
+        topic: `talk:${runRow.talk_id}`,
+        eventType: 'talk_run_retrying',
+        payload: {
+          talkId: runRow.talk_id,
+          threadId: runRow.thread_id,
+          runId: input.runId,
+          retryAttempt,
+          maxRetries,
+        },
+        ownerIds: [runRow.owner_id],
+      });
+    }
+  }
+
   const claim = await markRunRunning(input.runId);
   switch (claim.status) {
     case 'not_found':

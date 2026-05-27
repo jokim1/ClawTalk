@@ -176,6 +176,7 @@ import type {
   TalkRunCancelledEvent,
   TalkRunCompletedEvent,
   TalkRunFailedEvent,
+  TalkRunRetryingEvent,
   TalkRunStartedEvent,
   TalkStreamState,
 } from '../lib/talkStream';
@@ -260,6 +261,11 @@ export type LiveResponseView = {
   queuedAt: number;
   pendingStatus?: 'queued' | 'running' | 'reconnecting';
   terminalStatus?: 'completed' | 'failed' | 'cancelled';
+  // Queue retry visibility. Set when a `talk_run_retrying` event lands
+  // (CF Queues redelivered the message). LiveResponsePanel reads
+  // `retryAttempt` to show "Retrying N/maxRetries" instead of "Queued".
+  retryAttempt?: number;
+  retryMaxRetries?: number;
 };
 
 export type { RunView };
@@ -561,6 +567,12 @@ type DetailAction =
       targetAgentNickname?: string | null;
       responseGroupId?: string | null;
       sequenceIndex?: number | null;
+    }
+  | {
+      type: 'RUN_RETRYING';
+      runId: string;
+      retryAttempt: number;
+      maxRetries: number;
     }
   | {
       type: 'RUN_COMPLETED';
@@ -1244,6 +1256,23 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
         },
       };
       return { ...state, runsById, liveResponsesByRunId };
+    }
+    case 'RUN_RETRYING': {
+      if (state.kind !== 'ready') return state;
+      const existing = state.liveResponsesByRunId[action.runId];
+      // Only stamp retry visibility onto a live response we already
+      // know about — no point synthesizing one if we never saw the
+      // RUN_QUEUED frame.
+      if (!existing) return state;
+      const liveResponsesByRunId = {
+        ...state.liveResponsesByRunId,
+        [action.runId]: {
+          ...existing,
+          retryAttempt: action.retryAttempt,
+          retryMaxRetries: action.maxRetries,
+        },
+      };
+      return { ...state, liveResponsesByRunId };
     }
     case 'RUN_COMPLETED': {
       if (state.kind !== 'ready') return state;
@@ -4512,6 +4541,18 @@ export function TalkDetailPage({
         // src/clawtalk/talks/event-filters.ts allowlists this event
         // for thread-scoped subscriptions (T7).
         setToolsRefreshKey((k) => k + 1);
+      },
+      onTalkRunRetrying: (event: TalkRunRetryingEvent) => {
+        // CF Queues redelivered the run message — surface "Retrying
+        // N/M" in the LiveResponsePanel pill so the user knows the
+        // queue is alive and waiting (vs. the stale "Queued · 2:30"
+        // badge that looked dead).
+        dispatch({
+          type: 'RUN_RETRYING',
+          runId: event.runId,
+          retryAttempt: event.retryAttempt,
+          maxRetries: event.maxRetries,
+        });
       },
       onReplayGap: async () => {
         await resyncTalkState({ refreshThreads: true });
