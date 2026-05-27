@@ -44,3 +44,33 @@ export function normalizeRichTextLinkUrl(value: string): string {
 export function isAllowedRichTextLinkUrl(value: string): boolean {
   return normalizeRichTextLinkUrl(value).length > 0;
 }
+
+// Image-src normalizer. Permits the same http/https schemes as the link
+// normalizer PLUS `data:image/*` so inline screenshots paste from the
+// clipboard without an upload round-trip. Anything else is rejected by
+// returning '' — the caller drops the image node entirely.
+//
+// `data:` is allowed only when the media-type starts with `image/` so a
+// pasted `data:text/html` payload can't smuggle markup into the editor.
+const SAFE_IMAGE_DATA_MIME_RE =
+  /^data:image\/(png|jpeg|jpg|gif|webp|svg\+xml|avif)(;[^,]*)?,/i;
+
+export function normalizeRichTextImageSrc(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+
+  // data: URIs are explicitly allowed for image MIME types only.
+  if (trimmed.toLowerCase().startsWith('data:')) {
+    return SAFE_IMAGE_DATA_MIME_RE.test(trimmed) ? trimmed : '';
+  }
+
+  // For http(s), reuse the link normalizer but loosen mailto rejection
+  // (irrelevant for images anyway — mailto: as image src would be
+  // dropped by the URL parser). Relative URLs are still rejected because
+  // ClawTalk doesn't serve images from its own origin yet.
+  return normalizeRichTextLinkUrl(trimmed);
+}
+
+export function isAllowedRichTextImageSrc(value: string): boolean {
+  return normalizeRichTextImageSrc(value).length > 0;
+}

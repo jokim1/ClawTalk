@@ -343,6 +343,21 @@ export function parseInline(text: string): RichTextNode[] {
       }
     }
 
+    // image ![alt](url) — must come BEFORE link so the leading `!` is
+    // handled. Images are inline nodes (Tiptap models them this way),
+    // not blocks, so they live alongside text inside paragraphs.
+    if (rest[0] === '!' && rest[1] === '[') {
+      const imgMatch = matchLink(rest.slice(1));
+      if (imgMatch) {
+        flush();
+        const attrs: Record<string, string> = { src: imgMatch.href };
+        if (imgMatch.text.length > 0) attrs.alt = imgMatch.text;
+        nodes.push({ type: 'image', attrs });
+        pos += imgMatch.consumed + 1; // +1 for the leading `!`
+        continue;
+      }
+    }
+
     // link [text](url)
     if (rest[0] === '[') {
       const linkMatch = matchLink(rest);

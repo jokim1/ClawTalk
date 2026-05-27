@@ -226,6 +226,37 @@ describe('markdown-to-tiptap parser', () => {
     const md2 = tiptapJsonToMarkdown(parsed);
     expect(md2).toBe(md);
   });
+
+  it('parses + round-trips inline image syntax', () => {
+    const md = 'See ![chart](https://example.com/c.png) inline.';
+    const parsed = markdownToTiptapJson(md);
+    const para = parsed.content[0];
+    expect(para.type).toBe('paragraph');
+    const inline = para.content ?? [];
+    // text + image + text
+    expect(inline.length).toBe(3);
+    expect(inline[0].type).toBe('text');
+    expect(inline[0].text).toBe('See ');
+    expect(inline[1].type).toBe('image');
+    expect(inline[1].attrs?.src).toBe('https://example.com/c.png');
+    expect(inline[1].attrs?.alt).toBe('chart');
+    expect(inline[2].type).toBe('text');
+    expect(inline[2].text).toBe(' inline.');
+    // Round-trip back to identical markdown.
+    expect(tiptapJsonToMarkdown(parsed)).toBe(md);
+  });
+
+  it('parses an image with empty alt text', () => {
+    const md = '![](https://example.com/p.png)';
+    const parsed = markdownToTiptapJson(md);
+    const inline = parsed.content[0].content ?? [];
+    expect(inline.length).toBe(1);
+    expect(inline[0].type).toBe('image');
+    expect(inline[0].attrs?.src).toBe('https://example.com/p.png');
+    // No alt key when text is empty (keeps the round-trip stable).
+    expect(inline[0].attrs?.alt).toBeUndefined();
+    expect(tiptapJsonToMarkdown(parsed)).toBe(md);
+  });
 });
 
 describe('anchor-ops', () => {
@@ -381,6 +412,83 @@ describe('sanitizer policy', () => {
     const inline = out.content[0].content ?? [];
     expect(inline[0].marks?.length ?? 0).toBe(0);
     expect(inline[1].marks?.[0]?.attrs?.href).toBe('https://x.com/');
+  });
+
+  it('sanitizeRichTextDocument allows http/https/data image src + strips extras', () => {
+    const out = sanitizeRichTextDocument(
+      doc([
+        {
+          type: 'paragraph',
+          content: [
+            { type: 'text', text: 'inline ' },
+            {
+              type: 'image',
+              attrs: {
+                src: 'https://lh3.googleusercontent.com/abc=w750',
+                alt: 'chart',
+                onclick: 'alert(1)',
+                srcset: 'huge.png 2x',
+              },
+            },
+            { type: 'text', text: ' http img ' },
+            {
+              type: 'image',
+              attrs: { src: 'http://example.com/pic.jpg', alt: 'pic' },
+            },
+            { type: 'text', text: ' data img ' },
+            {
+              type: 'image',
+              attrs: {
+                src: 'data:image/png;base64,iVBORw0KGgo=',
+              },
+            },
+          ],
+        },
+      ]),
+    );
+    const inline = out.content[0].content ?? [];
+    // First image kept; src normalized, alt preserved, onclick + srcset gone.
+    const first = inline[1];
+    expect(first.type).toBe('image');
+    expect(first.attrs?.src).toBe('https://lh3.googleusercontent.com/abc=w750');
+    expect(first.attrs?.alt).toBe('chart');
+    expect(first.attrs?.onclick).toBeUndefined();
+    expect(first.attrs?.srcset).toBeUndefined();
+    // Second image: http URL allowed.
+    expect(inline[3].type).toBe('image');
+    expect(inline[3].attrs?.src).toBe('http://example.com/pic.jpg');
+    // Third image: data:image/png allowed.
+    expect(inline[5].type).toBe('image');
+    expect(inline[5].attrs?.src).toBe('data:image/png;base64,iVBORw0KGgo=');
+  });
+
+  it('sanitizeRichTextDocument drops image with unsafe src (javascript:, data:text/html)', () => {
+    const out = sanitizeRichTextDocument(
+      doc([
+        {
+          type: 'paragraph',
+          content: [
+            { type: 'text', text: 'a' },
+            {
+              type: 'image',
+              attrs: { src: 'javascript:alert(1)' },
+            },
+            { type: 'text', text: 'b' },
+            {
+              type: 'image',
+              attrs: { src: 'data:text/html,<script>alert(1)</script>' },
+            },
+          ],
+        },
+      ]),
+    );
+    const inline = out.content[0].content ?? [];
+    // Both unsafe images are replaced with empty text nodes (preserves
+    // surrounding structure but no live src).
+    expect(inline[1].type).toBe('text');
+    expect(inline[1].text).toBe('');
+    expect(inline[3].type).toBe('text');
+    expect(inline[3].text).toBe('');
   });
 });
 

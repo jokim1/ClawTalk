@@ -5872,6 +5872,24 @@ a {
   min-height: 4rem;
 }
 
+.rich-text-editor .ProseMirror img {
+  /* Inline images: paste from Google Docs / drag-drop / markdown
+     `![alt](url)` syntax. Cap at the editor width to avoid blowouts
+     from full-resolution Google CDN sources. */
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 1em auto;
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(31, 52, 88, 0.06);
+  background: #f5f3ec;
+}
+
+.rich-text-editor .ProseMirror img.ProseMirror-selectednode {
+  outline: 2px solid #1356b8;
+  outline-offset: 2px;
+}
+
 .rich-text-editor .ProseMirror p {
   margin: 0 0 0.85em;
 }

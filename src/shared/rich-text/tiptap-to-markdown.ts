@@ -142,6 +142,12 @@ function renderInlineContent(content: RichTextNode[] | undefined): string {
     .map((node) => {
       if (node.type === 'text') return applyMarks(node.text ?? '', node.marks);
       if (node.type === 'hardBreak') return '  \n';
+      if (node.type === 'image') {
+        const src = typeof node.attrs?.src === 'string' ? node.attrs.src : '';
+        const alt = typeof node.attrs?.alt === 'string' ? node.attrs.alt : '';
+        if (src.length === 0) return '';
+        return `![${alt}](${src})`;
+      }
       // Nested inline: recurse.
       return renderInlineContent(node.content);
     })
