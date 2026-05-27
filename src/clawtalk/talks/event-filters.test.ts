@@ -205,6 +205,36 @@ describe('buildTalkThreadEventFilter', () => {
     }
   });
 
+  describe('talk_run_retrying (thread-scoped queue retry visibility)', () => {
+    it('accepts talk_run_retrying when threadId matches', () => {
+      expect(
+        filter(
+          makeEvent('talk_run_retrying', {
+            talkId: 'talk-1',
+            threadId: 'thread-A',
+            runId: 'run-1',
+            retryAttempt: 1,
+            maxRetries: 3,
+          }),
+        ),
+      ).toBe(true);
+    });
+
+    it('rejects talk_run_retrying on threadId mismatch', () => {
+      expect(
+        filter(
+          makeEvent('talk_run_retrying', {
+            talkId: 'talk-1',
+            threadId: 'thread-B',
+            runId: 'run-1',
+            retryAttempt: 1,
+            maxRetries: 3,
+          }),
+        ),
+      ).toBe(false);
+    });
+  });
+
   describe('talk_tools_changed (Talk-level, thread-agnostic)', () => {
     it('accepts talk_tools_changed regardless of payload threadId — chip bar is Talk-level', () => {
       expect(

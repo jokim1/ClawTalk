@@ -180,6 +180,43 @@ describe('LiveResponsePanel render', () => {
     expect(screen.getByText(/3s/)).toBeTruthy();
   });
 
+  it('swaps Queued pill for Retrying N/M when retryAttempt is set', () => {
+    render(
+      <LiveResponsePanel
+        {...makeProps({
+          response: makeResponse({
+            pendingStatus: 'queued',
+            retryAttempt: 2,
+            retryMaxRetries: 3,
+          }),
+          now: 1_700_000_003_000,
+        })}
+      />,
+    );
+    expect(screen.getByText('Retrying 2/3')).toBeTruthy();
+    // Body fallback also swaps so the user gets clear feedback.
+    expect(screen.getByText(/Waiting on retry 2\/3/)).toBeTruthy();
+  });
+
+  it('ignores retryAttempt once the run has moved to running/terminal', () => {
+    // Stale retry counter shouldn't override the more-informative
+    // "Running" label when the consumer has finally claimed the run.
+    render(
+      <LiveResponsePanel
+        {...makeProps({
+          response: makeResponse({
+            pendingStatus: 'running',
+            retryAttempt: 2,
+            retryMaxRetries: 3,
+          }),
+          run: makeRun({ status: 'running' }),
+        })}
+      />,
+    );
+    expect(screen.getByText('Running')).toBeTruthy();
+    expect(screen.queryByText(/Retrying/)).toBeNull();
+  });
+
   it('shows M:SS format past 60s with tabular-nums on the elapsed span', () => {
     const { container } = render(
       <LiveResponsePanel

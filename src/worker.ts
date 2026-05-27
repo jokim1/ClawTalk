@@ -21,6 +21,7 @@
 // ack.
 
 import { type RequestExecutionContext, withRequestScopedDb } from './db.js';
+import { logger } from './logger.js';
 import { getWorkerApp } from './clawtalk/web/worker-app.js';
 import {
   BlockedBySiblingError,
@@ -101,6 +102,12 @@ interface UserEventHubStub {
 interface QueueMessage {
   id: string;
   body: unknown;
+  // CF Queues populates `attempts` with the delivery attempt count
+  // (1 on first delivery, 2 on first retry, ...). Used by the queue
+  // handler to thread retry visibility through processTalkRunMessage
+  // so the UI can surface "Retrying N/3" instead of stale
+  // "Queued · 2:30" badges.
+  attempts: number;
   ack(): void;
   retry(options?: { delaySeconds?: number }): void;
 }
@@ -192,13 +199,21 @@ export default {
     ctx: RequestExecutionContext,
   ): Promise<void> {
     const isDlq = batch.queue === 'clawtalk-talk-runs-dlq';
+    // Total delivery attempts per message before DLQ: 1 initial + max_retries
+    // from wrangler.toml (currently 3) = 4. Surfaced on the retry outbox
+    // event payload so the UI can show "Retrying N/3" without hardcoding
+    // the limit client-side.
+    const QUEUE_MAX_RETRIES = 3;
     for (const message of batch.messages) {
       const body = message.body;
       if (!isRunMessageBody(body)) {
-        console.warn(
+        logger.warn(
+          {
+            queue: batch.queue,
+            messageId: message.id,
+            attempts: message.attempts,
+          },
           'queue message: invalid body shape, acking',
-          batch.queue,
-          message.id,
         );
         message.ack();
         continue;
@@ -215,32 +230,50 @@ export default {
           async () =>
             isDlq
               ? processDlqMessage({ runId: body.runId })
-              : processTalkRunMessage({ runId: body.runId }),
+              : processTalkRunMessage({
+                  runId: body.runId,
+                  attempts: message.attempts,
+                  maxRetries: QUEUE_MAX_RETRIES,
+                }),
         );
         message.ack();
       } catch (err) {
         if (isDlq) {
           // No DLQ retries — log and ack so the message doesn't loop.
-          console.error(
+          logger.error(
+            {
+              messageId: message.id,
+              runId: body.runId,
+              err: err instanceof Error ? err.message : String(err),
+            },
             'dlq message: processDlqMessage threw, acking',
-            message.id,
-            body.runId,
-            err instanceof Error ? err.message : String(err),
           );
           message.ack();
           continue;
         }
-        if (err instanceof BlockedBySiblingError) {
-          message.retry({ delaySeconds: 60 });
-          continue;
-        }
-        console.error(
-          'queue message: processTalkRunMessage threw',
-          message.id,
-          body.runId,
-          err instanceof Error ? err.message : String(err),
+        // Shorter delay for sibling-sequencing waits (the blocking prior
+        // run typically finishes in seconds, not a minute). The generic-
+        // error path keeps 30s because most other failure modes (cold-
+        // start DB, transient network) take longer to clear.
+        const isSiblingBlock = err instanceof BlockedBySiblingError;
+        const delaySeconds = isSiblingBlock ? 10 : 30;
+        const errorClass =
+          err instanceof Error ? err.constructor.name : 'Unknown';
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        logger.warn(
+          {
+            messageId: message.id,
+            runId: body.runId,
+            attempts: message.attempts,
+            maxRetries: QUEUE_MAX_RETRIES,
+            reason: isSiblingBlock ? 'blocked_by_sibling' : 'execution_error',
+            errorClass,
+            errorMessage,
+            delaySeconds,
+          },
+          'queue message: retrying',
         );
-        message.retry({ delaySeconds: 30 });
+        message.retry({ delaySeconds });
       }
     }
   },

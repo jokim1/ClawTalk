@@ -229,6 +229,17 @@ export type TalkToolsChangedEvent = {
   active: Record<string, boolean>;
 };
 
+// Emitted by the queue handler in worker.ts when a CF Queues redelivery
+// fires (attempts > 1). Lets the UI swap "Queued · 2:30" for "Retrying
+// N/maxRetries" so the user knows the queue is alive but waiting.
+export type TalkRunRetryingEvent = {
+  talkId: string | null;
+  threadId: string | null;
+  runId: string;
+  retryAttempt: number;
+  maxRetries: number;
+};
+
 interface TalkStreamCallbacks {
   onMessageAppended: (event: MessageAppendedEvent) => void;
   onRunStarted: (event: TalkRunStartedEvent) => void;
@@ -253,6 +264,7 @@ interface TalkStreamCallbacks {
   onContentEditResolved?: (event: TalkContentEditResolvedEvent) => void;
   onToolCallStarted?: (event: TalkToolCallStartedEvent) => void;
   onTalkToolsChanged?: (event: TalkToolsChangedEvent) => void;
+  onTalkRunRetrying?: (event: TalkRunRetryingEvent) => void;
   onReplayGap: () => void | Promise<void>;
   onStateChange?: (state: TalkStreamState) => void;
   onUnauthorized: () => void;
@@ -508,6 +520,11 @@ export function openTalkStream(input: OpenTalkStreamInput): TalkStreamHandle {
       case 'talk_tools_changed': {
         const payload = parseFrame<TalkToolsChangedEvent>(frame);
         if (payload) input.onTalkToolsChanged?.(payload);
+        return;
+      }
+      case 'talk_run_retrying': {
+        const payload = parseFrame<TalkRunRetryingEvent>(frame);
+        if (payload) input.onTalkRunRetrying?.(payload);
         return;
       }
       case 'replay_gap': {

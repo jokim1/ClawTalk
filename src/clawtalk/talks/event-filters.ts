@@ -85,6 +85,11 @@ export function buildTalkThreadEventFilter(
       // in every thread of the Talk on every tool call.
       case 'tool_call_started':
         return payload.threadId === undefined || payload.threadId === threadId;
+      // Queue retry visibility — emitted by worker.ts queue handler when
+      // a CF Queues redelivery hits. Payload carries threadId from the
+      // talk_runs row so the right thread's LiveResponsePanel updates.
+      case 'talk_run_retrying':
+        return payload.threadId === threadId;
       default:
         // New event types must be added to this switch to be visible in
         // thread-scoped streams. Unknown events are excluded by default.
