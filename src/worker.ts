@@ -226,6 +226,14 @@ export default {
             DB_EVENT_HUB_URL: env.DB_EVENT_HUB_URL,
             USER_EVENT_HUB: env.USER_EVENT_HUB,
             TALK_RUN_QUEUE: env.TALK_RUN_QUEUE,
+            // Without ATTACHMENTS here, the executor's
+            // `loadAttachmentFile` throws "ATTACHMENTS R2 binding
+            // missing from request scope" on every image/PDF read —
+            // the catch in loadDirectPromptAttachments emits a "could
+            // not be loaded for vision input" text fallback, and the
+            // model dutifully reports vision is broken. fetch() already
+            // binds this; queue() and scheduled() didn't.
+            ATTACHMENTS: env.ATTACHMENTS,
           },
           async () =>
             isDlq
