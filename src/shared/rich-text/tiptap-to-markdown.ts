@@ -80,6 +80,19 @@ function renderBlockNode(node: RichTextNode, depth: number): string | null {
       return '---';
     case 'hardBreak':
       return '';
+    case 'image': {
+      // Top-level (block) image. Tiptap's Image extension is block by
+      // default — a Google-Docs paste of a standalone `<img>` lands as
+      // its own block node, NOT inside a paragraph. Without this case
+      // the default branch hit `renderInlineContent(node.content)`
+      // which returned `''` for a leaf node and silently dropped the
+      // image from the saved markdown. Inline images inside paragraphs
+      // are handled by renderInlineContent's image case as well.
+      const src = typeof node.attrs?.src === 'string' ? node.attrs.src : '';
+      if (src.length === 0) return null;
+      const alt = typeof node.attrs?.alt === 'string' ? node.attrs.alt : '';
+      return `![${alt}](${src})`;
+    }
     default:
       // Unknown block — degrade to plain text so user content is not lost.
       return renderInlineContent(node.content);

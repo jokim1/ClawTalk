@@ -257,6 +257,69 @@ describe('markdown-to-tiptap parser', () => {
     expect(inline[0].attrs?.alt).toBeUndefined();
     expect(tiptapJsonToMarkdown(parsed)).toBe(md);
   });
+
+  // Regression for the Google-Docs paste bug: when Tiptap's Image
+  // extension was block-default (`inline: false`), a paste of a
+  // standalone <img> created a TOP-LEVEL image node — not nested in a
+  // paragraph. The serializer's renderBlockNode hit `default` →
+  // renderInlineContent(undefined) → '' → the image silently
+  // disappeared from the saved markdown. Lock in that block-level
+  // image nodes round-trip too.
+  it('serializes a top-level (block) image node to `![alt](url)`', () => {
+    const blockImageDoc: RichTextDocument = doc([
+      {
+        type: 'image',
+        attrs: { src: 'https://example.com/grid.png', alt: 'grid' },
+      },
+    ]);
+    expect(tiptapJsonToMarkdown(blockImageDoc)).toBe(
+      '![grid](https://example.com/grid.png)',
+    );
+  });
+
+  it('serializes a block image with empty alt as `![](url)`', () => {
+    const blockImageDoc: RichTextDocument = doc([
+      { type: 'image', attrs: { src: 'https://example.com/a.png' } },
+    ]);
+    expect(tiptapJsonToMarkdown(blockImageDoc)).toBe(
+      '![](https://example.com/a.png)',
+    );
+  });
+
+  it('returns null for a block image with no src (drops the node)', () => {
+    const blockImageDoc: RichTextDocument = doc([
+      { type: 'image', attrs: { alt: 'no src' } },
+    ]);
+    // No src → no markdown — node drops, doesn't degrade to empty
+    // paragraph fragments.
+    expect(tiptapJsonToMarkdown(blockImageDoc)).toBe('');
+  });
+
+  it('round-trips a Google-Docs-shaped paste (paragraph + standalone images + paragraph)', () => {
+    // Mirrors what a Google Docs HTML paste produces after the Tiptap
+    // schema settles: surrounding paragraphs, with inline images
+    // between (each image lives inside a single-child paragraph since
+    // the Image extension is now `inline: true`). This is the shape
+    // Joseph's image grid takes once the bug is fixed.
+    const md = [
+      'Intro paragraph.',
+      '',
+      '![first](https://example.com/1.png)',
+      '',
+      '![second](https://example.com/2.png)',
+      '',
+      'Outro paragraph.',
+    ].join('\n');
+    const parsed = markdownToTiptapJson(md);
+    expect(parsed.content.length).toBe(4);
+    expect(parsed.content[0].type).toBe('paragraph');
+    expect(parsed.content[1].type).toBe('paragraph');
+    expect(parsed.content[1].content?.[0].type).toBe('image');
+    expect(parsed.content[2].type).toBe('paragraph');
+    expect(parsed.content[2].content?.[0].type).toBe('image');
+    expect(parsed.content[3].type).toBe('paragraph');
+    expect(tiptapJsonToMarkdown(parsed)).toBe(md);
+  });
 });
 
 describe('anchor-ops', () => {

@@ -236,11 +236,17 @@ export function RichTextEditor({
       }),
       // Image extension — accepts `<img>` tags via Tiptap's built-in
       // HTML-to-node converter on paste, and round-trips with the
-      // markdown serializer as `![alt](url)`. `inline: false` keeps
-      // images as block-level placements (matches markdown semantics
-      // where `![](url)` on its own line is a block image).
+      // markdown serializer as `![alt](url)`. `inline: true` matches
+      // the markdown convention (images live inside paragraphs as
+      // inline content) AND matches what `markdownToTiptapJson` emits
+      // when it sees `![](url)` syntax inside parseInline. With
+      // `inline: false` (the Tiptap default) a Google Docs paste of a
+      // standalone <img> landed as a top-level block image node, which
+      // the markdown serializer's block path didn't recognize — it
+      // serialized to an empty string and silently dropped the image
+      // grid on autosave.
       Image.configure({
-        inline: false,
+        inline: true,
         allowBase64: true,
         HTMLAttributes: {
           // Loading=lazy avoids blocking page render when a paste
