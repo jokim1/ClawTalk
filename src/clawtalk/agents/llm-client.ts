@@ -97,6 +97,27 @@ export type LlmContentBlock =
       data: string;
       detail?: 'auto' | 'low' | 'high';
     }
+  | {
+      /**
+       * Native PDF document input. Anthropic emits this as a
+       * `{type:'document', source:{type:'base64', media_type, data}}`
+       * block; Codex Responses emits it as an `input_file` with inline
+       * base64 `file_data`. Providers without native PDF support drop
+       * these blocks defensively (the loader should filter them out
+       * via `agentSupportsDocuments` before they reach the client).
+       */
+      type: 'document';
+      mimeType: string;
+      data: string;
+      title?: string;
+      /**
+       * When set, the executor requests a prompt-cache breakpoint at
+       * this block (Anthropic only). Document blocks should be placed
+       * before the user's per-turn text so the cache key includes the
+       * stable PDF and excludes the varying text.
+       */
+      cacheControl?: 'ephemeral' | 'ephemeral_1h';
+    }
   | { type: 'tool_use'; id: string; name: string; input: unknown }
   | {
       type: 'tool_result';
@@ -183,6 +204,8 @@ interface AnthropicMessage {
   content: AnthropicContent[];
 }
 
+type AnthropicCacheControl = { type: 'ephemeral'; ttl?: '5m' | '1h' };
+
 type AnthropicContent =
   | { type: 'text'; text: string }
   | {
@@ -192,6 +215,16 @@ type AnthropicContent =
         media_type: string;
         data: string;
       };
+    }
+  | {
+      type: 'document';
+      source: {
+        type: 'base64';
+        media_type: string;
+        data: string;
+      };
+      title?: string;
+      cache_control?: AnthropicCacheControl;
     }
   | {
       type: 'tool_use';
@@ -502,8 +535,11 @@ async function readSseResponse(
 /**
  * Convert LlmMessage[] to Anthropic format.
  * Extracts system message if present, converts tool calls to Anthropic format.
+ *
+ * Exported for unit-test access — the streaming entry point
+ * `streamLlmResponse` is the only production caller.
  */
-function buildAnthropicRequest(
+export function buildAnthropicRequest(
   modelId: string,
   messages: LlmMessage[],
   tools: LlmToolDefinition[] | undefined,
@@ -584,6 +620,23 @@ function buildAnthropicRequest(
                 data: block.data,
               },
             });
+          } else if (block.type === 'document') {
+            const docBlock: Extract<AnthropicContent, { type: 'document' }> = {
+              type: 'document',
+              source: {
+                type: 'base64',
+                media_type: block.mimeType,
+                data: block.data,
+              },
+              ...(block.title ? { title: block.title } : {}),
+            };
+            if (block.cacheControl) {
+              docBlock.cache_control =
+                block.cacheControl === 'ephemeral_1h'
+                  ? { type: 'ephemeral', ttl: '1h' }
+                  : { type: 'ephemeral' };
+            }
+            content.push(docBlock);
           }
         }
       }

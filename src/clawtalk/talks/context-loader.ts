@@ -110,6 +110,18 @@ export interface ContextPackage {
   contextImageSources: ContextImageSourceRef[];
 
   /**
+   * Talk-level Context PDF sources to attach as native document blocks
+   * on the current user turn. Populated only when the caller declared
+   * the active agent supports PDF documents
+   * (`agentSupportsDocuments: true`). Auto-attach selects at most one
+   * source by recency; @-ref additions arrive with `forceAttached=true`
+   * and bypass the count cap (but not the per-source size cap nor the
+   * total-payload budget). Non-doc-capable agents see a manifest note
+   * and rely on the `extracted_text` text fallback instead.
+   */
+  contextDocumentSources: ContextDocumentSourceRef[];
+
+  /**
    * Pre-fetched `@-ref` injection block to prepend to the user-role
    * message this turn. Null when the user did not @-reference any
    * sources. Already sanitized + bounded by FORCED_INJECTION_BUDGET_BYTES.
@@ -140,6 +152,22 @@ export interface ContextImageSourceRef {
   mimeType: string;
   storageKey: string;
   fileSize: number;
+}
+
+export interface ContextDocumentSourceRef {
+  ref: string;
+  id: string;
+  title: string;
+  fileName: string;
+  mimeType: string;
+  storageKey: string;
+  fileSize: number;
+  /**
+   * True when the user explicitly @-ref'd this PDF on the latest turn.
+   * Force-attached refs bypass the per-turn count cap (N=1) but still
+   * obey the per-source size cap and the total-payload budget.
+   */
+  forceAttached: boolean;
 }
 
 export interface TalkRunContextStateEntrySnapshot {
@@ -218,6 +246,20 @@ const OUTPUT_RESERVE = 4096; // Tokens to reserve for model output
 const TOOL_SCHEMA_RESERVE = 2000; // Tokens to reserve for tool definitions
 const STATE_SNAPSHOT_RESERVE = 2000; // Tokens reserved for bounded Talk state
 const RETRIEVAL_SECTION_RESERVE = 1200; // Tokens reserved for targeted retrieval
+
+// Per-source raw byte cap on PDF documents auto-attached or @-ref'd
+// onto a user turn. 12 MiB raw expands to ~16 MB base64 string + ~16 MB
+// JSON.stringify materialization, leaving headroom against the Anthropic
+// 32 MB total-request-payload cap and the Cloudflare Workers 128 MB
+// per-isolate heap (shared across concurrent requests). Codex review
+// flagged the prior 16 MB plan as too aggressive — see
+// ~/.claude/plans/pdf-vision-plan.md D3.
+export const MAX_PDF_DOCUMENT_BYTES = 12 * 1024 * 1024;
+
+// Maximum number of PDFs auto-attached per turn before @-ref bypass.
+// Start conservative at 1 to keep cost + heap predictable; lift later
+// once production telemetry confirms safe room.
+export const MAX_AUTO_ATTACH_PDF_COUNT = 1;
 // 20KB budget for the inlined doc — large enough to give the agent the
 // actual prose it's being asked to edit, while truncating from the
 // bottom on really long docs. Read-block tool is the v2 escape hatch.
@@ -385,6 +427,15 @@ export async function loadTalkContext(
      * "hidden" note in the source manifest.
      */
     agentSupportsVision?: boolean;
+    /**
+     * Whether the active agent's model accepts native PDF document
+     * blocks on the user turn. Controls how PDF Context sources are
+     * surfaced: doc-capable models get the PDF auto-attached (capped
+     * at one per turn by recency, plus any @-ref additions) as a
+     * native document block; other models see a manifest note and
+     * read the `extracted_text` fallback via `read_source`.
+     */
+    agentSupportsDocuments?: boolean;
   },
 ): Promise<ContextPackage> {
   const db = getDbPg();
@@ -408,7 +459,26 @@ export async function loadTalkContext(
   // Step 2: Build source manifest
   const sources = await fetchSources(db, talkId);
   const agentSupportsVision = options?.agentSupportsVision ?? false;
-  const sourceLines = buildSourceManifest(sources, agentSupportsVision);
+  const agentSupportsDocuments = options?.agentSupportsDocuments ?? false;
+
+  // Auto-attach selection for PDFs: most-recently-updated source under
+  // the per-source size cap, capped at N=1. @-ref bypass merges in
+  // additional rows below (force-attached can exceed N=1, never the
+  // per-source size cap).
+  const eligiblePdfSources = sources
+    .filter(isPdfSource)
+    .filter((row) => rowFileSizeBytes(row) <= MAX_PDF_DOCUMENT_BYTES)
+    .sort(
+      (a, b) =>
+        new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
+    );
+  const autoAttachedPdfRefs = new Set<string>(
+    agentSupportsDocuments
+      ? eligiblePdfSources
+          .slice(0, MAX_AUTO_ATTACH_PDF_COUNT)
+          .map((row) => row.source_ref)
+      : [],
+  );
 
   // Step 2a: Resolve `@-ref` mentions in the latest user message into a
   // pre-fetched injection block. Must happen BEFORE history budgeting so
@@ -416,14 +486,27 @@ export async function loadTalkContext(
   // otherwise a 40 KB injection silently steals history slots. The
   // executor prefixes this block onto the user-role message (not the
   // system prompt) so source content stays in the user-authority lane.
+  //
+  // For PDFs specifically: when the agent supports native PDF documents,
+  // the @-ref resolver hands the source off to `contextDocumentSources`
+  // (force-attached) instead of inlining text. The non-doc path falls
+  // back to the existing text-fenced injection.
   const userMessageText = options?.retrievalQuery ?? '';
   const { refs: forcedInjectionRefs, slugs: forcedInjectionSlugs } =
     extractSourceReferences(userMessageText);
-  const forcedInjectionText = await buildAtRefForcedInjection(
+  const atRefResult = await buildAtRefForcedInjection(
     db,
     talkId,
     forcedInjectionRefs,
     forcedInjectionSlugs,
+    {
+      agentSupportsDocuments,
+      perSourceMaxBytes: MAX_PDF_DOCUMENT_BYTES,
+    },
+  );
+  const forcedInjectionText = atRefResult.text;
+  const forcedAttachedPdfRefs = new Set(
+    atRefResult.forcedPdfDocuments.map((row) => row.source_ref),
   );
   const forcedInjectionTokens = forcedInjectionText
     ? Math.ceil(forcedInjectionText.length * CHARS_TO_TOKENS)
@@ -439,12 +522,44 @@ export async function loadTalkContext(
           fileName: row.file_name ?? `${row.source_ref}.bin`,
           mimeType: row.mime_type!,
           storageKey: row.storage_key!,
-          fileSize:
-            typeof row.file_size === 'string'
-              ? Number(row.file_size) || 0
-              : (row.file_size ?? 0),
+          fileSize: rowFileSizeBytes(row),
         }))
     : [];
+
+  // Dedupe by source_ref; force-attached wins over auto-selection so
+  // the executor only loads each PDF once. Forced refs append after
+  // auto refs to preserve the user's explicit ordering in the @-ref
+  // list (auto-attached PDF first, then any extra @-refs).
+  const contextDocumentSources: ContextDocumentSourceRef[] =
+    agentSupportsDocuments
+      ? (() => {
+          const out: ContextDocumentSourceRef[] = [];
+          const seen = new Set<string>();
+          for (const row of eligiblePdfSources) {
+            if (!autoAttachedPdfRefs.has(row.source_ref)) continue;
+            if (forcedAttachedPdfRefs.has(row.source_ref)) continue;
+            out.push(toContextDocumentSourceRef(row, false));
+            seen.add(row.source_ref);
+          }
+          for (const row of atRefResult.forcedPdfDocuments) {
+            if (seen.has(row.source_ref)) continue;
+            out.push(toContextDocumentSourceRef(row, true));
+            seen.add(row.source_ref);
+          }
+          return out;
+        })()
+      : [];
+
+  const pdfManifestState: PdfManifestState = {
+    agentSupportsDocuments,
+    autoAttachedRefs: autoAttachedPdfRefs,
+    forceAttachedRefs: forcedAttachedPdfRefs,
+  };
+  const sourceLines = buildSourceManifest(
+    sources,
+    agentSupportsVision,
+    pdfManifestState,
+  );
   const retrievedContext = buildRetrievedContext({
     query: options?.retrievalQuery ?? null,
     personaRole,
@@ -632,6 +747,7 @@ export async function loadTalkContext(
     estimatedTokens,
     contextSnapshot,
     contextImageSources,
+    contextDocumentSources,
     forcedInjectionText,
     metadata,
   };
@@ -689,6 +805,7 @@ export interface SourceRow {
   storage_key: string | null;
   extracted_text: string | null;
   status: string;
+  updated_at: string;
 }
 
 async function fetchSources(db: Sql, talkId: string): Promise<SourceRow[]> {
@@ -706,7 +823,8 @@ async function fetchSources(db: Sql, talkId: string): Promise<SourceRow[]> {
       mime_type,
       storage_key,
       extracted_text,
-      status
+      status,
+      updated_at
     from public.talk_context_sources
     where talk_id = ${talkId}::uuid and status = 'ready'
     order by sort_order asc
@@ -727,9 +845,63 @@ function isImageSource(row: SourceRow): boolean {
   );
 }
 
+function isPdfSource(row: SourceRow): boolean {
+  return (
+    row.source_type === 'file' &&
+    row.mime_type === 'application/pdf' &&
+    !!row.storage_key
+  );
+}
+
+function rowFileSizeBytes(row: SourceRow): number {
+  if (typeof row.file_size === 'string') return Number(row.file_size) || 0;
+  return row.file_size ?? 0;
+}
+
+interface PdfRowLike {
+  id: string;
+  source_ref: string;
+  title: string;
+  file_name: string | null;
+  mime_type: string | null;
+  storage_key: string | null;
+  file_size: number | string | null;
+}
+
+function toContextDocumentSourceRef(
+  row: PdfRowLike,
+  forceAttached: boolean,
+): ContextDocumentSourceRef {
+  const fileSize =
+    typeof row.file_size === 'string'
+      ? Number(row.file_size) || 0
+      : (row.file_size ?? 0);
+  return {
+    ref: row.source_ref,
+    id: row.id,
+    title: row.title,
+    fileName: row.file_name ?? `${row.source_ref}.pdf`,
+    mimeType: row.mime_type!,
+    storageKey: row.storage_key!,
+    fileSize,
+    forceAttached,
+  };
+}
+
+export interface PdfManifestState {
+  agentSupportsDocuments: boolean;
+  autoAttachedRefs: Set<string>;
+  forceAttachedRefs: Set<string>;
+}
+
 export function buildSourceManifest(
   sources: SourceRow[],
   agentSupportsVision: boolean,
+  pdfState: PdfManifestState = {
+    agentSupportsDocuments: false,
+    autoAttachedRefs: new Set(),
+    forceAttachedRefs: new Set(),
+  },
 ): Array<{
   ref: string;
   title: string;
@@ -755,6 +927,52 @@ export function buildSourceManifest(
         sourceUrl: source.source_url,
         fileName: source.file_name,
         line: `[${ref}] ${source.title}${suffix}`,
+      };
+    }
+
+    // PDF sources: render with document-aware suffix when the agent
+    // supports native PDF input. Vision-doc capable agents see the
+    // PDF as both text preview AND a native attached document (auto
+    // or @-ref); non-doc-capable agents only see the text preview
+    // and can call `read_source(ref)` for full extracted text.
+    if (isPdfSource(source)) {
+      const sizeBytes = rowFileSizeBytes(source);
+      const tooBig = sizeBytes > MAX_PDF_DOCUMENT_BYTES;
+      let suffix: string;
+      if (!pdfState.agentSupportsDocuments) {
+        suffix =
+          " (PDF — text-only, this agent's model lacks PDF document vision)";
+      } else if (tooBig) {
+        suffix = ` (PDF — too large to attach as document, > ${Math.floor(
+          MAX_PDF_DOCUMENT_BYTES / (1024 * 1024),
+        )} MB; text preview only)`;
+      } else if (pdfState.forceAttachedRefs.has(ref)) {
+        suffix = ' (PDF — pages attached to this turn via @-ref)';
+      } else if (pdfState.autoAttachedRefs.has(ref)) {
+        suffix = ' (PDF — pages attached to this turn)';
+      } else {
+        suffix = ` (PDF — text-only this turn; @${ref} to attach pages)`;
+      }
+
+      const parts: string[] = [`[${ref}] ${source.title}${suffix}`];
+      if (source.note && source.note.trim().length > 0) {
+        parts[0] += ` — note: ${source.note.trim()}`;
+      }
+      const preview = buildSourcePreview(source.extracted_text);
+      if (preview) {
+        parts.push(`preview: "${preview}"`);
+      } else if (source.extracted_text === null) {
+        parts.push(
+          '(text extraction failed; native PDF attach still available)',
+        );
+      }
+      return {
+        ref,
+        title: source.title,
+        sourceType: source.source_type,
+        sourceUrl: source.source_url,
+        fileName: source.file_name,
+        line: parts.join(' — '),
       };
     }
 
@@ -846,11 +1064,43 @@ export interface AtRefCandidateRow {
   title_slug: string | null;
   status: string;
   extracted_text: string | null;
+  mime_type: string | null;
+  storage_key: string | null;
+  file_size: number | string | null;
+  file_name: string | null;
+  id: string;
+  source_type: string;
+  source_url: string | null;
+  updated_at: string;
 }
 
 type ForcedInjectionResolution =
   | { kind: 'resolved'; sourceRef: string; title: string; content: string }
   | { kind: 'pending'; sourceRef: string; title: string }
+  | {
+      /**
+       * PDF row force-attached as a native document block. The text
+       * payload omitted; manifest note in the prompt explains the
+       * pages-attached-this-turn behavior. Carried back via the
+       * `forcedPdfDocuments` array so the executor can hydrate.
+       */
+      kind: 'pdf-document';
+      sourceRef: string;
+      title: string;
+      row: AtRefCandidateRow;
+    }
+  | {
+      /**
+       * PDF row that would have been force-attached but exceeds the
+       * per-source size cap. Fall through to text injection if the row
+       * has extracted_text; otherwise emit a pending note.
+       */
+      kind: 'pdf-too-large';
+      sourceRef: string;
+      title: string;
+      maxBytes: number;
+      fallbackText: string | null;
+    }
   | { kind: 'missing-ref'; requestedRef: string }
   | { kind: 'missing-slug'; requestedSlug: string }
   | { kind: 'ambiguous-slug'; requestedSlug: string; readyRefs: string[] };
@@ -868,6 +1118,20 @@ function renderForcedInjectionResolution(
       ].join('\n');
     case 'pending':
       return `[${res.sourceRef}] ${res.title} (content not yet available)`;
+    case 'pdf-document':
+      return `[${res.sourceRef}] ${res.title} (PDF — pages attached to this turn via @-ref; native document block carries the visual layout, charts, and full text)`;
+    case 'pdf-too-large': {
+      const mb = Math.floor(res.maxBytes / (1024 * 1024));
+      if (res.fallbackText) {
+        return [
+          `[${res.sourceRef}] ${res.title} (PDF — exceeds ${mb} MB attach cap; text fallback below)`,
+          '<<<source',
+          sanitizeBlockForPrompt(res.fallbackText),
+          'source>>>',
+        ].join('\n');
+      }
+      return `[${res.sourceRef}] ${res.title} (PDF — exceeds ${mb} MB attach cap; no text available)`;
+    }
     case 'missing-ref':
       return `[${res.requestedRef}] (no such source)`;
     case 'missing-slug':
@@ -879,10 +1143,71 @@ function renderForcedInjectionResolution(
   }
 }
 
+interface AtRefResolveOptions {
+  agentSupportsDocuments?: boolean;
+  perSourceMaxBytes?: number;
+}
+
+function rowIsPdfWithStorage(row: AtRefCandidateRow): boolean {
+  return (
+    row.source_type === 'file' &&
+    row.mime_type === 'application/pdf' &&
+    !!row.storage_key
+  );
+}
+
+function rowFileSizeBytesAt(row: AtRefCandidateRow): number {
+  if (typeof row.file_size === 'string') return Number(row.file_size) || 0;
+  return row.file_size ?? 0;
+}
+
+function resolveSingleRowForRef(
+  row: AtRefCandidateRow,
+  options: AtRefResolveOptions,
+): ForcedInjectionResolution {
+  // PDF + agent supports docs → emit pdf-document resolution. Size cap
+  // still enforced; oversize PDFs fall back to text injection if
+  // extracted_text exists, else a pending note.
+  if (options.agentSupportsDocuments && rowIsPdfWithStorage(row)) {
+    const sizeBytes = rowFileSizeBytesAt(row);
+    const cap = options.perSourceMaxBytes ?? MAX_PDF_DOCUMENT_BYTES;
+    if (sizeBytes > cap) {
+      return {
+        kind: 'pdf-too-large',
+        sourceRef: row.source_ref,
+        title: row.title,
+        maxBytes: cap,
+        fallbackText: row.extracted_text,
+      };
+    }
+    return {
+      kind: 'pdf-document',
+      sourceRef: row.source_ref,
+      title: row.title,
+      row,
+    };
+  }
+
+  if (row.status !== 'ready' || !row.extracted_text) {
+    return {
+      kind: 'pending',
+      sourceRef: row.source_ref,
+      title: row.title,
+    };
+  }
+  return {
+    kind: 'resolved',
+    sourceRef: row.source_ref,
+    title: row.title,
+    content: row.extracted_text,
+  };
+}
+
 function resolveAtRefRequests(
   rows: AtRefCandidateRow[],
   refs: string[],
   slugs: string[],
+  options: AtRefResolveOptions = {},
 ): ForcedInjectionResolution[] {
   const byRef = new Map<string, AtRefCandidateRow>();
   const bySlug = new Map<string, AtRefCandidateRow[]>();
@@ -906,20 +1231,7 @@ function resolveAtRefRequests(
       continue;
     }
     claimedRefs.add(row.source_ref);
-    if (row.status !== 'ready' || !row.extracted_text) {
-      resolutions.push({
-        kind: 'pending',
-        sourceRef: row.source_ref,
-        title: row.title,
-      });
-      continue;
-    }
-    resolutions.push({
-      kind: 'resolved',
-      sourceRef: row.source_ref,
-      title: row.title,
-      content: row.extracted_text,
-    });
+    resolutions.push(resolveSingleRowForRef(row, options));
   }
 
   for (const slug of slugs) {
@@ -928,9 +1240,15 @@ function resolveAtRefRequests(
       resolutions.push({ kind: 'missing-slug', requestedSlug: slug });
       continue;
     }
-    const ready = matches.filter(
-      (m) => m.status === 'ready' && m.extracted_text,
-    );
+    // PDF rows with native-doc support don't need extracted_text to
+    // "be ready"; the document block carries the content. For non-PDF
+    // (and non-doc-capable) paths keep the prior text-readiness check.
+    const ready = matches.filter((m) => {
+      if (options.agentSupportsDocuments && rowIsPdfWithStorage(m)) {
+        return m.status === 'ready';
+      }
+      return m.status === 'ready' && m.extracted_text;
+    });
     if (ready.length > 1) {
       resolutions.push({
         kind: 'ambiguous-slug',
@@ -953,35 +1271,57 @@ function resolveAtRefRequests(
     const row = ready[0];
     if (claimedRefs.has(row.source_ref)) continue;
     claimedRefs.add(row.source_ref);
-    resolutions.push({
-      kind: 'resolved',
-      sourceRef: row.source_ref,
-      title: row.title,
-      content: row.extracted_text as string,
-    });
+    resolutions.push(resolveSingleRowForRef(row, options));
   }
 
   return resolutions;
 }
 
+export interface AtRefForcedInjectionResult {
+  /**
+   * The rendered text block to prepend to the user-role message.
+   * Null when no resolutions were emitted (no refs/slugs, or all
+   * resolutions were force-attached PDFs without text fallbacks).
+   *
+   * For force-attached PDFs (`pdf-document` kind), this string carries
+   * a manifest note pointing the agent at the native document block;
+   * the actual PDF bytes ride on the same user turn as a separate
+   * `document` content block hydrated from `forcedPdfDocuments`.
+   */
+  text: string | null;
+  /**
+   * Source rows that should be hydrated as native document blocks on
+   * the user turn. Already filtered to PDFs under the per-source size
+   * cap. Caller deduplicates against the auto-attached set.
+   */
+  forcedPdfDocuments: AtRefCandidateRow[];
+}
+
 /**
  * Test-friendly pure variant of `buildAtRefForcedInjection`. Takes the
- * pre-loaded row set instead of an active SQL handle. Returns the same
- * shape: the rendered block (or null) and the resolution metadata.
+ * pre-loaded row set instead of an active SQL handle. Returns both the
+ * rendered text block and the PDF rows that should be hydrated as
+ * native document blocks.
  */
 export function buildAtRefForcedInjectionFromRows(
   rows: AtRefCandidateRow[],
   refs: string[],
   slugs: string[],
-): string | null {
-  if (refs.length === 0 && slugs.length === 0) return null;
-  const resolutions = resolveAtRefRequests(rows, refs, slugs);
-  if (resolutions.length === 0) return null;
+  options: AtRefResolveOptions = {},
+): AtRefForcedInjectionResult {
+  if (refs.length === 0 && slugs.length === 0) {
+    return { text: null, forcedPdfDocuments: [] };
+  }
+  const resolutions = resolveAtRefRequests(rows, refs, slugs, options);
+  if (resolutions.length === 0) {
+    return { text: null, forcedPdfDocuments: [] };
+  }
 
   const encoder = new TextEncoder();
   const blocks: string[] = [];
   let usedBytes = 0;
   let omittedCount = 0;
+  const forcedPdfDocuments: AtRefCandidateRow[] = [];
 
   for (let i = 0; i < resolutions.length; i++) {
     const rendered = renderForcedInjectionResolution(resolutions[i]);
@@ -996,15 +1336,27 @@ export function buildAtRefForcedInjectionFromRows(
     }
     blocks.push(rendered);
     usedBytes += sizeWithSeparator;
+    if (resolutions[i].kind === 'pdf-document') {
+      forcedPdfDocuments.push(
+        (
+          resolutions[i] as Extract<
+            ForcedInjectionResolution,
+            { kind: 'pdf-document' }
+          >
+        ).row,
+      );
+    }
   }
 
-  if (blocks.length === 0) return null;
+  if (blocks.length === 0) {
+    return { text: null, forcedPdfDocuments };
+  }
 
   let text = blocks.join('\n\n');
   if (omittedCount > 0) {
     text += `\n\n[truncated, ${omittedCount} more @-refs omitted]`;
   }
-  return text;
+  return { text, forcedPdfDocuments };
 }
 
 /**
@@ -1027,20 +1379,36 @@ export async function buildAtRefForcedInjection(
   talkId: string,
   refs: string[],
   slugs: string[],
-): Promise<string | null> {
-  if (refs.length === 0 && slugs.length === 0) return null;
+  options: AtRefResolveOptions = {},
+): Promise<AtRefForcedInjectionResult> {
+  if (refs.length === 0 && slugs.length === 0) {
+    return { text: null, forcedPdfDocuments: [] };
+  }
 
   const upperRefs = refs.map((r) => r.toUpperCase());
   const lowerSlugs = slugs.map((s) => s.toLowerCase());
 
   // Single SQL covering both ref + slug lookups, with no status filter
   // so we can emit a "(content not yet available)" note when a user
-  // @-refs a still-pending URL ingest. Sanity-check: we ignore any
-  // rows whose source_ref doesn't appear in the requested ref list AND
-  // whose title_slug doesn't appear in the requested slug list — but
-  // the SQL where-clause already does that.
+  // @-refs a still-pending URL ingest. Includes the columns the PDF
+  // routing path needs (mime_type, storage_key, file_size, file_name)
+  // so resolveSingleRowForRef can decide between text injection and
+  // native document attach without a second query.
   const rows = await db<AtRefCandidateRow[]>`
-    select source_ref, title, title_slug, status, extracted_text
+    select
+      id,
+      source_ref,
+      title,
+      title_slug,
+      status,
+      extracted_text,
+      mime_type,
+      storage_key,
+      file_size,
+      file_name,
+      source_type,
+      source_url,
+      updated_at
     from public.talk_context_sources
     where talk_id = ${talkId}::uuid
       and (
@@ -1049,7 +1417,12 @@ export async function buildAtRefForcedInjection(
       )
   `;
 
-  return buildAtRefForcedInjectionFromRows(rows, upperRefs, lowerSlugs);
+  return buildAtRefForcedInjectionFromRows(
+    rows,
+    upperRefs,
+    lowerSlugs,
+    options,
+  );
 }
 
 // ---------------------------------------------------------------------------

@@ -110,7 +110,12 @@ export type CodexInputItem =
 export type CodexContentPart =
   | { type: 'input_text'; text: string }
   | { type: 'output_text'; text: string }
-  | { type: 'input_image'; image_url: string; detail?: string };
+  | { type: 'input_image'; image_url: string; detail?: string }
+  | {
+      type: 'input_file';
+      filename: string;
+      file_data: string;
+    };
 
 export interface CodexFunctionTool {
   type: 'function';
@@ -279,6 +284,16 @@ function contentBlocksToResponsesParts(
         type: 'input_image',
         image_url: `data:${block.mimeType};base64,${block.data}`,
         ...(block.detail ? { detail: block.detail } : {}),
+      });
+    } else if (block.type === 'document' && role !== 'assistant') {
+      // OpenAI Responses `input_file` accepts inline base64 via
+      // `file_data` (no /files upload required, which is critical on
+      // the chatgpt.com/backend-api/codex path where /files isn't
+      // exposed to subscription credentials). Filename is required.
+      out.push({
+        type: 'input_file',
+        filename: block.title || 'document.pdf',
+        file_data: `data:${block.mimeType};base64,${block.data}`,
       });
     }
   }

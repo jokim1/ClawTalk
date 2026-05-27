@@ -40,6 +40,7 @@ function makeSource(
     storage_key: input.storage_key ?? null,
     extracted_text: input.extracted_text ?? null,
     status: input.status ?? 'ready',
+    updated_at: input.updated_at ?? '2026-05-26T00:00:00Z',
   };
 }
 
@@ -391,16 +392,26 @@ describe('buildAtRefForcedInjectionFromRows', () => {
     },
   ): AtRefCandidateRow {
     return {
+      id: input.id ?? `id-${input.source_ref}`,
       source_ref: input.source_ref,
       title: input.title,
       title_slug: input.title_slug ?? null,
       status: input.status ?? 'ready',
       extracted_text: input.extracted_text ?? null,
+      mime_type: input.mime_type ?? null,
+      storage_key: input.storage_key ?? null,
+      file_size: input.file_size ?? null,
+      file_name: input.file_name ?? null,
+      source_type: input.source_type ?? 'text',
+      source_url: input.source_url ?? null,
+      updated_at: input.updated_at ?? '2026-05-26T00:00:00Z',
     };
   }
 
   it('returns null when no refs or slugs are requested', () => {
-    expect(buildAtRefForcedInjectionFromRows([], [], [])).toBeNull();
+    const result = buildAtRefForcedInjectionFromRows([], [], []);
+    expect(result.text).toBeNull();
+    expect(result.forcedPdfDocuments).toEqual([]);
   });
 
   it('renders a fenced block for a single resolved @S<n> ref', () => {
@@ -411,11 +422,11 @@ describe('buildAtRefForcedInjectionFromRows', () => {
         extracted_text: 'The opportunity is large.',
       }),
     ];
-    const out = buildAtRefForcedInjectionFromRows(rows, ['S1'], []);
-    expect(out).toContain('[S1] Investor Memo');
-    expect(out).toContain('<<<source');
-    expect(out).toContain('The opportunity is large.');
-    expect(out).toContain('source>>>');
+    const { text } = buildAtRefForcedInjectionFromRows(rows, ['S1'], []);
+    expect(text).toContain('[S1] Investor Memo');
+    expect(text).toContain('<<<source');
+    expect(text).toContain('The opportunity is large.');
+    expect(text).toContain('source>>>');
   });
 
   it('resolves @<slug> when a unique ready row matches', () => {
@@ -427,19 +438,23 @@ describe('buildAtRefForcedInjectionFromRows', () => {
         extracted_text: 'roadmap content here',
       }),
     ];
-    const out = buildAtRefForcedInjectionFromRows(rows, [], ['design-notes']);
-    expect(out).toContain('[S3] Design Notes');
-    expect(out).toContain('roadmap content here');
+    const { text } = buildAtRefForcedInjectionFromRows(
+      rows,
+      [],
+      ['design-notes'],
+    );
+    expect(text).toContain('[S3] Design Notes');
+    expect(text).toContain('roadmap content here');
   });
 
   it('emits "(no such source)" for a non-existent ref', () => {
-    const out = buildAtRefForcedInjectionFromRows([], ['S99'], []);
-    expect(out).toBe('[S99] (no such source)');
+    const { text } = buildAtRefForcedInjectionFromRows([], ['S99'], []);
+    expect(text).toBe('[S99] (no such source)');
   });
 
   it('emits "(no such source)" for a non-existent slug', () => {
-    const out = buildAtRefForcedInjectionFromRows([], [], ['ghost']);
-    expect(out).toBe('[@ghost] (no such source)');
+    const { text } = buildAtRefForcedInjectionFromRows([], [], ['ghost']);
+    expect(text).toBe('[@ghost] (no such source)');
   });
 
   it('emits "(content not yet available)" for a pending source', () => {
@@ -451,8 +466,8 @@ describe('buildAtRefForcedInjectionFromRows', () => {
         extracted_text: null,
       }),
     ];
-    const out = buildAtRefForcedInjectionFromRows(rows, ['S4'], []);
-    expect(out).toBe('[S4] Stuck URL (content not yet available)');
+    const { text } = buildAtRefForcedInjectionFromRows(rows, ['S4'], []);
+    expect(text).toBe('[S4] Stuck URL (content not yet available)');
   });
 
   it('emits "(content not yet available)" for a ready row with empty extracted_text', () => {
@@ -464,8 +479,8 @@ describe('buildAtRefForcedInjectionFromRows', () => {
         extracted_text: null,
       }),
     ];
-    const out = buildAtRefForcedInjectionFromRows(rows, ['S5'], []);
-    expect(out).toBe('[S5] Empty Body (content not yet available)');
+    const { text } = buildAtRefForcedInjectionFromRows(rows, ['S5'], []);
+    expect(text).toBe('[S5] Empty Body (content not yet available)');
   });
 
   it('emits ambiguity note when a slug matches two ready rows', () => {
@@ -483,12 +498,12 @@ describe('buildAtRefForcedInjectionFromRows', () => {
         extracted_text: 'b',
       }),
     ];
-    const out = buildAtRefForcedInjectionFromRows(rows, [], ['notes']);
-    expect(out).toContain('[@notes] (ambiguous slug');
-    expect(out).toContain('S1');
-    expect(out).toContain('S2');
-    expect(out).toContain('Use the @S<n> form instead');
-    expect(out).not.toContain('<<<source');
+    const { text } = buildAtRefForcedInjectionFromRows(rows, [], ['notes']);
+    expect(text).toContain('[@notes] (ambiguous slug');
+    expect(text).toContain('S1');
+    expect(text).toContain('S2');
+    expect(text).toContain('Use the @S<n> form instead');
+    expect(text).not.toContain('<<<source');
   });
 
   it('resolves a slug that matches only one READY row even when a pending row shares it', () => {
@@ -508,10 +523,10 @@ describe('buildAtRefForcedInjectionFromRows', () => {
         extracted_text: null,
       }),
     ];
-    const out = buildAtRefForcedInjectionFromRows(rows, [], ['notes']);
-    expect(out).toContain('[S6] Notes');
-    expect(out).toContain('real content');
-    expect(out).not.toContain('ambiguous');
+    const { text } = buildAtRefForcedInjectionFromRows(rows, [], ['notes']);
+    expect(text).toContain('[S6] Notes');
+    expect(text).toContain('real content');
+    expect(text).not.toContain('ambiguous');
   });
 
   it('sanitizes control characters and backticks in source content', () => {
@@ -523,16 +538,16 @@ describe('buildAtRefForcedInjectionFromRows', () => {
         extracted_text: dirty,
       }),
     ];
-    const out = buildAtRefForcedInjectionFromRows(rows, ['S8'], []);
-    expect(out).not.toBeNull();
+    const { text } = buildAtRefForcedInjectionFromRows(rows, ['S8'], []);
+    expect(text).not.toBeNull();
     // Null byte stripped.
-    expect(out).not.toContain(' ');
+    expect(text).not.toContain(' ');
     // Newline preserved (sanitizeBlockForPrompt keeps \n).
-    expect(out).toContain('more');
+    expect(text).toContain('more');
     // Backticks pass through sanitizeBlockForPrompt unchanged but
     // wouldn't break out of the <<<source ... source>>> fence anyway —
     // the fence is intentionally non-markdown.
-    expect(out).toContain('code');
+    expect(text).toContain('code');
   });
 
   it('joins multiple resolved refs with a blank-line separator', () => {
@@ -540,11 +555,11 @@ describe('buildAtRefForcedInjectionFromRows', () => {
       makeRow({ source_ref: 'S1', title: 'One', extracted_text: 'aaa' }),
       makeRow({ source_ref: 'S2', title: 'Two', extracted_text: 'bbb' }),
     ];
-    const out = buildAtRefForcedInjectionFromRows(rows, ['S1', 'S2'], []);
-    expect(out).toContain('[S1] One');
-    expect(out).toContain('[S2] Two');
+    const { text } = buildAtRefForcedInjectionFromRows(rows, ['S1', 'S2'], []);
+    expect(text).toContain('[S1] One');
+    expect(text).toContain('[S2] Two');
     // The two fenced blocks are separated by a blank line.
-    const segments = out!.split('\n\n');
+    const segments = text!.split('\n\n');
     expect(segments.length).toBeGreaterThanOrEqual(2);
   });
 
@@ -557,8 +572,8 @@ describe('buildAtRefForcedInjectionFromRows', () => {
         extracted_text: 'content',
       }),
     ];
-    const out = buildAtRefForcedInjectionFromRows(rows, ['S1'], ['one']);
-    expect(out!.split('<<<source').length).toBe(2); // exactly one fenced block (split produces N+1 pieces)
+    const { text } = buildAtRefForcedInjectionFromRows(rows, ['S1'], ['one']);
+    expect(text!.split('<<<source').length).toBe(2); // exactly one fenced block (split produces N+1 pieces)
   });
 
   it('truncates with a footer when total bytes exceed the 40 KB budget', () => {
@@ -575,13 +590,81 @@ describe('buildAtRefForcedInjectionFromRows', () => {
       );
       refs.push(`S${i}`);
     }
-    const out = buildAtRefForcedInjectionFromRows(rows, refs, []);
-    expect(out).not.toBeNull();
-    expect(out).toContain('[truncated,');
-    expect(out).toContain('more @-refs omitted]');
+    const { text } = buildAtRefForcedInjectionFromRows(rows, refs, []);
+    expect(text).not.toBeNull();
+    expect(text).toContain('[truncated,');
+    expect(text).toContain('more @-refs omitted]');
     // Final size stays within 40 KB.
-    expect(new TextEncoder().encode(out!).byteLength).toBeLessThanOrEqual(
+    expect(new TextEncoder().encode(text!).byteLength).toBeLessThanOrEqual(
       40 * 1024,
     );
+  });
+
+  it('emits a pdf-document resolution and exposes forcedPdfDocuments when agent supports docs', () => {
+    const rows = [
+      makeRow({
+        source_ref: 'S9',
+        title: 'Annual Report',
+        source_type: 'file',
+        mime_type: 'application/pdf',
+        storage_key: 'attachments/talk-1/abc.pdf',
+        file_size: 1024 * 1024,
+        file_name: 'annual-report.pdf',
+        status: 'ready',
+        extracted_text: 'fallback text',
+      }),
+    ];
+    const result = buildAtRefForcedInjectionFromRows(rows, ['S9'], [], {
+      agentSupportsDocuments: true,
+      perSourceMaxBytes: 12 * 1024 * 1024,
+    });
+    expect(result.text).toContain('[S9] Annual Report');
+    expect(result.text).toContain('pages attached to this turn via @-ref');
+    expect(result.text).not.toContain('<<<source');
+    expect(result.forcedPdfDocuments).toHaveLength(1);
+    expect(result.forcedPdfDocuments[0].source_ref).toBe('S9');
+  });
+
+  it('falls through to text injection for PDF rows when agent lacks doc support', () => {
+    const rows = [
+      makeRow({
+        source_ref: 'S10',
+        title: 'Annual Report',
+        source_type: 'file',
+        mime_type: 'application/pdf',
+        storage_key: 'attachments/talk-1/abc.pdf',
+        file_size: 1024 * 1024,
+        file_name: 'annual-report.pdf',
+        status: 'ready',
+        extracted_text: 'fallback text content',
+      }),
+    ];
+    const result = buildAtRefForcedInjectionFromRows(rows, ['S10'], []);
+    expect(result.text).toContain('<<<source');
+    expect(result.text).toContain('fallback text content');
+    expect(result.forcedPdfDocuments).toHaveLength(0);
+  });
+
+  it('falls back to text when a forced PDF exceeds the per-source size cap', () => {
+    const rows = [
+      makeRow({
+        source_ref: 'S11',
+        title: 'Huge Slides',
+        source_type: 'file',
+        mime_type: 'application/pdf',
+        storage_key: 'attachments/talk-1/big.pdf',
+        file_size: 20 * 1024 * 1024,
+        file_name: 'huge.pdf',
+        status: 'ready',
+        extracted_text: 'fallback excerpt',
+      }),
+    ];
+    const result = buildAtRefForcedInjectionFromRows(rows, ['S11'], [], {
+      agentSupportsDocuments: true,
+      perSourceMaxBytes: 12 * 1024 * 1024,
+    });
+    expect(result.text).toContain('exceeds 12 MB attach cap');
+    expect(result.text).toContain('fallback excerpt');
+    expect(result.forcedPdfDocuments).toHaveLength(0);
   });
 });

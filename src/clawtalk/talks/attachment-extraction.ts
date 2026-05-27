@@ -192,16 +192,19 @@ function extractHtml(buffer: Buffer): string {
 
 async function extractPdf(buffer: Buffer, fileName: string): Promise<string> {
   try {
-    // Dynamic import so the dependency is optional at module load time
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const pdfParseMod = await import('pdf-parse');
-    const pdfParse = (pdfParseMod as any).default ?? pdfParseMod;
-    const data = await pdfParse(buffer, { max: 0 }); // max: 0 → all pages
-    const text = data.text?.trim();
-    if (!text || text.length < 10) {
+    // unpdf is a serverless-runtime fork of pdfjs that strips the
+    // browser DOM globals (DOMMatrix, Path2D, ImageData) the upstream
+    // pdfjs-dist references. Works on Workers under nodejs_compat,
+    // unlike pdf-parse@2 (which transitively pulled in pdfjs-dist@5
+    // and threw "DOMMatrix is not defined" on the isolate).
+    const { extractText, getDocumentProxy } = await import('unpdf');
+    const pdf = await getDocumentProxy(new Uint8Array(buffer));
+    const { text } = await extractText(pdf, { mergePages: true });
+    const merged = (Array.isArray(text) ? text.join('\n\n') : text).trim();
+    if (!merged || merged.length < 10) {
       return `[Scanned PDF — no extractable text layer found in "${fileName}". OCR is not currently supported.]`;
     }
-    return truncate(text);
+    return truncate(merged);
   } catch (err) {
     throw new AttachmentExtractionError(
       'pdf_extraction_failed',

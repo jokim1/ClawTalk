@@ -46,13 +46,20 @@ import {
   listTalkAgents,
   resolvePrimaryAgent,
 } from '../agents/agent-registry.js';
-import { modelSupportsVision } from '../llm/capabilities.js';
+import {
+  modelSupportsPdfDocuments,
+  modelSupportsVision,
+} from '../llm/capabilities.js';
 import type { TalkPersonaRole } from '../llm/types.js';
 import {
   loadTalkContext,
+  MAX_PDF_DOCUMENT_BYTES,
+  type ContextDocumentSourceRef,
   type ContextImageSourceRef,
 } from './context-loader.js';
 import { isImageAttachmentMimeType } from './attachment-extraction.js';
+
+const PDF_ATTACHMENT_MIME_TYPE = 'application/pdf';
 
 // ---------------------------------------------------------------------------
 // Chassis-removal stubs
@@ -1089,6 +1096,15 @@ const MAX_DIRECT_HISTORY_ATTACHMENT_TOKENS = 8_000;
 const MAX_DIRECT_HISTORY_ATTACHMENT_CONTEXT_SHARE = 0.1;
 const MAX_DIRECT_HISTORY_IMAGE_MESSAGES = 3;
 const MAX_DIRECT_HISTORY_IMAGE_BYTES = 15 * 1024 * 1024;
+// PDF document attach budget for chat-message attachments. Tighter than
+// the image budget because Anthropic's 32 MB total-request-payload cap
+// AND the Cloudflare Workers 128 MB per-isolate heap (shared across
+// concurrent requests) bound the practical PDF-in-flight headroom.
+// 24 MB total (current + history) covers two 12 MB PDFs at the
+// per-source cap, matching the Saved Sources Talk-context budget.
+// See ~/.claude/plans/pdf-vision-plan.md D3.
+const MAX_DIRECT_HISTORY_DOCUMENT_BYTES = 24 * 1024 * 1024;
+const MAX_DIRECT_HISTORY_DOCUMENT_MESSAGES = 2;
 const TRUNCATED_CONTEXT_SUFFIX = '\n\n[truncated for context window]';
 const OMITTED_CONTEXT_MARKER = '[omitted due to context window]';
 const ATTACHMENT_BUDGET_OMISSION_MESSAGE =
@@ -1443,7 +1459,16 @@ type DirectPromptAttachment =
       base64Data: string;
     }
   | {
-      originalKind: 'image' | 'text';
+      originalKind: 'pdf';
+      kind: 'document';
+      id: string;
+      fileName: string;
+      fileSize: number;
+      mimeType: string;
+      base64Data: string;
+    }
+  | {
+      originalKind: 'image' | 'pdf' | 'text';
       kind: 'text';
       id: string;
       fileName: string;
@@ -1462,6 +1487,12 @@ type TextAttachmentExcerpt = {
 type DirectHistoryAttachmentBudget = {
   remainingImageBytes: number;
   remainingTextChars: number;
+  /**
+   * Remaining bytes available across this turn's PDF chat-message
+   * attachments (current + history). Distinct from image budget so a
+   * single 12 MiB PDF doesn't starve out images in the same turn.
+   */
+  remainingDocumentBytes: number;
 };
 
 function formatAttachmentSize(bytes: number): string {
@@ -1577,6 +1608,14 @@ function hasImageAttachments(rows: MessageAttachmentRecord[]): boolean {
   return rows.some((row) => isImageAttachmentMimeType(row.mime_type ?? ''));
 }
 
+function isPdfAttachmentRow(row: MessageAttachmentRecord): boolean {
+  return (row.mime_type ?? '') === PDF_ATTACHMENT_MIME_TYPE;
+}
+
+function hasPdfAttachments(rows: MessageAttachmentRecord[]): boolean {
+  return rows.some(isPdfAttachmentRow);
+}
+
 async function buildHistoryAttachmentRowsByMessageId(input: {
   history: LlmMessage[];
   historyMessageIds: string[];
@@ -1631,9 +1670,46 @@ function selectRecentHistoryImageMessageIds(input: {
   return selected;
 }
 
+function selectRecentHistoryDocumentMessageIds(input: {
+  history: LlmMessage[];
+  historyMessageIds: string[];
+  attachmentRowsByMessageId: Map<string, MessageAttachmentRecord[]>;
+}): Set<string> {
+  const selected = new Set<string>();
+
+  for (
+    let index = input.history.length - 1;
+    index >= 0 && selected.size < MAX_DIRECT_HISTORY_DOCUMENT_MESSAGES;
+    index -= 1
+  ) {
+    const message = input.history[index]!;
+    const messageId = input.historyMessageIds[index];
+    if (message.role !== 'user' || !messageId) {
+      continue;
+    }
+    const rows = input.attachmentRowsByMessageId.get(messageId);
+    if (!rows || !hasPdfAttachments(rows)) {
+      continue;
+    }
+    selected.add(messageId);
+  }
+
+  return selected;
+}
+
 async function loadDirectPromptAttachments(input: {
   attachmentRows: MessageAttachmentRecord[];
   includeImages?: boolean;
+  /**
+   * Whether to hydrate PDF attachments as native `document` content
+   * blocks. False (or undefined) means fall back to the text-excerpt
+   * branch — the unpdf-extracted `extracted_text` rides as a prompt
+   * excerpt and no document block is emitted. Always false when the
+   * agent's model doesn't support PDF documents; for non-current
+   * history messages, gate on whether the message is in the
+   * "recent-PDF-messages-to-hydrate" set.
+   */
+  includeDocuments?: boolean;
   historyBudget?: DirectHistoryAttachmentBudget;
 }): Promise<DirectPromptAttachment[]> {
   const attachments: DirectPromptAttachment[] = [];
@@ -1641,6 +1717,98 @@ async function loadDirectPromptAttachments(input: {
   for (const row of input.attachmentRows) {
     const fileSize = row.file_size ?? 0;
     const mimeType = row.mime_type ?? '';
+
+    if (mimeType === PDF_ATTACHMENT_MIME_TYPE && input.includeDocuments) {
+      // Refuse oversized PDFs at the boundary — the cap is enforced
+      // against the per-isolate Workers heap and the Anthropic payload
+      // ceiling, not per-conversation. Fall back to text excerpt.
+      if (fileSize > MAX_PDF_DOCUMENT_BYTES) {
+        const excerpt = buildTextAttachmentExcerpt({
+          attachmentId: row.id,
+          fileName: row.file_name || row.id,
+          extractionStatus: row.extraction_status,
+          extractedText: row.extracted_text,
+          extractionError: row.extraction_error,
+          maxChars: input.historyBudget?.remainingTextChars,
+        });
+        if (input.historyBudget) {
+          input.historyBudget.remainingTextChars = Math.max(
+            0,
+            input.historyBudget.remainingTextChars - excerpt.usedChars,
+          );
+        }
+        attachments.push({
+          originalKind: 'pdf',
+          kind: 'text',
+          id: row.id,
+          fileName: row.file_name || 'document.pdf',
+          fileSize,
+          mimeType,
+          text: excerpt.text,
+          omittedDueToBudget: true,
+        });
+        continue;
+      }
+
+      if (
+        input.historyBudget &&
+        fileSize > input.historyBudget.remainingDocumentBytes
+      ) {
+        attachments.push({
+          originalKind: 'pdf',
+          kind: 'text',
+          id: row.id,
+          fileName: row.file_name || 'document.pdf',
+          fileSize,
+          mimeType,
+          text: null,
+          omittedDueToBudget: true,
+        });
+        continue;
+      }
+
+      try {
+        const buffer = await loadAttachmentFile(row.storage_key);
+        if (input.historyBudget) {
+          input.historyBudget.remainingDocumentBytes = Math.max(
+            0,
+            input.historyBudget.remainingDocumentBytes - fileSize,
+          );
+        }
+        attachments.push({
+          originalKind: 'pdf',
+          kind: 'document',
+          id: row.id,
+          fileName: row.file_name || 'document.pdf',
+          fileSize,
+          mimeType,
+          base64Data: buffer.toString('base64'),
+        });
+        continue;
+      } catch (error) {
+        logger.warn(
+          {
+            err: error,
+            attachmentId: row.id,
+            messageId: row.message_id,
+            talkId: row.talk_id,
+            storageKey: row.storage_key,
+          },
+          'Failed to load PDF attachment for native document input',
+        );
+        attachments.push({
+          originalKind: 'pdf',
+          kind: 'text',
+          id: row.id,
+          fileName: row.file_name || 'document.pdf',
+          fileSize,
+          mimeType,
+          text: `PDF attachment "${row.file_name || row.id}" could not be loaded as a native document.`,
+        });
+        continue;
+      }
+    }
+
     if (isImageAttachmentMimeType(mimeType)) {
       if (input.includeImages === false) {
         attachments.push({
@@ -1799,16 +1967,64 @@ async function prependTalkContextImages(
   return [headerBlock, ...imageBlocks, ...base];
 }
 
+async function prependTalkContextDocuments(
+  base: LlmMessage['content'],
+  contextDocumentSources: ContextDocumentSourceRef[],
+): Promise<LlmMessage['content']> {
+  if (contextDocumentSources.length === 0) return base;
+
+  const docBlocks: LlmContentBlock[] = [];
+  for (const source of contextDocumentSources) {
+    let base64: string;
+    try {
+      const buffer = await loadAttachmentFile(source.storageKey);
+      base64 = buffer.toString('base64');
+    } catch (err) {
+      logger.warn(
+        { err, sourceRef: source.ref, storageKey: source.storageKey },
+        'Failed to load Talk context document source — skipping',
+      );
+      continue;
+    }
+    // Document blocks ride BEFORE any later text/image content so the
+    // Anthropic prompt-cache breakpoint (cache_control on the doc
+    // block) covers a stable prefix and the per-turn user text varies
+    // separately. 1h TTL caches well within a Talk's session lifetime;
+    // see ~/.claude/plans/pdf-vision-plan.md D4.
+    docBlocks.push({
+      type: 'document',
+      mimeType: source.mimeType,
+      data: base64,
+      title: source.title,
+      cacheControl: 'ephemeral_1h',
+    });
+  }
+
+  if (docBlocks.length === 0) return base;
+
+  const headerBlock: LlmContentBlock = {
+    type: 'text',
+    text: 'Talk-level Context PDFs (native document attach — both text layer and page imagery):',
+  };
+
+  if (typeof base === 'string') {
+    return [headerBlock, ...docBlocks, { type: 'text', text: base }];
+  }
+  return [headerBlock, ...docBlocks, ...base];
+}
+
 async function buildAttachmentAwareMessageContent(input: {
   attachmentRows: MessageAttachmentRecord[];
   userMessageText: string;
   attachmentHeading: string;
   includeImages?: boolean;
+  includeDocuments?: boolean;
   historyBudget?: DirectHistoryAttachmentBudget;
 }): Promise<LlmMessage['content']> {
   const attachments = await loadDirectPromptAttachments({
     attachmentRows: input.attachmentRows,
     includeImages: input.includeImages,
+    includeDocuments: input.includeDocuments,
     historyBudget: input.historyBudget,
   });
   if (attachments.length === 0) {
@@ -1826,6 +2042,15 @@ async function buildAttachmentAwareMessageContent(input: {
         return `- [${attachment.id}] ${attachment.fileName} (${attachment.mimeType}, ${size}) — ${ATTACHMENT_BUDGET_OMISSION_MESSAGE}`;
       }
       return `- [${attachment.id}] ${attachment.fileName} (${attachment.mimeType}, ${size}) — image note included below.`;
+    }
+    if (attachment.originalKind === 'pdf') {
+      if (attachment.kind === 'document') {
+        return `- [${attachment.id}] ${attachment.fileName} (${attachment.mimeType}, ${size}) — PDF attached as native document below (full text + page imagery).`;
+      }
+      if (attachment.omittedDueToBudget) {
+        return `- [${attachment.id}] ${attachment.fileName} (${attachment.mimeType}, ${size}) — ${ATTACHMENT_BUDGET_OMISSION_MESSAGE}`;
+      }
+      return `- [${attachment.id}] ${attachment.fileName} (${attachment.mimeType}, ${size}) — PDF text excerpt included below.`;
     }
     if (attachment.omittedDueToBudget) {
       return `- [${attachment.id}] ${attachment.fileName} (${attachment.mimeType}, ${size}) — ${ATTACHMENT_BUDGET_OMISSION_MESSAGE}`;
@@ -1858,6 +2083,21 @@ async function buildAttachmentAwareMessageContent(input: {
       continue;
     }
 
+    if (attachment.kind === 'document') {
+      blocks.push({
+        type: 'text',
+        text: `PDF attachment [${attachment.id}] "${attachment.fileName}":`,
+      });
+      blocks.push({
+        type: 'document',
+        mimeType: attachment.mimeType,
+        data: attachment.base64Data,
+        title: attachment.fileName,
+        cacheControl: 'ephemeral_1h',
+      });
+      continue;
+    }
+
     if (!attachment.text?.trim()) {
       continue;
     }
@@ -1877,6 +2117,7 @@ async function buildDirectHistoryMessages(input: {
   currentTriggerMessageId: string;
   attachmentRowsByMessageId: Map<string, MessageAttachmentRecord[]>;
   imageMessageIdsToHydrate: Set<string>;
+  documentMessageIdsToHydrate: Set<string>;
   modelContextWindow: number;
   estimatedContextTokens: number;
   userMessageText: string;
@@ -1885,6 +2126,7 @@ async function buildDirectHistoryMessages(input: {
   const rehydratedContentByMessageId = new Map<string, LlmMessage['content']>();
   const historyBudget: DirectHistoryAttachmentBudget = {
     remainingImageBytes: MAX_DIRECT_HISTORY_IMAGE_BYTES,
+    remainingDocumentBytes: MAX_DIRECT_HISTORY_DOCUMENT_BYTES,
     remainingTextChars: computeHistoryAttachmentTextBudgetChars({
       modelContextWindow: input.modelContextWindow,
       estimatedContextTokens: input.estimatedContextTokens,
@@ -1915,6 +2157,7 @@ async function buildDirectHistoryMessages(input: {
         userMessageText: messageContentToPlainText(message.content),
         attachmentHeading: 'Message attachments:',
         includeImages: input.imageMessageIdsToHydrate.has(messageId),
+        includeDocuments: input.documentMessageIdsToHydrate.has(messageId),
         historyBudget,
       }),
     );
@@ -1964,6 +2207,38 @@ function assertVisionSupportForConversationImages(input: {
     'MODEL_VISION_UNSUPPORTED',
     `The selected model "${input.agent.model_id}" does not support vision, but ${scope}. Choose a vision-capable model or remove the images.`,
   );
+}
+
+/**
+ * Companion to assertVisionSupportForConversationImages — surfaces the
+ * "agent doesn't accept PDF documents" footgun BEFORE the request is
+ * built. Distinct error code so the UI can suggest the right fix
+ * (switch to a Claude or ChatGPT-Codex agent vs unfasten the PDF).
+ *
+ * Soft path: if the model supports image vision but not PDF documents,
+ * we still let the text excerpt ride. Hard fail only when neither
+ * native PDF nor any extracted text is available — those uploads
+ * silently no-op today and that's the worst case to leave shipping.
+ */
+function assertPdfSupportForConversationDocuments(input: {
+  agent: RegisteredAgentRecord;
+  currentAttachmentRows: MessageAttachmentRecord[];
+  historyDocumentMessageIdsToHydrate: Set<string>;
+}): void {
+  const includesCurrentPdfs = hasPdfAttachments(input.currentAttachmentRows);
+  const includesHistoryPdfs = input.historyDocumentMessageIdsToHydrate.size > 0;
+
+  if (!includesCurrentPdfs && !includesHistoryPdfs) {
+    return;
+  }
+
+  if (
+    modelSupportsPdfDocuments(input.agent.provider_id, input.agent.model_id)
+  ) {
+    return;
+  }
+
+  // Non-doc-capable models still get the text excerpt path. No throw.
 }
 
 function buildResponseMetadataJson(input: {
@@ -2070,6 +2345,10 @@ export class CleanTalkExecutor implements TalkExecutor {
         activeAgent.provider_id,
         activeAgent.model_id,
       );
+      const agentSupportsDocuments = modelSupportsPdfDocuments(
+        activeAgent.provider_id,
+        activeAgent.model_id,
+      );
       const contextPackage = await loadTalkContext(
         input.talkId,
         modelContextWindow,
@@ -2083,6 +2362,7 @@ export class CleanTalkExecutor implements TalkExecutor {
           effectiveTools: scopedEffectiveTools,
           channelContextSection: channelExecutionContext.channelContextSection,
           agentSupportsVision,
+          agentSupportsDocuments,
         },
       );
       await setTalkRunMetadata(input.runId, {
@@ -2236,11 +2516,23 @@ export class CleanTalkExecutor implements TalkExecutor {
           historyMessageIds: contextPackage.metadata.historyMessageIds,
           attachmentRowsByMessageId: historyAttachmentRowsByMessageId,
         });
+      const historyDocumentMessageIdsToHydrate = agentSupportsDocuments
+        ? selectRecentHistoryDocumentMessageIds({
+            history: context.history,
+            historyMessageIds: contextPackage.metadata.historyMessageIds,
+            attachmentRowsByMessageId: historyAttachmentRowsByMessageId,
+          })
+        : new Set<string>();
 
       assertVisionSupportForConversationImages({
         agent: activeAgent,
         currentAttachmentRows,
         historyImageMessageIdsToHydrate,
+      });
+      assertPdfSupportForConversationDocuments({
+        agent: activeAgent,
+        currentAttachmentRows,
+        historyDocumentMessageIdsToHydrate,
       });
 
       const directHistory = await buildDirectHistoryMessages({
@@ -2249,6 +2541,7 @@ export class CleanTalkExecutor implements TalkExecutor {
         currentTriggerMessageId: input.triggerMessageId,
         attachmentRowsByMessageId: historyAttachmentRowsByMessageId,
         imageMessageIdsToHydrate: historyImageMessageIdsToHydrate,
+        documentMessageIdsToHydrate: historyDocumentMessageIdsToHydrate,
         modelContextWindow,
         estimatedContextTokens: contextPackage.estimatedTokens,
         userMessageText,
@@ -2257,9 +2550,14 @@ export class CleanTalkExecutor implements TalkExecutor {
         attachmentRows: currentAttachmentRows,
         userMessageText,
         attachmentHeading: 'Current message attachments:',
+        includeDocuments: agentSupportsDocuments,
       });
-      const directUserMessage = await prependTalkContextImages(
+      const directUserMessageWithDocs = await prependTalkContextDocuments(
         directUserMessageBase,
+        contextPackage.contextDocumentSources,
+      );
+      const directUserMessage = await prependTalkContextImages(
+        directUserMessageWithDocs,
         contextPackage.contextImageSources,
       );
 

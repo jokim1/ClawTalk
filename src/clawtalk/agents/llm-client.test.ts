@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  buildAnthropicRequest,
   buildLlmHttpErrorMessage,
   buildOpenAiRequest,
   classifyHttpFailure,
@@ -299,5 +300,96 @@ describe('fetchWithUpstreamRetry', () => {
     expect(res.status).toBe(524);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     vi.unstubAllGlobals();
+  });
+});
+
+describe('buildAnthropicRequest — document blocks', () => {
+  it('translates an LlmContentBlock document into the Anthropic source-block shape with cache_control', () => {
+    const msgs: LlmMessage[] = [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'document',
+            mimeType: 'application/pdf',
+            data: 'BASE64PDFDATA',
+            title: 'Annual Report',
+            cacheControl: 'ephemeral_1h',
+          },
+          { type: 'text', text: 'Summarize this PDF.' },
+        ],
+      },
+    ];
+    const req = buildAnthropicRequest(
+      'claude-sonnet-4-6',
+      msgs,
+      undefined,
+      1024,
+      'api_key',
+      false,
+    );
+    expect(req.messages).toHaveLength(1);
+    const userBlocks = req.messages[0].content;
+    expect(userBlocks[0]).toEqual({
+      type: 'document',
+      source: {
+        type: 'base64',
+        media_type: 'application/pdf',
+        data: 'BASE64PDFDATA',
+      },
+      title: 'Annual Report',
+      cache_control: { type: 'ephemeral', ttl: '1h' },
+    });
+    expect(userBlocks[1]).toEqual({
+      type: 'text',
+      text: 'Summarize this PDF.',
+    });
+  });
+
+  it('drops the ttl when cacheControl is plain ephemeral', () => {
+    const msgs: LlmMessage[] = [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'document',
+            mimeType: 'application/pdf',
+            data: 'x',
+            cacheControl: 'ephemeral',
+          },
+        ],
+      },
+    ];
+    const req = buildAnthropicRequest(
+      'claude-sonnet-4-6',
+      msgs,
+      undefined,
+      1024,
+    );
+    const block = req.messages[0].content[0] as Record<string, unknown>;
+    expect(block.cache_control).toEqual({ type: 'ephemeral' });
+  });
+
+  it('omits cache_control entirely when not requested', () => {
+    const msgs: LlmMessage[] = [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'document',
+            mimeType: 'application/pdf',
+            data: 'x',
+          },
+        ],
+      },
+    ];
+    const req = buildAnthropicRequest(
+      'claude-sonnet-4-6',
+      msgs,
+      undefined,
+      1024,
+    );
+    const block = req.messages[0].content[0] as Record<string, unknown>;
+    expect('cache_control' in block).toBe(false);
   });
 });
