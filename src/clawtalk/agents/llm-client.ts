@@ -14,7 +14,6 @@
 
 import { randomUUID } from 'crypto';
 
-import { logger } from '../../logger.js';
 import {
   ANTHROPIC_CLAUDE_CODE_VERSION,
   ANTHROPIC_OAUTH_BETAS,
@@ -1261,58 +1260,6 @@ export async function* streamLlmResponse(
         options?.maxOutputTokens,
         credentialKind,
         options?.forceToolUse ?? false,
-      );
-
-      // Diagnostic: log the user-message block shape Anthropic sees on the
-      // wire. We've seen the model report "PNG file is attached, but not
-      // its contents" for image attachments — this dumps block types +
-      // image/document byte sizes per user message so we can tell whether
-      // the image content block reached the request at all. Remove once
-      // the chat-attachment vision bug is closed.
-      const userMessageShapes = requestBody.messages
-        .filter((m) => m.role === 'user')
-        .map((m) =>
-          Array.isArray(m.content)
-            ? m.content.map((block) => {
-                if (block.type === 'image') {
-                  return {
-                    type: 'image',
-                    media_type: block.source.media_type,
-                    dataLength: block.source.data?.length ?? 0,
-                  };
-                }
-                if (block.type === 'document') {
-                  return {
-                    type: 'document',
-                    media_type: block.source.media_type,
-                    dataLength: block.source.data?.length ?? 0,
-                  };
-                }
-                if (block.type === 'text') {
-                  return {
-                    type: 'text',
-                    textPreview: block.text.slice(0, 80),
-                    textLength: block.text.length,
-                  };
-                }
-                return { type: block.type };
-              })
-            : [
-                {
-                  type: 'string',
-                  textPreview: String(m.content).slice(0, 80),
-                  textLength: String(m.content).length,
-                },
-              ],
-        );
-      logger.info(
-        {
-          modelId,
-          credentialKind,
-          userMessageCount: userMessageShapes.length,
-          userMessageShapes,
-        },
-        'anthropic-request: outgoing user-message block shapes',
       );
 
       // Subscription requests need Claude Code's user-agent + OAuth betas.

@@ -11,10 +11,12 @@ import {
 
 /**
  * Pull the R2 bucket binding from the request-scoped env that
- * `withRequestScopedDb` populated. Every caller of these helpers runs
- * inside that scope (HTTP routes via worker.ts fetch handler, queue
- * consumer via the queue() handler, scheduler via scheduled()), so the
- * binding is always available in production.
+ * `withRequestScopedDb` populated. Each entrypoint that calls these
+ * helpers (HTTP routes via worker.ts fetch handler, queue consumer via
+ * the queue() handler, scheduler via scheduled()) must include
+ * `ATTACHMENTS: env.ATTACHMENTS` in the env object it passes to
+ * `withRequestScopedDb` — PR #454 added the binding to the queue path
+ * after a missed scope caused chat-attachment vision to silently fail.
  *
  * Tests that exercise the storage adapter must pass the bucket via
  * `withRequestScopedDb(url, ctx, { ATTACHMENTS: mockBucket }, ...)`.
