@@ -19,8 +19,10 @@
 //   • blockConcurrencyWhile (F9) wraps the drain so two concurrent
 //     /notify requests serialize. The drain runs to completion inside
 //     the lock — drainOnce is bounded by postgres.statement_timeout
-//     (5_000 ms per query), so the lock release is naturally bounded
-//     well under CF's 30s blockConcurrencyWhile reset ceiling.
+//     (5_000 ms per query), well under CF's 30s blockConcurrencyWhile
+//     ceiling under measured load (p95 drain ≈ 460 ms). Pathological
+//     backlog × slow-query conditions still rely on the alarm backstop
+//     to recover.
 //   • R8 JWT exp check per socket → close(4401) on expiry.
 //   • R9 backpressure close on bufferedAmount > 1MB → close(1011).
 //   • Drain loop (R5) keeps reading outbox until rows < limit, in
@@ -315,14 +317,9 @@ export class UserEventHub {
 
   // ─── /notify ─────────────────────────────────────────────────────────
   private async handleNotify(_req: Request): Promise<Response> {
-    // blockConcurrencyWhile serializes /notify, /upgrade, and alarm
-    // on this DO. drainOnce runs to completion inside the lock so a
-    // subsequent /notify (or alarm) cannot start a second drainOnce
-    // while this one is still draining the outbox — that would race
-    // on per-socket attachment.cursor writes. drainOnce is bounded
-    // by postgres.statement_timeout (5s per query) and DRAIN_BATCH_
-    // LIMIT, so the lock release is naturally bounded well under CF's
-    // 30s blockConcurrencyWhile ceiling.
+    // drainOnce must complete inside blockConcurrencyWhile — a lock
+    // released with an orphan drainOnce racing the next handler's
+    // drainOnce would corrupt per-socket attachment.cursor writes.
     await this.state.blockConcurrencyWhile(async () => {
       try {
         await this.drainOnce();
@@ -417,10 +414,7 @@ export class UserEventHub {
 
   // ─── alarm() — catch-up path (R4) ────────────────────────────────────
   async alarm(): Promise<void> {
-    // Same blockConcurrencyWhile-holds-full-drainOnce contract as
-    // handleNotify above: drainOnce runs to completion inside the lock
-    // so it can't race a concurrent /notify drain on attachment.cursor
-    // writes. Bounded by postgres.statement_timeout.
+    // Same drainOnce-inside-blockConcurrencyWhile contract as handleNotify — see above.
     await this.state.blockConcurrencyWhile(async () => {
       try {
         await this.drainOnce();
