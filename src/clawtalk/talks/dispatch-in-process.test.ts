@@ -35,12 +35,14 @@ import {
 } from './dispatch-in-process.js';
 import { processTalkRunMessage } from './queue-consumer.js';
 
-function buildEnv(): DispatchRunInProcessEnv {
+function buildEnv(
+  queueSend: (msg: unknown, opts?: unknown) => Promise<void> = async () => {},
+): DispatchRunInProcessEnv {
   return {
     DB: { connectionString: 'postgresql://test' },
     DB_EVENT_HUB_URL: 'http://hub',
     USER_EVENT_HUB: {} as never,
-    TALK_RUN_QUEUE: {} as never,
+    TALK_RUN_QUEUE: { send: queueSend } as never,
     ATTACHMENTS: {} as never,
   };
 }
@@ -84,20 +86,71 @@ describe('dispatchRunInProcess', () => {
     });
   });
 
-  it('catches processTalkRunMessage errors and logs them (never throws)', async () => {
+  it('on processTalkRunMessage failure, falls back to TALK_RUN_QUEUE.send', async () => {
     const boom = new Error('upstream exploded');
     vi.mocked(processTalkRunMessage).mockRejectedValueOnce(boom);
+    const sendSpy = vi.fn(async () => {});
 
     await expect(
       dispatchRunInProcess({
-        env: buildEnv(),
+        env: buildEnv(sendSpy),
         ctx: buildCtx(),
         runId: 'run-fail',
       }),
     ).resolves.toBeUndefined();
 
-    expect(logger.error).toHaveBeenCalledTimes(1);
-    const [logArg] = vi.mocked(logger.error).mock.calls[0]!;
-    expect(logArg).toMatchObject({ err: boom, runId: 'run-fail' });
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    expect(sendSpy).toHaveBeenCalledWith(
+      { runId: 'run-fail' },
+      { contentType: 'json' },
+    );
+    expect(logger.error).toHaveBeenCalled();
+    const firstLog = vi.mocked(logger.error).mock.calls[0]![0];
+    expect(firstLog).toMatchObject({ err: boom, runId: 'run-fail' });
+  });
+
+  it('logs "stranded" when both in-process exec AND fallback queue.send fail', async () => {
+    vi.mocked(processTalkRunMessage).mockRejectedValueOnce(
+      new Error('exec fail'),
+    );
+    const sendBoom = new Error('queue down');
+    const sendSpy = vi.fn(async () => {
+      throw sendBoom;
+    });
+
+    await expect(
+      dispatchRunInProcess({
+        env: buildEnv(sendSpy),
+        ctx: buildCtx(),
+        runId: 'run-stranded',
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    // Last error log mentions the stranded state explicitly.
+    const calls = vi.mocked(logger.error).mock.calls;
+    const lastMsg = calls[calls.length - 1]![1];
+    expect(lastMsg).toContain('stranded');
+  });
+
+  it('logs "binding missing" when TALK_RUN_QUEUE is undefined', async () => {
+    vi.mocked(processTalkRunMessage).mockRejectedValueOnce(
+      new Error('exec fail'),
+    );
+    const env: DispatchRunInProcessEnv = {
+      DB: { connectionString: 'postgresql://test' },
+      DB_EVENT_HUB_URL: 'http://hub',
+      USER_EVENT_HUB: {} as never,
+      TALK_RUN_QUEUE: undefined,
+      ATTACHMENTS: {} as never,
+    };
+
+    await expect(
+      dispatchRunInProcess({ env, ctx: buildCtx(), runId: 'run-no-queue' }),
+    ).resolves.toBeUndefined();
+
+    const calls = vi.mocked(logger.error).mock.calls;
+    const lastMsg = calls[calls.length - 1]![1];
+    expect(lastMsg).toContain('binding missing');
   });
 });

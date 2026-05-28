@@ -13,8 +13,11 @@
 //     response returns / client disconnects. Executors that need >30s
 //     past disconnect die silently. Rows stuck in 'running' are reaped
 //     by `scheduler.ts:sweepStuckRunningRuns` after 60 min.
-//   • Errors before `markRunRunning` claims the row leave it 'queued'.
-//     The same sweep catches that.
+//   • Errors before `markRunRunning` claims the row would leave it
+//     'queued' — and the scheduler sweep ONLY catches 'running' rows
+//     (see scheduler.ts:125), not 'queued'. To avoid stranding the
+//     run, the catch below falls back to `TALK_RUN_QUEUE.send` so the
+//     queue consumer can retry under CF Queues' retry/DLQ semantics.
 //
 // Multi-run, cron, and job-run-now keep going through `dispatchRun` —
 // see `worker-app.ts` for the routing decision.
@@ -66,9 +69,30 @@ export async function dispatchRunInProcess(
         }),
     );
   } catch (err) {
+    // Pre-claim failures (e.g. transient DB error in markRunRunning,
+    // withUserContext throwing) leave the row 'queued'. The scheduler
+    // sweep only catches 'running'. Fall back to TALK_RUN_QUEUE.send
+    // so CF Queues' retry/DLQ pipeline handles it — same semantics the
+    // pre-T7 path had.
     logger.error(
       { err, runId },
-      'dispatchRunInProcess: processTalkRunMessage failed; run row may be stuck until cron sweep',
+      'dispatchRunInProcess: in-process exec failed; falling back to TALK_RUN_QUEUE.send for retry/DLQ',
     );
+    const queue = input.env.TALK_RUN_QUEUE;
+    if (!queue) {
+      logger.error(
+        { err, runId },
+        'dispatchRunInProcess: TALK_RUN_QUEUE binding missing — run row stranded in queued',
+      );
+      return;
+    }
+    try {
+      await queue.send({ runId }, { contentType: 'json' });
+    } catch (sendErr) {
+      logger.error(
+        { err: sendErr, runId },
+        'dispatchRunInProcess: fallback queue.send also failed; run row stranded in queued',
+      );
+    }
   }
 }
