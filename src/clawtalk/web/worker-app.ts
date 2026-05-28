@@ -216,6 +216,10 @@ import {
   deleteTalkResourceRoute,
   listTalkResourcesRoute,
 } from './routes/talk-resources.js';
+import {
+  dispatchRunInProcess,
+  type DispatchRunInProcessEnv,
+} from '../talks/dispatch-in-process.js';
 import { ensureMainTalkForUser } from '../talks/main-talk-bootstrap.js';
 import { dispatchRun } from '../talks/queue-producer.js';
 import {
@@ -2331,8 +2335,20 @@ function buildApp(): Hono<{ Variables: Variables }> {
       idempotencyKey,
     });
     if (result.statusCode === 202 && result.body.ok) {
-      for (const run of result.body.data.runs) {
-        await dispatchRun({ runId: run.id });
+      const runs = result.body.data.runs;
+      if (runs.length === 1) {
+        // T7: bypass queue for single-run. See dispatchRunInProcess.
+        c.executionCtx.waitUntil(
+          dispatchRunInProcess({
+            env: c.env as DispatchRunInProcessEnv,
+            ctx: c.executionCtx,
+            runId: runs[0].id,
+          }),
+        );
+      } else {
+        for (const run of runs) {
+          await dispatchRun({ runId: run.id });
+        }
       }
     }
     return jsonResponse(result);
