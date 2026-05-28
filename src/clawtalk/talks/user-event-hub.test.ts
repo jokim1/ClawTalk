@@ -17,7 +17,15 @@
 // What we test here is the OUTBOX READ + FILTER + SEND + CURSOR logic
 // inside replayInto + drainOnce.
 
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import postgres from 'postgres';
 
 import { closePgDatabase, initPgDatabase } from '../../db.js';
@@ -461,6 +469,96 @@ describe('alarm()', () => {
     ]);
     await hub.alarm();
     expect(ws.sent).toHaveLength(1);
+  });
+});
+
+// ─── drainOnce serialization ─────────────────────────────────────────
+//
+// Invariant: concurrent handlers must not start overlapping drainOnce
+// calls, which would race on per-socket attachment.cursor writes.
+
+describe('drainOnce serialization', () => {
+  it('5 concurrent /notify calls deliver each event exactly once, no BCWhile overlap', async () => {
+    const state = new MockDurableObjectState();
+    const topic = uniqueTopic();
+    const ids = await seedOutbox(topic, [
+      { event_type: 'message_appended', payload: { i: 1 } },
+      { event_type: 'message_appended', payload: { i: 2 } },
+      { event_type: 'message_appended', payload: { i: 3 } },
+    ]);
+    const ws = new MockWebSocket();
+    ws.serializeAttachment(makeAttachment({ scope: 'user', topic }));
+    state.attach(ws);
+
+    const hub = createHub(state);
+    await Promise.all(
+      Array.from({ length: 5 }, () =>
+        hub.fetch(new Request('http://hub/notify', { method: 'POST' })),
+      ),
+    );
+
+    // Exactly-once delivery — duplicates would indicate two drainOnce
+    // calls overlapped and both sent the same row to the socket.
+    expect(ws.sent.map((m) => m.id)).toEqual(ids);
+    expect(ws.attachment?.cursor).toBe(ids[2]);
+    // drainOnce runs inside BCWhile; BCWhile serializes; therefore
+    // drainOnce never overlaps.
+    expect(state.blockConcurrencyWhileMaxConcurrent).toBe(1);
+    expect(state.blockConcurrencyWhileCalls).toBeGreaterThanOrEqual(5);
+  });
+
+  it('alarm() concurrent with /notify: same no-overlap invariant', async () => {
+    const state = new MockDurableObjectState();
+    const topic = uniqueTopic();
+    const ids = await seedOutbox(topic, [
+      { event_type: 'message_appended', payload: { i: 1 } },
+      { event_type: 'message_appended', payload: { i: 2 } },
+      { event_type: 'message_appended', payload: { i: 3 } },
+    ]);
+    const ws = new MockWebSocket();
+    ws.serializeAttachment(makeAttachment({ scope: 'user', topic }));
+    state.attach(ws);
+
+    const hub = createHub(state);
+    await Promise.all([
+      hub.fetch(new Request('http://hub/notify', { method: 'POST' })),
+      hub.alarm(),
+    ]);
+
+    expect(ws.sent.map((m) => m.id)).toEqual(ids);
+    expect(ws.attachment?.cursor).toBe(ids[2]);
+    expect(state.blockConcurrencyWhileMaxConcurrent).toBe(1);
+  });
+
+  it('drainOnce caps at MAX_DRAIN_BATCHES_PER_CALL; remainder defers to alarm', async () => {
+    // 1100 events = 11 batches × DRAIN_BATCH_LIMIT(100). Cap is 10
+    // batches, so this drain pass should deliver exactly 1000 and stop;
+    // the remaining 100 must wait for the alarm backstop to catch up.
+    const state = new MockDurableObjectState();
+    const topic = uniqueTopic();
+    const events = Array.from({ length: 1100 }, (_, i) => ({
+      event_type: 'message_appended',
+      payload: { i },
+    }));
+    await seedOutbox(topic, events);
+
+    const ws = new MockWebSocket();
+    ws.serializeAttachment(makeAttachment({ scope: 'user', topic }));
+    state.attach(ws);
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const hub = createHub(state);
+      await hub.fetch(new Request('http://hub/notify', { method: 'POST' }));
+      expect(ws.sent.length).toBe(1000);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('MAX_DRAIN_BATCHES_PER_CALL'),
+      );
+      // R4 alarm still scheduled by handleNotify regardless of cap exit.
+      expect(state.alarms).toHaveLength(1);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
 
