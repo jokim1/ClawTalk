@@ -464,6 +464,71 @@ describe('alarm()', () => {
   });
 });
 
+// ─── drainOnce serialization (no orphan race) ────────────────────────
+//
+// Closes the Codex P1-A race: handleNotify and alarm used to wrap
+// drainOnce in `Promise.race([drainOnce, rejectAfter(8s)])` so the
+// blockConcurrencyWhile lock could release while drainOnce was still
+// running, allowing a concurrent /notify or alarm to enter the lock
+// and start a second drainOnce that races on attachment.cursor writes.
+// The fix drops Promise.race so drainOnce runs to completion inside
+// the lock. These tests verify drainOnce never overlaps concurrent
+// handlers and that events are still delivered exactly once.
+
+describe('drainOnce serialization', () => {
+  it('5 concurrent /notify calls deliver each event exactly once, no BCWhile overlap', async () => {
+    const state = new MockDurableObjectState();
+    const topic = uniqueTopic();
+    const ids = await seedOutbox(topic, [
+      { event_type: 'message_appended', payload: { i: 1 } },
+      { event_type: 'message_appended', payload: { i: 2 } },
+      { event_type: 'message_appended', payload: { i: 3 } },
+    ]);
+    const ws = new MockWebSocket();
+    ws.serializeAttachment(makeAttachment({ scope: 'user', topic }));
+    state.attach(ws);
+
+    const hub = createHub(state);
+    await Promise.all(
+      Array.from({ length: 5 }, () =>
+        hub.fetch(new Request('http://hub/notify', { method: 'POST' })),
+      ),
+    );
+
+    // Exactly-once delivery — duplicates would indicate two drainOnce
+    // calls overlapped and both sent the same row to the socket.
+    expect(ws.sent.map((m) => m.id)).toEqual(ids);
+    expect(ws.attachment?.cursor).toBe(ids[2]);
+    // drainOnce runs inside BCWhile; BCWhile serializes; therefore
+    // drainOnce never overlaps.
+    expect(state.blockConcurrencyWhileMaxConcurrent).toBe(1);
+    expect(state.blockConcurrencyWhileCalls).toBeGreaterThanOrEqual(5);
+  });
+
+  it('alarm() concurrent with /notify drains exactly once, no BCWhile overlap (D2)', async () => {
+    const state = new MockDurableObjectState();
+    const topic = uniqueTopic();
+    const ids = await seedOutbox(topic, [
+      { event_type: 'message_appended', payload: { i: 1 } },
+      { event_type: 'message_appended', payload: { i: 2 } },
+      { event_type: 'message_appended', payload: { i: 3 } },
+    ]);
+    const ws = new MockWebSocket();
+    ws.serializeAttachment(makeAttachment({ scope: 'user', topic }));
+    state.attach(ws);
+
+    const hub = createHub(state);
+    await Promise.all([
+      hub.fetch(new Request('http://hub/notify', { method: 'POST' })),
+      hub.alarm(),
+    ]);
+
+    expect(ws.sent.map((m) => m.id)).toEqual(ids);
+    expect(ws.attachment?.cursor).toBe(ids[2]);
+    expect(state.blockConcurrencyWhileMaxConcurrent).toBe(1);
+  });
+});
+
 // ─── /upgrade — only the testable bits without WebSocketPair ──────────
 
 describe('handleUpgrade pre-accept guards', () => {
