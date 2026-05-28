@@ -6,6 +6,11 @@ webapp/node_modules/
 dist/
 webapp/dist/
 
+# Playwright artifacts
+test-results/
+webapp/test-results/
+webapp/playwright-report/
+
 # Local data & auth
 store/
 data/

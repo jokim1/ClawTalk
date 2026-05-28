@@ -160,6 +160,11 @@ import {
   setLastThreadForTalk,
 } from '../lib/lastThreadForTalk';
 import { linkifyText } from '../lib/linkifyText';
+import {
+  clearThreadScroll,
+  loadThreadScroll,
+  saveThreadScroll,
+} from '../lib/threadScroll';
 import { displayThreadTitle } from '../lib/threadTitles';
 import { openTalkStream } from '../lib/talkStream';
 import { useQueryClient } from '@tanstack/react-query';
@@ -384,7 +389,6 @@ type DetailState = {
     message?: string;
   };
   hasUnreadBelow: boolean;
-  initialScrollPending: boolean;
 };
 
 const JOB_WEEKDAY_ORDER: TalkJobWeekday[] = [
@@ -832,7 +836,6 @@ function createInitialDetailState(): DetailState {
     liveResponsesByRunId: {},
     cancelState: { status: 'idle' },
     hasUnreadBelow: false,
-    initialScrollPending: false,
   };
 }
 
@@ -1101,9 +1104,9 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
     case 'SNAPSHOT_HYDRATED': {
       // First snapshot hydration for a (talkId, threadId). Seed runsById
       // from the snapshot's active runs while preserving any live-state
-      // already accumulated from WS deltas that beat the snapshot. Mark
-      // initialScrollPending so the scroll effect parks us at the bottom
-      // once messages render.
+      // already accumulated from WS deltas that beat the snapshot. The
+      // first-paint scroll position is owned by threadScroll — the
+      // thread-show effect restores it on mount.
       const incoming = mapRunsById(action.runs);
       const merged = { ...incoming };
       for (const [runId, view] of Object.entries(state.runsById)) {
@@ -1123,7 +1126,6 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
         runsById: pruneEventRunCache(merged),
         liveResponsesByRunId,
         hasUnreadBelow: false,
-        initialScrollPending: true,
       };
     }
     case 'THREAD_SELECTED':
@@ -1133,7 +1135,6 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
         selectedThreadId: action.threadId,
         liveResponsesByRunId: {},
         hasUnreadBelow: false,
-        initialScrollPending: false,
       };
     case 'MERGE_HISTORICAL_RUNS': {
       // Server-authoritative refresh: every run in `action.runs` carries
@@ -1172,10 +1173,9 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
       return {
         ...state,
         liveResponsesByRunId,
-        hasUnreadBelow:
-          state.initialScrollPending || action.wasNearBottom
-            ? false
-            : state.hasUnreadBelow || true,
+        hasUnreadBelow: action.wasNearBottom
+          ? false
+          : state.hasUnreadBelow || true,
       };
     }
     case 'RUN_STARTED': {
@@ -1644,7 +1644,6 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
       return {
         ...state,
         hasUnreadBelow: false,
-        initialScrollPending: false,
       };
     default:
       return state;
@@ -3805,6 +3804,11 @@ export function TalkDetailPage({
     // container alone is unambiguous. requestAnimationFrame defers the
     // write to the next frame so scrollHeight reflects the newly
     // committed message.
+    if (import.meta.env.DEV && typeof window !== 'undefined') {
+      const w = window as unknown as { __clawtalkScrollToBottomCount?: number };
+      w.__clawtalkScrollToBottomCount =
+        (w.__clawtalkScrollToBottomCount ?? 0) + 1;
+    }
     const apply = () => {
       const container = timelineRef.current;
       if (!container) return;
@@ -4145,9 +4149,8 @@ export function TalkDetailPage({
   // Tracks the last (talkId, activeThreadId) we fully hydrated from the
   // snapshot. PR C: same-thread refetches no longer dispatch into the
   // reducer at all — the snapshot owns messages/talk/content — but we
-  // still gate the run-side SNAPSHOT_HYDRATED so we don't re-seed
-  // active runs (and reset initialScrollPending) on every background
-  // refetch.
+  // still gate the run-side SNAPSHOT_HYDRATED so we don't re-seed active
+  // runs on every background refetch.
   const hydratedKeyRef = useRef<string | null>(null);
 
   // Reset every per-talk slice when talkId changes. The snapshot query
@@ -4362,19 +4365,82 @@ export function TalkDetailPage({
     setRetryRunState(null);
   }, [activeThreadId]);
 
-  // Scroll-to-bottom on thread show — the snapshot already hydrated the
-  // messages slice, so all we need to do here is fire the post-render
-  // scroll alignment.
+  // Thread-show scroll: restore the saved offset for this (talkId,
+  // threadId) if the user had scrolled up to read history; otherwise
+  // park at the bottom.
+  //
+  // We gate on the snapshot's activeThreadId matching the current
+  // activeThreadId so a thread switch waits for the new snapshot to
+  // land before scrolling — pageKind stays 'ready' across switches via
+  // lastSnapshotRef, so the previous thread's DOM is what's mounted
+  // until the new snapshot resolves. snapshotActiveThreadId is a
+  // primitive derived from the cached snapshot, so background refetches
+  // for the same thread don't re-trigger this effect.
+  const snapshotActiveThreadId = snapshotQuery.data?.activeThreadId ?? null;
   useEffect(() => {
     if (pageKind !== 'ready' || !activeThreadId) return;
-    requestAnimationFrame(() => {
+    if (snapshotActiveThreadId !== activeThreadId) return;
+    const saved = loadThreadScroll(talkId, activeThreadId);
+    const rafId = requestAnimationFrame(() => {
       if (pendingComposerFocusRef.current) {
         pendingComposerFocusRef.current = false;
         textareaRef.current?.focus();
       }
-      scrollToBottom('auto');
+      if (saved && !saved.atBottom) {
+        const container = timelineRef.current;
+        if (container) {
+          const maxOffset = Math.max(
+            0,
+            container.scrollHeight - container.clientHeight,
+          );
+          container.scrollTop = Math.min(saved.offset, maxOffset);
+        }
+      } else {
+        scrollToBottom('auto');
+      }
+      dispatch({ type: 'CLEAR_UNREAD' });
     });
-  }, [activeThreadId, scrollToBottom, pageKind]);
+    // StrictMode in dev runs the mount effect twice; cancelling the
+    // first rAF on cleanup ensures the second setup wins and we don't
+    // scroll twice on warm-cache mounts where the gate passes on the
+    // very first render.
+    return () => cancelAnimationFrame(rafId);
+  }, [
+    activeThreadId,
+    scrollToBottom,
+    pageKind,
+    snapshotActiveThreadId,
+    talkId,
+  ]);
+
+  // Persist scroll position + at-bottom flag on user scroll, debounced
+  // ~200ms. Owns the localStorage write end of the per-thread scroll
+  // memory so the next mount can restore.
+  useEffect(() => {
+    const container = timelineRef.current;
+    if (!container) return;
+    if (pageKind !== 'ready' || !activeThreadId) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const capturedTalkId = talkId;
+    const capturedThreadId = activeThreadId;
+    const onScroll = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        const el = timelineRef.current;
+        if (!el) return;
+        saveThreadScroll(capturedTalkId, capturedThreadId, {
+          offset: el.scrollTop,
+          atBottom: isNearBottom(),
+        });
+      }, 200);
+    };
+    container.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      container.removeEventListener('scroll', onScroll);
+      if (timer) clearTimeout(timer);
+    };
+  }, [activeThreadId, isNearBottom, pageKind, talkId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -4827,13 +4893,7 @@ export function TalkDetailPage({
   ]);
 
   useEffect(() => {
-    if (pageKind !== 'ready' || !state.initialScrollPending) return;
-    scrollToBottom('auto');
-    dispatch({ type: 'CLEAR_UNREAD' });
-  }, [scrollToBottom, state.initialScrollPending, pageKind]);
-
-  useEffect(() => {
-    if (pageKind !== 'ready' || state.initialScrollPending) return;
+    if (pageKind !== 'ready') return;
     if (!autoStickToBottomRef.current) return;
     autoStickToBottomRef.current = false;
     scrollToBottom('smooth');
@@ -4847,7 +4907,6 @@ export function TalkDetailPage({
     // this effect skips the scroll until they scroll back down.
   }, [
     scrollToBottom,
-    state.initialScrollPending,
     pageKind,
     pageMessages.length,
     state.liveResponsesByRunId,
@@ -5147,6 +5206,7 @@ export function TalkDetailPage({
             // Quota / private mode — ignore.
           }
         }
+        clearThreadScroll(pageTalk.id, thread.id);
         const remaining = sortThreads(
           threadState.threads.filter((candidate) => candidate.id !== thread.id),
         );
