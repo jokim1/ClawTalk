@@ -313,26 +313,8 @@ export class UserEventHub {
   }
 
   // ─── /notify ─────────────────────────────────────────────────────────
-  private async handleNotify(req: Request): Promise<Response> {
-    // [T-new-B §4.5] Temporary measurement instrumentation. Revert in T3
-    // before applying the §4.2 coalesce fix. Logs one JSON line per
-    // /notify call so tail can derive: bcw acquire wait, drain duration,
-    // and producer batch size. Combined with [t-new-b-meta] drain-batch
-    // lines from drainOnce, this drives the MAX_DRAIN_ITERATIONS pick
-    // per §4.5 step 5.
-    const tNotifyStart = Date.now();
-    let entriesCount = -1;
-    try {
-      const body = (await req.json()) as { entries?: unknown[] };
-      entriesCount = Array.isArray(body.entries) ? body.entries.length : -1;
-    } catch {
-      // No body (vitest) or unparseable — measurement defaults to -1.
-    }
-    const tBcwRequested = Date.now();
-    let tBcwEntered = 0;
-    let tDrainEnd = 0;
+  private async handleNotify(_req: Request): Promise<Response> {
     await this.state.blockConcurrencyWhile(async () => {
-      tBcwEntered = Date.now();
       try {
         await Promise.race([
           this.drainOnce(),
@@ -341,21 +323,11 @@ export class UserEventHub {
       } catch (err) {
         console.error('[user-event-hub] drain failed', err);
       }
-      tDrainEnd = Date.now();
     });
     // R4: schedule an alarm catch-up regardless of drain outcome —
     // if the drain succeeded, alarm fires on idle and is a no-op
     // (no new rows). If it failed, alarm retries in 30s.
     await this.state.storage.setAlarm(Date.now() + ALARM_BACKOFF_MS);
-    console.log(
-      '[t-new-b-meta] notify',
-      JSON.stringify({
-        notifyStart: tNotifyStart,
-        entries: entriesCount,
-        bcwAcquireMs: tBcwEntered - tBcwRequested,
-        drainMs: tDrainEnd - tBcwEntered,
-      }),
-    );
     return new Response(null, { status: 200 });
   }
 
@@ -397,21 +369,12 @@ export class UserEventHub {
     );
 
     await this.withDoSql(async () => {
-      // [T-new-B §4.5] Temporary per-iteration instrumentation. Revert
-      // in T3. `iter` + row count feed the median-rows-per-iteration
-      // value driving MAX_DRAIN_ITERATIONS per §4.5 step 5.
-      let iter = 0;
       while (true) {
         const rows = await getOutboxEventsForTopics(
           topics,
           sinceCursor,
           DRAIN_BATCH_LIMIT,
         );
-        console.log(
-          '[t-new-b-meta] drain-batch',
-          JSON.stringify({ iter, rows: rows.length }),
-        );
-        iter += 1;
         if (rows.length === 0) break;
         for (const row of rows) {
           for (const ws of live) {
