@@ -66,7 +66,10 @@ export function appendTalkMessageToSnapshot(input: {
 /**
  * Prepend older messages (cursor pagination) to the snapshot. Filters
  * out anything already in the cache by id so concurrent appends don't
- * double-up the timeline.
+ * double-up the timeline. When `hasOlderMessages` is provided (the
+ * caller knows whether the server returned a full page), the snapshot's
+ * `hasOlderMessages` field is patched too so a background snapshot
+ * refetch doesn't mirror the stale `true` back into the page state.
  */
 export function prependOlderTalkMessagesToSnapshot(input: {
   queryClient: QueryClient;
@@ -74,17 +77,26 @@ export function prependOlderTalkMessagesToSnapshot(input: {
   talkId: string;
   threadId: string;
   messages: TalkMessage[];
+  hasOlderMessages?: boolean;
 }): void {
-  const { queryClient, userId, talkId, threadId, messages } = input;
-  if (messages.length === 0) return;
+  const { queryClient, userId, talkId, threadId, messages, hasOlderMessages } =
+    input;
+  if (messages.length === 0 && hasOlderMessages === undefined) return;
   const key = resolveCacheKey(userId, talkId, threadId);
   if (!key) return;
   queryClient.setQueryData<TalkSnapshot | undefined>(key, (prev) => {
     if (!prev) return prev;
     const existing = new Set(prev.messages.map((m) => m.id));
     const additions = messages.filter((m) => !existing.has(m.id));
-    if (additions.length === 0) return prev;
-    return { ...prev, messages: [...additions, ...prev.messages] };
+    if (additions.length === 0 && hasOlderMessages === undefined) return prev;
+    const next: TalkSnapshot = { ...prev };
+    if (additions.length > 0) {
+      next.messages = [...additions, ...prev.messages];
+    }
+    if (hasOlderMessages !== undefined) {
+      next.hasOlderMessages = hasOlderMessages;
+    }
+    return next;
   });
 }
 

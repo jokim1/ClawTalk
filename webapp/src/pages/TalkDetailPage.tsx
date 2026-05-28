@@ -533,6 +533,7 @@ function summarizeTalkJobScope(
 }
 
 type DetailAction =
+  | { type: 'TALK_RESET' }
   | { type: 'SNAPSHOT_HYDRATED'; threadId: string; runs: TalkRun[] }
   | { type: 'THREAD_SELECTED'; threadId: string | null }
   | { type: 'MERGE_HISTORICAL_RUNS'; runs: TalkRun[] }
@@ -1090,6 +1091,13 @@ function withRun(
 
 function detailReducer(state: DetailState, action: DetailAction): DetailState {
   switch (action.type) {
+    case 'TALK_RESET':
+      // Cross-talk navigation: previously BOOTSTRAP_LOADING cleared the
+      // full reducer state because the snapshot hydrate replaced it.
+      // PR C kept the existing run cache so a parallel-fetch race
+      // wouldn't drop in-flight runs — but on a fresh talkId the old
+      // talk's runs/live state must not survive into the new one.
+      return createInitialDetailState();
     case 'SNAPSHOT_HYDRATED': {
       // First snapshot hydration for a (talkId, threadId). Seed runsById
       // from the snapshot's active runs while preserving any live-state
@@ -2943,8 +2951,18 @@ export function TalkDetailPage({
   // captured a DOM reference (e.g. handleDeleteThread holding a
   // threadRail node) and causes a visible page-level loading flash.
   const lastSnapshotRef = useRef<TalkSnapshot | null>(null);
+  // Only fall back to the last-good snapshot when it belongs to the
+  // currently-routed talk. Cross-talk navigation drops the fallback
+  // immediately so the previous talk's messages/title can't render
+  // against the new talkId — and so handlers reading pageTalk.id can't
+  // mutate the previous Talk before the new snapshot resolves.
   if (snapshotQuery.data) {
     lastSnapshotRef.current = snapshotQuery.data;
+  } else if (
+    lastSnapshotRef.current &&
+    lastSnapshotRef.current.talk.id !== talkId
+  ) {
+    lastSnapshotRef.current = null;
   }
   const talkSnapshot = snapshotQuery.data ?? lastSnapshotRef.current;
   const snapshotError = snapshotQuery.error;
@@ -3895,17 +3913,20 @@ export function TalkDetailPage({
       });
       if (activeThreadIdRef.current !== threadId) return;
       const filtered = filterDeletedMessages(older);
+      // Server returned fewer than we asked for → no more history. Patch
+      // the snapshot's `hasOlderMessages` in the same setQueryData so a
+      // background refetch can't mirror the stale `true` back into the
+      // page state (Codex #466 P2 + Codex #462 P3).
+      const isFinalPage = older.length < pageSize;
       prependOlderTalkMessagesToSnapshot({
         queryClient,
         userId,
         talkId,
         threadId,
         messages: filtered,
+        hasOlderMessages: isFinalPage ? false : undefined,
       });
-      // Server returned fewer than we asked for → no more history. Hide
-      // the button so the user doesn't keep firing empty `?before=`
-      // requests (Codex #462 P3).
-      if (older.length < pageSize) {
+      if (isFinalPage) {
         setOlderMessagesAvailable(false);
       }
     } catch (err) {
@@ -4133,8 +4154,10 @@ export function TalkDetailPage({
   // and the runs/agents fetch below re-hydrate them; the rest stay at
   // their defaults until the user opens the corresponding tab.
   useEffect(() => {
+    dispatch({ type: 'TALK_RESET' });
     threadStateTalkIdRef.current = null;
     hydratedKeyRef.current = null;
+    lastSnapshotRef.current = null;
     messageElementRefs.current.clear();
     setThreadState({ threads: [], loading: true, error: null });
     deletedMessageIdsRef.current = new Set();
