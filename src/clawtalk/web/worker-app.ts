@@ -78,13 +78,7 @@
 import { Hono } from 'hono';
 import type { Context, MiddlewareHandler } from 'hono';
 
-import {
-  isPgDatabaseHealthy,
-  type RequestExecutionContext,
-  withRequestScopedDb,
-  withUserContext,
-} from '../../db.js';
-import { logger } from '../../logger.js';
+import { isPgDatabaseHealthy, withUserContext } from '../../db.js';
 import { getUserById, updateUserDisplayName } from '../db/index.js';
 import { authenticateRequestPg } from './middleware/auth.js';
 import { authChallengeHeader, extractJwksEnv } from './middleware/auth.js';
@@ -222,8 +216,11 @@ import {
   deleteTalkResourceRoute,
   listTalkResourcesRoute,
 } from './routes/talk-resources.js';
+import {
+  dispatchRunInProcess,
+  type DispatchRunInProcessEnv,
+} from '../talks/dispatch-in-process.js';
 import { ensureMainTalkForUser } from '../talks/main-talk-bootstrap.js';
-import { processTalkRunMessage } from '../talks/queue-consumer.js';
 import { dispatchRun } from '../talks/queue-producer.js';
 import {
   cancelTalkChat,
@@ -2340,18 +2337,13 @@ function buildApp(): Hono<{ Variables: Variables }> {
     if (result.statusCode === 202 && result.body.ok) {
       const runs = result.body.data.runs;
       if (runs.length === 1) {
-        // T7: single-run chats run the executor inline via
-        // `ctx.waitUntil`, skipping the queue entirely. Saves the 5–14s
-        // CF-Queues dispatch latency measured in the T9 baseline.
-        // Caveats:
-        //   • 30s post-disconnect ceiling on ctx.waitUntil (per D5) —
-        //     if the executor needs >30s after the tab closes the run
-        //     dies silently. Cron sweeper picks up rows stuck >60min.
-        //   • Multi-run, cron, and job-run-now keep the queue path
-        //     (multi-run handled below; cron in scheduler.ts; job runs
-        //     in /jobs/:jobId/run-now).
+        // T7: bypass queue for single-run. See dispatchRunInProcess.
         c.executionCtx.waitUntil(
-          runTalkInline(c.env as InlineRunEnv, c.executionCtx, runs[0].id),
+          dispatchRunInProcess({
+            env: c.env as DispatchRunInProcessEnv,
+            ctx: c.executionCtx,
+            runId: runs[0].id,
+          }),
         );
       } else {
         for (const run of runs) {
@@ -2583,56 +2575,6 @@ function rateLimitedResponse(
       'retry-after': String(rateResult.retryAfterSec),
     },
   );
-}
-
-// Subset of the Worker `Env` used by the T7 inline path. Defined
-// structurally here rather than imported from `src/worker.ts` to keep
-// the dependency direction one-way (worker.ts → worker-app.ts).
-interface InlineRunEnv {
-  DB: { connectionString: string };
-  DB_EVENT_HUB_URL: string;
-  USER_EVENT_HUB: unknown;
-  TALK_RUN_QUEUE: unknown;
-  ATTACHMENTS: unknown;
-}
-
-/**
- * T7: run a single-run /chat turn inline (no queue dispatch). Opens a
- * fresh `withRequestScopedDb` scope so the executor's DB connection is
- * independent of the request handler's — the handler's connection is
- * closed when the 202 response returns, but this executor keeps running
- * until terminal (or until the 30s post-disconnect waitUntil ceiling
- * hits, whichever comes first). On any error before `markRunRunning`
- * lands, the run stays 'queued' and the cron sweeper picks it up.
- */
-async function runTalkInline(
-  env: InlineRunEnv,
-  ctx: RequestExecutionContext,
-  runId: string,
-): Promise<void> {
-  try {
-    await withRequestScopedDb(
-      env.DB.connectionString,
-      ctx,
-      {
-        DB_EVENT_HUB_URL: env.DB_EVENT_HUB_URL,
-        USER_EVENT_HUB: env.USER_EVENT_HUB as never,
-        TALK_RUN_QUEUE: env.TALK_RUN_QUEUE as never,
-        ATTACHMENTS: env.ATTACHMENTS as never,
-      },
-      async () =>
-        processTalkRunMessage({
-          runId,
-          attempts: 1,
-          maxRetries: 3,
-        }),
-    );
-  } catch (err) {
-    logger.error(
-      { err, runId },
-      't7-inline: processTalkRunMessage failed; run row may be stuck until cron sweep',
-    );
-  }
 }
 
 /** Returns a 403 csrf_failed response if validation fails, else null. */
