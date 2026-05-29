@@ -29,6 +29,9 @@
 //
 // CLI flags:
 //   --provider=<name>     — only run one provider (haiku/sonnet/opus/codex/kimi)
+//   --agents=<N>          — fan out each /chat to N bench agents of the same
+//                           provider (default 1). Used by T-new-A2 §4.5 N=3
+//                           run for per-agent loop attribution.
 
 import { writeFile } from 'node:fs/promises';
 
@@ -116,6 +119,11 @@ interface ProviderStats {
 }
 
 const cliArgs = parseCliArgs(process.argv.slice(2));
+const AGENTS_PER_TALK = cliArgs.agents ?? 1;
+if (!Number.isInteger(AGENTS_PER_TALK) || AGENTS_PER_TALK < 1) {
+  console.error(`--agents must be a positive integer (got ${cliArgs.agents})`);
+  process.exit(1);
+}
 
 if (!BENCH_TOKEN) {
   console.error(
@@ -145,14 +153,14 @@ async function main(): Promise<void> {
 
   const allStats: ProviderStats[] = [];
   for (const provider of TARGETS) {
-    let registeredAgentId: string;
+    let registeredAgentIds: string[];
     try {
-      registeredAgentId = await ensureBenchAgent(provider);
+      registeredAgentIds = await ensureBenchAgents(provider, AGENTS_PER_TALK);
     } catch (err) {
       const message =
         err instanceof Error ? `${err.name}: ${err.message}` : String(err);
       console.error(
-        `[bench] FAIL setting up ${provider.name} agent: ${message}`,
+        `[bench] FAIL setting up ${provider.name} agents: ${message}`,
       );
       const failed: RunMeasurement[] = Array.from(
         { length: RUNS_PER_PROVIDER },
@@ -165,9 +173,9 @@ async function main(): Promise<void> {
     const runs: RunMeasurement[] = [];
     for (let runIndex = 0; runIndex < RUNS_PER_PROVIDER; runIndex += 1) {
       console.error(
-        `[bench] ${provider.name} run ${runIndex + 1}/${RUNS_PER_PROVIDER} ...`,
+        `[bench] ${provider.name} run ${runIndex + 1}/${RUNS_PER_PROVIDER} (N=${registeredAgentIds.length} agents) ...`,
       );
-      const measurement = await runOne(provider, runIndex, registeredAgentId);
+      const measurement = await runOne(provider, runIndex, registeredAgentIds);
       logSummary(measurement);
       runs.push(measurement);
     }
@@ -191,7 +199,7 @@ async function main(): Promise<void> {
 async function runOne(
   provider: ProviderConfig,
   runIndex: number,
-  registeredAgentId: string,
+  registeredAgentIds: string[],
 ): Promise<RunMeasurement> {
   const measurement: RunMeasurement = {
     provider: provider.name,
@@ -217,12 +225,12 @@ async function runOne(
   try {
     const talk = await createTalk(`bench-${provider.name}-${Date.now()}`);
     measurement.talkId = talk.id;
-    await assignAgent(talk.id, provider, registeredAgentId);
+    await assignAgents(talk.id, provider, registeredAgentIds);
 
     const events = await openTalkEvents(talk.id);
     try {
       measurement.t0_postSent = Date.now();
-      const chatPromise = sendChat(talk.id, registeredAgentId);
+      const chatPromise = sendChat(talk.id, registeredAgentIds);
       const eventsPromise = collectStreamingEvents(events);
 
       const chatResponse = await chatPromise;
@@ -280,42 +288,45 @@ async function createTalk(title: string): Promise<{ id: string }> {
   return { id: json.data.talk.id };
 }
 
-async function assignAgent(
+async function assignAgents(
   talkId: string,
   provider: ProviderConfig,
-  registeredAgentId: string,
+  registeredAgentIds: string[],
 ): Promise<void> {
   const res = await authedFetch(`/api/v1/talks/${talkId}/agents`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      agents: [
-        {
-          // Must match an existing registered_agents row — talk_agents.
-          // registered_agent_id is a FK. See setTalkAgents in
-          // src/clawtalk/db/talk-agents.ts.
-          id: registeredAgentId,
-          role: 'assistant',
-          isPrimary: true,
-          sourceKind: 'provider',
-          providerId: provider.providerId,
-          modelId: provider.modelId,
-          nicknameMode: 'auto',
-          displayOrder: 0,
-        },
-      ],
+      // Must match existing registered_agents rows — talk_agents.
+      // registered_agent_id is a FK. See setTalkAgents in
+      // src/clawtalk/db/talk-agents.ts. Full-replace per
+      // feedback_settalkagents_full_replace.
+      agents: registeredAgentIds.map((id, i) => ({
+        id,
+        role: 'assistant',
+        isPrimary: i === 0,
+        sourceKind: 'provider',
+        providerId: provider.providerId,
+        modelId: provider.modelId,
+        nicknameMode: 'auto',
+        displayOrder: i,
+      })),
     }),
   });
   const json = (await res.json()) as ApiEnvelope<unknown>;
-  if (!res.ok || !json.ok) throw apiError('assignAgent', res.status, json);
+  if (!res.ok || !json.ok) throw apiError('assignAgents', res.status, json);
 }
 
-// Idempotent: looks up a registered_agent named `bench-<name>`. If it
-// exists with the right provider+model it's reused; if stale it's
-// updated; if missing it's created. Persists across baseline reruns so
-// the per-run measurement window never pays the agent-create cost.
-async function ensureBenchAgent(provider: ProviderConfig): Promise<string> {
-  const benchName = `bench-${provider.name}`;
+// Idempotent: looks up N registered_agents named `bench-<name>` for
+// N=1, or `bench-<name>-<i>` for N>1. Each is reused if it matches
+// provider+model, updated if stale, created if missing. Persists
+// across baseline reruns so the per-run measurement window never pays
+// the agent-create cost. N>1 supports T-new-A2 §4.5 N=3 attribution
+// per codex C-M4.
+async function ensureBenchAgents(
+  provider: ProviderConfig,
+  count: number,
+): Promise<string[]> {
   const listRes = await authedFetch('/api/v1/registered-agents', {
     method: 'GET',
   });
@@ -325,62 +336,69 @@ async function ensureBenchAgent(provider: ProviderConfig): Promise<string> {
   if (!listRes.ok || !listJson.ok) {
     throw apiError('listRegisteredAgents', listRes.status, listJson);
   }
-  const existing = listJson.data.find((a) => a.name === benchName);
-
-  if (existing) {
-    if (
-      existing.providerId === provider.providerId &&
-      existing.modelId === provider.modelId
-    ) {
-      return existing.id;
+  const benchNames = Array.from({ length: count }, (_, i) =>
+    count === 1 ? `bench-${provider.name}` : `bench-${provider.name}-${i}`,
+  );
+  const out: string[] = [];
+  for (const benchName of benchNames) {
+    const existing = listJson.data.find((a) => a.name === benchName);
+    if (existing) {
+      if (
+        existing.providerId === provider.providerId &&
+        existing.modelId === provider.modelId
+      ) {
+        out.push(existing.id);
+        continue;
+      }
+      const updateRes = await authedFetch(
+        `/api/v1/registered-agents/${existing.id}`,
+        {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            name: benchName,
+            providerId: provider.providerId,
+            modelId: provider.modelId,
+          }),
+        },
+      );
+      const updateJson = (await updateRes.json()) as ApiEnvelope<{
+        id: string;
+      }>;
+      if (!updateRes.ok || !updateJson.ok) {
+        throw apiError('updateRegisteredAgent', updateRes.status, updateJson);
+      }
+      out.push(existing.id);
+      continue;
     }
-    const updateRes = await authedFetch(
-      `/api/v1/registered-agents/${existing.id}`,
-      {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          name: benchName,
-          providerId: provider.providerId,
-          modelId: provider.modelId,
-        }),
-      },
-    );
-    const updateJson = (await updateRes.json()) as ApiEnvelope<{
-      id: string;
-    }>;
-    if (!updateRes.ok || !updateJson.ok) {
-      throw apiError('updateRegisteredAgent', updateRes.status, updateJson);
+    const createRes = await authedFetch('/api/v1/registered-agents', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: benchName,
+        providerId: provider.providerId,
+        modelId: provider.modelId,
+      }),
+    });
+    const createJson = (await createRes.json()) as ApiEnvelope<{ id: string }>;
+    if (!createRes.ok || !createJson.ok) {
+      throw apiError('createRegisteredAgent', createRes.status, createJson);
     }
-    return existing.id;
+    out.push(createJson.data.id);
   }
-
-  const createRes = await authedFetch('/api/v1/registered-agents', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      name: benchName,
-      providerId: provider.providerId,
-      modelId: provider.modelId,
-    }),
-  });
-  const createJson = (await createRes.json()) as ApiEnvelope<{ id: string }>;
-  if (!createRes.ok || !createJson.ok) {
-    throw apiError('createRegisteredAgent', createRes.status, createJson);
-  }
-  return createJson.data.id;
+  return out;
 }
 
 async function sendChat(
   talkId: string,
-  targetAgentId: string,
+  targetAgentIds: string[],
 ): Promise<{ runId: string | null }> {
   const res = await authedFetch(`/api/v1/talks/${talkId}/chat`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       content: PROMPT,
-      targetAgentIds: [targetAgentId],
+      targetAgentIds,
     }),
   });
   const json = (await res.json()) as ApiEnvelope<{
@@ -698,11 +716,13 @@ function apiError(op: string, status: number, json: unknown): Error {
   return new Error(`${op} failed (${status}): ${code}`);
 }
 
-function parseCliArgs(argv: string[]): { provider?: string } {
-  const out: { provider?: string } = {};
+function parseCliArgs(argv: string[]): { provider?: string; agents?: number } {
+  const out: { provider?: string; agents?: number } = {};
   for (const arg of argv) {
-    const match = /^--provider=(.+)$/.exec(arg);
-    if (match) out.provider = match[1];
+    const providerMatch = /^--provider=(.+)$/.exec(arg);
+    if (providerMatch) out.provider = providerMatch[1];
+    const agentsMatch = /^--agents=(\d+)$/.exec(arg);
+    if (agentsMatch) out.agents = Number(agentsMatch[1]);
   }
   return out;
 }
