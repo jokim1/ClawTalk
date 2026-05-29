@@ -3782,6 +3782,80 @@ describe('TalkDetailPage', () => {
     );
   });
 
+  // Regression (Codex P1): creating a doc must render it immediately from the
+  // create response, and must survive a stale snapshot that was already in
+  // flight when the doc was created (it read the pre-doc server state, so it
+  // resolves content:null). Without the optimistic setTalkContent + the
+  // cancelQueries/setQueryData guard, the doc either never appears until a
+  // later refetch (the "+ Doc did nothing / took forever" report) or gets
+  // clobbered back to null by the stale snapshot (the #462 race).
+  it('renders a freshly created doc immediately and keeps it when a stale in-flight snapshot resolves with content:null', async () => {
+    const user = userEvent.setup();
+    const staleSnapshot = createDeferred<TalkMessage[]>();
+    // Flag-based (not call-index) so it doesn't matter how many snapshot
+    // fetches the initial load makes — we hold exactly the next one, which is
+    // the refetch onReplayGap kicks off below.
+    let holdNextSnapshot = false;
+    const onCreateContent = vi.fn(({ title, format }) =>
+      buildContent({
+        id: 'content-new',
+        threadId: DEFAULT_THREAD_ID,
+        title,
+        contentFormat: (format as Content['contentFormat']) ?? 'markdown',
+      }),
+    );
+
+    installTalkDetailFetch({
+      onCreateContent,
+      // Hold the next snapshot fetch in flight; contentByThreadId stays empty,
+      // so when released it resolves content:null (the stale, pre-doc state).
+      onListMessages: ({ visibleMessages }) => {
+        if (holdNextSnapshot) {
+          holdNextSnapshot = false;
+          return staleSnapshot.promise;
+        }
+        return visibleMessages;
+      },
+    });
+
+    renderDetailPage('/app/talks/talk-1/talk', { sidebarContents: [] });
+    await screen.findByPlaceholderText('Send a message to this thread');
+
+    // Kick off a snapshot refetch and leave it pending (in flight).
+    expect(streamInput).toBeTruthy();
+    holdNextSnapshot = true;
+    act(() => {
+      void streamInput?.onReplayGap?.();
+    });
+
+    // Create a doc while that snapshot is still pending.
+    await user.click(
+      await screen.findByRole('button', { name: /add a document|\+ doc/i }),
+    );
+    await user.type(await screen.findByLabelText('Title'), 'Optimistic Doc');
+    await user.click(screen.getByRole('button', { name: /create document/i }));
+
+    // The doc pane appears immediately from the create response — no waiting
+    // on a snapshot refetch. (Fails on the old code, which discarded the
+    // returned Content.)
+    await waitFor(() => expect(onCreateContent).toHaveBeenCalledTimes(1));
+    expect(
+      await screen.findByRole('region', { name: /talk document/i }),
+    ).toBeInTheDocument();
+
+    // Let the stale, in-flight snapshot resolve with content:null. The create
+    // cancelled it, so it must NOT wipe the doc pane back out.
+    staleSnapshot.resolve([]);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByRole('region', { name: /talk document/i }),
+      ).toBeInTheDocument(),
+    );
+  });
+
   it('renders an HTML doc via SafeHtml in Preview mode', async () => {
     installTalkDetailFetch({
       contentByThreadId: {

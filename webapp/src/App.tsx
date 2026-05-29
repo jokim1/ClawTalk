@@ -11,6 +11,7 @@ import { ClawTalkMark } from './components/ClawTalkMark';
 import { ClawTalkSidebar } from './components/ClawTalkSidebar';
 import { SignInView } from './components/SignInView';
 import {
+  ApiError,
   ContentSidebarItem,
   createTalk,
   createTalkFolder,
@@ -610,13 +611,30 @@ export function App() {
 
   const handleDeleteTalk = useCallback(
     async (talkId: string) => {
-      await deleteTalk(talkId);
+      try {
+        await deleteTalk(talkId);
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          handleUnauthorized();
+          return;
+        }
+        // A 404 means the talk is already gone server-side — treat delete as
+        // idempotent and fall through to local cleanup. Anything else: surface
+        // it and keep the talk listed rather than letting the rejection escape
+        // uncaught (which also left the stale talk in the sidebar).
+        if (!(err instanceof ApiError && err.status === 404)) {
+          setSidebarError(
+            err instanceof Error ? err.message : 'Failed to delete talk',
+          );
+          return;
+        }
+      }
       setSidebarItems((current) => removeSidebarTalk(current, talkId));
       if (location.pathname.startsWith(`/app/talks/${talkId}`)) {
         navigate('/app/talks');
       }
     },
-    [location.pathname, navigate],
+    [handleUnauthorized, location.pathname, navigate],
   );
 
   const handleRenameFolder = useCallback(

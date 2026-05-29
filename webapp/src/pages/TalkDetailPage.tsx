@@ -3339,23 +3339,55 @@ export function TalkDetailPage({
         // known — the backend keys content rows on threadId and the
         // /threads route works equally well for default threads. Fall
         // back to talk-scoped if the thread list hasn't hydrated yet.
-        if (activeThreadId) {
-          await createThreadContent({
-            threadId: activeThreadId,
-            title: trimmed,
-            format: docModalFormat,
-          });
-        } else {
-          await createTalkContent({
-            talkId,
-            title: trimmed,
-            format: docModalFormat,
-          });
-        }
-        await onSidebarChanged();
+        const created = activeThreadId
+          ? await createThreadContent({
+              threadId: activeThreadId,
+              title: trimmed,
+              format: docModalFormat,
+            })
+          : await createTalkContent({
+              talkId,
+              title: trimmed,
+              format: docModalFormat,
+            });
+
+        // Render the new doc immediately. The create API returns the row,
+        // so we don't wait on a background snapshot/WS refetch — for a
+        // brand-new doc the WS content handler bails while talkContent is
+        // still null (see onContentUpdated ~4747), so otherwise the doc
+        // only lands on a much later refetch (that "took a long time" feel).
+        //
+        // Clobber-safety: the snapshot hydration effect does an
+        // unconditional setTalkContent(snapshot.content). A same-thread
+        // snapshot fetch already in flight (it read the server before this
+        // doc existed) would resolve content:null and wipe the optimistic
+        // doc back out. Cancel those in-flight fetches and seed the cache so
+        // hydration reads content:created. Key on created.threadId so the
+        // talk-scoped fallback (default thread) is covered too.
+        const threadKey = snapshotQueryKey(userId, talkId, created.threadId);
+        await queryClient.cancelQueries({ queryKey: threadKey });
+        queryClient.setQueryData<TalkSnapshot>(threadKey, (old) =>
+          old ? { ...old, content: created, pendingEdits: [] } : old,
+        );
+
+        setTalkContent(created);
+        setTalkContentPendingEdits([]);
+        setTalkContentError(null);
+        setTalkContentConflict(false);
+        setTalkContentSaveStatus('idle');
+        setTalkContentLoading(false);
+        setDocPaneHidden(false);
         setDocModalOpen(false);
         setDocModalTitle('');
-        navigate(`/app/talks/${encodeURIComponent(talkId)}?doc=1`);
+        // Reconcile the sidebar (hides "+ Doc") in the background — don't
+        // block the modal close on it.
+        void onSidebarChanged();
+        // Preserve ?thread= so we stay on the canonical thread-keyed
+        // snapshot entry (no bootstrap refetch that could reintroduce the
+        // clobber).
+        navigate(
+          `${buildThreadHref(talkId, created.threadId, currentTab)}&doc=1`,
+        );
       } catch (err) {
         if (err instanceof UnauthorizedError) {
           onUnauthorized();
@@ -3373,13 +3405,16 @@ export function TalkDetailPage({
     },
     [
       activeThreadId,
+      currentTab,
       docModalFormat,
       docModalSubmitting,
       docModalTitle,
       navigate,
       onSidebarChanged,
       onUnauthorized,
+      queryClient,
       talkId,
+      userId,
     ],
   );
 
