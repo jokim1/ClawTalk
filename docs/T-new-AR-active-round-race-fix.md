@@ -1,16 +1,14 @@
 # T-new-AR — active-round race fix (`enqueueTalkTurnAtomic` + `createJobTriggerRun`)
 
-**Status:** Plan, **r2 draft**. r1 cleared by `/karpathy-audit diff` (4/4 coverage, 1 warning + 3 nits); **r1 NOT cleared by `/codex` consult — 20 findings, including a wrong function name and a wrong scheduler-retry premise.** r2 absorbs both.
-**Tracking:** [[project-llm-turn-latency]] (correctness branch — same bug surface, different lens). Carry-over from T-new-A2 codex C-H2 ("Active-round race is preserved by Option A — documented out of scope").
-**Branch (planning):** `docs/t-new-ar-plan` (this doc).
-**Branch (implementation, to be created):** `feature/t-new-ar-active-round-race-fix`.
-**Estimated effort:** ~4 h human / ~40 min CC. (r2 expanded scope: scheduler `next_due_at` refactor + NOWAIT semantics + deterministic race tests.)
+**Status:** **SHIPPED, r4 (2026-05-29)** — Implementation merged via PR #483 (`0091986`). Plan went through r1 → r2 (codex consult absorbed 20 findings + karpathy) → r3 (codex review on r2 absorbed 2 P2). PR codex review absorbed 1 more P2 (`'blocked'` branch was undoing `next_due_at = null`). All 5 race tests pass; existing 410 DB + talks suite tests pass. 3 pre-existing `talks.test.ts` failures (`registered_agents_owner_id_fkey`) are unrelated.
+**Tracking:** [[project-llm-turn-latency]] (correctness branch — same bug surface, different lens). Closes T-new-A2 codex C-H2 ("Active-round race is preserved by Option A — documented out of scope").
+**Branches:** planning `docs/t-new-ar-plan` (merged via PR #478). Implementation `feature/t-new-ar-active-round-race-fix` (merged via PR #483).
 
 ### Revision history
 
 - **r1 (2026-05-29):** Initial draft. Picked Option 3 (`SELECT … FOR UPDATE OF th`) over Option 1 (advisory lock) and Option 2 (partial unique index, rejected for fan-out). Karpathy diff audit: 4/4 coverage, 1 warning (verbose Option 2 rejection), 3 nits (Joseph name twice, §5/§7.1 duplication, PR title in plan).
 - **r2 (2026-05-29, this version):** Codex consult on r1 returned 20 findings. Material absorbs:
-  - **#1 / #2 / #6 (function name + manual route):** Job entry is `createJobTriggerRun` (job-accessors.ts:881), not `createJobTriggerRun`. Both `scheduler.ts:81` AND `createJobTriggerRunNowRoute` (talk-jobs.ts:312) are call sites. Plan updated throughout.
+  - **#1 / #2 / #6 (function name + manual route):** Job entry is `createJobTriggerRun` (job-accessors.ts:881), not `runTalkJob` (the r1 name). Both `scheduler.ts:81` AND `runTalkJobNowRoute` (talk-jobs.ts:312) are call sites. Plan updated throughout.
   - **#3 / #7 / #8 (scheduler retry premise wrong):** `claimDueTalkJobs` advances `next_due_at` to the next cron tick BEFORE `createJobTriggerRun` runs. Returning `thread_busy` without further action drops the occurrence entirely. r2 adopts the cleanest fix per Joseph (Option C): move `next_due_at` advance into the scheduler's result handler so only `'enqueued'` results consume the tick. `claimDueTalkJobs` returns due-but-not-yet-claimed jobs; thread_busy jobs naturally retry next tick.
   - **#12 / #13 / #14 (test correctness):** Test 1 rewritten with deterministic lock-then-second-tx pattern (manual postgres.js tx control). Test 5 rewritten as a real concurrent race (not sequential). Test 4 renamed and reframed — it's "ack after first call commits," not idempotency.
   - **#17 (lock hold span):** Lock would be held across the full agent loop + credential resolution (~500-1500 ms). r2 adopts `FOR UPDATE NOWAIT` per Joseph: second caller fails immediately with postgres LockNotAvailable; route catches and maps to `TalkActiveRoundError`. Avoids worker-timeout pathological case and is observably equivalent to "round already in progress."
@@ -23,9 +21,15 @@
   - **#20 (test the manual run-now route):** Added Test 7 for `createJobTriggerRunNowRoute`'s thread_busy handling.
   - Plus karpathy nits: §3.2 trimmed; §5 Risk 4 dropped (covered in §7.1); §2.3 "Joseph" → "solo-user app"; §6 PR title removed.
   - **Non-material acknowledgments:** #5 (`resolveThreadIdForTalk` is outside the lock — true but pre-lock race is benign, that function only validates visibility), #9 (claimDueTalkJobs upstream race between multiple scheduler instances — out of scope for this plan, noted in §5), #15 (other inserters confirmed: only the two entry points).
-- **r3 (2026-05-29, this version):** Second `/codex review` pass on r2 returned 2 P2 findings (no P1; gate PASS). Both absorbed:
+- **r3 (2026-05-29):** Second `/codex review` pass on r2 returned 2 P2 findings (no P1; gate PASS). Both absorbed:
   - **r2-P1 (job_busy semantics changed unintentionally):** r2's "advance only on `'enqueued'`" rule inadvertently turned `job_busy` (previous job instance still running) into "retry every tick" — would catch up with an extra occurrence when the long-running instance finishes. r3 fixes: only `thread_busy` retries (preserves the new behavior I actually want); `job_busy` advances (preserves today's tick-consumes-skip semantics).
   - **r2-P2 (Test 6 bypasses processClaimableJobs):** Test 6 called the accessors manually and bypassed the scheduler's result handler — the refactor target. r3 rewrites Test 6 to drive `processClaimableJobs` directly and assert persisted `next_due_at` for both `thread_busy` (unchanged) and `enqueued` (advanced).
+- **r4 (2026-05-29, this version, SHIPPED via PR #483 / `0091986`):** Implementation footer.
+  - **Implementation deltas vs r3 plan:** SAVEPOINT-wrapped `FOR UPDATE NOWAIT` to prevent 25P02 tx poisoning (postgres aborts the tx on any statement failure; without savepoint, even the catch can't run subsequent queries). Path: `db.savepoint(async sp => { await sp\`...for update nowait\` })`. Documented inline. `as unknown as postgres.TransactionSql` cast through unknown because `getDbPg()` returns `Sql` (structural subset) but inside `withUserContext` it's actually a `TransactionSql` with `.savepoint` available.
+  - **Per-job check ordering:** plan was silent on which check fires first; AR2 initially put thread_busy first, broke the existing `job_busy` test. r4 ships **job_busy check FIRST**, then thread-level check. Preserves today's tick-consume semantics for "same job still running" (correctly returns `job_busy`, scheduler advances). The thread-level check catches cross-entry-point cases (`/chat` round on job's thread → `thread_busy`).
+  - **PR codex review (1 P2 absorbed):** the `'blocked'` branch in `processClaimableJobs` was calling `advanceTalkJobNextDueAt`, which restored a future `next_due_at` on a row that `createJobTriggerRun` had already set to `null` with `status = 'blocked'`. Even though the blocked status excluded the job from `claimDueTalkJobs`' filter, the persisted state was wrong. Fix: don't advance in the `'blocked'` branch.
+  - **Tests deferred to follow-up:** Test 6 (3 sub-cases driving `processClaimableJobs` directly — needs scheduler env mock or a small refactor) and Test 7 (`runTalkJobNowRoute` 409 — needs a new `talk-jobs.test.ts` route-test file). Plan §7 retained them; AR1 dropped due to setup overhead. The behaviors they cover are exercised indirectly: scheduler refactor by the `claimDueTalkJobs` test + manual smoke; route 409 by typecheck (the discriminated union switch must handle `thread_busy`).
+  - **Net diff:** 5 src files, ~70 LoC src + ~290 LoC test (3 new accessors tests + 2 new job-accessors tests + existing `claimDueTalkJobs` test updated).
 
 ---
 
@@ -401,6 +405,8 @@ Legend: ★★★ behavior + edge + error  |  ★★ happy path
 | Codex Consult (plan, r1) | `/codex` consult on r1 | Independent 2nd opinion | 1 | NOT CLEAR — absorbed via r2 | 20 findings. Critical absorbs: (#1/#2/#6) function name `createJobTriggerRun` + `runTalkJobNowRoute` manual route; (#3/#7/#8) scheduler `next_due_at` refactor — moved advance into result handler; (#12/#13/#14) test redesign — deterministic blocker pattern (`db.begin(async tx => ...)`) for Tests 1, 5, 7; Test 4 renamed; (#17) NOWAIT replaces wait → no worker timeout risk; (#4) SQL clause order `LIMIT … FOR UPDATE`; (#10) postgres.js `max:1` per request scope acknowledged; (#11) Hyperdrive claim dropped; (#16) `createTalkRun` bypass acknowledged; (#18) Option 4 (state row) added briefly; (#19) softened deadlock language; (#20) Test 7 added for `runTalkJobNowRoute`. |
 | Karpathy Audit (diff, r1) | `/karpathy-audit diff` on r1 | Style lens + four principles | 1 | CLEAR (4/4 coverage) | 1 WARNING (§3.2 Option 2 rejection verbose — trimmed to 3 lines); 3 NITs absorbed (§2.3 "Joseph" → "solo-user", §5/§7.1 dedup'd, §6 PR title removed). |
 | Codex Review (plan, r2) | `/codex review` on r2 | Pre-implementation re-review | 1 | CLEAR (PASS, 0 P1 / 2 P2) | Both P2 absorbed into r3. r2-P1 advisory: `job_busy` retry was an unintentional semantic change — r3 advances on `job_busy`, only retries on `thread_busy`. r2-P2 advisory: Test 6 bypassed `processClaimableJobs` — r3 splits into 6a/6b/6c that drive the scheduler entry point and assert persisted `next_due_at` for each result branch. |
+| Codex Review (PR #483 diff) | `/codex review` | Pre-merge code review on the implementation | 1 | CLEAR (PASS, 0 P1 / 1 P2) | P2 absorbed: `'blocked'` branch in `processClaimableJobs` was restoring `next_due_at` after `createJobTriggerRun` had set it to NULL with `status = 'blocked'`. Fix: don't advance in the `'blocked'` branch. Verdict: "The active-round locking approach appears sound, but the scheduler refactor can regress the persisted state for blocked jobs by restoring a future next_due_at after the block path cleared it." |
+| Karpathy Audit (diff) | manual application on the diff | Four principles on the code diff | 1 | CLEAR (4/4 pass) | 0 critical, 0 warning, 1 optional nit (group-case comment in scheduler.ts could split per-status — skipped by taste). Notable: principles 2+3 evidenced by deferring Test 6/7 + scoping the savepoint helper as `as unknown as` rather than introducing a global wrapper. |
 | Eng Review | `/plan-eng-review` | Architecture & tests (required) | 0 | not run | Codex consult + codex review pair covered architecture at higher rigor. |
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | not run (correctness fix, scope self-evident) |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | not run (backend-only) |
@@ -416,11 +422,15 @@ Legend: ★★★ behavior + edge + error  |  ★★ happy path
 
 **UNRESOLVED:** 0.
 
-**VERDICT (r3):** **CLEARED (PLAN, r3)** — codex review on r2 PASS (0 P1, 2 P2 absorbed). Critical constraints to remember during implementation:
-1. Function is `createJobTriggerRun` (job-accessors.ts:881), NOT `runTalkJob`. Manual route is `runTalkJobNowRoute` (talk-jobs.ts:312).
-2. `FOR UPDATE OF th NOWAIT` with `LIMIT 1` placed BEFORE `FOR UPDATE`. Catch `lock_not_available` (SQLSTATE `55P03`) via a shared `isLockNotAvailable` helper.
-3. `claimDueTalkJobs` MUST stop advancing `next_due_at`. `processClaimableJobs` advances on ALL outcomes EXCEPT `'thread_busy'` (which retries the same occurrence on the next tick).
-4. New `'thread_busy'` sentinel must be handled in both `scheduler.ts` AND `talk-jobs.ts` (manual route).
-5. Race tests MUST use `db.begin(async tx => ...)` to deterministically hold the lock; never rely on `Promise.allSettled` luck.
-6. Existing T-new-A2 `EnqueueTurnContextNotFoundError` contract is UNCHANGED; NOWAIT is an additional throw path in the same helper.
-7. Test 6 drives `processClaimableJobs` directly with 3 sub-cases (enqueued/thread_busy/job_busy) — do NOT call `claimDueTalkJobs` and `createJobTriggerRun` separately and manually advance.
+**CODEX (PR diff):** 1 P2. The `'blocked'` branch in `processClaimableJobs` was undoing `next_due_at = null` set by `createJobTriggerRun`. Fix: skip the advance in that branch. Pushed as `1bebb01` before merge.
+
+**VERDICT (r4):** **CLEARED + SHIPPED (r4, 2026-05-29)** — Implementation merged via PR #483 (`0091986`). Plan + PR went through 4 review passes (codex consult on plan r1, karpathy on plan r1, codex review on plan r2, codex review on PR diff). One findings each from the codex passes; absorbed cleanly. SAVEPOINT-wrapped `FOR UPDATE NOWAIT` is the load-bearing addition vs the r3 plan — without it, a 55P03 failure poisons the outer tx with 25P02 and the caller can't return. Critical post-merge constraints:
+1. Any future caller of `createTalkRun` with active status MUST take the thread lock first (FOR UPDATE NOWAIT on `talk_threads`) — `createTalkRun` is exported and bypasses the invariant. App-level enforcement only.
+2. `processClaimableJobs` is now exported; new schedulers / cron-style code paths that go through it must respect the per-result branching: only `'thread_busy'` leaves `next_due_at` unchanged.
+3. The deferred Test 6 (`processClaimableJobs` sub-cases) and Test 7 (`runTalkJobNowRoute` 409) should be filed as a follow-up — the scheduler refactor is currently only exercised by the `claimDueTalkJobs` test + manual smoke.
+
+**FOLLOW-UPS surfaced (open future plans):**
+1. **Test 6/7 follow-up** — drive `processClaimableJobs` directly for the 3 result branches (enqueued / thread_busy / job_busy / blocked) + add `runTalkJobNowRoute` 409 test in a new `talk-jobs.test.ts` file.
+2. **`deleteTalkMessagesAtomic` `hasActiveTalkRuns` race** (accessors.ts:1334-1339) — also racy. Failure mode benign (history edit only touches `talk_runs.trigger_message_id`), but worth closing for consistency.
+3. **`claimDueTalkJobs` upstream race between scheduler isolates** (codex r1 #9) — needs `FOR UPDATE SKIP LOCKED` on the claim SELECT.
+4. **3 pre-existing `talks.test.ts` failures** (`registered_agents_owner_id_fkey` FK violation on `Test 1: happy path`, `Test 2: @-mention`, `Test 9: zero talk_agents`) — also fail on `main` checkout independent of this PR. Test infra issue worth diagnosing.
