@@ -27,6 +27,8 @@
 
 import { randomUUID } from 'node:crypto';
 
+import type postgres from 'postgres';
+
 import { getCurrentUserId, getDbPg, getOutOfBandSql } from '../../db.js';
 import { resolveCredentialKindSnapshot } from '../agents/execution-resolver.js';
 import { emitOutboxEvent } from '../talks/outbox-emit.js';
@@ -2243,31 +2245,78 @@ export interface EnqueueTurnContext {
   activeCount: number;
 }
 
+// SQLSTATE 55P03 — postgres raises this when a row is FOR-UPDATE locked
+// by another tx and the requester asked NOWAIT (instead of waiting).
+// Used by the active-round race fix (T-new-AR) to convert "someone else
+// holds the thread lock" into TalkActiveRoundError / 'thread_busy'.
+export function isLockNotAvailable(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false;
+  const code = (err as { code?: unknown }).code;
+  return typeof code === 'string' && code === '55P03';
+}
+
 export async function loadEnqueueTurnContext(
   talkId: string,
   threadId: string,
 ): Promise<EnqueueTurnContext> {
-  const db = getDbPg();
-  const rows = await db<
-    {
-      active_tool_families_json: Record<string, boolean> | null;
-      title: string | null;
-      active_count: number;
-    }[]
-  >`
-    select
-      tk.active_tool_families_json,
-      th.title,
-      (
-        select count(*)::int from public.talk_runs
-        where talk_id = tk.id and thread_id = th.id
-          and status in ('queued', 'running', 'awaiting_confirmation')
-      ) as active_count
-    from public.talks tk
-    join public.talk_threads th on th.talk_id = tk.id
-    where tk.id = ${talkId}::uuid and th.id = ${threadId}::uuid
-    limit 1
-  `;
+  // getDbPg() inside withUserContext returns the surrounding tx
+  // (a TransactionSql), so .savepoint is available — but the Sql type
+  // alias used elsewhere hides that. Cast through unknown to access
+  // savepoint without leaking the postgres.TransactionSql type to other
+  // accessors that don't care.
+  const db = getDbPg() as unknown as postgres.TransactionSql;
+  let rows: Array<{
+    active_tool_families_json: Record<string, boolean> | null;
+    title: string | null;
+    active_count: number;
+  }>;
+  try {
+    // Wrap the FOR UPDATE NOWAIT in a SAVEPOINT so a 55P03 failure
+    // rolls back JUST the savepoint and leaves the outer tx usable. A
+    // bare failed statement would poison the tx with 25P02, defeating
+    // the whole point of returning TalkActiveRoundError from this path
+    // (the outer enqueueTalkTurnAtomic still has rollback work it
+    // expects to do via its own catch in talks.ts).
+    rows = await db.savepoint<
+      {
+        active_tool_families_json: Record<string, boolean> | null;
+        title: string | null;
+        active_count: number;
+      }[]
+    >(async (sp) => {
+      return await sp<
+        {
+          active_tool_families_json: Record<string, boolean> | null;
+          title: string | null;
+          active_count: number;
+        }[]
+      >`
+        select
+          tk.active_tool_families_json,
+          th.title,
+          (
+            select count(*)::int from public.talk_runs
+            where talk_id = tk.id and thread_id = th.id
+              and status in ('queued', 'running', 'awaiting_confirmation')
+          ) as active_count
+        from public.talks tk
+        join public.talk_threads th on th.talk_id = tk.id
+        where tk.id = ${talkId}::uuid and th.id = ${threadId}::uuid
+        limit 1
+        for update of th nowait
+      `;
+    });
+  } catch (err) {
+    // Another tx holds FOR UPDATE on this talk_threads row — observable
+    // exactly when a concurrent enqueueTalkTurnAtomic or
+    // createJobTriggerRun is in flight on the same thread. Map to the
+    // same active-round error the activeCount check would throw, so
+    // the route returns 409 talk_round_active.
+    if (isLockNotAvailable(err)) {
+      throw new TalkActiveRoundError('thread');
+    }
+    throw err;
+  }
   if (rows.length === 0) {
     throw new EnqueueTurnContextNotFoundError();
   }

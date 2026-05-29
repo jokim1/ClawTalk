@@ -335,12 +335,10 @@ describe('job-accessors-pg (postgres + RLS)', () => {
 
   // ── claimDueTalkJobs ───────────────────────────────────────────────
 
-  it('claimDueTalkJobs: pulls due active jobs and advances nextDueAt', async () => {
+  it('claimDueTalkJobs: returns due active jobs WITHOUT advancing nextDueAt (T-new-AR refactor)', async () => {
     const { talkId, agentId } = await setupTalkWithAgent();
-    // Use a backdated `now` so the job's initial nextDueAt is in the
-    // past at claim time. The accessor sets nextDueAt = now + 1h on
-    // create; we ask claimDueTalkJobs for `now + 2h` to ensure the row
-    // is selected.
+    // The accessor sets nextDueAt = now + 1h on create; we ask
+    // claimDueTalkJobs for `now + 2h` to ensure the row is selected.
     const createdAt = await withUserContext(USER_A_ID, async () => {
       const j = await createTalkJob({
         ownerId: USER_A_ID,
@@ -361,10 +359,21 @@ describe('job-accessors-pg (postgres + RLS)', () => {
       return await claimDueTalkJobs(10, claimAt);
     });
     expect(claimed.length).toBe(1);
-    // nextDueAt advanced past claimAt.
-    expect(Date.parse(claimed[0].nextDueAt!)).toBeGreaterThan(
-      Date.parse(claimAt),
-    );
+    // T-new-AR: claimDueTalkJobs no longer advances nextDueAt. The
+    // claimed job's nextDueAt should still equal the original (a tick
+    // before claimAt), and the persisted row should match. The
+    // scheduler's processClaimableJobs is responsible for advancing on
+    // 'enqueued' / 'job_busy' / etc., and leaving it unchanged on
+    // 'thread_busy' so the next tick retries.
+    expect(claimed[0].nextDueAt).toBe(createdAt);
+    const db = getDbPg();
+    const persisted = await withUserContext(USER_A_ID, async () => {
+      const rows = await db<{ next_due_at: string }[]>`
+        select next_due_at from public.talk_jobs limit 1
+      `;
+      return rows[0]?.next_due_at;
+    });
+    expect(persisted).toBe(createdAt);
   });
 
   // ── createJobTriggerRun ────────────────────────────────────────────
@@ -524,7 +533,7 @@ describe('job-accessors-pg (postgres + RLS)', () => {
   // returns a new 'thread_busy' sentinel.
 
   it('createJobTriggerRun: returns thread_busy when /chat holds FOR UPDATE on the thread (deterministic via FOR UPDATE)', async () => {
-    const { talkId, threadId, agentId } = await setupTalkWithAgent();
+    const { talkId, agentId } = await setupTalkWithAgent();
     const job = await withUserContext(USER_A_ID, async () => {
       return await createTalkJob({
         ownerId: USER_A_ID,
@@ -538,15 +547,17 @@ describe('job-accessors-pg (postgres + RLS)', () => {
       });
     });
 
-    // Hold a FOR UPDATE on talk_threads from tx A. While the lock is
-    // held, call createJobTriggerRun from a separate withUserContext.
-    // Once the fix ships, the second caller's helper FOR UPDATE NOWAIT
-    // fails immediately and returns {status: 'thread_busy'}.
+    // Hold a FOR UPDATE on the JOB's thread row (createTalkJob spins up
+    // its own thread per job — locking the talk's default thread would
+    // be a different row and wouldn't exercise the race). While the
+    // lock is held, call createJobTriggerRun for the same job from a
+    // separate withUserContext. Its FOR UPDATE NOWAIT fails immediately
+    // and the function returns {status: 'thread_busy'}.
     const db = getDbPg();
     await db.begin(async (txA) => {
       await txA`
         select 1 from public.talk_threads
-        where id = ${threadId}::uuid and talk_id = ${talkId}::uuid
+        where id = ${job.threadId}::uuid and talk_id = ${talkId}::uuid
         for update
       `;
 
@@ -557,9 +568,6 @@ describe('job-accessors-pg (postgres + RLS)', () => {
           triggerSource: 'scheduler',
         });
       });
-      // String comparison rather than discriminated union — the
-      // 'thread_busy' member doesn't exist in CreateJobTriggerRunResult
-      // until AR2 ships. After AR2 this becomes a typed check.
       expect((result as { status: string }).status).toBe('thread_busy');
     });
 
@@ -568,14 +576,14 @@ describe('job-accessors-pg (postgres + RLS)', () => {
       const dbAfter = getDbPg();
       const runs = await dbAfter<{ count: number }[]>`
         select count(*)::int as count from public.talk_runs
-        where talk_id = ${talkId}::uuid and thread_id = ${threadId}::uuid
+        where talk_id = ${talkId}::uuid and thread_id = ${job.threadId}::uuid
       `;
       expect(runs[0]?.count ?? 0).toBe(0);
     });
   });
 
-  it('createJobTriggerRun: returns thread_busy when a /chat round on the same thread is already active (cross-entry-point thread invariant)', async () => {
-    const { talkId, threadId, agentId } = await setupTalkWithAgent();
+  it('createJobTriggerRun: returns thread_busy when a /chat round on the SAME thread is already active (cross-entry-point thread invariant)', async () => {
+    const { talkId, agentId } = await setupTalkWithAgent();
     const job = await withUserContext(USER_A_ID, async () => {
       return await createTalkJob({
         ownerId: USER_A_ID,
@@ -589,19 +597,21 @@ describe('job-accessors-pg (postgres + RLS)', () => {
       });
     });
 
-    // Park a /chat-triggered queued run on the same thread but on a
-    // DIFFERENT job_id (the /chat path leaves job_id NULL). Today the
-    // job-scoped active check at line 921 misses this, the FOR UPDATE
-    // succeeds, the function inserts and we end up with 2 active rounds
-    // on the thread. After AR2, the new thread-level active check
-    // catches the /chat round and returns thread_busy.
+    // createTalkJob spins up its own internal thread for the job; the
+    // race we want to exercise is /chat racing with createJobTriggerRun
+    // on THAT thread (not the talk's default thread). Park a
+    // /chat-triggered queued run on the JOB's thread but with
+    // job_id = NULL (which is what enqueueTalkTurnAtomic always does).
+    // Today the job-scoped active check at line 921 misses cross-entry
+    // active runs; with the new thread-level check, createJobTriggerRun
+    // returns 'thread_busy'.
     await withUserContext(USER_A_ID, async () => {
       await enqueueTalkTurnAtomic({
         ownerId: USER_A_ID,
         talkId,
-        threadId,
+        threadId: job.threadId,
         userId: USER_A_ID,
-        content: 'user chat round',
+        content: 'user chat round on the job thread',
         targetAgentIds: [agentId],
       });
     });
@@ -615,12 +625,12 @@ describe('job-accessors-pg (postgres + RLS)', () => {
     });
     expect((result as { status: string }).status).toBe('thread_busy');
 
-    // Thread should still have exactly the original /chat's runs.
+    // Thread should still have exactly the original /chat's run.
     await withUserContext(USER_A_ID, async () => {
       const dbAfter = getDbPg();
       const runs = await dbAfter<{ count: number }[]>`
         select count(*)::int as count from public.talk_runs
-        where talk_id = ${talkId}::uuid and thread_id = ${threadId}::uuid
+        where talk_id = ${talkId}::uuid and thread_id = ${job.threadId}::uuid
       `;
       expect(runs[0]?.count ?? 0).toBe(1);
     });

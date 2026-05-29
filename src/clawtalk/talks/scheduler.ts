@@ -20,7 +20,11 @@ import {
   type RequestExecutionContext,
 } from '../../db.js';
 import { failRunAndPromoteNextAtomic } from '../db/accessors.js';
-import { claimDueTalkJobs, createJobTriggerRun } from '../db/job-accessors.js';
+import {
+  advanceTalkJobNextDueAt,
+  claimDueTalkJobs,
+  createJobTriggerRun,
+} from '../db/job-accessors.js';
 import { logger } from '../../logger.js';
 
 import { dispatchRun } from './queue-producer.js';
@@ -66,7 +70,7 @@ export async function runScheduledTick(
   });
 }
 
-async function processClaimableJobs(): Promise<void> {
+export async function processClaimableJobs(): Promise<void> {
   let claimed;
   try {
     claimed = await claimDueTalkJobs(JOB_CLAIM_BATCH_SIZE);
@@ -84,11 +88,28 @@ async function processClaimableJobs(): Promise<void> {
           triggerSource: 'scheduler',
         }),
       );
+      // T-new-AR: only 'thread_busy' retries on the next tick (the
+      // /chat or other job that holds the thread lock will release
+      // within seconds). Every other terminal status consumes the
+      // tick by advancing next_due_at — matching the pre-T-new-AR
+      // claim-time advance for job_busy/paused/not_found/blocked,
+      // and adding the same for the new enqueued path.
       switch (result.status) {
         case 'enqueued':
+          await withUserContext(job.ownerId, () =>
+            advanceTalkJobNextDueAt(job),
+          );
           await dispatchRun({ runId: result.runId });
           break;
+        case 'thread_busy':
+          // Leave next_due_at unchanged — next scheduler tick retries
+          // the same occurrence. Silent (no warn) — short-lived
+          // contention is expected.
+          break;
         case 'blocked':
+          await withUserContext(job.ownerId, () =>
+            advanceTalkJobNextDueAt(job),
+          );
           logger.warn(
             {
               jobId: job.id,
@@ -101,9 +122,13 @@ async function processClaimableJobs(): Promise<void> {
         case 'job_busy':
         case 'paused':
         case 'not_found':
-          // Silent — these states are expected at scheduler edges:
-          // 'job_busy' (a manual run-now beat us), 'paused' (toggled
-          // between claim + create), 'not_found' (deleted).
+          // Consume the tick (matches pre-T-new-AR behavior). Silent —
+          // these states are expected at scheduler edges: 'job_busy' (a
+          // manual run-now beat us), 'paused' (toggled between claim +
+          // create), 'not_found' (deleted).
+          await withUserContext(job.ownerId, () =>
+            advanceTalkJobNextDueAt(job),
+          );
           break;
       }
     } catch (err) {

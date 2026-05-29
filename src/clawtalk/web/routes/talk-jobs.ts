@@ -326,6 +326,11 @@ export async function runTalkJobNowRoute(input: {
             'job_busy',
             'This job already has an active queued or running run.',
           );
+        case 'thread_busy':
+          return conflict(
+            'thread_busy',
+            'A round is already in progress on this thread. Wait for it to finish or cancel before running the job.',
+          );
         case 'paused':
           return badRequest(
             'job_paused',

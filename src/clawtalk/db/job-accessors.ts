@@ -16,10 +16,13 @@
 //   - Inserts/updates rely on RLS `owner_id = auth.uid()` instead of an
 //     explicit ownerId WHERE clause.
 
+import type postgres from 'postgres';
+
 import {
   createTalkMessage,
   createTalkRun,
   createTalkThread,
+  isLockNotAvailable,
 } from './accessors.js';
 import { getDbPg } from '../../db.js';
 import { resolveCredentialKindSnapshot } from '../agents/execution-resolver.js';
@@ -799,6 +802,11 @@ export async function claimDueTalkJobs(
   const normalizedLimit = Math.max(1, Math.floor(limit));
   const currentNow = now ?? new Date().toISOString();
   const db = getDbPg();
+  // T-new-AR: returns due-but-not-yet-claimed jobs WITHOUT advancing
+  // next_due_at. The advance is now the scheduler's job — only
+  // successful enqueues (and other non-retry sentinels) consume the
+  // tick; 'thread_busy' leaves next_due_at unchanged so the next tick
+  // retries the same occurrence.
   const dueRows = await db<TalkJobRow[]>`
     select ${db.unsafe(TALK_JOB_SELECT)}
     from public.talk_jobs j
@@ -809,23 +817,36 @@ export async function claimDueTalkJobs(
     order by j.next_due_at asc, j.created_at asc
     limit ${normalizedLimit}
   `;
-  const claimed: TalkJob[] = [];
-  for (const row of dueRows) {
-    const job = toTalkJob(row);
-    const nextDueAt = computeNextTalkJobDueAt({
-      schedule: job.schedule,
-      timezone: job.timezone,
-      from: currentNow,
-    });
-    await db`
-      update public.talk_jobs
-      set next_due_at = ${nextDueAt}::timestamptz,
-          updated_at = ${currentNow}::timestamptz
-      where id = ${job.id}::uuid
-    `;
-    claimed.push({ ...job, nextDueAt });
-  }
-  return claimed;
+  return dueRows.map(toTalkJob);
+}
+
+/**
+ * Advance `talk_jobs.next_due_at` to the next cron-computed time for
+ * the given job. Called by the scheduler's result handler for outcomes
+ * that consume the tick (everything except 'thread_busy', which retries
+ * on the next tick).
+ *
+ * T-new-AR: extracted from claimDueTalkJobs so the scheduler can decide
+ * whether to advance per result branch.
+ */
+export async function advanceTalkJobNextDueAt(
+  job: TalkJob,
+  now?: string,
+): Promise<string | null> {
+  const currentNow = now ?? new Date().toISOString();
+  const nextDueAt = computeNextTalkJobDueAt({
+    schedule: job.schedule,
+    timezone: job.timezone,
+    from: currentNow,
+  });
+  const db = getDbPg();
+  await db`
+    update public.talk_jobs
+    set next_due_at = ${nextDueAt}::timestamptz,
+        updated_at = ${currentNow}::timestamptz
+    where id = ${job.id}::uuid
+  `;
+  return nextDueAt;
 }
 
 export async function markTalkJobRunQueued(
@@ -865,6 +886,7 @@ export async function markTalkJobRunFinished(input: {
 // ---------------------------------------------------------------------------
 
 export type CreateJobTriggerRunResult =
+  | { status: 'thread_busy'; job: TalkJob }
   | {
       status: 'enqueued';
       talkId: string;
@@ -917,7 +939,36 @@ export async function createJobTriggerRun(input: {
     return { status: 'blocked', job: blockedJob, issue };
   }
 
-  const db = getDbPg();
+  const db = getDbPg() as unknown as postgres.TransactionSql;
+
+  // T-new-AR: take a thread-level FOR UPDATE NOWAIT lock before reading
+  // the active-runs check. Wrap in SAVEPOINT so the outer
+  // withUserContext tx isn't poisoned by a 55P03 failure (we need to
+  // keep transacting — at minimum to return cleanly; in the happy path
+  // to write the message + run + outbox). Serializes against
+  // concurrent /chat (loadEnqueueTurnContext takes the same lock) and
+  // concurrent jobs on the same thread.
+  try {
+    await db.savepoint(async (sp) => {
+      await sp`
+        select 1 from public.talk_threads
+        where id = ${job.threadId}::uuid and talk_id = ${job.talkId}::uuid
+        for update nowait
+      `;
+    });
+  } catch (err) {
+    if (isLockNotAvailable(err)) {
+      return { status: 'thread_busy', job };
+    }
+    throw err;
+  }
+
+  // Per-job check FIRST. Preserves today's job_busy semantics: if a
+  // previous instance of THIS job is still running, return job_busy so
+  // the scheduler advances next_due_at and skips this tick (don't catch
+  // up). The per-thread check below would also catch this case, but
+  // returning thread_busy would cause processClaimableJobs to retry on
+  // the next tick — wrong for a long-running same-job instance.
   const active = await db<{ count: number }[]>`
     select count(*)::int as count
     from public.talk_runs
@@ -926,6 +977,20 @@ export async function createJobTriggerRun(input: {
   `;
   if ((active[0]?.count ?? 0) > 0) {
     return { status: 'job_busy', job };
+  }
+
+  // Thread-level active check — closes the cross-entry-point invariant
+  // (a /chat-triggered round on the same thread leaves talk_runs rows
+  // with job_id = null, which the per-job check above misses).
+  const threadActive = await db<{ count: number }[]>`
+    select count(*)::int as count
+    from public.talk_runs
+    where talk_id = ${job.talkId}::uuid
+      and thread_id = ${job.threadId}::uuid
+      and status in ('queued', 'running', 'awaiting_confirmation')
+  `;
+  if ((threadActive[0]?.count ?? 0) > 0) {
+    return { status: 'thread_busy', job };
   }
 
   const metadata = {
