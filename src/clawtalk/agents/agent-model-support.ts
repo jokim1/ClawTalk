@@ -31,25 +31,17 @@ export interface ProviderModelSupport {
   displayNames: Map<string, string>;
 }
 
-/** Anthropic API key for the current context — workspace credential wins,
- *  else personal, else the host env var. Returns null when none is set or
- *  decrypt fails. */
+/** Anthropic API key for the current context — personal credential first,
+ *  else the host env var. Returns null when none is set or decrypt fails. */
 async function resolveAnthropicApiKey(): Promise<string | null> {
   const db = getDbPg();
-  const wsRows = await db<Array<{ ciphertext: string }>>`
-    select ciphertext from public.workspace_provider_secrets
-    where provider_id = ${ANTHROPIC_PROVIDER_ID} and credential_kind = 'api_key'
+  const personalRows = await db<Array<{ ciphertext: string }>>`
+    select ciphertext from public.llm_provider_secrets
+    where provider_id = ${ANTHROPIC_PROVIDER_ID}
+      and credential_kind = 'api_key'
     limit 1
   `;
-  const personalRows = wsRows.length
-    ? []
-    : await db<Array<{ ciphertext: string }>>`
-        select ciphertext from public.llm_provider_secrets
-        where provider_id = ${ANTHROPIC_PROVIDER_ID}
-          and credential_kind = 'api_key'
-        limit 1
-      `;
-  const ciphertext = wsRows[0]?.ciphertext ?? personalRows[0]?.ciphertext;
+  const ciphertext = personalRows[0]?.ciphertext;
   if (!ciphertext) {
     // Mirror resolveExecution's env-var fallback: a host-configured Anthropic
     // key can run agents, so discovery must see it too — otherwise the

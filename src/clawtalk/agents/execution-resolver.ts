@@ -74,8 +74,6 @@ interface LlmProviderSecretRow {
   expires_at: string | null;
 }
 
-type CredentialOrigin = 'personal' | 'workspace';
-
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -197,15 +195,7 @@ export async function isAnthropicDirectHttpReady(): Promise<boolean> {
     where provider_id = ${'provider.anthropic'}
     limit 1
   `;
-  if (personalRows.length > 0) return true;
-
-  const workspaceRows = await db`
-    select 1 as one
-    from public.workspace_provider_secrets
-    where provider_id = ${'provider.anthropic'}
-    limit 1
-  `;
-  return workspaceRows.length > 0;
+  return personalRows.length > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -231,15 +221,13 @@ async function resolveSecret(
   // Order precedence (when no pinned mode):
   //   1. Personal api_key
   //   2. Personal subscription (OAuth)
-  //   3. Workspace api_key
-  //   4. Workspace subscription (OAuth)
-  //   5. Env var (Anthropic only, api_key kind)
+  //   3. Env var (Anthropic only, api_key kind)
   //
-  // When pinnedMode is set, both queries below filter by
-  // credential_kind so only that mode is considered. Env-var fallback
-  // is skipped for the 'subscription' pin (env-var is api_key only).
+  // When pinnedMode is set, the query below filters by credential_kind
+  // so only that mode is considered. Env-var fallback is skipped for
+  // the 'subscription' pin (env-var is api_key only).
   //
-  // Per-user RLS scopes the personal queries to auth.uid() automatically.
+  // Per-user RLS scopes the personal query to auth.uid() automatically.
   const personalRows = await db<LlmProviderSecretRow[]>`
     select ciphertext, credential_kind, encrypted_refresh_token,
            expires_at::text as expires_at
@@ -257,30 +245,6 @@ async function resolveSecret(
   for (const row of personalRows) {
     const secret = await tryUseSecretRow({
       providerId: agent.provider_id,
-      origin: 'personal',
-      row,
-    });
-    if (secret) return secret;
-  }
-
-  const workspaceRows = await db<LlmProviderSecretRow[]>`
-    select ciphertext, credential_kind, encrypted_refresh_token,
-           expires_at::text as expires_at
-    from public.workspace_provider_secrets
-    where provider_id = ${agent.provider_id}
-      and (${pinnedMode}::text is null
-           or credential_kind = ${pinnedMode}::text)
-    order by case credential_kind
-      when 'api_key' then 0
-      when 'subscription' then 1
-    end asc
-    limit 2
-  `;
-
-  for (const row of workspaceRows) {
-    const secret = await tryUseSecretRow({
-      providerId: agent.provider_id,
-      origin: 'workspace',
       row,
     });
     if (secret) return secret;
@@ -355,22 +319,6 @@ export async function resolveCredentialKindSnapshot(
     return personalRow[0].credential_kind as RegisteredAgentCredentialMode;
   }
 
-  const workspaceRow = await db<Array<{ credential_kind: string }>>`
-    select credential_kind
-    from public.workspace_provider_secrets
-    where provider_id = ${agent.provider_id}
-      and (${pinnedMode}::text is null
-           or credential_kind = ${pinnedMode}::text)
-    order by case credential_kind
-      when 'api_key' then 0
-      when 'subscription' then 1
-    end asc
-    limit 1
-  `;
-  if (workspaceRow[0]) {
-    return workspaceRow[0].credential_kind as RegisteredAgentCredentialMode;
-  }
-
   if (
     agent.provider_id === 'provider.anthropic' &&
     pinnedMode !== 'subscription' &&
@@ -384,13 +332,12 @@ export async function resolveCredentialKindSnapshot(
 
 async function tryUseSecretRow(input: {
   providerId: string;
-  origin: CredentialOrigin;
   row: LlmProviderSecretRow;
 }): Promise<LlmSecret | null> {
-  const { providerId, origin, row } = input;
+  const { providerId, row } = input;
 
   if (row.credential_kind === 'subscription') {
-    return resolveSubscriptionSecret({ providerId, origin, row });
+    return resolveSubscriptionSecret({ providerId, row });
   }
 
   try {
@@ -406,10 +353,9 @@ async function tryUseSecretRow(input: {
 
 async function resolveSubscriptionSecret(input: {
   providerId: string;
-  origin: CredentialOrigin;
   row: LlmProviderSecretRow;
 }): Promise<LlmSecret> {
-  const { providerId, origin, row } = input;
+  const { providerId, row } = input;
 
   const expiring =
     providerId === 'provider.openai_codex'
@@ -421,7 +367,6 @@ async function resolveSubscriptionSecret(input: {
   if (expiring && row.encrypted_refresh_token) {
     const refreshedAccess = await refreshAndPersist({
       providerId,
-      origin,
       encryptedRefreshToken: row.encrypted_refresh_token,
     });
     return { apiKey: refreshedAccess, credentialKind: 'subscription' };
@@ -440,7 +385,6 @@ async function resolveSubscriptionSecret(input: {
 
 async function refreshAndPersist(input: {
   providerId: string;
-  origin: CredentialOrigin;
   encryptedRefreshToken: string;
 }): Promise<string> {
   const refreshTokenPayload = await decryptProviderSecret(
@@ -459,26 +403,14 @@ async function refreshAndPersist(input: {
   });
 
   const db = getDbPg();
-  if (input.origin === 'workspace') {
-    await db`
-      update public.workspace_provider_secrets
-      set ciphertext = ${encryptedAccess},
-          encrypted_refresh_token = ${encryptedRefresh},
-          expires_at = ${refreshed.expiresAtIso}::timestamptz,
-          updated_at = now()
-      where provider_id = ${input.providerId}
-        and credential_kind = 'subscription'
-    `;
-  } else {
-    await db`
-      update public.llm_provider_secrets
-      set ciphertext = ${encryptedAccess},
-          encrypted_refresh_token = ${encryptedRefresh},
-          expires_at = ${refreshed.expiresAtIso}::timestamptz,
-          updated_at = now()
-      where provider_id = ${input.providerId}
-        and credential_kind = 'subscription'
-    `;
-  }
+  await db`
+    update public.llm_provider_secrets
+    set ciphertext = ${encryptedAccess},
+        encrypted_refresh_token = ${encryptedRefresh},
+        expires_at = ${refreshed.expiresAtIso}::timestamptz,
+        updated_at = now()
+    where provider_id = ${input.providerId}
+      and credential_kind = 'subscription'
+  `;
   return refreshed.accessToken;
 }

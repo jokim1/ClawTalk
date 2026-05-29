@@ -110,17 +110,11 @@ async function loadSetupChecklist(
   newTalkId: string,
 ): Promise<SetupChecklist> {
   const db = getDbPg();
-  // Personal + workspace-shared keys both count — the executor falls
-  // back to whichever is available.
-  const [personalKey, workspaceKey, agent, talk] = await Promise.all([
+  const [personalKey, agent, talk] = await Promise.all([
     db<Array<{ count: number }>>`
       select count(*)::int as count
       from public.llm_provider_secrets
       where owner_id = ${userId}::uuid
-    `,
-    db<Array<{ count: number }>>`
-      select count(*)::int as count
-      from public.workspace_provider_secrets
     `,
     db<Array<{ count: number }>>`
       select count(*)::int as count
@@ -137,8 +131,7 @@ async function loadSetupChecklist(
   ]);
 
   return {
-    hasProviderKey:
-      (personalKey[0]?.count ?? 0) > 0 || (workspaceKey[0]?.count ?? 0) > 0,
+    hasProviderKey: (personalKey[0]?.count ?? 0) > 0,
     hasRegisteredAgent: (agent[0]?.count ?? 0) > 0,
     hasTalk: (talk[0]?.count ?? 0) > 0,
   };
