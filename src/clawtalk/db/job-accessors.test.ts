@@ -515,6 +515,117 @@ describe('job-accessors-pg (postgres + RLS)', () => {
     expect(result.job.status).toBe('blocked');
   });
 
+  // ── T-new-AR: active-round race fix ────────────────────────────────
+  //
+  // Race surface: today, createJobTriggerRun's job_id-scoped active
+  // check doesn't prevent a job-triggered run from racing with a /chat
+  // on the same thread. After the fix, the function takes a
+  // FOR UPDATE NOWAIT on talk_threads first; concurrent contention
+  // returns a new 'thread_busy' sentinel.
+
+  it('createJobTriggerRun: returns thread_busy when /chat holds FOR UPDATE on the thread (deterministic via FOR UPDATE)', async () => {
+    const { talkId, threadId, agentId } = await setupTalkWithAgent();
+    const job = await withUserContext(USER_A_ID, async () => {
+      return await createTalkJob({
+        ownerId: USER_A_ID,
+        talkId,
+        title: 'ThreadRace',
+        prompt: 'p',
+        targetAgentId: agentId,
+        schedule: { kind: 'hourly_interval', everyHours: 1 },
+        timezone: 'UTC',
+        createdBy: USER_A_ID,
+      });
+    });
+
+    // Hold a FOR UPDATE on talk_threads from tx A. While the lock is
+    // held, call createJobTriggerRun from a separate withUserContext.
+    // Once the fix ships, the second caller's helper FOR UPDATE NOWAIT
+    // fails immediately and returns {status: 'thread_busy'}.
+    const db = getDbPg();
+    await db.begin(async (txA) => {
+      await txA`
+        select 1 from public.talk_threads
+        where id = ${threadId}::uuid and talk_id = ${talkId}::uuid
+        for update
+      `;
+
+      const result = await withUserContext(USER_A_ID, async () => {
+        return await createJobTriggerRun({
+          ownerId: USER_A_ID,
+          jobId: job.id,
+          triggerSource: 'scheduler',
+        });
+      });
+      // String comparison rather than discriminated union — the
+      // 'thread_busy' member doesn't exist in CreateJobTriggerRunResult
+      // until AR2 ships. After AR2 this becomes a typed check.
+      expect((result as { status: string }).status).toBe('thread_busy');
+    });
+
+    // After tx A releases, no leftover run from the rejected attempt.
+    await withUserContext(USER_A_ID, async () => {
+      const dbAfter = getDbPg();
+      const runs = await dbAfter<{ count: number }[]>`
+        select count(*)::int as count from public.talk_runs
+        where talk_id = ${talkId}::uuid and thread_id = ${threadId}::uuid
+      `;
+      expect(runs[0]?.count ?? 0).toBe(0);
+    });
+  });
+
+  it('createJobTriggerRun: returns thread_busy when a /chat round on the same thread is already active (cross-entry-point thread invariant)', async () => {
+    const { talkId, threadId, agentId } = await setupTalkWithAgent();
+    const job = await withUserContext(USER_A_ID, async () => {
+      return await createTalkJob({
+        ownerId: USER_A_ID,
+        talkId,
+        title: 'CrossEntryThreadInvariant',
+        prompt: 'p',
+        targetAgentId: agentId,
+        schedule: { kind: 'hourly_interval', everyHours: 1 },
+        timezone: 'UTC',
+        createdBy: USER_A_ID,
+      });
+    });
+
+    // Park a /chat-triggered queued run on the same thread but on a
+    // DIFFERENT job_id (the /chat path leaves job_id NULL). Today the
+    // job-scoped active check at line 921 misses this, the FOR UPDATE
+    // succeeds, the function inserts and we end up with 2 active rounds
+    // on the thread. After AR2, the new thread-level active check
+    // catches the /chat round and returns thread_busy.
+    await withUserContext(USER_A_ID, async () => {
+      await enqueueTalkTurnAtomic({
+        ownerId: USER_A_ID,
+        talkId,
+        threadId,
+        userId: USER_A_ID,
+        content: 'user chat round',
+        targetAgentIds: [agentId],
+      });
+    });
+
+    const result = await withUserContext(USER_A_ID, async () => {
+      return await createJobTriggerRun({
+        ownerId: USER_A_ID,
+        jobId: job.id,
+        triggerSource: 'scheduler',
+      });
+    });
+    expect((result as { status: string }).status).toBe('thread_busy');
+
+    // Thread should still have exactly the original /chat's runs.
+    await withUserContext(USER_A_ID, async () => {
+      const dbAfter = getDbPg();
+      const runs = await dbAfter<{ count: number }[]>`
+        select count(*)::int as count from public.talk_runs
+        where talk_id = ${talkId}::uuid and thread_id = ${threadId}::uuid
+      `;
+      expect(runs[0]?.count ?? 0).toBe(1);
+    });
+  });
+
   // ── Other helpers ──────────────────────────────────────────────────
 
   it('markTalkJobRunQueued / Finished + listTalkJobRunSummaries: surface run history', async () => {

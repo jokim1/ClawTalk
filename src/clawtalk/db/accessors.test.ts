@@ -1178,6 +1178,186 @@ describe('accessors-pg slice 1: talks/folders/members/threads', () => {
     expect(after.outboxCount).toBe(before.outboxCount);
   });
 
+  // T-new-AR — active-round race fix. loadEnqueueTurnContext uses
+  // FOR UPDATE OF th NOWAIT to serialize concurrent enqueue attempts on
+  // the same thread. The lock is held for the lifetime of the outer tx.
+  //
+  // Test 1 is the deterministic concurrent-race proof. Tests 2 and 3
+  // lock cross-thread / cross-talk isolation (these pass on main too —
+  // they're regression coverage). Test 4 from the plan was dropped as
+  // a duplicate of the active-rounds rejection test at :1104.
+
+  it('enqueueTalkTurnAtomic: concurrent attempts on same thread → one wins, other throws TalkActiveRoundError (deterministic via FOR UPDATE)', async () => {
+    const AGENT_1 = '0c555555-7777-9999-9999-000000000001';
+
+    const { talkId, threadId } = await withUserContext(USER_A_ID, async () => {
+      const t = await createTalk({
+        ownerId: USER_A_ID,
+        topicTitle: 'RaceLock',
+      });
+      // Use a non-default thread with a pre-set non-placeholder title so
+      // maybePersistTalkThreadTitleFromMessages returns early without
+      // attempting to UPDATE talk_threads (which would conflict with the
+      // tx A's FOR UPDATE below and deadlock the test).
+      const tt = await createTalkThread({
+        talkId: t.id,
+        ownerId: USER_A_ID,
+        title: 'Pre-titled (avoid maybePersist UPDATE conflict)',
+      });
+      return { talkId: t.id, threadId: tt.id };
+    });
+
+    // Hold a FOR UPDATE on talk_threads from tx A. While the lock is
+    // held, fire a concurrent enqueueTalkTurnAtomic from a fresh
+    // withUserContext (gets a different pooled connection). Once
+    // FOR UPDATE NOWAIT ships in accessors.ts, the second caller's
+    // loadEnqueueTurnContext fails immediately and the helper maps
+    // the postgres lock_not_available error to TalkActiveRoundError.
+    const db = getDbPg();
+    await db.begin(async (txA) => {
+      await txA`
+        select 1 from public.talk_threads
+        where id = ${threadId}::uuid and talk_id = ${talkId}::uuid
+        for update
+      `;
+
+      await expect(
+        withUserContext(USER_A_ID, async () => {
+          await enqueueTalkTurnAtomic({
+            ownerId: USER_A_ID,
+            talkId,
+            threadId,
+            userId: USER_A_ID,
+            content: 'second tx — should fail NOWAIT immediately',
+            targetAgentIds: [AGENT_1],
+          });
+        }),
+      ).rejects.toBeInstanceOf(TalkActiveRoundError);
+    });
+
+    // After tx A commits and releases the lock, no leftover state from
+    // the rejected second tx. (The second tx rolled back when NOWAIT
+    // fired.)
+    await withUserContext(USER_A_ID, async () => {
+      const dbAfter = getDbPg();
+      const runs = await dbAfter<{ count: number }[]>`
+        select count(*)::int as count from public.talk_runs
+        where talk_id = ${talkId}::uuid and thread_id = ${threadId}::uuid
+      `;
+      expect(runs[0]?.count ?? 0).toBe(0);
+      const messages = await listTalkMessages({ talkId, threadId });
+      expect(messages.length).toBe(0);
+    });
+  });
+
+  it('enqueueTalkTurnAtomic: cross-thread isolation — concurrent /chat on different threads of same talk both succeed', async () => {
+    const AGENT_1 = '0c555555-7777-9999-9999-000000000002';
+
+    const { talkId, threadAId, threadBId } = await withUserContext(
+      USER_A_ID,
+      async () => {
+        const t = await createTalk({
+          ownerId: USER_A_ID,
+          topicTitle: 'CrossThread',
+        });
+        const aId = await getOrCreateDefaultThread({
+          talkId: t.id,
+          ownerId: USER_A_ID,
+        });
+        const b = await createTalkThread({
+          talkId: t.id,
+          ownerId: USER_A_ID,
+          title: 'Thread B',
+        });
+        return { talkId: t.id, threadAId: aId, threadBId: b.id };
+      },
+    );
+
+    const [resultA, resultB] = await Promise.all([
+      withUserContext(USER_A_ID, async () => {
+        return await enqueueTalkTurnAtomic({
+          ownerId: USER_A_ID,
+          talkId,
+          threadId: threadAId,
+          userId: USER_A_ID,
+          content: 'on thread A',
+          targetAgentIds: [AGENT_1],
+        });
+      }),
+      withUserContext(USER_A_ID, async () => {
+        return await enqueueTalkTurnAtomic({
+          ownerId: USER_A_ID,
+          talkId,
+          threadId: threadBId,
+          userId: USER_A_ID,
+          content: 'on thread B',
+          targetAgentIds: [AGENT_1],
+        });
+      }),
+    ]);
+    expect(resultA.threadId).toBe(threadAId);
+    expect(resultB.threadId).toBe(threadBId);
+    expect(resultA.runs[0].thread_id).toBe(threadAId);
+    expect(resultB.runs[0].thread_id).toBe(threadBId);
+  });
+
+  it('enqueueTalkTurnAtomic: cross-talk isolation — concurrent /chat on different talks both succeed', async () => {
+    const AGENT_1 = '0c555555-7777-9999-9999-000000000003';
+
+    const { talkAId, threadAId, talkBId, threadBId } = await withUserContext(
+      USER_A_ID,
+      async () => {
+        const a = await createTalk({
+          ownerId: USER_A_ID,
+          topicTitle: 'TalkA',
+        });
+        const aThreadId = await getOrCreateDefaultThread({
+          talkId: a.id,
+          ownerId: USER_A_ID,
+        });
+        const b = await createTalk({
+          ownerId: USER_A_ID,
+          topicTitle: 'TalkB',
+        });
+        const bThreadId = await getOrCreateDefaultThread({
+          talkId: b.id,
+          ownerId: USER_A_ID,
+        });
+        return {
+          talkAId: a.id,
+          threadAId: aThreadId,
+          talkBId: b.id,
+          threadBId: bThreadId,
+        };
+      },
+    );
+
+    const [resultA, resultB] = await Promise.all([
+      withUserContext(USER_A_ID, async () => {
+        return await enqueueTalkTurnAtomic({
+          ownerId: USER_A_ID,
+          talkId: talkAId,
+          threadId: threadAId,
+          userId: USER_A_ID,
+          content: 'on talk A',
+          targetAgentIds: [AGENT_1],
+        });
+      }),
+      withUserContext(USER_A_ID, async () => {
+        return await enqueueTalkTurnAtomic({
+          ownerId: USER_A_ID,
+          talkId: talkBId,
+          threadId: threadBId,
+          userId: USER_A_ID,
+          content: 'on talk B',
+          targetAgentIds: [AGENT_1],
+        });
+      }),
+    ]);
+    expect(resultA.runs[0].talk_id).toBe(talkAId);
+    expect(resultB.runs[0].talk_id).toBe(talkBId);
+  });
+
   // ── Run lifecycle atomics ──────────────────────────────────────────
 
   it('claimQueuedTalkRuns → completeRunAndPromoteNextAtomic: queued→running→completed lifecycle', async () => {
