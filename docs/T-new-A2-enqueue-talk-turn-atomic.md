@@ -1,10 +1,9 @@
 # T-new-A2 — `enqueueTalkTurnAtomic` per-request 1734 ms latency reduction
 
-**Status:** Plan, **r2 draft**. r1 cleared by `/karpathy-audit diff` (4/4 coverage, 1 warning + 3 nits) but **r1 NOT cleared by `/codex` consult — 3 HIGH findings, verdict "do not ship as-is."** r2 absorbs both.
+**Status:** **SHIPPED, r3 (2026-05-29)** — Option A merged via PR #475 (`67a56aa`). §4.5 gate verdict: Option A PASS (+252 ms N=1, +248 ms N=3), Option D FAIL (dropped). §4.7 post-deploy bench: t1-t0 dropped 3918 ms → 3520 ms (−398 ms total; ~273 ms attributable to Option A after accounting for the §4.5 shadow-query overhead reverting).
 **Tracking:** [[project-llm-turn-latency]]. Next lever after T-new-A landed (`f596fb2`, −121 ms attributable).
-**Branch (planning):** `docs/t-new-a2-plan` (this doc).
-**Branch (implementation, to be created):** `feature/t-new-a2-enqueue-turn`.
-**Estimated effort:** ~4h human / ~45 min CC. (Estimates carried from T-new-A pattern; A2 measurement may revise.)
+**Branches:** planning `docs/t-new-a2-plan` (merged via PR #474). Implementation `feature/t-new-a2-enqueue-turn` (merged via PR #475).
+**Follow-up:** `docs/T-new-A2-followup.md` — per-agent loop attribution from §4.5 N=3 bench (codex C-M4 + C8 deferred work).
 
 ### Revision history
 
@@ -19,6 +18,14 @@
   - **C-M4 (C8 deferral not clean):** §4.5 extended — instrumentation now requires per-agent sub-phase breakdown AND a multi-agent N=3 bench run alongside N=1. Follow-up plan T-new-A2-followup gets filed with concrete measurement evidence when A2 completes.
   - **C-L1 (test overlap with existing accessors.test.ts:916):** Dropped redundant N=3 fan-out test. Focused new tests on CHANGED behavior only (combined helper no-row, ordering, rollback).
   - Karpathy diff audit also returned 1 WARNING (savings predictions not conditional on §4.5) and 3 NITs. Absorbed: §4.3 / §4.7 rewritten as conditional; PR title dropped from §6; §9 estimates annotated. NIT 2 (deferred-options verbosity) deferred to taste; left as-is for follow-up plan readers.
+- **r3 (2026-05-29, this version, SHIPPED via PR #475 / `67a56aa`):** Post-implementation footer with measured numbers.
+  - **§4.5 gate outcome (n=10 haiku, instrumented prod build):**
+    - **Option A PASS both N=1 and N=3.** N=1: sum of 3 old SELECTs = 378 ms median vs shadowCombinedHelper = 126 ms median → +252 ms delta (≥100 ms threshold). N=3: 373 ms vs 124 ms → +248 ms delta. Both runs at 13/13 success.
+    - **Option D FAIL both N=1 and N=3.** N=1: postLoopSerial = 370 ms vs postLoopParallel = 382 ms → −12 ms delta (worse). N=3: 631 ms vs 616 ms → +15 ms delta (below the 50 ms threshold). Confirms codex C-M1: postgres.js does not pipeline meaningfully inside an async-callback tx; both Promise.all-shape and serial-shape serialize on the single connection.
+  - **Implementation per §4.5 "Only A passes" path:** Shipped Option A only. Option D and its two associated tests (Test 4 outbox ordering, Test 5 rollback after Promise.all) dropped from the diff.
+  - **§4.7 post-deploy bench (n=10 haiku, N=1, Option A live):** median t1-t0 = 3520 ms (down from §4.5 instrumented baseline of 3918 ms = −398 ms total). After backing out ~125 ms of §4.5 shadow-query instrumentation overhead that no longer runs, **~273 ms is genuinely attributable to Option A** — within noise of the §4.5 gate's +252 ms prediction.
+  - **Per-agent loop attribution from §4.5 N=3 (codex C-M4 / C8 deferral closeout):** filed as `docs/T-new-A2-followup.md`. Headline: per agent loop iteration costs ~498 ms median (125 ms `getRegisteredAgent` + 248 ms `resolveCredentialKindSnapshot` + 125 ms `createTalkRun`). The credential resolve is the dominant lever for any future Option B.
+  - Codex review on PR #475 diff: PASS, no findings. Karpathy audit on PR #475 diff: PASS, 1 optional nit (`expect(otherTalkId).toBeTruthy()` cleanup) skipped by taste.
 
 ---
 
@@ -401,6 +408,8 @@ Legend: ★★★ behavior + edge + error  |  ★★ happy path
 |--------|---------|-----|------|--------|----------|
 | Codex Consult (plan, r1) | `/codex` consult on r1 | Independent 2nd opinion | 1 | NOT CLEAR — absorbed via r2 | 7 findings (3 HIGH, 3 MED, 1 LOW), verdict "do not ship as-is". All 7 absorbed: C-H1 explicit no-row contract + EnqueueTurnContextNotFoundError; C-H2 active-round race documented as out-of-scope; C-H3 §4.5 reworked to shadow-query A/B + n=10; C-M1 Option D softened to measured hypothesis; C-M2 outbox ordering test added (Test 4); C-M3 Test 5 rewritten to use attachment-validation path; C-M4 §4.5 extended with N=3 bench + per-agent attribution; C-L1 dropped redundant N=3 fan-out test. |
 | Karpathy Audit (diff, r1) | `/karpathy-audit diff` on r1 | Style lens + four principles | 1 | CLEAR (4/4 coverage) | 1 WARNING (§4.3/§4.7 savings predictions not conditional on §4.5 — fixed in r2 with conditional rewrite); 3 NITs (deferred options verbosity left as-is for follow-up readers; PR title dropped from §6; estimates annotated). |
+| Codex Review (PR #475 diff) | `/codex review` | Pre-merge code review | 1 | CLEAR (PASS, 0 P1 / 0 P2) | No findings. Codex inspected adjacent code (job-accessors.ts sister snapshot read, migration 0001 schema, RLS policies in 0002, talk-tools-accessors.ts active_tool_families_json usage) and ran both `accessors.test.ts` (35 pass) and `talks.test.ts` (7 pass). Verdict: "The combined context query preserves the active-round gate before writes, keeps RLS-scoped reads inside the existing user transaction, and the route maps the new no-row helper error appropriately." |
+| Karpathy Audit (PR #475 diff) | `/karpathy-audit diff` | Four principles on the code diff | 1 | CLEAR (4/4 pass) | 1 optional NIT (`expect(otherTalkId).toBeTruthy()` at end of `loadEnqueueTurnContext` test silences unused-var warning — skipped by taste). Notable: principles 1+2 evidenced by Option D being measured AND DROPPED rather than shipped speculatively. |
 | Eng Review | `/plan-eng-review` | Architecture & tests (required) | 0 | not run | This plan IS the architecture; codex consult covered the equivalent ground at higher rigor. |
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | not run (perf fix, scope self-evident) |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | not run (backend-only) |
@@ -414,9 +423,11 @@ Legend: ★★★ behavior + edge + error  |  ★★ happy path
 
 **UNRESOLVED:** 0. All codex findings absorbed; Karpathy NIT 2 (deferred-options verbosity) left as-is by taste (follow-up plan readers need the risk context).
 
-**VERDICT:** **CLEARED (PLAN, r2)** — narrowed by codex's 3 HIGH findings into a plan with a real failure mode (the §4.5 gate can refuse the dedupe). Critical constraints to remember during implementation:
-1. `loadEnqueueTurnContext` MUST throw `EnqueueTurnContextNotFoundError` (not a generic postgres error) when the combined SELECT returns no rows. Route catch maps to 404.
-2. Active-round race (C-H2) is OUT OF SCOPE here. Document it in the commit message; don't try to fix it.
-3. §4.5 instrumentation ships THREE commits: sub-phase logs, shadow combined-SELECT, postLoopSerial timing. Compare actual deltas, not absolute time of the OLD path.
-4. Bench at n=10, not n=3. Include N=3 multi-agent run for C-M4 per-agent attribution.
-5. If §4.5 "Neither passes" outcome: STOP at A3. Don't ship the dedupe; file T-new-A2-followup with measured evidence instead.
+**VERDICT:** **CLEARED + SHIPPED (r3, 2026-05-29)** — §4.5 gate verdict allowed Option A only (PASS +252 ms N=1, +248 ms N=3) and refused Option D (FAIL −12 ms N=1, +15 ms N=3, both below 50 ms threshold). §4.7 post-deploy median t1-t0 dropped 3918 ms → 3520 ms (−398 ms; ~273 ms attributable to Option A after backing out §4.5 shadow-query instrumentation overhead). Critical constraints honored:
+1. `loadEnqueueTurnContext` throws `EnqueueTurnContextNotFoundError` (not a generic postgres error). Route catch in `talks.ts` maps to 404 `talk_not_found`. Test 2 locks the contract.
+2. Active-round race (C-H2) was preserved exactly — Option A reshapes the read but not the SELECT-then-INSERT shape. Documented as out-of-scope in PR #475's commit message.
+3. §4.5 measurement gate fired as designed: Option D failed, was dropped from the diff (along with Tests 4 and 5), and the simpler PR shipped.
+4. n=10 bench + N=3 multi-agent attribution both completed. Per-agent loop attribution → `docs/T-new-A2-followup.md`.
+5. Codex review on PR #475 PASS (no findings); Karpathy audit on PR #475 PASS (1 optional nit). Cross-model overlap was zero, validating [[feedback-codex-catches-behavior-karpathy-catches-style]] at the diff stage as well as the plan stage.
+
+**FOLLOW-UPS surfaced (open future plans):** `T-new-A2-followup` (per-agent credential resolve = ~248 ms × N — the dominant remaining cost in `enqueueTalkTurnAtomic`); active-round race fix (codex C-H2 — needs tx-level advisory lock plan); `ensureTalkUsesUsableDefaultAgent` ~748 ms (T-new-A A2 surfaced); `preflight_iter_0` ~435 ms per agent (codex C2 effective-tools graph). The next latency lever is whichever of these the next plan picks up.
