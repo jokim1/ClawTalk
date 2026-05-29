@@ -22,10 +22,10 @@ You're reading this because you're an AI coding agent (or engineer) about to wor
 2. **Hierarchy / data model** → [08-information-architecture.md](./08-information-architecture.md).
 3. **UI / interaction** → the prototype (`ClawTalk Salon.html` + `prototype/*.jsx`).
 4. **Stack / runtime** → `CLAUDE.md` + repo reality (Cloudflare Workers) — **not** the historical "Tech stack" note below.
-5. **Shipped vs planned** → [roadmap.md](./roadmap.md) wins over `01` where they disagree (connectors, scheduled jobs).
+5. **What currently exists** → [roadmap.md](./roadmap.md) describes the current/shipped code, which is **disposable** in the greenfield build (DECISIONS D0) — use it for context, not as a constraint on the target design.
 6. **Product behavior** → `01-product-spec.md`. **Anything in [archive/](./archive/) is superseded.**
 
-> ⚠️ The `01`/`08` model (**Workspace → Folder → Talk + Document**, multi-workspace, no Threads) is the **target we're migrating toward** (DECISIONS D2). The live schema differs — it's user-owned, has `talk_threads`, and calls the artifact `contents`. Threads removal (D4), the workspace layer (D5), and a jobs redefinition (D6) are committed but not yet planned. Read spec table names through the [GLOSSARY](./GLOSSARY.md) mapping until the renames land.
+> ⚠️ **Greenfield build (DECISIONS D0).** The `01`/`08` model — **Workspace → Folder → Talk + Document**, multi-workspace, no Threads — is the design we're building, on a clean new schema with clean names (`workspaces`, `folders`, `talks`, `documents`, `agents`). The current code uses different names/shapes (`contents`, `talk_threads`, user-owned, `registered_agents`); it's **disposable** and referenced only to extract requirements. The [GLOSSARY](./GLOSSARY.md) maps the old terms purely as a reading aid for the code being replaced.
 
 ---
 
