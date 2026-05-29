@@ -39,6 +39,7 @@ You're reading this because you're an AI coding agent (or engineer) about to wor
 | 4 | **[06-agent-system-design.md](./06-agent-system-design.md)** | Production agent architecture: hidden runtime policy, role templates, editable fields, snapshots, prompt assembly, and evals. |
 | 5 | **[07-homepage-system-design.md](./07-homepage-system-design.md)** | Home architecture: recommendations, News, Inbox items, ranking, feedback, and auto-optimization. |
 | 6 | **[08-information-architecture.md](./08-information-architecture.md)** | Canonical workspace/folder/Talk/document hierarchy, primary document model, Context rules, and IA schema constraints. |
+| ★ | **[11-data-model.md](./11-data-model.md)** | The **clean greenfield schema** — every table for the whole product, RLS model, and reuse-vs-rewrite calls. The concrete DB source of truth. |
 | 7 | **[04-api-contracts.md](./04-api-contracts.md)** | Backend API endpoints, websocket protocol for streaming, LLM-provider abstraction, OAuth shapes. |
 | 8 | **[05-build-plan.md](./05-build-plan.md)** | Recommended build sequence. Infrastructure first, polish last. |
 
