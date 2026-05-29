@@ -1,6 +1,6 @@
 # T-new-A2 B-3 — remove the `workspace_provider_secrets` surface (two-PR rollout)
 
-**Status:** Plan, **r4 draft**.
+**Status:** Plan, **r5 draft**.
 **Tracking:** [[project-llm-turn-latency]], [[T-new-A2-enqueue-talk-turn-atomic]] (the C-M4 / C8 deferred work), [[T-new-A2-followup]].
 **Branch (planning):** `docs/t-new-a2-b3-plan` (this doc).
 **Branches (implementation, to be created):** `feature/t-new-a2-b3-pr-a-code-removal`, then `feature/t-new-a2-b3-pr-b-drop-tables`.
@@ -23,6 +23,14 @@
   - **§9 task-time syntax** (karpathy r3 NIT). Uniform `(P1, human: ~X min, CC: ~Y min)` across every task line.
 
 Cross-revision overlap rose sharply on r3: 4 of 6 karpathy findings also surfaced in codex output. Per [[feedback-codex-catches-behavior-karpathy-catches-style]] this is diagnostic of plan health, not reviewer redundancy — the precision-failure class kept re-firing because the plan kept inventing identifiers. r4 closes that channel by pinning field names and adding the source-of-truth verification note.
+
+- **r5 (this revision)** — Polish pass absorbing the four codex r4 + four karpathy r4 P2 advisories. No structural changes; ~10 LoC delta confined to §4.2, §4.4, §4.6. Codex r4 + karpathy r4 had 4-of-4 overlap on findings (and karpathy added an observation about long-term revision-history accumulation that does not yet require action). Fixes:
+  - **§4.2 "no-op" residue** (codex r4 P2 #1 + karpathy r4 WARNING). r4 fixed §6 but missed the same string class at §4.2:161. Reworded to match §6.
+  - **§4.6 soak criterion (2) unverifiable** (codex r4 P2 #2 + karpathy r4 WARNING). The original wording asked Joseph to filter `ExecutionResolverError` events "tagged to workspace credentials," but the error object carries only `message` and `code` — no credential origin metadata. Reworded to "zero resolver failures from providers listed in the §4.3 workspace audit," which defers to the human cross-reference Joseph would do anyway.
+  - **§4.4 DB-role preamble** (codex r4 P2 #3 + karpathy r4 WARNING). The INSERT step requires `owner_id = auth.uid()` per RLS at `0002_rls_policies.sql:53`; the DELETE on `workspace_provider_secrets` requires `current_user_is_workspace_admin()` per `0008:53`. r5 adds an explicit "run as the Supabase postgres role" preamble so the fork doesn't trip on authenticated-user RLS.
+  - **§4.4 `<joseph-uuid>` lookup as Step 0** (codex r4 P2 #4 + karpathy r4 NIT). Adds a one-line lookup query so the fork is self-contained and Joseph doesn't paste the UUID literal four times.
+
+Codex r4 raw output preserved at `.codex-r4-findings.txt`.
 
 ---
 
@@ -158,7 +166,7 @@ PR A ships **no migration**. The destructive migration is PR B.
 
 ### 4.2 PR B — destructive migration
 
-PR B is a single new migration file. No code changes. The Worker redeploys as a no-op via `deploy.yml`. PR B may be opened immediately after PR A merges, but **must not merge until §4.4 confirms the workspace tables haven't been written to since PR A's deploy** — the audit query catches the rare race where a stale build is still serving and re-inserts a workspace row.
+PR B is a single new migration file. No application code changes; the deploy.yml-triggered deploy is still a full Worker + assets redeploy (SPA rebuild, secret sync, asset / queue / cron / DO binding republish via wrangler). PR B may be opened immediately after PR A merges, but **must not merge until §4.4 confirms the workspace tables haven't been written to since PR A's deploy** — the audit query catches the rare race where a stale build is still serving and re-inserts a workspace row.
 
 Migration text (filename `supabase/migrations/0036_drop_workspace_provider_secrets.sql` — next free index per `ls supabase/migrations/ | tail -10`):
 
@@ -217,7 +225,20 @@ Expected: all three `row_count = 0`. If `secrets.row_count > 0`, the §4.4 data-
 
 Re-run the §4.3 query after PR A has been deployed and the §4.6 soak criteria are satisfied (see §4.6 for the specific signals; minimum ≥24h prod soak). The `secrets` row count should still match what it was at §4.3 — PR A's writer removal means nothing new can land. If row count is 0, run PR B's migration.
 
-If `secrets.row_count > 0`, run the data-migration fork before merging PR B. The fork is three explicit steps — `report` → `copy non-conflicting rows` → `delete migrated and discarded source rows` — so the post-fork audit can actually return zero.
+If `secrets.row_count > 0`, run the data-migration fork before merging PR B. The fork is four explicit steps — `look up owner` → `report` → `copy non-conflicting rows` → `delete migrated and discarded source rows` → `re-audit` — so the post-fork audit can actually return zero.
+
+**Run all four steps as the Supabase postgres role** (the same connection `deploy.yml:84` uses for `supabase db push`). Authenticated-user psql sessions will hit RLS on the `llm_provider_secrets` INSERT (requires `owner_id = auth.uid()` per `0002_rls_policies.sql:53`) and on the workspace DELETE (requires `current_user_is_workspace_admin()` per `0008_workspace_provider_secrets.sql:53`).
+
+**Step 0 — capture Joseph's owner_id once.** Used as `:joseph_uuid` in Steps 1 / 2:
+
+```sql
+select id as joseph_uuid
+from public.users
+where email = 'jokim1@gmail.com';
+\gset
+```
+
+(Steps 1 and 2 below reference `:joseph_uuid`; psql substitutes the value captured by `\gset`. If you're running outside psql, paste the UUID into the literal `'<joseph-uuid>'` slots.)
 
 **Step 1 — report (read-only).** Lists every workspace row and whether a personal row already exists for the same `(owner_id, provider_id, credential_kind)`:
 
@@ -228,7 +249,7 @@ select wps.provider_id,
        wps.updated_at as workspace_updated_at,
        exists (
          select 1 from public.llm_provider_secrets lps
-         where lps.owner_id = '<joseph-uuid>'::uuid
+         where lps.owner_id = :'joseph_uuid'::uuid
            and lps.provider_id = wps.provider_id
            and lps.credential_kind = wps.credential_kind
        ) as personal_row_exists
@@ -242,13 +263,13 @@ insert into public.llm_provider_secrets (
   owner_id, provider_id, credential_kind, enc_key_version, ciphertext,
   encrypted_refresh_token, expires_at
 )
-select '<joseph-uuid>'::uuid, wps.provider_id, wps.credential_kind,
+select :'joseph_uuid'::uuid, wps.provider_id, wps.credential_kind,
        wps.enc_key_version, wps.ciphertext, wps.encrypted_refresh_token,
        wps.expires_at
 from public.workspace_provider_secrets wps
 where not exists (
   select 1 from public.llm_provider_secrets lps
-  where lps.owner_id = '<joseph-uuid>'::uuid
+  where lps.owner_id = :'joseph_uuid'::uuid
     and lps.provider_id = wps.provider_id
     and lps.credential_kind = wps.credential_kind
 );
@@ -264,7 +285,7 @@ delete from public.workspace_provider_secrets;
 
 **Step 4 — re-audit.** Re-run the §4.3 query. `secrets.row_count` must equal 0 before PR B merges. If non-zero, do not proceed — investigate which row Steps 2/3 missed and update the fork.
 
-If the §4.3 audit at PR A time already returned 0 (the expected path on Joseph's setup), Steps 1-4 are skipped entirely and PR B's migration runs against an empty table.
+If the §4.3 audit at PR A time already returned 0 (the expected path on Joseph's setup), Steps 0-4 are skipped entirely and PR B's migration runs against an empty table.
 
 ### 4.5 Local verification (per PR)
 
@@ -297,8 +318,8 @@ PR A:
 
 **PR A → PR B gate (the "~24h soak" — explicit success criteria):** PR B opens only once **all four** of these hold:
 1. PR A has been deployed to prod for ≥24 hours.
-2. `wrangler tail` shows zero `ExecutionResolverError` events tagged to workspace credentials since PR A's deploy.
-3. `wrangler tail` shows zero `PROVIDER_SECRET_MISSING` events tagged to a provider that had been served by a workspace credential pre-PR-A (Joseph cross-references against the §4.3 audit list).
+2. `wrangler tail` shows zero `ExecutionResolverError` events with a `provider_id` in the §4.3 workspace-audit provider list. (Runtime errors don't carry credential-origin metadata — `execution-resolver.ts:92` records only `message`+`code`. The §4.3 audit captures the provider IDs that had workspace credentials pre-PR-A; Joseph filters tail by `provider_id` against that list.)
+3. `wrangler tail` shows zero `PROVIDER_SECRET_MISSING` events for any provider in the §4.3 audit list (same cross-reference pattern as #2).
 4. Bench median `resolveCredentialKindSnapshot` ≤140 ms on a fresh haiku N=1 + N=3 run.
 
 If any of (1)–(4) fails, hold PR B. Investigate before re-arming.
@@ -475,16 +496,18 @@ Time annotations: `(P1, human: ~X min, CC: ~Y min)` — `human` is wall-clock ti
 | Codex Consult (r1) | `/codex consult` on r1 | Independent 2nd opinion | 1 | ABSORBED | 16 findings (3 critical, 5 high, 7 medium, 1 low). Raw output `.codex-r1-findings.txt`. |
 | Codex Consult (r2) | `/codex consult` on r2 | Independent 2nd opinion | 1 | ABSORBED | 12 findings (6 critical, 6 advisory). Raw output `.codex-r2-findings.txt`. r3 absorbs all 6 P1 + key P2s. |
 | Codex Consult (r3) | `/codex consult` on r3 | Verify staged-deploy framing | 1 | ABSORBED | 4 findings (1 P1, 3 P2): §4.4 INSERT-no-DELETE contradiction, missing `enc_key_version`, "no-op" framing, invented `hasSubscription` field. Raw output `.codex-r3-findings.txt`. r4 fixes all four. |
-| Codex Consult (r4) | `/codex consult` on r4 | Verify §4.4 fork + naming fixes | 0 | pending | Will run on r4 commit. |
+| Codex Consult (r4) | `/codex consult` on r4 | Verify §4.4 fork + naming fixes | 1 | ABSORBED | 4 findings, all P2: §4.2 "no-op" residue, soak criterion (2) unverifiable, §4.4 DB-role missing, `<joseph-uuid>` lookup needed. Raw output `.codex-r4-findings.txt`. r5 fixes all four. |
+| Codex Consult (r5) | `/codex consult` on r5 | Verify polish-pass fixes | 0 | pending | Will run on r5 commit. |
 | Karpathy Audit (r1) | manual | Style lens + four principles | 1 | ABSORBED | 1 warning, 2 nits. Reframed §1 in r2 to defer to §4.5. |
 | Karpathy Audit (r2) | manual | Style lens + four principles | 1 | ABSORBED | 6 findings (3 critical, 2 warning, 1 nit). r3 fixes §4.2/§4.3 contradiction, field naming, §6 dup, §7 test reconciliation. |
 | Karpathy Audit (r3) | manual | Style lens + four principles | 1 | ABSORBED | 6 findings (2 critical, 3 warning, 1 nit): §4.4 contradiction (overlap with codex P1), invented field name (overlap with codex P2 #4), §6 "no-op" framing (overlap), `enc_key_version` (overlap), file-count ambiguity, missing soak success criteria, §9 task-time syntax. Cross-revision overlap noted in r4 revision-history block. |
-| Karpathy Audit (r4) | manual | Style lens + four principles | 0 | pending | Will run alongside codex r4. |
+| Karpathy Audit (r4) | manual | Style lens + four principles | 1 | ABSORBED | 4 findings (0 critical, 3 warning, 1 nit). 4-of-4 overlap with codex r4 + 1 karpathy-unique observation on long-term revision-history accumulation cost (deferred to r6+). |
+| Karpathy Audit (r5) | manual | Style lens + four principles | 0 | pending | Will run alongside codex r5. |
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | Not run — scope is "remove dead surface in a solo-user product." |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | Not run — UI change is sub-tab removal; low risk. |
 | DX Review | `/plan-devex-review` | DX gaps | 0 | — | Not run. |
 
-**VERDICT (r4):** **DRAFT — pending review.** r4 absorbs the four codex r3 findings and the six karpathy r3 findings as tight edits to §1 / §2.4 / §4.1 / §4.4 / §4.6 / §6 / §9. r3's two-PR rollout shape is unchanged; this revision is precision-only. Critical pre-implementation constraints (unchanged from r3):
+**VERDICT (r5):** **DRAFT — pending review.** r5 absorbs the four codex r4 + four karpathy r4 P2 advisories as a ~10-LoC polish pass on §4.2 / §4.4 / §4.6. The structural shape (two-PR rollout, RLS helper preserved, scope contradiction resolved, four-step fork) has been stable since r3; r4 closed the identifier-precision channel; r5 closes the operational-precision channel (DB role, UUID lookup, verifiable soak criteria, framing parity). Critical pre-implementation constraints (unchanged from r4):
 
 1. **PR A must merge and meet §4.6's soak criteria before PR B opens.** All four conditions (≥24h, zero ExecutionResolverError, zero PROVIDER_SECRET_MISSING from workspace-served providers, bench median ≤140 ms).
 2. **Migration filename re-verified at commit time** against `supabase/migrations/`.
