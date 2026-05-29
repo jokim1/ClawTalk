@@ -1,0 +1,20 @@
+codex consult on docs/T-new-A2-B3-credential-resolve.md r6 (commit bc6a287)
+session id: 019e7528-3c25-7511-a250-1b08829648f7
+tokens: 89,732
+verdict: PASS WITH 2 P2 POLISH ITEMS — no P1s, no structural issues.
+
+Checks passed:
+  - r6 absorbed both .codex-r5-findings.txt items: §4.3 provider-list query added; §4.4 "four steps" / §9 "Steps 1-4" fixed.
+  - No other invalid "four steps" / "Steps 1-4" references found. "all four" in §4.6 correctly refers to the four soak criteria.
+  - §4.3 aggregate + companion provider query are coherent as written.
+  - GSTACK table sanity: 6 codex rows + 6 karpathy rows, r5 absorbed, r6 pending. Fine.
+
+1. [P2] Stale r5 footer reference survived. §9 B3-B5 still says
+   "update … r5 footer on this doc marking B-3 SHIPPED." In r6 that
+   should be "r6 footer" or just "this doc footer."
+
+2. [P2] Revision history is now overweight for an implementation
+   plan. Six entries is acceptable, but r4/r5/r6 are carrying
+   review-log detail that is duplicated again in the GSTACK table.
+   Not blocking; consider collapsing older revision bullets before
+   implementation starts.

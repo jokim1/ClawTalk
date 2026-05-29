@@ -1,6 +1,6 @@
 # T-new-A2 B-3 — remove the `workspace_provider_secrets` surface (two-PR rollout)
 
-**Status:** Plan, **r6 draft**.
+**Status:** Plan, **r7 draft**.
 **Tracking:** [[project-llm-turn-latency]], [[T-new-A2-enqueue-talk-turn-atomic]] (the C-M4 / C8 deferred work), [[T-new-A2-followup]].
 **Branch (planning):** `docs/t-new-a2-b3-plan` (this doc).
 **Branches (implementation, to be created):** `feature/t-new-a2-b3-pr-a-code-removal`, then `feature/t-new-a2-b3-pr-b-drop-tables`.
@@ -10,34 +10,15 @@
 
 ## Revision history
 
-- **r1 (2026-05-29, `6d3e437`)** — Framed B-3 as "collapse 2 SELECTs to 1." Codex consult returned 16 findings, 3 critical, that invalidated the central premise (invalid `owner_id` predicate, inconsistent enqueue/runtime fallback, UNION ALL did not short-circuit). Findings preserved at `.codex-r1-findings.txt`.
-- **r2 (2026-05-29, `0341fc8`)** — Reframed to "coherently remove `workspace_provider_secrets`." Codex consult returned 12 findings (6 critical, 6 advisory), karpathy audit returned 6 findings (3 critical). Critical blockers: (1) `DROP FUNCTION current_user_is_workspace_admin()` would break unrelated workspace_channels / workspace_data_connectors / workspace_slack_installs RLS; (2) deploy.yml runs migrations **before** the Worker deploys — single-PR shape leaves old code reading dropped tables during the window; (3) rollback framing only covered the migration, not the Worker; (4) §4.2 ↔ §4.3 contradicted on `provider_oauth_states.scope`; (5) `TalkDetailPage.tsx:2338-2340` + its test fixture consume `workspaceHasCredential` and `hasWorkspaceSubscription`, missed from §2.4; (6) §4.6 `ON CONFLICT DO NOTHING` discards workspace ciphertext silently. Codex r2 findings preserved at `.codex-r2-findings.txt`.
-- **r3 (2026-05-29, `b400133`)** — Splits the rollout into two PRs to dodge the deploy-window race. PR A removes code only (forward-compatible against the existing schema). PR B ships the destructive migration after PR A is verified in prod. Keeps `current_user_is_workspace_admin` (still referenced by 0019/0020/0023). Resolves the scope contradiction: column and NOT NULL stay; inserts keep `scope: 'user'`; PR B tightens the CHECK. Adds `TalkDetailPage` to the frontend inventory. Reconciles §7 test plan to live in three files (execution-resolver, agent-management, main-talk-bootstrap), drops the contradiction about asserting against a dropped table. Codex r3 returned 4 findings (1 P1, 3 P2); karpathy r3 added 1 CRITICAL + 2 WARNINGS + 1 nit. Raw codex output preserved at `.codex-r3-findings.txt`.
-- **r4 (this revision)** — Tight delta absorbing the r3 review round. Six edits, all confined to §4.1, §4.4, §4.6, §6, §9, and §2.4:
-  - **§4.4 internal contradiction** (codex r3 P1 #1 + karpathy r3 CRITICAL #1). The data-migration fork now INSERTs new rows, then DELETEs both migrated *and* intentionally-discarded source rows from `workspace_provider_secrets`, then re-runs the §4.3 audit which can now actually return `row_count = 0`.
-  - **§4.4 `enc_key_version` omission** (codex r3 P2 #2). Copy SQL now includes `enc_key_version` in both columns and projection.
-  - **§4.1 + §2.4 invented field name** (codex r3 P2 #4 + karpathy r3 CRITICAL #2). `provider.hasSubscription` (does not exist) → `provider.hasPersonalSubscription` (the actual field per `webapp/src/lib/api.ts:880`). §2.4 also adds an explicit "field names verified against `webapp/src/lib/api.ts` at commit-time" line. Same precision-failure class as r2's `workspaceSubscriptionHasCredential` mistake; logged to [[feedback-verify-schema-facts-in-plan-gates]] so it doesn't repeat.
-  - **§6 "no-op redeploy" framing** (codex r3 P2 #3 + karpathy r3 WARNING). PR B's deploy is not literally a no-op — `deploy.yml` still rebuilds SPA, syncs secrets, re-publishes assets / queues / cron / DO bindings via wrangler. Reworded to "no application code changes; still a full Worker + assets redeploy."
-  - **§6 file-count ambiguity + §4.1 list-count discrepancy** (karpathy r3 WARNING). "~13 source files + 4 webapp files" was inconsistent with §2.2's 14 sites + §2.4's 11 rows. r4 picks the "files touched" convention (~9 backend + ~5 webapp) so it matches PR-stat output.
-  - **§4.1 + §4.4 "~24h soak" success criteria** (karpathy r3 WARNING). Now explicit: PR B opens once PR A has been in prod ≥24h with zero `ExecutionResolverError` / `PROVIDER_SECRET_MISSING` events in `wrangler tail` and bench `resolveCredentialKindSnapshot` median ≤140 ms.
-  - **§9 task-time syntax** (karpathy r3 NIT). Uniform `(P1, human: ~X min, CC: ~Y min)` across every task line.
+Per-finding detail for each revision lives in the matching `.codex-rN-findings.txt` file in this directory and in the GSTACK REVIEW REPORT table at the bottom of the doc. The bullets below are one-line summaries.
 
-Cross-revision overlap rose sharply on r3: 4 of 6 karpathy findings also surfaced in codex output. Per [[feedback-codex-catches-behavior-karpathy-catches-style]] this is diagnostic of plan health, not reviewer redundancy — the precision-failure class kept re-firing because the plan kept inventing identifiers. r4 closes that channel by pinning field names and adding the source-of-truth verification note.
-
-- **r5 (this revision)** — Polish pass absorbing the four codex r4 + four karpathy r4 P2 advisories. No structural changes; ~10 LoC delta confined to §4.2, §4.4, §4.6. Codex r4 + karpathy r4 had 4-of-4 overlap on findings (and karpathy added an observation about long-term revision-history accumulation that does not yet require action). Fixes:
-  - **§4.2 "no-op" residue** (codex r4 P2 #1 + karpathy r4 WARNING). r4 fixed §6 but missed the same string class at §4.2:161. Reworded to match §6.
-  - **§4.6 soak criterion (2) unverifiable** (codex r4 P2 #2 + karpathy r4 WARNING). The original wording asked Joseph to filter `ExecutionResolverError` events "tagged to workspace credentials," but the error object carries only `message` and `code` — no credential origin metadata. Reworded to "zero resolver failures from providers listed in the §4.3 workspace audit," which defers to the human cross-reference Joseph would do anyway.
-  - **§4.4 DB-role preamble** (codex r4 P2 #3 + karpathy r4 WARNING). The INSERT step requires `owner_id = auth.uid()` per RLS at `0002_rls_policies.sql:53`; the DELETE on `workspace_provider_secrets` requires `current_user_is_workspace_admin()` per `0008:53`. r5 adds an explicit "run as the Supabase postgres role" preamble so the fork doesn't trip on authenticated-user RLS.
-  - **§4.4 `<joseph-uuid>` lookup as Step 0** (codex r4 P2 #4 + karpathy r4 NIT). Adds a one-line lookup query so the fork is self-contained and Joseph doesn't paste the UUID literal four times.
-
-Codex r4 raw output preserved at `.codex-r4-findings.txt`.
-
-- **r6 (this revision)** — Tiny precision pass absorbing the 2 codex r5 + 2 karpathy r5 findings (100 % overlap between the two reviews on r5, per [[feedback-codex-catches-behavior-karpathy-catches-style]]). Three substitutions plus one new audit query block:
-  - **§4.3 provider list query** (codex r5 P2 #1 + karpathy r5 WARNING). The aggregate audit at §4.3 captured `count(*)` + `max(updated_at)` but not the provider IDs that §4.6 criterion (2)/(3) tells Joseph to filter `wrangler tail` against. r6 adds a companion query that emits `provider_id, credential_kind` per row.
-  - **§4.4 step-count prose** (codex r5 P2 #2 + karpathy r5 WARNING). r5's Step 0 insertion left "four explicit steps" and "Run all four steps" as stale labels for what is now a five-step fork. r6 changes both to five.
-  - **§9 B3-B2 task** (same finding as above). "Steps 1-4" → "Steps 0-4."
-
-Codex r5 raw output preserved at `.codex-r5-findings.txt`.
+- **r1 (2026-05-29, `6d3e437`)** — Framed B-3 as "collapse 2 SELECTs to 1." Codex returned 16 findings (3 critical) that invalidated the central premise (invalid `owner_id` predicate; UNION ALL did not short-circuit; Option B left enqueue/runtime inconsistent). Raw findings: `.codex-r1-findings.txt`.
+- **r2 (2026-05-29, `0341fc8`)** — Reframed to "coherently remove `workspace_provider_secrets`." Codex returned 12 findings (6 critical, 6 advisory); karpathy added 6 (3 critical). Critical blockers: dropped-helper-breaks-RLS, single-PR deploy-window race, scope contradiction, missed `TalkDetailPage`, `ON CONFLICT DO NOTHING` discards ciphertext. Raw findings: `.codex-r2-findings.txt`.
+- **r3 (2026-05-29, `b400133`)** — Split into two PRs (PR A code-only forward-compatible, PR B destructive migration after PR A's prod soak). Keeps `current_user_is_workspace_admin`. Resolves scope contradiction (column + NOT NULL stay; CHECK tightens; inserts use `'user'`). Adds `TalkDetailPage` to §2.4. Codex returned 4 findings (1 P1, 3 P2); karpathy added 4 (1 CRITICAL + 2 WARNINGS + 1 nit). Raw findings: `.codex-r3-findings.txt`.
+- **r4 (2026-05-29, `30af2e4`)** — 7 edits across §1/§2.4/§4.1/§4.4/§4.6/§6/§9 absorbing the r3 round. §4.4 INSERT-no-DELETE fixed via a four-step fork; `provider.hasSubscription` → `provider.hasPersonalSubscription`; soak success criteria made explicit. Cross-revision overlap rose to 4-of-6, diagnostic of plan health per [[feedback-codex-catches-behavior-karpathy-catches-style]]. Codex returned 4 P2; karpathy added 4 (3 warn, 1 nit). Raw findings: `.codex-r4-findings.txt`.
+- **r5 (2026-05-29, `4c16031`)** — Operational-precision polish (~10 LoC on §4.2/§4.4/§4.6). §4.2 "no-op" residue + soak criterion (2) rewording + §4.4 DB-role preamble + UUID lookup as Step 0. Codex returned 2 P2; karpathy added 2 WARNINGS (100 % overlap). Raw findings: `.codex-r5-findings.txt`.
+- **r6 (2026-05-29, `bc6a287`)** — Provider-list + step-count polish (~27 LoC). §4.3 companion query for the provider list §4.6 references; §4.4 "four steps" → "five steps"; §9 B3-B2 "Steps 1-4" → "Steps 0-4." Codex returned 2 P2 (cosmetic); karpathy added 2 WARNINGS (100 % overlap, both also flagged the revision-history overweight observation karpathy predicted at r4). Raw findings: `.codex-r6-findings.txt`.
+- **r7 (this revision)** — Final polish absorbing the 2+2 r6 cosmetic items: (a) §9 B3-B5 stale "r5 footer" label → "post-ship footer" (codex r6 P2 #1 + karpathy r6 WARNING); (b) this revision-history block collapsed from per-finding bullets to one-line summaries per revision (codex r6 P2 #2 + karpathy r6 WARNING) — the per-finding detail now lives in the `.codex-rN-findings.txt` files and the GSTACK REVIEW REPORT table where it belongs, instead of being duplicated in §1. Raw findings will land at `.codex-r7-findings.txt` after the r7 review round.
 
 ---
 
@@ -499,7 +480,7 @@ Time annotations: `(P1, human: ~X min, CC: ~Y min)` — `human` is wall-clock ti
   - Files: PR metadata
   - Verify: codex PASS, deploy.yml succeeds
 
-- [ ] **B3-B5 (P1, human: ~15 min, CC: ~5 min)** — §4.6 PR B post-deploy verification + update [[project-llm-turn-latency]] memory + r5 footer on this doc marking B-3 SHIPPED.
+- [ ] **B3-B5 (P1, human: ~15 min, CC: ~5 min)** — §4.6 PR B post-deploy verification + update [[project-llm-turn-latency]] memory + post-ship footer on this doc marking B-3 SHIPPED.
   - Files: this doc footer, memory
   - Verify: workspace tables gone from prod; bench results recorded
 
@@ -515,18 +496,20 @@ Time annotations: `(P1, human: ~X min, CC: ~Y min)` — `human` is wall-clock ti
 | Codex Consult (r3) | `/codex consult` on r3 | Verify staged-deploy framing | 1 | ABSORBED | 4 findings (1 P1, 3 P2): §4.4 INSERT-no-DELETE contradiction, missing `enc_key_version`, "no-op" framing, invented `hasSubscription` field. Raw output `.codex-r3-findings.txt`. r4 fixes all four. |
 | Codex Consult (r4) | `/codex consult` on r4 | Verify §4.4 fork + naming fixes | 1 | ABSORBED | 4 findings, all P2: §4.2 "no-op" residue, soak criterion (2) unverifiable, §4.4 DB-role missing, `<joseph-uuid>` lookup needed. Raw output `.codex-r4-findings.txt`. r5 fixes all four. |
 | Codex Consult (r5) | `/codex consult` on r5 | Verify polish-pass fixes | 1 | ABSORBED | 2 P2 findings: §4.3 missing provider list, "four steps" prose stale after Step 0 insertion. Raw output `.codex-r5-findings.txt`. r6 fixes both. |
-| Codex Consult (r6) | `/codex consult` on r6 | Final precision verification | 0 | pending | Will run on r6 commit. |
+| Codex Consult (r6) | `/codex consult` on r6 | Final precision verification | 1 | ABSORBED | 2 P2 findings (cosmetic): §9 B3-B5 stale "r5 footer" label, revision-history overweight. Verdict: PASS WITH 2 P2 POLISH ITEMS. Raw output `.codex-r6-findings.txt`. r7 fixes both. |
+| Codex Consult (r7) | `/codex consult` on r7 | Post-collapse verification | 0 | pending | Will run on r7 commit. |
 | Karpathy Audit (r1) | manual | Style lens + four principles | 1 | ABSORBED | 1 warning, 2 nits. Reframed §1 in r2 to defer to §4.5. |
 | Karpathy Audit (r2) | manual | Style lens + four principles | 1 | ABSORBED | 6 findings (3 critical, 2 warning, 1 nit). r3 fixes §4.2/§4.3 contradiction, field naming, §6 dup, §7 test reconciliation. |
 | Karpathy Audit (r3) | manual | Style lens + four principles | 1 | ABSORBED | 6 findings (2 critical, 3 warning, 1 nit): §4.4 contradiction (overlap with codex P1), invented field name (overlap with codex P2 #4), §6 "no-op" framing (overlap), `enc_key_version` (overlap), file-count ambiguity, missing soak success criteria, §9 task-time syntax. Cross-revision overlap noted in r4 revision-history block. |
 | Karpathy Audit (r4) | manual | Style lens + four principles | 1 | ABSORBED | 4 findings (0 critical, 3 warning, 1 nit). 4-of-4 overlap with codex r4 + 1 karpathy-unique observation on long-term revision-history accumulation cost (deferred to r6+). |
 | Karpathy Audit (r5) | manual | Style lens + four principles | 1 | ABSORBED | 2 WARNINGS, 100 % overlap with codex r5 (diagnostic of plan health per [[feedback-codex-catches-behavior-karpathy-catches-style]]). r6 fixes both. |
-| Karpathy Audit (r6) | manual | Style lens + four principles | 0 | pending | Will run alongside codex r6. |
+| Karpathy Audit (r6) | manual | Style lens + four principles | 1 | ABSORBED | 2 WARNINGS, 100 % overlap with codex r6 — both reviewers converged on r5 footer + revision-history accumulation cost. Diminishing-returns floor confirmed. |
+| Karpathy Audit (r7) | manual | Style lens + four principles | 0 | pending | Will run alongside codex r7. |
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | Not run — scope is "remove dead surface in a solo-user product." |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | Not run — UI change is sub-tab removal; low risk. |
 | DX Review | `/plan-devex-review` | DX gaps | 0 | — | Not run. |
 
-**VERDICT (r6):** **DRAFT — pending review.** r6 absorbs the 2+2 r5 advisories (100 % cross-model overlap). The §4.3 audit now emits the provider list the §4.6 soak criteria reference, and the §4.4 fork's "four steps" prose now matches the actual five-step (Step 0 through Step 4) shape. Expected next-review verdict: PASS or one trivial finding. Critical pre-implementation constraints (unchanged from r4):
+**VERDICT (r7):** **DRAFT — pending review.** r7 absorbs the 2+2 r6 cosmetic items via a stale-label fix and a structural cleanup (revision history collapsed; per-finding detail now lives in the `.codex-rN-findings.txt` files and the GSTACK table). The plan body is unchanged since r5's operational-precision pass. Expected next-review verdict: PASS clean. Critical pre-implementation constraints (unchanged from r4):
 
 1. **PR A must merge and meet §4.6's soak criteria before PR B opens.** All four conditions (≥24h, zero ExecutionResolverError, zero PROVIDER_SECRET_MISSING from workspace-served providers, bench median ≤140 ms).
 2. **Migration filename re-verified at commit time** against `supabase/migrations/`.
