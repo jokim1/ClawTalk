@@ -9,7 +9,8 @@
 ### Revision history
 - **r1 (2026-05-28):** Initial draft. Three options (A/B/C) copied from parent sketch.
 - **r2 (2026-05-28):** /plan-eng-review found 4 substantive issues, all absorbed: D1 corrected postgres.js semantics (Option B rejected, new Option D added using CTE batching), D2 Option C deferred, D3 tests expanded with ASCII coverage diagram, D4 cache to NOT-in-scope. Also 3 lower-confidence findings folded in (RLS coupling, canEditTalk callers, extractMentionTokens purity).
-- **r3 (2026-05-28, this version):** /codex consult on r2 returned 11 findings, several load-bearing. Absorbed via **major scope reduction:**
+- **r4 (2026-05-29, SHIPPED):** PR #472 merged at commit `f596fb2`. A1–A7 executed against the r3 plan with no deviations. **Pre-deploy measurement (A2)** put `canEditTalk` phase at 125 ms median (3 runs, instrumented version `2e327d4b`) — squarely inside the predicted 100–200 ms range. **Post-deploy measurement (A6, version `f596fb2`)** showed `t1-t0 = 3920 ms median` vs 4041 ms T-new-B baseline → **−121 ms** observable end-to-end gain, matching the per-phase savings within noise. Win is attributable. Codex review surfaced one [P2] (Test 9 leaked `system.defaultTalkAgentId`) — absorbed via try/finally save+restore. 14 new tests landed (7 in `agent-registry.test.ts`, 7 in `talks.test.ts`); full backend suite green (956 tests).
+- **r3 (2026-05-28):** /codex consult on r2 returned 11 findings, several load-bearing. Absorbed via **major scope reduction:**
   - **Drop Option D entirely.** Codex C2 showed `getBrowserPreflightErrorForAgent` calls into `getEffectiveToolsForAgent` + `planExecution` + container-runtime checks, each with its own DB reads. The "one round trip" claim for the Stage D batch was false. Codex C8 surfaced that `enqueueTalkTurnAtomic` itself has a per-agent loop (`getRegisteredAgent` inside the run-creation loop) that the planned Stage D batch wouldn't touch. Both require deeper understanding of the effective-tools graph; defer to a separate plan.
   - **Drop the `access_role === 'owner'` test (r2 Test 4).** Per codex C3, current RLS returns 404 (not 403) for non-owner via `getTalkForUser`. The invariant test would fail today. Per codex C4, `access_role` is hardcoded to `'owner'` in `getTalkForUser` — it's a no-op against current owner-only RLS. The dedupe still works (the second canEditTalk call IS redundant under current RLS) but the new code can't use `access_role` for short-circuit; refactor `canUserEditTalk` to accept the pre-loaded talk instead.
   - **Drop the idempotency-key test (r2 Test 11).** Per codex C7, chat path doesn't dedup via `idempotency_cache`. The key just gets written onto the first run. Plan can't claim or test idempotent dedup.
@@ -350,7 +351,8 @@ PR title: `perf(chat): dedupe redundant SELECTs in enqueueTalkChat (T-new-A)`.
 | Review | Trigger | Why | Runs | Status | Findings |
 |--------|---------|-----|------|--------|----------|
 | Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | CLEAR (PLAN, r2) | 4 decisions raised (D1-D4), all 4 absorbed into r2. Also 3 lower-confidence findings (A3 RLS, C1 canEditTalk callers, C2 extractMentionTokens) folded in without separate AskUserQuestion. |
-| Codex Review | `/codex` consult on plan | Independent 2nd opinion | 1 | CLEAR via scope reduction | 11 findings raised against r2. **9 absorbed via narrowing scope to Option A only** (drop D, drop access_role test, drop idempotency test, drop CTE, soften pg.js claim, flip to pre-deploy measurement). C9 (don't ship A+D together) resolved by dropping D. C10 (test coverage misses execution-planner branches) moot once D dropped. |
+| Codex Review (plan) | `/codex` consult on plan | Independent 2nd opinion on r2 | 1 | CLEAR via scope reduction | 11 findings raised against r2. **9 absorbed via narrowing scope to Option A only** (drop D, drop access_role test, drop idempotency test, drop CTE, soften pg.js claim, flip to pre-deploy measurement). C9 (don't ship A+D together) resolved by dropping D. C10 (test coverage misses execution-planner branches) moot once D dropped. |
+| Codex Review (PR #472) | `/codex review` on the diff | Pre-merge code review | 1 | CLEAR (PASS, 0 P1 / 1 P2) | C-1 (P2) — Test 9 overwrites `system.defaultTalkAgentId` without restore, leaving settings_kv pointing at a UUID the purge wipes. Absorbed via try/finally save+restore in `talks.test.ts`. |
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | not run (perf fix, scope is self-evident) |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | not run (backend-only) |
 | DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | not run |
@@ -363,8 +365,10 @@ PR title: `perf(chat): dedupe redundant SELECTs in enqueueTalkChat (T-new-A)`.
 
 **UNRESOLVED:** 0. All codex findings either absorbed by scope reduction (C1-C8, C11) or moot in the narrower scope (C9-C10).
 
-**VERDICT:** **CLEARED (PLAN, r3)** — narrowed to a small, safe dedupe with pre-deploy measurement. ~100-200 ms savings target. Critical constraints to remember during implementation:
+**VERDICT:** **CLEARED + SHIPPED (r4, 2026-05-29)** — pre-deploy A2 confirmed canEditTalk phase at 125 ms median; post-deploy A6 confirmed t1-t0 dropped from 4041 ms → 3920 ms (−121 ms), within noise of the per-phase savings. The dedupe is the entire delivered scope. Critical constraints honored:
 1. `canEditTalk` export STAYS (7 other callers); only `enqueueTalkChat` uses the new `FromRecord` variant.
 2. `canUserEditTalkFromRecord` and `canUserEditTalk` MUST update together when real ACL lands (codex C4 future-proofing).
-3. §4.5 measurement is PRE-deploy in this plan (per codex C11) — different from T-new-A r2's post-deploy plan, different from T-new-B's pre-deploy plan only in that T-new-A's measurement validates a *smaller* savings claim.
-4. Don't get clever — the plan deliberately ships ~5 LoC of business logic + 25 LoC of new function exports. Bigger refactors require a different plan.
+3. §4.5 measurement ran PRE-deploy (per codex C11) and confirmed the predicted attribution before the dedupe shipped.
+4. No scope creep — the diff shipped ~30 LoC of business logic + ~250 LoC of tests.
+
+**FOLLOW-UPS surfaced by A2 instrumentation (open future plans):** `enqueueTalkTurnAtomic` ~1734 ms (codex C8 per-agent loop), `ensureTalkUsesUsableDefaultAgent` ~748 ms (3 SELECTs), `preflight_iter_0` ~435 ms per agent (codex C2 effective-tools graph). The next latency lever is whichever of these the next plan picks up.
