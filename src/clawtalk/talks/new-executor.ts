@@ -1172,7 +1172,7 @@ async function listPriorOrderedOutputs(
     from public.talk_runs r
     join assistant_outputs ao on ao.run_id = r.id
     left join public.registered_agents ra on ra.id = r.target_agent_id
-    where r.response_group_id = ${responseGroupId}::uuid
+    where r.response_group_id = ${responseGroupId}
       and r.sequence_index is not null
       and r.sequence_index < ${currentSequenceIndex}
       and r.status = 'completed'
@@ -1217,7 +1217,7 @@ async function listPriorOrderedGaps(
       r.status as status
     from public.talk_runs r
     left join public.registered_agents ra on ra.id = r.target_agent_id
-    where r.response_group_id = ${responseGroupId}::uuid
+    where r.response_group_id = ${responseGroupId}
       and r.sequence_index is not null
       and r.sequence_index < ${currentSequenceIndex}
       and r.status <> 'completed'
@@ -1238,7 +1238,7 @@ async function getOrderedGroupMaxSequence(
   const rows = await db<Array<{ max_sequence_index: number | null }>>`
     select max(sequence_index) as max_sequence_index
     from public.talk_runs
-    where response_group_id = ${responseGroupId}::uuid
+    where response_group_id = ${responseGroupId}
       and sequence_index is not null
   `;
   const row = rows[0];
@@ -1397,7 +1397,11 @@ function buildForcedInjectionPrefix(forcedInjectionText: string): string {
   ].join('\n');
 }
 
-async function buildStepUserMessageText(input: {
+// Exported for the ordered-round regression test: these queries are only
+// reached by a downstream ordered step (sequence_index >= 1), so a bug here
+// (e.g. casting the text response_group_id to ::uuid) stays invisible until
+// such a step actually executes. See new-executor.test.ts.
+export async function buildStepUserMessageText(input: {
   triggerContent: string;
   estimatedContextTokens: number;
   modelContextWindow: number;
