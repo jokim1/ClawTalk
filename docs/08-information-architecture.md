@@ -1,3 +1,6 @@
+> **Status:** canonical — **authoritative for hierarchy + data model.** Uses `documents`/`doc_tabs` names; live DB is `contents` and tabs are unbuilt — see DECISIONS D2 + [GLOSSARY](./GLOSSARY.md).
+> Precedence + orientation: [README.md](./README.md) · decisions: [DECISIONS.md](./DECISIONS.md) · terms: [GLOSSARY.md](./GLOSSARY.md).
+
 # ClawTalk Information Architecture
 
 This doc is the canonical information architecture for ClawTalk v1. It defines

@@ -1,3 +1,6 @@
+> **Status:** draft PRD (Forge — what/why). Uses the **shipped** `contents`/`registered_agents` vocabulary, which matches the live DB (DECISIONS D2). Blocked on the Content feature + open questions in §15.
+> Precedence + orientation: [README.md](./README.md) · decisions: [DECISIONS.md](./DECISIONS.md) · terms: [GLOSSARY.md](./GLOSSARY.md).
+
 # PRD: Autonomous Content Improvement ("Forge")
 
 > **Status:** Draft for review. Not yet planned into `docs/plans/`.

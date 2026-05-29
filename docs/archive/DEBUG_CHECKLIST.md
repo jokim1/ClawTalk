@@ -1,3 +1,7 @@
+> ⛔ **ARCHIVED — not current.** Ops runbook for the retired "ClawRocket" (sqlite3/journalctl/docker/port 3210). None of these commands apply to the current Workers + Postgres + Queues + Durable Objects stack.
+>
+> Retired 2026-05-28 during the docs restructure. See [../DOC-AUDIT.md](../DOC-AUDIT.md) and [../README.md](../README.md). Kept for historical reference only.
+
 # ClawRocket Debug Checklist
 
 Use [OPERATIONS_UBUNTU.md](OPERATIONS_UBUNTU.md) for routine service management. This file is for targeted debugging.

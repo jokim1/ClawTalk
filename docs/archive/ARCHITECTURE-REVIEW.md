@@ -1,3 +1,7 @@
+> ⛔ **ARCHIVED — not current.** As-built review of the retired "ClawRocket" architecture (SQLite + containers). Durable architectural commitments + the execution-resolver credential rationale are captured in ../engineering-notes.md.
+>
+> Retired 2026-05-28 during the docs restructure. See [../DOC-AUDIT.md](../DOC-AUDIT.md) and [../README.md](../README.md). Kept for historical reference only.
+
 # Architecture Review: Post Main-Channel Wiring
 
 All findings verified against source code. Decisions annotated inline.

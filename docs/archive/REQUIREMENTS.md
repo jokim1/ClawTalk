@@ -1,3 +1,7 @@
+> ⛔ **ARCHIVED — not current.** Engineering constraints for the retired "ClawRocket" NanoClaw fork (dual execution domains, systemd). Obsolete under the single Workers runtime.
+>
+> Retired 2026-05-28 during the docs restructure. See [../DOC-AUDIT.md](../DOC-AUDIT.md) and [../README.md](../README.md). Kept for historical reference only.
+
 # ClawRocket Requirements And Constraints
 
 This file captures current project constraints and engineering priorities.

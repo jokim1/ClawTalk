@@ -6,6 +6,7 @@ function getContainerRuntimeStatus(): 'ready' | 'unavailable' {
 }
 import {
   AttachmentValidationError,
+  EnqueueTurnContextNotFoundError,
   TalkActiveRoundError,
   TalkThreadValidationError,
   cancelTalkRunsAtomic,
@@ -2066,6 +2067,15 @@ export async function enqueueTalkChat(input: {
               message:
                 'Wait for the current round in this thread to finish or cancel it before sending another message',
             },
+          },
+        };
+      }
+      if (error instanceof EnqueueTurnContextNotFoundError) {
+        return {
+          statusCode: 404,
+          body: {
+            ok: false,
+            error: { code: 'talk_not_found', message: 'Talk not found' },
           },
         };
       }

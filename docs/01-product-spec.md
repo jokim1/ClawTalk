@@ -1,3 +1,6 @@
+> **Status:** canonical (product behavior). Uses greenfield `documents`/`agents` names — read via [GLOSSARY](./GLOSSARY.md) (DECISIONS D2). Connectors are workspace-global per [roadmap](./roadmap.md) #5; scheduled-jobs scope per DECISIONS D2 — both override this doc.
+> Precedence + orientation: [README.md](./README.md) · decisions: [DECISIONS.md](./DECISIONS.md) · terms: [GLOSSARY.md](./GLOSSARY.md).
+
 # ClawTalk · Product Spec
 
 **Read me first.** This is the canonical specification of ClawTalk — the product you're building. Every concept, data structure, screen, and flow lives here. The working visual prototype (`ClawTalk Salon.html` at the repo root) is the canonical reference for *what it looks like and how it feels*. This doc tells you *what it does*.

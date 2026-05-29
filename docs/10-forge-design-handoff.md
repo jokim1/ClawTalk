@@ -1,3 +1,6 @@
+> **Status:** canonical (Forge design/interaction). Front-end mock; all scoring data simulated. Scope model (whole doc / tab / section) must reconcile with the PRD + tabs (DOC-AUDIT #3c).
+> Precedence + orientation: [README.md](./README.md) · decisions: [DECISIONS.md](./DECISIONS.md) · terms: [GLOSSARY.md](./GLOSSARY.md).
+
 # Forge — design handoff
 
 Autonomous content improvement for ClawTalk. This doc is the

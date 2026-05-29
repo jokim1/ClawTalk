@@ -1,3 +1,6 @@
+> **Status:** canonical (API). Transport is **WebSocket only** (ignore the SSE hedge). Missing: Forge endpoints (DOC-AUDIT #13) and move-block-between-tabs (DOC-AUDIT #14).
+> Precedence + orientation: [README.md](./README.md) · decisions: [DECISIONS.md](./DECISIONS.md) · terms: [GLOSSARY.md](./GLOSSARY.md).
+
 # ClawTalk · API Contracts
 
 Framework-agnostic backend contracts derived from the prototype's behavior. Reference implementation should be REST + WebSocket (or Server-Sent Events). All endpoints are workspace-scoped unless noted. The canonical object hierarchy and document relationship are defined in `08-information-architecture.md`.

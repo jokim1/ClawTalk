@@ -1,3 +1,7 @@
+> ⛔ **ARCHIVED — not current.** Reverse-engineering of @anthropic-ai/claude-agent-sdk used by the retired containerized executor. The current Talk runtime is direct-HTTP/provider-routed and does NOT use this SDK. Preserved verbatim — uniquely valuable if the agent-SDK path ever returns.
+>
+> Retired 2026-05-28 during the docs restructure. See [../DOC-AUDIT.md](../DOC-AUDIT.md) and [../README.md](../README.md). Kept for historical reference only.
+
 # Claude Agent SDK Deep Dive
 
 This document applies to the **containerized core executor path only**. It does not describe the direct HTTP Talk runtime under `src/clawrocket/talks/*`.

@@ -2143,6 +2143,19 @@ export class TalkThreadValidationError extends Error {
   }
 }
 
+// Thrown by loadEnqueueTurnContext when the combined SELECT returns no
+// row. The only realistic race is the talk being deleted between
+// resolveThreadIdForTalk (which validates visibility) and the combined
+// helper. enqueueTalkChat's catch maps this to 404 talk_not_found —
+// the same shape the standalone getTalkForUser path already produces.
+export class EnqueueTurnContextNotFoundError extends Error {
+  readonly code: 'talk_not_found' = 'talk_not_found';
+  constructor() {
+    super('Talk not found');
+    this.name = 'EnqueueTurnContextNotFoundError';
+  }
+}
+
 export class ThreadDeleteConflictError extends Error {
   readonly code:
     | 'last_thread'
@@ -2213,6 +2226,60 @@ async function maybePersistTalkThreadTitleFromMessages(
 }
 
 // ---------------------------------------------------------------------------
+// loadEnqueueTurnContext — combined pre-loop read for enqueueTalkTurnAtomic
+//
+// Replaces three sequential SELECTs (active-rounds count, thread title,
+// talks.active_tool_families_json) with one JOIN-and-subquery so the
+// per-request tx pays a single round-trip for the pre-loop context.
+// T-new-A2 measured the savings at ~250 ms median (n=10 haiku, both
+// N=1 and N=3 — codex C-H3 shadow-query gate). Throws
+// EnqueueTurnContextNotFoundError if either the talk or thread is no
+// longer visible — same race a fresh getTalkForUser would surface.
+// ---------------------------------------------------------------------------
+
+export interface EnqueueTurnContext {
+  title: string | null;
+  activeFamilies: Record<string, boolean>;
+  activeCount: number;
+}
+
+export async function loadEnqueueTurnContext(
+  talkId: string,
+  threadId: string,
+): Promise<EnqueueTurnContext> {
+  const db = getDbPg();
+  const rows = await db<
+    {
+      active_tool_families_json: Record<string, boolean> | null;
+      title: string | null;
+      active_count: number;
+    }[]
+  >`
+    select
+      tk.active_tool_families_json,
+      th.title,
+      (
+        select count(*)::int from public.talk_runs
+        where talk_id = tk.id and thread_id = th.id
+          and status in ('queued', 'running', 'awaiting_confirmation')
+      ) as active_count
+    from public.talks tk
+    join public.talk_threads th on th.talk_id = tk.id
+    where tk.id = ${talkId}::uuid and th.id = ${threadId}::uuid
+    limit 1
+  `;
+  if (rows.length === 0) {
+    throw new EnqueueTurnContextNotFoundError();
+  }
+  const row = rows[0];
+  return {
+    title: row.title,
+    activeFamilies: row.active_tool_families_json ?? {},
+    activeCount: row.active_count,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // enqueueTalkTurnAtomic — user message + N queued runs + outbox events
 //
 // Caller's withUserContext wraps this in a single tx; either all rows
@@ -2259,17 +2326,14 @@ export async function enqueueTalkTurnAtomic(input: {
     ownerId: input.ownerId,
   });
 
-  // No concurrent rounds — if any run is queued/running/awaiting on the
-  // thread, reject before creating new ones.
-  const db = getDbPg();
-  const active = await db<{ count: number }[]>`
-    select count(*)::int as count
-    from public.talk_runs
-    where talk_id = ${input.talkId}::uuid
-      and thread_id = ${threadId}::uuid
-      and status in ('queued', 'running', 'awaiting_confirmation')
-  `;
-  if ((active[0]?.count ?? 0) > 0) {
+  // One combined SELECT replaces three sequential reads: the
+  // active-rounds count, thread title, and talk.active_tool_families_json
+  // snapshot. The active-rounds count still gates the throw before any
+  // INSERT runs (same ordering as before). Throws
+  // EnqueueTurnContextNotFoundError if talk or thread is no longer
+  // visible — only happens on a race against deletion.
+  const ctx = await loadEnqueueTurnContext(input.talkId, threadId);
+  if (ctx.activeCount > 0) {
     throw new TalkActiveRoundError('thread');
   }
 
@@ -2296,16 +2360,13 @@ export async function enqueueTalkTurnAtomic(input: {
   });
 
   // Heal thread title from the first user message — runs in the same
-  // tx so a rollback drops the title write too.
-  const threadRows = await db<{ title: string | null }[]>`
-    select title from public.talk_threads
-    where id = ${threadId}::uuid and talk_id = ${input.talkId}::uuid
-    limit 1
-  `;
+  // tx so a rollback drops the title write too. Uses the snapshot title
+  // from loadEnqueueTurnContext (read above, before createTalkMessage —
+  // same input the now-deleted separate SELECT would have produced).
   await maybePersistTalkThreadTitleFromMessages(
     input.talkId,
     threadId,
-    threadRows[0]?.title ?? null,
+    ctx.title,
   );
 
   // Snapshot the Talk's active tool families once before the fan-out so
@@ -2314,18 +2375,7 @@ export async function enqueueTalkTurnAtomic(input: {
   // the "queue snapshot" intent from migration 0031 — consumers in
   // new-executor.ts read this value via getTalkRunById and pass it to
   // planExecution as `activeFamilies`, bypassing the live read.
-  const activeToolFamiliesRows = await db<
-    {
-      active_tool_families_json: Record<string, boolean> | null;
-    }[]
-  >`
-    select active_tool_families_json
-    from public.talks
-    where id = ${input.talkId}::uuid
-    limit 1
-  `;
-  const activeToolFamiliesSnapshot =
-    activeToolFamiliesRows[0]?.active_tool_families_json ?? {};
+  const activeToolFamiliesSnapshot = ctx.activeFamilies;
 
   // Fan out one queued run per target agent. Each run snapshots the
   // credential kind the resolver would pick RIGHT NOW (migration 0032 /
@@ -2409,6 +2459,7 @@ export async function enqueueTalkTurnAtomic(input: {
         `A message may have at most ${cap} attachments.`,
       );
     }
+    const db = getDbPg();
     const invalidIds: string[] = [];
     for (const attId of attIds) {
       const result = await db<{ id: string }[]>`

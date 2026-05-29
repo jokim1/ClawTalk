@@ -1,3 +1,6 @@
+> **Status:** canonical (Home). TODO: surface Forge runs on Home (no rec/inbox path today — DOC-AUDIT #4).
+> Precedence + orientation: [README.md](./README.md) · decisions: [DECISIONS.md](./DECISIONS.md) · terms: [GLOSSARY.md](./GLOSSARY.md).
+
 # ClawTalk Homepage System Design
 
 This doc specifies the production architecture for the ClawTalk Home page,

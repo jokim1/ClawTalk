@@ -1,8 +1,31 @@
 # ClawTalk · Build Package
 
-This `/docs` folder is a complete specification for building **ClawTalk** — a multi-agent reasoning product where users invite different LLMs into a "Talk" (a context-bound room) and watch them debate, push back, and synthesize toward a recommendation.
+This `/docs` folder specifies **ClawTalk** — a multi-agent reasoning product where users invite different LLMs into a "Talk" (a context-bound room) and watch them debate, push back, and synthesize toward a recommendation.
 
-You're reading this because you're an AI coding agent (or engineer) about to build the product greenfield. Read these docs in order, then start.
+You're reading this because you're an AI coding agent (or engineer) about to work on the product. ClawTalk is **not** greenfield — there is a live codebase on Cloudflare Workers + Supabase Postgres. Read the orientation docs below first, then the spec docs in order.
+
+---
+
+## Start here — orientation
+
+| Doc | Why |
+|---|---|
+| **[DECISIONS.md](./DECISIONS.md)** | Resolved cross-cutting decisions (stack, naming, Forge agents). **When a spec doc conflicts with a decision here, this wins.** |
+| **[GLOSSARY.md](./GLOSSARY.md)** | Canonical terms + the shipped-DB-name ↔ spec-name mapping. Read it to avoid the vocabulary forks. |
+| **[DOC-AUDIT.md](./DOC-AUDIT.md)** | The audit behind the current cleanup: open inconsistencies + gaps, prioritized. |
+| **[engineering-notes.md](./engineering-notes.md)** | Durable engineering knowledge (architectural commitments, latency hotspots, eval gate). |
+| **[archive/](./archive/)** | Retired "ClawRocket"-era docs. **Not current** — do not implement from them. |
+
+## Precedence — who wins on conflict
+
+1. **Cross-cutting decisions** → [DECISIONS.md](./DECISIONS.md).
+2. **Hierarchy / data model** → [08-information-architecture.md](./08-information-architecture.md).
+3. **UI / interaction** → the prototype (`ClawTalk Salon.html` + `prototype/*.jsx`).
+4. **Stack / runtime** → `CLAUDE.md` + repo reality (Cloudflare Workers) — **not** the historical "Tech stack" note below.
+5. **Shipped vs planned** → [roadmap.md](./roadmap.md) wins over `01` where they disagree (connectors, scheduled jobs).
+6. **Product behavior** → `01-product-spec.md`. **Anything in [archive/](./archive/) is superseded.**
+
+> ⚠️ The spec docs `01`–`08` were written for a greenfield `documents`/`agents` model. The live DB uses `contents`/`registered_agents` (see DECISIONS D2). Until D2 is finalized, read spec table names through the [GLOSSARY](./GLOSSARY.md) mapping.
 
 ---
 
@@ -31,8 +54,6 @@ You're reading this because you're an AI coding agent (or engineer) about to bui
 | `prototype/*.jsx` | The prototype's source. Component-by-component. Read these alongside the screens you're building. The `forge-*.jsx` modules hold the Forge surfaces; the Salon modules carry Forge integration gated behind `CT_FORGE_ENABLED`. |
 | `design-canvas.jsx` | Source for the Forge exploration canvas (`ClawTalk Forge - Exploration.html`). |
 | `shared/data.jsx` | Mock data, brand marks, icons, and the canonical agent / team / role definitions. **Seed your DB from this file.** |
-| `ClawTalk Redesign.html` | An earlier design canvas with three alternate visual directions (Salon, Operator, Studio). For reference only — the chosen direction is **Salon**, which is what `ClawTalk Salon.html` implements. |
-| `MIGRATION SPEC.md` (root) | Earlier draft of the product spec written as a migration. Superseded by `01-product-spec.md` here; left for archeology. |
 
 ---
 
@@ -61,14 +82,15 @@ When ambiguity arises, the **prototype** is the canonical reference for UI, the 
 
 ---
 
-## Tech stack — recommended but not prescribed
+## Tech stack — decided (see [DECISIONS.md](./DECISIONS.md) D1)
 
-The prototype is React + Tailwind + Babel-in-the-browser. For production:
+The prototype is React + Tailwind + Babel-in-the-browser. Production runs on the **existing** stack:
 
-- **Frontend:** Next.js (App Router) + React + Tailwind. Stick with the type scale and color tokens in `02-visual-system.md`.
-- **Backend:** Whatever you're comfortable with — the API contract in `04` is framework-agnostic. Reference is Node/TypeScript with Postgres.
-- **LLM providers:** Anthropic Claude (Opus + Sonnet), OpenAI GPT, Google Gemini. The agents in `03` pick a default model per role; users can swap.
-- **Real-time:** WebSocket or SSE for streaming agent responses. Pattern in `04`.
-- **Auth:** OAuth (Google, GitHub) + magic-link email. Workspace-scoped sessions.
+- **Runtime:** Cloudflare Workers + Hono + Durable Objects + Hyperdrive. Run queues are **Cloudflare Queues**; websocket pub/sub is the `UserEventHub` Durable Object. **No Redis, no BullMQ/Sidekiq.**
+- **Database:** Supabase Postgres (postgres.js + RLS via `withUserContext`).
+- **Frontend:** Vite + React + Tailwind under `webapp/`. Stick with the tokens in `02-visual-system.md`.
+- **LLM providers:** Anthropic Claude, OpenAI GPT, Google Gemini — via the provider abstraction in `04` §14. Model catalog needs a single source of truth (DOC-AUDIT #10).
+- **Real-time:** WebSocket only (drop the SSE hedge in `04` §0).
+- **Auth:** OAuth (Google, GitHub) + magic-link email; HttpOnly cookies + double-submit CSRF. Workspace-scoped sessions.
 
-If you swap any of these, document why and adjust the relevant doc.
+> Earlier drafts (and the archived rebuild plan) recommended Next.js + Node + Redis. That was **rejected** — see DECISIONS D1. `05-build-plan.md` Phase 0 still references Redis/BullMQ and needs fixing.

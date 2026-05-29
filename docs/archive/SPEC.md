@@ -1,3 +1,7 @@
+> ⛔ **ARCHIVED — not current.** Implementation spec for the retired "ClawRocket" (SQLite, container core, systemd, SSE). Superseded by 01-product-spec.md + 08-information-architecture.md; current stack is Cloudflare Workers + Postgres.
+>
+> Retired 2026-05-28 during the docs restructure. See [../DOC-AUDIT.md](../DOC-AUDIT.md) and [../README.md](../README.md). Kept for historical reference only.
+
 # ClawRocket Specification
 
 This document describes the current implementation, not historical rollout plans.

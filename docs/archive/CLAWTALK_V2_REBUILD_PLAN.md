@@ -1,3 +1,7 @@
+> ⛔ **ARCHIVED — not current.** Greenfield rebuild plan. Its product layer is covered by 01-08; its recommended Next.js/Node/Redis stack was rejected in favor of Cloudflare Workers (see DECISIONS.md #1). Durable schema/latency/orchestration content lives in ../engineering-notes.md.
+>
+> Retired 2026-05-28 during the docs restructure. See [../DOC-AUDIT.md](../DOC-AUDIT.md) and [../README.md](../README.md). Kept for historical reference only.
+
 # ClawTalk Rebuild Plan
 
 Status: review draft  

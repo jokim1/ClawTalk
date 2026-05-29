@@ -1,3 +1,6 @@
+> **Status:** canonical (design tokens). TODO: add the doc-tab strip + Forge surface components (DOC-AUDIT #15).
+> Precedence + orientation: [README.md](./README.md) · decisions: [DECISIONS.md](./DECISIONS.md) · terms: [GLOSSARY.md](./GLOSSARY.md).
+
 # ClawTalk · Visual System
 
 The chosen direction is **Salon** — warm, editorial, paper-cream. Notion + Anthropic territory with multi-agent reasoning UI grafted on top. Use these tokens exactly. The working reference is `ClawTalk Salon.html`; this doc abstracts what's there into reusable tokens.

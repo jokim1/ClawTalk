@@ -31,7 +31,9 @@ import {
   deleteTalkMember,
   deleteTalkMessagesAtomic,
   deleteTalkThread,
+  EnqueueTurnContextNotFoundError,
   enqueueTalkTurnAtomic,
+  loadEnqueueTurnContext,
   failInterruptedRunsOnStartup,
   failRunAndPromoteNextAtomic,
   getIdempotencyCache,
@@ -985,6 +987,195 @@ describe('accessors-pg slice 1: talks/folders/members/threads', () => {
         });
       }),
     ).rejects.toBeInstanceOf(TalkActiveRoundError);
+  });
+
+  // T-new-A2 Option A — combined pre-loop SELECT via loadEnqueueTurnContext.
+  // Tests below cover CHANGED behavior only (codex C-L1). The N=2 fan-out
+  // test above already exercises the unchanged shape.
+
+  it('enqueueTalkTurnAtomic: explicit non-default thread routes correctly through loadEnqueueTurnContext', async () => {
+    const AGENT_1 = '0c555555-7777-7777-7777-000000000001';
+
+    const { talkId, defaultThreadId, otherThreadId } = await withUserContext(
+      USER_A_ID,
+      async () => {
+        const t = await createTalk({
+          ownerId: USER_A_ID,
+          topicTitle: 'NonDefault',
+        });
+        const defId = await getOrCreateDefaultThread({
+          talkId: t.id,
+          ownerId: USER_A_ID,
+        });
+        const other = await createTalkThread({
+          talkId: t.id,
+          ownerId: USER_A_ID,
+          title: 'Other thread',
+        });
+        return {
+          talkId: t.id,
+          defaultThreadId: defId,
+          otherThreadId: other.id,
+        };
+      },
+    );
+
+    // Sanity: loadEnqueueTurnContext returns the non-default thread's
+    // title — proves the JOIN scoped to the right talk_threads row, not
+    // the default one.
+    const ctx = await withUserContext(USER_A_ID, async () => {
+      return await loadEnqueueTurnContext(talkId, otherThreadId);
+    });
+    expect(ctx.title).toBe('Other thread');
+    expect(ctx.activeCount).toBe(0);
+
+    const result = await withUserContext(USER_A_ID, async () => {
+      return await enqueueTalkTurnAtomic({
+        ownerId: USER_A_ID,
+        talkId,
+        threadId: otherThreadId,
+        userId: USER_A_ID,
+        content: 'on the non-default thread',
+        targetAgentIds: [AGENT_1],
+      });
+    });
+    expect(result.threadId).toBe(otherThreadId);
+    expect(result.threadId).not.toBe(defaultThreadId);
+    expect(result.runs[0].thread_id).toBe(otherThreadId);
+    expect(result.message.thread_id).toBe(otherThreadId);
+  });
+
+  it('loadEnqueueTurnContext: throws EnqueueTurnContextNotFoundError when talk or thread is invisible', async () => {
+    const { talkId, threadId, missingTalkId, otherTalkId, otherThreadId } =
+      await withUserContext(USER_A_ID, async () => {
+        const t = await createTalk({
+          ownerId: USER_A_ID,
+          topicTitle: 'Visible',
+        });
+        const tid = await getOrCreateDefaultThread({
+          talkId: t.id,
+          ownerId: USER_A_ID,
+        });
+        const other = await createTalk({
+          ownerId: USER_A_ID,
+          topicTitle: 'Other',
+        });
+        const otherTid = await getOrCreateDefaultThread({
+          talkId: other.id,
+          ownerId: USER_A_ID,
+        });
+        return {
+          talkId: t.id,
+          threadId: tid,
+          missingTalkId: '0c555555-dead-dead-dead-deaddeaddead',
+          otherTalkId: other.id,
+          otherThreadId: otherTid,
+        };
+      });
+
+    // Happy path returns the context — no throw.
+    await withUserContext(USER_A_ID, async () => {
+      const ctx = await loadEnqueueTurnContext(talkId, threadId);
+      expect(ctx.activeCount).toBe(0);
+    });
+
+    // Missing talkId → throws (lock the no-row contract for the upstream
+    // 404 talk_not_found mapping in enqueueTalkChat).
+    await expect(
+      withUserContext(USER_A_ID, async () => {
+        await loadEnqueueTurnContext(missingTalkId, threadId);
+      }),
+    ).rejects.toBeInstanceOf(EnqueueTurnContextNotFoundError);
+
+    // Talk + thread that belong to DIFFERENT talks → throws (the JOIN
+    // gate refuses cross-talk threadIds even when both rows individually
+    // exist).
+    await expect(
+      withUserContext(USER_A_ID, async () => {
+        await loadEnqueueTurnContext(talkId, otherThreadId);
+      }),
+    ).rejects.toBeInstanceOf(EnqueueTurnContextNotFoundError);
+
+    // Silence the otherTalkId unused warning — it backs the cross-talk
+    // threadId above.
+    expect(otherTalkId).toBeTruthy();
+  });
+
+  it('enqueueTalkTurnAtomic: TalkActiveRoundError under Option A throws BEFORE any message/run/outbox write', async () => {
+    const AGENT_1 = '0c555555-8888-8888-8888-000000000001';
+
+    const { talkId, threadId } = await withUserContext(USER_A_ID, async () => {
+      const t = await createTalk({
+        ownerId: USER_A_ID,
+        topicTitle: 'NoSideEffectsOnReject',
+      });
+      const tid = await getOrCreateDefaultThread({
+        talkId: t.id,
+        ownerId: USER_A_ID,
+      });
+      return { talkId: t.id, threadId: tid };
+    });
+
+    // Seed an already-queued run so the second call's
+    // loadEnqueueTurnContext returns activeCount > 0.
+    await withUserContext(USER_A_ID, async () => {
+      await enqueueTalkTurnAtomic({
+        ownerId: USER_A_ID,
+        talkId,
+        threadId,
+        userId: USER_A_ID,
+        content: 'first message — claims the active slot',
+        targetAgentIds: [AGENT_1],
+      });
+    });
+
+    // Snapshot counts AFTER seeding so the rejection delta is computable.
+    const before = await withUserContext(USER_A_ID, async () => {
+      const messages = await listTalkMessages({ talkId, threadId });
+      const events = await getOutboxEventsForTopics([`talk:${talkId}`], 0);
+      const db = getDbPg();
+      const runs = await db<{ count: number }[]>`
+        select count(*)::int as count from public.talk_runs
+        where talk_id = ${talkId}::uuid and thread_id = ${threadId}::uuid
+      `;
+      return {
+        messageCount: messages.length,
+        runCount: runs[0]?.count ?? 0,
+        outboxCount: events.length,
+      };
+    });
+
+    await expect(
+      withUserContext(USER_A_ID, async () => {
+        await enqueueTalkTurnAtomic({
+          ownerId: USER_A_ID,
+          talkId,
+          threadId,
+          userId: USER_A_ID,
+          content: 'rejected — should write nothing',
+          targetAgentIds: [AGENT_1],
+        });
+      }),
+    ).rejects.toBeInstanceOf(TalkActiveRoundError);
+
+    const after = await withUserContext(USER_A_ID, async () => {
+      const messages = await listTalkMessages({ talkId, threadId });
+      const events = await getOutboxEventsForTopics([`talk:${talkId}`], 0);
+      const db = getDbPg();
+      const runs = await db<{ count: number }[]>`
+        select count(*)::int as count from public.talk_runs
+        where talk_id = ${talkId}::uuid and thread_id = ${threadId}::uuid
+      `;
+      return {
+        messageCount: messages.length,
+        runCount: runs[0]?.count ?? 0,
+        outboxCount: events.length,
+      };
+    });
+
+    expect(after.messageCount).toBe(before.messageCount);
+    expect(after.runCount).toBe(before.runCount);
+    expect(after.outboxCount).toBe(before.outboxCount);
   });
 
   // ── Run lifecycle atomics ──────────────────────────────────────────

@@ -1,3 +1,6 @@
+> **Status:** canonical (agent architecture). Forge's rewriter/critic are **built-in system agents** in `registered_agents` (DECISIONS D3). TODO: define `ModelId` enum + temperature storage (DOC-AUDIT #9–#10).
+> Precedence + orientation: [README.md](./README.md) · decisions: [DECISIONS.md](./DECISIONS.md) · terms: [GLOSSARY.md](./GLOSSARY.md).
+
 # ClawTalk Agent System Design
 
 This doc specifies how ClawTalk agents should work in production. It is the

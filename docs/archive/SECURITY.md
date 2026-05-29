@@ -1,3 +1,7 @@
+> ⛔ **ARCHIVED — not current.** Security model for the retired "ClawRocket" (container isolation, SQLite secrets, no RLS). Superseded; a fresh security doc for Workers + Postgres RLS is still TODO (see DOC-AUDIT.md #22).
+>
+> Retired 2026-05-28 during the docs restructure. See [../DOC-AUDIT.md](../DOC-AUDIT.md) and [../README.md](../README.md). Kept for historical reference only.
+
 # ClawRocket Security Model
 
 This document describes the current security model and its real limitations.

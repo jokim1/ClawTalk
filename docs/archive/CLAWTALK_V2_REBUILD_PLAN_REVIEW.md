@@ -1,3 +1,7 @@
+> ⛔ **ARCHIVED — not current.** Code-accurate critique of the rebuild plan. Its conclusions (keep Workers; latency hotspots; agent-eval gate) are promoted into DECISIONS.md + ../engineering-notes.md.
+>
+> Retired 2026-05-28 during the docs restructure. See [../DOC-AUDIT.md](../DOC-AUDIT.md) and [../README.md](../README.md). Kept for historical reference only.
+
 # ClawTalk V2 Rebuild Plan — Review and Restructure
 
 Status: review draft

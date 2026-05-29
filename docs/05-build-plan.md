@@ -1,3 +1,6 @@
+> **Status:** canonical (sequence) — but stack is **Cloudflare Workers**, not Next.js/Node/Redis/BullMQ (DECISIONS D1; fix Phase 0 + Risk register). Forge is not yet sequenced (DOC-AUDIT #12).
+> Precedence + orientation: [README.md](./README.md) · decisions: [DECISIONS.md](./DECISIONS.md) · terms: [GLOSSARY.md](./GLOSSARY.md).
+
 # ClawTalk · Build Plan
 
 Recommended sequence for building ClawTalk greenfield. Infrastructure → data → core flows → polish.

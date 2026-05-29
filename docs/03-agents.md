@@ -1,3 +1,6 @@
+> **Status:** canonical (agent default content). Known fixes: "Samira" placeholder in the Strategist prompt, `@strat` handle, and where per-agent temperature lives (DOC-AUDIT #7–#9).
+> Precedence + orientation: [README.md](./README.md) · decisions: [DECISIONS.md](./DECISIONS.md) · terms: [GLOSSARY.md](./GLOSSARY.md).
+
 # ClawTalk · Agents
 
 This doc fully specifies the 5 default agents that ship with every workspace. They are the heart of the product's value — get the role definitions, methodologies, and default model assignments right.
