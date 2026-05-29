@@ -3045,6 +3045,10 @@ export function TalkDetailPage({
   const threadStateTalkIdRef = useRef<string | null>(null);
   const threadSnapshotVersionRef = useRef(0);
   const deletedMessageIdsRef = useRef<Set<string>>(new Set());
+  // Bumped whenever deleted ids are recorded so memoized message lists
+  // re-run the deleted-id filter even if the messages array itself is
+  // unchanged (a stale resync can return the pre-delete list verbatim).
+  const [deletedIdsVersion, setDeletedIdsVersion] = useState(0);
   // Tracks every runId we've ever seen on MESSAGE_APPENDED. Used by the
   // "missing persisted message" timer below to decide whether to refetch.
   const persistedRunMessageIdsRef = useRef<Set<string>>(new Set());
@@ -3915,6 +3919,10 @@ export function TalkDetailPage({
       }
     }
     deletedMessageIdsRef.current = next;
+    // Re-run memoized message filters even if the messages array doesn't
+    // change — otherwise a racing execution resync that returns the
+    // pre-delete rows verbatim would flash the just-deleted messages back.
+    setDeletedIdsVersion((v) => v + 1);
   }, []);
 
   const filterDeletedMessages = useCallback((messages: TalkMessage[]) => {
@@ -3929,7 +3937,7 @@ export function TalkDetailPage({
   // identity of `talkSnapshot.messages` changes (mutation, refetch, delete).
   const pageMessages: TalkMessage[] = useMemo(
     () => filterDeletedMessages(talkSnapshot?.messages ?? EMPTY_MESSAGES),
-    [filterDeletedMessages, talkSnapshot?.messages],
+    [deletedIdsVersion, filterDeletedMessages, talkSnapshot?.messages],
   );
   const pageMessageIds = useMemo(
     () => new Set(pageMessages.map((m) => m.id)),

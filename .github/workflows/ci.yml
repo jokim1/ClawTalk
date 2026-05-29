@@ -21,6 +21,19 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit
 
+      # Webapp (Vite/React) is a separate package with its own lockfile,
+      # tsconfig, and jsdom vitest config; the root `vitest run` above does
+      # not pick up webapp/src tests, so gate them explicitly here. No
+      # Supabase needed — these are jsdom unit tests.
+      - name: Install webapp deps
+        run: npm --prefix webapp ci
+
+      - name: Webapp typecheck
+        run: npm --prefix webapp run typecheck
+
+      - name: Webapp tests
+        run: npm --prefix webapp run test
+
       # Phase 5 PR 2 — pg-side tests talk to a real Postgres + Supabase
       # Auth schema (migrations under `supabase/migrations/` apply
       # automatically on `supabase start`, including the

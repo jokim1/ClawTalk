@@ -371,11 +371,11 @@ describe('App', () => {
 
     renderWithRouter('/app/talks');
     const avatarButton = await screen.findByRole('button', {
-      name: 'Owner',
+      name: 'Open profile menu',
     });
     avatarButton.click();
     const logOutButton = await screen.findByRole('menuitem', {
-      name: 'Log Out',
+      name: 'Log out',
     });
     logOutButton.click();
 

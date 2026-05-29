@@ -59,5 +59,13 @@ export const idbPersister = createIDBPersister();
 // move that also drops MRU residue for privacy.
 export async function clearPersistedQueryCache(): Promise<void> {
   queryClient.clear();
-  await idbPersister.removeClient();
+  // Best-effort: never let a cache-clear failure break sign-out. IndexedDB
+  // can be unavailable (private browsing, blocked, quota) or absent entirely
+  // (jsdom in tests), and a rejected removeClient() would otherwise abort the
+  // caller's sign-out flow before it clears auth state.
+  try {
+    await idbPersister.removeClient();
+  } catch {
+    // ignore
+  }
 }
