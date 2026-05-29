@@ -137,24 +137,33 @@ runs (                                                            -- clean: NO t
   trigger_message_id uuid,                                       -- the user turn that triggered this run (composite FK below)
   job_id uuid,                                                   -- set when a scheduled Job fired this run (§8 / 12-jobs.md)
   trigger text not null default 'user' check (trigger in ('user','scheduler','manual')),
+  scheduled_for timestamptz,                                     -- only set for trigger in ('scheduler','manual'); the immutable slot identity that powers (job_id, scheduled_for) dedup (12 §5)
   response_group_id text not null, sequence_index int not null,  -- ordered/parallel sequencing the orchestrator needs
   prompt_snapshot_id uuid,
   tokens_in int, tokens_out int, error_json jsonb,
   started_at, finished_at, created_at,
   unique (workspace_id, id),                                     -- composite-FK target (run_prompt_snapshots, document_edits.proposed_by_run_id, etc.)
   unique (workspace_id, talk_id, id),                            -- composite-FK target including talk_id (messages.run_id)
+  check (                                                        -- job-trigger invariant: no message-author trigger, prompt comes from a snapshot, slot identity only on scheduler (12 §2)
+    (trigger = 'user') or
+    (trigger = 'scheduler' and job_id is not null and trigger_message_id is null and prompt_snapshot_id is not null and scheduled_for is not null) or
+    (trigger = 'manual'    and job_id is not null and trigger_message_id is null and prompt_snapshot_id is not null and scheduled_for is null)
+  ),
   foreign key (workspace_id, talk_id)                                          references talks(workspace_id, id) on delete cascade,
   foreign key (workspace_id, talk_id, snapshot_group_id, agent_snapshot_id)
     references talk_agent_snapshots(workspace_id, talk_id, snapshot_group_id, id),
   foreign key (workspace_id, talk_id, trigger_message_id)
     references messages(workspace_id, talk_id, id) deferrable initially deferred,
-  foreign key (workspace_id, job_id)                                           references jobs(workspace_id, id) on delete set null (job_id),
+  foreign key (workspace_id, job_id)                                           references jobs(workspace_id, id) on delete restrict,  -- 12 §6: history is runs filtered by job_id; archive (not delete) is the UI path
   foreign key (workspace_id, prompt_snapshot_id)
     references run_prompt_snapshots(workspace_id, id) deferrable initially deferred
 )
 -- single-flight per job: only one nonterminal run per job at a time (P1, §8)
 create unique index runs_one_active_per_job
   on runs (job_id) where job_id is not null and status in ('queued','running','awaiting');
+-- slot dedup: each (job_id, scheduled_for) slot fires exactly once across scheduler-tick races and queue retries (12 §5)
+create unique index runs_one_per_job_slot
+  on runs (job_id, scheduled_for) where job_id is not null and scheduled_for is not null;
 
 -- Per-user read state → unread is derived (P0-2). No `unread` column on talks.
 talk_reads ( workspace_id uuid not null, talk_id uuid not null, user_id uuid not null,
@@ -171,6 +180,10 @@ Design notes:
 - **Rounds are derived** — `round int` on messages/runs; a round = the runs sharing `(talk_id, round)`. No `rounds` table.
 - **Run model is clean (D7).** Dropped `thread_id` (threads eliminated), channel/source/transport columns, and the `instruction_review` kind; added `content_improvement`. Kept `response_group_id` + `sequence_index` + `requested_by` + `trigger_message_id` because the ordered/parallel orchestration genuinely uses them.
 - **Single-flight per job.** Partial unique on `runs(job_id)` for `status in ('queued','running','awaiting')` prevents two scheduler/manual races from creating concurrent nonterminal runs for the same job (`12-jobs.md` §5).
+- **Slot identity per job-trigger run.** `scheduled_for timestamptz` is the immutable slot timestamp the scheduler computes per fire. The partial unique on `(job_id, scheduled_for)` makes "never fire the same slot twice" a Postgres invariant — covering scheduler-tick races, queue at-least-once retries, and dropped-claim recovery without app-side coordination (`12-jobs.md` §5). Manual `run-now` writes `scheduled_for=null` (no slot consumed).
+- **Job-trigger invariant.** The CHECK in the runs body encodes `12-jobs.md` §2: scheduler/manual runs never carry a `trigger_message_id` (no `messages` row is written for the trigger), and they must point at a `run_prompt_snapshots` row (`prompt_snapshot_id is not null`) — so the executor reads an immutable snapshot of `jobs.prompt`, not the live row.
+- **Scheduler authorization vs. attribution.** Scheduler-triggered runs are claimed and inserted under service-role auth (no `auth.uid()` — the scheduler isn't a user). `requested_by = jobs.created_by` for attribution only (so "who set this up" stays answerable in run-list UI and audit queries), not for authorization — accessors scope by `workspace_id` explicitly. The `requested_by` user may leave the workspace later; that doesn't break the run.
+- **`runs.job_id` is `RESTRICT`.** History for a job is `runs filtered by job_id` (no separate `job_runs` ledger), so the FK must survive job-delete attempts. Hard delete is only allowed via an admin path when `run_count = 0`; the UI "Delete" action archives instead (`jobs.archived_at` in §8).
 - **Index cost.** The composite-FK pattern adds 7–8 indexes per `runs` insert and 4 per `messages` insert (each `unique` = a B-tree index). Tenant integrity beats write cost at the foreseeable target (personal-only, one workspace), but revisit if write throughput becomes the binding constraint — relaxing the `(workspace_id, talk_id, id)` targets would lose the cross-Talk integrity codex flagged on 2026-05-29.
 - **Unread (P0-2):** derived = messages in a talk newer than the caller's `talk_reads.last_read_at`; workspace badge = sum across the workspace's talks.
 - **Message attribution (P1-5):** points at `talk_agent_snapshots`, so editing an agent later never rewrites historical attribution.
@@ -271,6 +284,7 @@ Design notes:
 - **Temperature** lives on the template (default) → `agents.temperature` (editable) → snapshot. Resolves the audit gap.
 - **System agents (`is_system`)** carry Forge's rewriter + critic (D3); filtered from `GET /agents` and the roster at the query layer.
 - **Index cost on snapshots.** `talk_agent_snapshots` carries 6 indexes per row (PK + 3 composite-FK targets + uniqueness on `(snapshot_group_id, source_agent_id)` + the `snapshot_group_id` lookup index). One row per agent per run = 3–6 rows per Talk turn at a typical roster size. Acceptable for the personal-only target; if write rate ever blows past ~10 turns/sec sustained, consider partitioning by month or relaxing the workspace-id-redundant targets.
+- **`run_prompt_snapshots` is shared with jobs (`12-jobs.md` §2 / §5).** Scheduler-triggered runs and manual `run-now` runs reuse this table — no new table, no new column. The scheduler writes the snapshot in the same transaction as the `runs` INSERT (`12-jobs.md` §5 Path A): `prompt_text_redacted = jobs.prompt` (the immutable copy the executor reads), `model_id = <from the targeted agent's `talk_agent_snapshots` row>`, `provider = (SELECT provider FROM llm_models WHERE id = model_id)` (the snapshot row has no provider column; provider lives on `llm_models`). Optional provenance fields (`global_policy_version`, `role_template_version`, `context_manifest_json`, `tool_manifest_json`, `prompt_hash`) are left NULL by the scheduler; the executor or a follow-up backfill can populate them. The `runs.prompt_snapshot_id` FK is deferrable so the scheduler can insert `runs` first (referencing the future snapshot id) and `run_prompt_snapshots` second within the same txn.
 - `06` §14.6 loop tables (`agent_audit_results`, `prompt_improvement_proposals`, `prompt_versions`) are deferred until that loop is built.
 
 ---
@@ -352,6 +366,9 @@ Design notes:
 - **Document invariants** are enforced, not just documented (P1): `≥1 tab` and `last-tab-can't-delete` via a `before delete` trigger on `doc_tabs` (reject if it's the document's last); `documents.folder_id` is materialized by the app on talk move/link (one transaction); `after_block_id` is a real FK.
 - **Edit concurrency (P1-7) — CAS covers both shape changes.** Replace/delete check `base_block_version` against `doc_blocks.version`; inserts check `base_list_version` against `doc_tabs.list_version` (so a concurrent insert/reorder that already changed the placement bumps the tab's `list_version` and the late edit is marked `superseded`). On accept, the relevant version column bumps. Inline rendering of a pending edit interleaves `document_edits` rows (status `pending`) against `doc_blocks` by `after_block_id`/`block_id`.
 - **`document_edits` unifies** today's `content_edits` + `content_proposals`; `source='forge'` lets a Forge winner land and `source='job'` lets a §8 job append land through the same accept path (no second write path).
+- **Job-emitted edit shape (`12-jobs.md` §3).** When a job with `emit_document_append=true` runs successfully, the executor INSERTs one `document_edits` row keyed to the Talk's primary Document (`SELECT * FROM documents WHERE primary_talk_id = job.talk_id`) and the primary tab of that document (lowest `doc_tabs.sort_order` for the document). Payload: `op='insert'`, `block_id=null`, `after_block_id=<last block of that tab by sort_order, or NULL if the tab is empty>`, `base_list_version=<that tab's current list_version at insert time>`, `new_kind='p'`, `new_text=<agent's reply content>`, `new_attrs_json=null`, `source='job'`, `proposed_by_run_id=<the run.id>`, `proposed_by_agent_id` set from the targeted snapshot's `source_agent_id` with a single retry-as-NULL on FK violation (the live agent may have been deleted between snapshot and edit insert). Satisfies the op-shape check at line 328. The edit is always pending; the Forge accept path (or a user) applies it — there is no `auto_accept` mode.
+- **Primary Document per Talk is the existing `documents.primary_talk_id`** reverse FK plus the unique partial index above (0/1 primary doc per talk). `12-jobs.md` does NOT add a `talks.primary_document_id` column — the existing reverse FK is the single source of truth. Jobs with `emit_document_append=true` block (`status='blocked', block_reason='no_primary_document'`) when the SELECT returns zero rows.
+- **Post-insert cascade is intentional silent loss.** `document_edits.tab_id` and `after_block_id` FKs are `ON DELETE CASCADE`. If a user deletes the target tab or anchor block between the executor's INSERT and a human accepting the edit, the pending row is cascaded out. The job spec accepts this as a feature — the user manually destroyed the target — and tracks revisit in `12-jobs.md §9`.
 - **Co-editors are per-tab** (`doc_tab_coeditors`) — matches the prototype (Draft vs Comp-table tabs have different editors). _(Default call on pressure-test #6; flip to per-document if you'd rather simplify.)_
 - `format` is `('markdown','html')` (plain-text deferred). `kind` includes `code` — the editor must render it (the prototype currently ignores `code`; small UI follow-on).
 - Indexes: `doc_blocks(tab_id, sort_order)`, `doc_blocks(document_id)`; `document_edits(document_id) where status='pending'`.
@@ -411,6 +428,7 @@ connector_bindings (
 ```
 
 - **Tool ↔ connector dependency (P1-11):** a tool (e.g. `gdrive-read`) requires its service connector (`gdrive`) authorized. This mapping is a **static code catalog** (`tool_id → required service`), not a table; the runtime gates a tool if its connector isn't authorized.
+- **Jobs' `source_scope_json.tool_ids` (`12-jobs.md` §3 / §7) validates against `talk_tools` at fire time.** The `tool_id text` shape is the contract: `source_scope_json` is `{ allow_web: bool, tool_ids: text[] }`. The scheduler's fire-time dependency check (`12-jobs.md` §5 Path A step 2) verifies every `tool_ids` entry has a matching row in `talk_tools(workspace_id, talk_id, tool_id)` with `enabled = true`; any missing/disabled tool → `jobs.status='blocked', block_reason='tool_not_enabled'`. Validation is at fire time (not create time) because the Talk's tool roster can change after the job is created.
 - **Connector/SSR secrets get their own store** (`connector_secrets`) — D7 corrected the false reuse of `workspace_provider_secrets` (which is LLM provider keys). Same encrypt-at-rest + JIT-decrypt pattern (engineering-notes §1).
 - Primary document is projected into Context from `documents.primary_talk_id`, not stored as a `context_sources` row (`08` §3.9).
 
@@ -427,10 +445,13 @@ inbox_items (
   id uuid pk, workspace_id uuid not null,
   type text not null,   -- agent_replied|round_completed|agent_asks_user|run_failed|doc_edits_ready|connector_needs_auth|news_context_added|long_running_run|system_limit_reached|forge_run_needs_review|job_output_ready|job_blocked
   target_kind text, target_id uuid, talk_id uuid, document_id uuid, run_id uuid, tab_id uuid,
+  ref_id uuid,                                                       -- natural-dedup key for at-least-once emits (`12-jobs.md` §6 (Inbox surfacing))
   title text, summary text, reason text,
   severity text check (severity in ('info','action','blocking')),
   status text check (status in ('unread','read','resolved','dismissed','snoozed','expired')),
   group_key text, score numeric, algorithm_version text, due_at, expires_at, created_at, updated_at )
+create unique index inbox_items_dedup
+  on inbox_items (workspace_id, type, ref_id) where ref_id is not null;
 
 recommendations (
   id uuid pk, workspace_id uuid not null,
@@ -451,6 +472,7 @@ interaction_events ( id, workspace_id, surface, item_id, action, created_at )
 ```
 
 - **Forge on Home:** `inbox_items.type = forge_run_needs_review` + `recommendations.kind = forge-suggestion` (resolves audit #4 — Home was Forge-blind).
+- **Inbox idempotency for jobs (`12-jobs.md` §6 (Inbox surfacing)).** `inbox_items.ref_id` is the natural-dedup key for inbox writes that ride at-least-once paths. `job_output_ready` is emitted by the queue consumer on successful run completion and sets `ref_id = run.id` — the unique `(workspace_id, type, ref_id)` partial index dedups replays. `job_blocked` is emitted by the scheduler **synchronously** in the same transaction as the `jobs.status='blocked'` transition (no queue, no retry surface) and sets `ref_id = NULL` — each block episode produces a distinct inbox row (a job that blocks, unblocks via user edit, then blocks again writes two rows; this is intentional). Other producers may set `ref_id` for their own dedup needs; the constraint is per-type.
 - News privacy is structural: `news_topics` stores only abstract/keywords/entities/negative-terms; raw message/doc text never leaves (`07` §8.4). Use the `07` §8.10.1 implementation as the single authoritative scoring formula.
 - Optimizer writes only `ranking_profiles` (bounded weights); structural changes go through `optimization_proposals` (admin-reviewed).
 - **Reuse vs. rewrite.** Net-new (no Home tables today). Deterministic generators first; Curator model-copy is flagged polish.
@@ -467,19 +489,24 @@ jobs (
   talk_id uuid not null, created_by uuid not null references users(id) on delete restrict,
   title text not null, prompt text not null,
   agent_id uuid,                                               -- the one agent; nullable so agent-delete → block, not FK failure (P1)
-  schedule_json jsonb not null,                                -- {kind:'interval'|'daily'|'weekly', ...}
-  timezone text not null,                                      -- IANA; wall-clock schedules are DST-safe
-  output_targets text[] not null default '{talk_message}'      -- subset of {talk_message, document_append}
-    check (output_targets <@ array['talk_message','document_append']),
-  document_append_mode text not null default 'pending'         -- when document_append is targeted
-    check (document_append_mode in ('pending','auto_accept')),
-  source_scope_json jsonb not null default '{"allow_web":false}',  -- {allow_web, tool_ids[]} — runs are read-only
+  schedule_json jsonb not null,                                -- {kind:'interval'|'daily'|'weekly', ...} — `12-jobs.md` §4
+  timezone text not null,                                      -- IANA; wall-clock schedules are DST-safe per `12-jobs.md` §4 (DST policy)
+  emit_talk_message bool not null default true,                -- post the reply as a normal agent message in the Talk (`12-jobs.md` §3)
+  emit_document_append bool not null default false,            -- propose an `insert` document_edits row against the primary doc's primary tab (`12-jobs.md` §3)
+  check (emit_talk_message or emit_document_append),           -- a job must produce at least one output (`12-jobs.md` §3)
+  source_scope_json jsonb not null default '{"allow_web":false,"tool_ids":[]}',  -- typed: { allow_web: bool, tool_ids: text[] } — runs are read-only; validated against talk_tools at fire time (`12-jobs.md` §3 / §7 + §6)
   status text not null default 'active' check (status in ('active','paused','blocked')),
-  block_reason text,                                           -- agent_missing | no_primary_document | ...
+  block_reason text,                                           -- known values: 'agent_missing' | 'model_disabled' | 'no_primary_document' | 'tool_not_enabled' | 'connector_not_authorized' (`12-jobs.md` §7)
   catch_up text not null default 'skip' check (catch_up in ('skip','run_once')),
-  next_due_at timestamptz, claimed_at timestamptz,             -- lease for FOR UPDATE SKIP LOCKED claiming
-  last_run_at timestamptz, last_run_status text, run_count int not null default 0,
+  next_due_at timestamptz, claimed_at timestamptz,             -- lease for FOR UPDATE SKIP LOCKED claiming (`12-jobs.md` §5)
+  archived_at timestamptz,                                     -- "Delete" in UI sets this; row stays for history (`12-jobs.md` §6 archive flow)
+  last_run_at timestamptz, last_run_status text, run_count int not null default 0,  -- terminal-only bookkeeping per `12-jobs.md` §6
   created_at, updated_at,
+  check (                                                      -- lifecycle invariant per `12-jobs.md` §6: archive is orthogonal to status
+    (archived_at is not null) or
+    (status = 'active' and next_due_at is not null) or
+    (status in ('paused','blocked') and next_due_at is null)
+  ),
   unique (workspace_id, id),
   foreign key (workspace_id, talk_id)  references talks(workspace_id, id)  on delete cascade,
   foreign key (workspace_id, agent_id) references agents(workspace_id, id) on delete set null (agent_id)
@@ -490,15 +517,24 @@ jobs (
 create trigger jobs_block_on_agent_clear
   before update of agent_id on jobs
   for each row when (new.agent_id is null and old.agent_id is not null)
-  execute function set_job_blocked_agent_missing();   -- sets new.status='blocked', new.block_reason='agent_missing'
+  execute function set_job_blocked_agent_missing();   -- sets new.status='blocked', new.block_reason='agent_missing', new.next_due_at=null
+
+-- RLS-preserving view for active-job hot paths (`12-jobs.md` §6 archive flow). `security_invoker = true` (PG 15+)
+-- makes the view evaluate RLS in the caller's identity, not the view owner's; without it the
+-- view would silently bypass workspace scoping.
+create view jobs_active with (security_invoker = true) as
+  select * from jobs where archived_at is null;
 ```
 
 - **Output via the unified edit path:** `document_append` proposes a `document_edits` row (`source='job'`), review-gated by default — no second write path, no autonomous overwrite (§5, `12` §3).
 - **Agent lifecycle:** `agent_id` is nullable + `on delete set null (agent_id)`. The `BEFORE UPDATE` trigger above runs _inside_ the FK action's row update, so the `SET NULL` and the `status='blocked'` flip are atomic — no window where an active job has a null agent. (An earlier `check (status <> 'active' or agent_id is not null)` was wrong: it would abort the FK action instead of letting it complete.)
 - **"Agent must be in the Talk roster"** is a runtime invariant — a `before insert or update` trigger on `jobs` looks up `talk_agents` for the same `(workspace_id, talk_id, agent_id)`; on roster removal the app flips status to `blocked`.
 - **Single-flight per job** is enforced in §3 by `runs_one_active_per_job` (partial unique on `runs(job_id) where status in ('queued','running','awaiting')`) — schema-guaranteed, not prose-only.
-- **Scheduler robustness** (`12` §5): lease-based claim (`for update skip locked` + `claimed_at`, advance `next_due_at` in-txn), sweep stuck `running` **and** `queued` runs. Reuses the cron `scheduler.ts` + Queues mechanism; the executor data-access is reworked with the new runs table.
-- Indexes: `jobs(status, next_due_at) where status='active'`; `runs(job_id, created_at)`.
+- **Scheduler robustness** (`12` §5): single-txn claim path (`for update skip locked` → fire-time dependency check → roster freeze → INSERT `runs` + `run_prompt_snapshots` → advance `next_due_at` → clear `claimed_at` → COMMIT, then dispatch outside the txn). Slot identity is enforced by `runs_one_active_per_job` + `runs_one_per_job_slot` in §3 — both partial unique. Stuck sweep transitions `queued` (5min threshold) AND `running` (1h) → `failed` with `error_json={"code":"stuck_*_swept"}` and `finished_at = now`; `awaiting` is not swept. Reuses the cron `scheduler.ts` + Queues mechanism; the executor data-access is reworked with the new runs table.
+- **Archive vs lifecycle (`12-jobs.md` §6).** `archived_at` is orthogonal to `status` — an archived row exits the active-job hot path (the `jobs_active` view filters it) but its run history (`runs filtered by job_id`) stays queryable forever. The UI "Delete" action sets `archived_at` + `next_due_at = null`; hard delete is restricted (an admin path requires `run_count = 0` and goes through `runs.job_id` `ON DELETE RESTRICT` — see §3).
+- **Bookkeeping is terminal-only (`12-jobs.md` §6).** `last_run_at`, `last_run_status`, and `run_count` are written exclusively when a run reaches a terminal status (`completed`, `failed` — including stuck-swept runs, which ARE terminal `failed`). The scheduler does NOT touch them at run-insert time; in-flight state is observable via the `runs` table directly. Manual run-now follows the same rule.
+- **Talk/workspace hard-delete interaction.** Postgres processes the cascade fan-out per parent row but does not guarantee a strict order between sibling cascade paths. `jobs.talk_id` cascades from `talks` and `runs.job_id` is `RESTRICT` to `jobs`; if a Talk delete reaches `jobs` before `runs.talk_id` (also cascade from `talks`) clears the dependent run rows, the RESTRICT will block the cascade. The intended product semantic is that Talks and Workspaces with surviving jobs are archived (`talks.archived_at`), not hard-deleted; the `RESTRICT` is the schema's pressure toward archive. Hard delete with surviving jobs requires the admin path to archive or hard-delete the jobs first (jobs with `run_count = 0` can be hard-deleted directly; jobs with history cannot).
+- Indexes: `jobs(status, next_due_at) where status='active' and archived_at is null` (archive-aware claim hot path); `runs(job_id, created_at)`.
 
 ---
 

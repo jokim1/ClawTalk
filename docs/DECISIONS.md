@@ -57,15 +57,19 @@ Use clean, direct names — `workspaces`, `workspace_members`, `folders`, `talks
 
 ## D6 — Jobs: design clean — ✅ Decided
 
-**Decision.** Full design in **[12-jobs.md](./12-jobs.md)**; schema in `11` §8/§3. A **Job** = a saved scheduled run (prompt + one agent + schedule) that fires a normal `conversation` run on its Talk. Resolutions:
+**Decision.** Full design in **[12-jobs.md](./12-jobs.md)**; schema in `11` §3/§4/§5/§7/§8. A **Job** = a saved scheduled run (prompt + one agent + schedule) that fires a normal `conversation` run on its Talk. Resolutions:
 
-- **Output (the open roadmap-#7 question):** `output_targets` set — default **`talk_message`** (answer appended to the Talk, tagged by `job_id`); optional **`document_append`** which proposes a **pending `document_edits`** (`source='job'`, review-gated by default) on the Talk's primary Document — the same accept path Forge uses, no autonomous overwrite, no second write path. Both can be targeted.
+- **Output:** two booleans on `jobs` — `emit_talk_message bool` (default true; tagged-by-`job_id` agent message in the Talk) and `emit_document_append bool` (default false; proposes a pending `document_edits` row with `source='job'` on the Talk's primary Document via `documents.primary_talk_id`). CHECK `(emit_talk_message OR emit_document_append)`. Both can be set. All-or-nothing on missing primary doc: the whole job blocks (`block_reason='no_primary_document'`), the message target does not fire alone. **No `auto_accept` mode** — every job document append is review-gated, consistent with Forge's HITL principle.
+- **Slot identity:** `runs.scheduled_for timestamptz` + partial unique `(job_id, scheduled_for)` makes "never fire the same slot twice" a Postgres invariant. Covers scheduler-tick races, queue at-least-once retries, and crash recovery without app-side coordination.
+- **No triggering message row:** scheduler/manual runs leave `runs.trigger_message_id = NULL` and point at a fresh `run_prompt_snapshots` row (existing table in `11` §4 — reused unchanged) containing `prompt_text_redacted = jobs.prompt`. The executor reads the snapshot, not the live `jobs.prompt`, so editing mid-queue affects the NEXT fire only.
 - **No threads:** the per-job dedicated thread is gone; scheduled turns are tagged in the Talk's main stream.
-- **Workspace-scoped** (was per-user); RLS via membership.
-- **Schedule:** `interval` / `daily` / `weekly`, IANA-tz, DST-safe; explicit `catch_up` (`skip` default). No raw cron in v1.
-- **Robustness wins:** lease-based claim (`for update skip locked` + `claimed_at`) replacing the watermark-only guard; sweep stuck `queued` runs too; drop dead connector/channel scope fields. Reuse the cron tick + queue + executor + read-only mutation lockdown.
+- **Workspace-scoped** (was per-user); scheduler runs with service-role auth, `runs.requested_by = jobs.created_by` for attribution only. Accessors scope by `workspace_id` explicitly.
+- **Schedule:** `interval` / `daily` / `weekly`, IANA-tz. DST policy explicit: spring-forward gap skipped; fall-back overlap fires first UTC instant only (the scheduler explicitly skips the second occurrence — `unique(job_id, scheduled_for)` does not dedup it since the two are different UTC instants). Explicit `catch_up` (`skip` default; `run_once` for missed-slot replay). No raw cron in v1.
+- **Robustness wins:** single-txn claim path (single-flight check → fire-time dependency check → roster freeze → INSERT runs + run_prompt_snapshots → advance `next_due_at` → clear `claimed_at` → COMMIT; dispatch outside the txn). No separate dropped-claim recovery needed (the single-txn model makes it unreachable). Sweep stuck `queued` (5min) AND `running` (1h). Atomic consumer claim (`update runs set status='running' where id=$1 and status='queued' returning *`) for at-least-once dedup. Source scope tightened to `{allow_web: bool, tool_ids: text[]}`, validated against `talk_tools.tool_id` at fire time.
+- **Archive, not delete.** `jobs.archived_at` + `runs.job_id` FK `ON DELETE RESTRICT` preserves "history is runs filtered by job_id." UI "Delete" sets `archived_at`; hard delete is admin-only when `run_count = 0`. `jobs_active` view (`WITH (security_invoker = true)`) wraps the active filter for hot paths.
+- **Inbox idempotency:** `inbox_items.ref_id uuid` + partial unique `(workspace_id, type, ref_id) where ref_id is not null`. `job_output_ready` (queue-emitted, at-least-once) sets `ref_id = run.id`; `job_blocked` (scheduler-emitted in the block txn, no retry surface) sets `ref_id = NULL` so each new block episode produces a distinct row.
 
-**Follow-ups.** `source_scope_json` aligns to the new tools model once tools/connectors land; confirm `daily` schedule + `auto_accept` trust model (`12` §9).
+**Follow-ups.** `source_scope_json.tool_ids` validation depends on `11` §6 tools model landing (hard prereq for impl). Scheduler-periodic recheck for blocked-job auto-unblock, notification surface for `job_blocked`, un-archive UI, and post-insert tab/anchor cascade behavior are tracked in `12-jobs.md §9`.
 
 ---
 
