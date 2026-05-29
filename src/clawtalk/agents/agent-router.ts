@@ -1,4 +1,5 @@
 import { getRegisteredAgent, TOOL_FAMILY_MAP } from '../db/agent-accessors.js';
+import { ensureRunnableModel } from './runtime-model-guard.js';
 import {
   resolveExecution,
   ExecutionResolverError,
@@ -293,6 +294,15 @@ export async function executeWithAgent(
     emit({ type: 'failed', errorCode, errorMessage });
     throw new Error(errorMessage);
   }
+
+  // Run-time safety net: swap a retired model to a served one before we
+  // resolve the binding and stream. Fail-open and mutates `agent` in place,
+  // so the binding's default-output query, the `started` event, the stream
+  // call, and the returned modelId below all use the live model. Redundant
+  // for Talk runs (the executor already swapped via resolveTalkAgent, and we
+  // re-load the upgraded row here) but makes executeWithAgent correct for any
+  // caller that reaches it directly. See runtime-model-guard.ts.
+  await ensureRunnableModel(agent);
 
   // -----------
   // Step 2: Resolve execution binding (provider config + credentials)

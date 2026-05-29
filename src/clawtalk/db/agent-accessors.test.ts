@@ -25,6 +25,7 @@ import {
 } from '../../db.js';
 import {
   autoUpgradeAgentModel,
+  autoUpgradeAgentModelOutsideTx,
   clearAgentModelUpgradeNotice,
   createRegisteredAgent,
   deleteRegisteredAgent,
@@ -256,6 +257,56 @@ describe('agent-accessors-pg (postgres + RLS)', () => {
       expect(manual?.model_auto_upgraded_from).toBeNull();
       expect(manual?.model_auto_upgraded_at).toBeNull();
     });
+  });
+
+  it('autoUpgradeAgentModelOutsideTx swaps + records the trail on a committed agent, guarded on the old model', async () => {
+    // Create + COMMIT the agent in its own user-context tx first: the
+    // out-of-band path runs on a separate auto-commit connection, so it must
+    // not depend on an open transaction's uncommitted rows.
+    const agentId = await withUserContext(USER_A_ID, async () => {
+      const agent = await createRegisteredAgent({
+        ownerId: USER_A_ID,
+        name: 'OOB Lifecycle',
+        providerId: 'provider.anthropic',
+        modelId: 'claude-opus-4-7',
+      });
+      return agent.id;
+    });
+
+    // A provider that no longer matches (concurrent provider switch) is a
+    // no-op — never clobber a Claude model onto a repointed agent.
+    const wrongProvider = await autoUpgradeAgentModelOutsideTx(
+      agentId,
+      'provider.openai',
+      'claude-opus-4-7',
+      'claude-opus-4-8',
+    );
+    expect(wrongProvider).toBeUndefined();
+
+    const upgraded = await autoUpgradeAgentModelOutsideTx(
+      agentId,
+      'provider.anthropic',
+      'claude-opus-4-7',
+      'claude-opus-4-8',
+    );
+    expect(upgraded?.model_id).toBe('claude-opus-4-8');
+    expect(upgraded?.model_auto_upgraded_from).toBe('claude-opus-4-7');
+    expect(upgraded?.model_auto_upgraded_at).toBeTruthy();
+
+    // Guard: a stale fromModel (lost the race) is a no-op, returns undefined.
+    const noop = await autoUpgradeAgentModelOutsideTx(
+      agentId,
+      'provider.anthropic',
+      'claude-opus-4-7',
+      'claude-opus-4-8',
+    );
+    expect(noop).toBeUndefined();
+
+    // The swap is visible to a normal RLS-scoped read.
+    const persisted = await withUserContext(USER_A_ID, () =>
+      getRegisteredAgent(agentId),
+    );
+    expect(persisted?.model_id).toBe('claude-opus-4-8');
   });
 
   it('clearAgentModelUpgradeNotice dismisses the badge without touching the model', async () => {

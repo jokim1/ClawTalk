@@ -27,7 +27,7 @@
 // commits after this pattern is verified end-to-end against `supabase
 // start`.
 
-import { getDbPg, type Sql } from '../../db.js';
+import { getDbPg, getOutOfBandSql, type Sql } from '../../db.js';
 
 // ---------------------------------------------------------------------------
 // Tool Capability Mapping (carried over verbatim from agent-accessors.ts —
@@ -429,6 +429,60 @@ export async function autoUpgradeAgentModel(
       model_auto_upgraded_at = now(),
       updated_at = now()
     where id = ${agentId}::uuid and model_id = ${fromModel}
+    returning id, owner_id, name, provider_id, model_id,
+              tool_permissions_json, persona_role, system_prompt,
+              description, enabled, credential_mode,
+              model_auto_upgraded_from, model_auto_upgraded_at,
+              created_at, updated_at
+  `;
+  return rows[0];
+}
+
+/**
+ * Out-of-band variant of `autoUpgradeAgentModel` for the run-time safety net
+ * (runtime-model-guard.ts). Identical guarded UPDATE, but runs on the request
+ * scope's fresh auto-commit connection (`getOutOfBandSql()`) instead of the
+ * surrounding transaction.
+ *
+ * WHY out-of-band: the swap happens deep inside a Talk run, whose
+ * `withUserContext` transaction stays open for the whole multi-minute LLM
+ * stream. An in-transaction UPDATE would hold the `registered_agents` row lock
+ * until the run commits, so a concurrent run / page-load auto-upgrade / manual
+ * edit on the SAME agent would block behind the stream (e.g. opening AI Agents
+ * would hang). The auto-commit connection releases the row lock immediately;
+ * the run's transaction only ever SELECTed the agent, so it holds no lock.
+ *
+ * RLS: `getOutOfBandSql()` is the BYPASSRLS pooled role (no `set local role
+ * authenticated`), so this does NOT enforce `owner_id = auth.uid()`. Callers
+ * MUST pass an `agentId` they already loaded under their own RLS context (the
+ * guard loads it via getRegisteredAgent inside the run's user context), so the
+ * id is provably the caller's own agent — the guarded `where` clause then only
+ * ever touches that one authorized row.
+ *
+ * The predicate guards on BOTH `provider_id` and `model_id` (the values the
+ * caller loaded). If a concurrent edit changed EITHER between the load and
+ * this write — including a provider-only switch that leaves model_id intact —
+ * the update matches no row and returns undefined, so the caller reloads and
+ * adopts the new config instead of clobbering it (e.g. writing a Claude model
+ * onto an agent the user just repointed to another provider).
+ */
+export async function autoUpgradeAgentModelOutsideTx(
+  agentId: string,
+  expectedProviderId: string,
+  fromModel: string,
+  toModel: string,
+): Promise<RegisteredAgentRecord | undefined> {
+  if (!UUID_REGEX.test(agentId)) return undefined;
+  const db = getOutOfBandSql();
+  const rows = await db<RegisteredAgentRecord[]>`
+    update public.registered_agents set
+      model_id = ${toModel},
+      model_auto_upgraded_from = ${fromModel},
+      model_auto_upgraded_at = now(),
+      updated_at = now()
+    where id = ${agentId}::uuid
+      and provider_id = ${expectedProviderId}
+      and model_id = ${fromModel}
     returning id, owner_id, name, provider_id, model_id,
               tool_permissions_json, persona_role, system_prompt,
               description, enabled, credential_mode,

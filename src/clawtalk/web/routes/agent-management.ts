@@ -21,12 +21,10 @@ import {
 } from '../../agents/agent-registry.js';
 import {
   buildProviderModelSupport,
+  resolveRetirementTarget,
   type ProviderModelSupport,
 } from '../../agents/agent-model-support.js';
-import {
-  isModelServed,
-  resolveModelLifecycle,
-} from '../../agents/model-lifecycle.js';
+import { resolveModelLifecycle } from '../../agents/model-lifecycle.js';
 import { TALK_EXECUTOR_ANTHROPIC_API_KEY } from '../../config.js';
 import { modelSupportsVision } from '../../llm/capabilities.js';
 import type { ApiEnvelope, AuthContext } from '../types.js';
@@ -200,20 +198,6 @@ function readCredentialModeField(
 // ---------------------------------------------------------------------------
 
 /**
- * Default Claude model to upgrade to when a retired model has no
- * same-family successor (settings_kv, maintained by the AI Agents UI).
- */
-async function defaultClaudeModelId(): Promise<string | null> {
-  const db = getDbPg();
-  const rows = await db<Array<{ value: string | null }>>`
-    select value from public.settings_kv
-    where key = 'executor.defaultClaudeModel'
-    limit 1
-  `;
-  return rows[0]?.value ?? null;
-}
-
-/**
  * Apply the model-lifecycle policy to one agent:
  *   - retired          → auto-upgrade to the newest same-family model (or
  *                        the provider default if it's still supported),
@@ -235,16 +219,9 @@ async function applyModelLifecycle(
   );
 
   if (lifecycle.status === 'retired') {
-    let target = lifecycle.suggestedModelId;
-    if (!target) {
-      const fallback = await defaultClaudeModelId();
-      // Only fall back to a default we can confirm is actually SERVED — never
-      // swap a retired model for another unserved (curated-only) one.
-      target =
-        fallback && isModelServed(fallback, support.supported)
-          ? fallback
-          : null;
-    }
+    // Shared with the run-time safety net so page-load and run-time can't
+    // diverge on the target: newest served same-family ?? served default ?? null.
+    const target = await resolveRetirementTarget(record, support);
     if (target && target !== record.model_id) {
       const upgraded = await autoUpgradeAgentModel(
         record.id,

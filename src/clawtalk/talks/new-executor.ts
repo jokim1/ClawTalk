@@ -41,6 +41,7 @@ import {
 } from '../agents/agent-router.js';
 import type { LlmContentBlock, LlmMessage } from '../agents/llm-client.js';
 import { planExecution } from '../agents/execution-planner.js';
+import { ensureRunnableModel } from '../agents/runtime-model-guard.js';
 import {
   getMainAgent,
   listTalkAgents,
@@ -2315,6 +2316,13 @@ export class CleanTalkExecutor implements TalkExecutor {
       );
       resolvedAgent = resolved;
       const activeAgent = resolved.agent;
+      // Run-time safety net: swap a retired model to a served one BEFORE any
+      // model-dependent work this turn — context-window sizing (below),
+      // vision/pdf capability gating, the container/direct LLM call, and the
+      // persisted metadata all read activeAgent.model_id. Fail-open and
+      // mutates activeAgent in place (= resolved.agent, so the failure-path
+      // metadata reflects the swap too). See runtime-model-guard.ts.
+      await ensureRunnableModel(activeAgent);
       const modelContextWindow = await getModelContextWindow(activeAgent);
       const jobPolicy = await buildTalkJobExecutionPolicy(input.jobId);
       // Prefer the snapshot captured at run-creation (migration 0031) —
