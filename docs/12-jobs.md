@@ -15,7 +15,7 @@ The shipped feature established the real requirements; the redesign keeps these 
 - **Two schedule shapes that cover the need:** every-N-hours and weekly (weekdays + time), **timezone-aware** (DST-safe for wall-clock schedules). No raw cron in v1.
 - **Unattended + safe.** Job runs are **read-only by default** — no state or external mutation, web/browser tools off unless explicitly allowed. A scheduled run must not take side-effecting actions on its own.
 - **Reuse the run pipeline.** A fired job is just a run on the existing queue + executor + event stream — not a parallel execution path.
-- **Self-healing lifecycle.** active / paused / blocked; a job that loses its agent goes `blocked` (not a crash loop); a failed *run* doesn't break the job — it fires again next time.
+- **Self-healing lifecycle.** active / paused / blocked; a job that loses its agent goes `blocked` (not a crash loop); a failed _run_ doesn't break the job — it fires again next time.
 - **Single-flight + no double-fire.** Never run two instances of the same job at once; never fire the same slot twice across scheduler ticks.
 
 What the current build got wrong / carried as dead weight (removed here): a **dedicated thread per job** (threads are gone), **per-user** ownership (we're multi-workspace), dead `connectorIds`/`channelBindingIds` scope fields, a watermark-only claim that relies on cron ticks never overlapping, and a stuck-sweep that misses `queued` runs.
@@ -39,8 +39,8 @@ A job is conceptually **"a saved run that fires itself."** No threads, no separa
 
 The old feature "always posts a thread message." With threads gone and Documents first-class, a job's output targets one or both of:
 
-- **`talk_message`** *(default)* — the agent's answer is appended to the **Talk** as a normal round, tagged with its `job_id` so the UI can group/collapse scheduled activity (this replaces the old dedicated-thread isolation with a tag, not a separate stream).
-- **`document_append`** *(optional)* — the answer is appended to the Talk's **primary Document** as a **pending edit** (`document_edits`, `source = 'job'`) through the *same* unified accept path Forge uses. **Review-gated by default** (no autonomous overwrite — consistent with Forge's human-in-the-loop principle); a job may opt into `document_append_mode = 'auto_accept'` for trusted, low-stakes appends (e.g. a rolling log).
+- **`talk_message`** _(default)_ — the agent's answer is appended to the **Talk** as a normal round, tagged with its `job_id` so the UI can group/collapse scheduled activity (this replaces the old dedicated-thread isolation with a tag, not a separate stream).
+- **`document_append`** _(optional)_ — the answer is appended to the Talk's **primary Document** as a **pending edit** (`document_edits`, `source = 'job'`) through the _same_ unified accept path Forge uses. **Review-gated by default** (no autonomous overwrite — consistent with Forge's human-in-the-loop principle); a job may opt into `document_append_mode = 'auto_accept'` for trusted, low-stakes appends (e.g. a rolling log).
 
 `output_targets` is a set, so a job can post to the Talk **and** propose a Document append in one fire. `document_append` requires the Talk to have a primary Document; if it doesn't, the job is `blocked` with `block_reason = 'no_primary_document'`.
 
@@ -58,7 +58,7 @@ This keeps the no-second-write-path rule: a job never mutates content directly �
 
 Next-fire is a precomputed **`next_due_at`** watermark (not a live cron evaluator): on create/resume/after-fire, compute the next slot by stepping wall-clock minutes through `Intl.DateTimeFormat(timezone)` (DST-safe). Raw cron expressions are a deliberate non-goal for v1 — these three shapes cover the product need and stay legible.
 
-**Catch-up policy** is explicit (the old code silently skipped missed fires): `catch_up = 'skip'` *(default — after downtime, jump to the next future slot)* or `'run_once'` *(fire once on recovery, then resume)*. No multi-fire backfill.
+**Catch-up policy** is explicit (the old code silently skipped missed fires): `catch_up = 'skip'` _(default — after downtime, jump to the next future slot)_ or `'run_once'` _(fire once on recovery, then resume)_. No multi-fire backfill.
 
 ---
 
@@ -68,10 +68,11 @@ Driven by the existing every-minute cron tick (`scheduler.ts` mechanism is kept)
 
 1. **Claim due jobs with a lease.** `select … where status='active' and next_due_at <= now order by next_due_at for update skip locked limit N`, then set `claimed_at = now` and advance `next_due_at` to the next slot **in the same transaction**. `FOR UPDATE SKIP LOCKED` + the lease makes this safe under overlapping ticks and multiple workers — replacing the old watermark-only guard that assumed ticks never overlap.
 2. **Single-flight per job.** Skip creating a run if the job already has a non-terminal run (`queued`/`running`/`awaiting`) — prevents a long job overrunning its interval or a manual run racing the scheduler.
-3. **Create + dispatch** the run (§2) under the job's workspace/user context.
+3. **Create + dispatch** the run (§2) under the job's workspace/user context. On success, clear `claimed_at`.
 4. **Sweep stuck runs** — reap runs stuck in `running` **and `queued`** past a threshold → `failed` (the old sweep missed `queued`, so a lost queue message could wedge a run forever).
+5. **Sweep dropped claims** _(closes the step-1-commit / step-3-crash window)_. `select … where claimed_at < now - interval 'N minutes' and not exists (select 1 from runs where runs.job_id = jobs.id and runs.created_at > jobs.claimed_at)` — these are jobs whose claim committed in step 1 but whose run was never created (worker crashed, deploy mid-fire, OOM between commit and dispatch). For each, **back up `next_due_at` to the missed slot** (so the next tick re-fires it) and clear `claimed_at`. Threshold should be a few × the typical run-create latency (e.g. 2 minutes) — long enough that an in-flight dispatch doesn't get re-claimed, short enough that a dropped fire is recovered within one product cycle.
 
-**Failure handling** stays layered: transient run failures retry at the queue/DLQ layer; a terminally failed *run* does **not** pause or block the job — it just records `last_run_status='failed'` and fires again next slot. Only **dependency** failures (agent removed from the Talk, `document_append` with no primary Document) flip the job to `blocked` with a `block_reason`, requiring a user fix (no auto-unblock, no crash loop).
+**Failure handling** stays layered: transient run failures retry at the queue/DLQ layer; a terminally failed _run_ does **not** pause or block the job — it just records `last_run_status='failed'` and fires again next slot. Only **dependency** failures (agent removed from the Talk, `document_append` with no primary Document) flip the job to `blocked` with a `block_reason`, requiring a user fix (no auto-unblock, no crash loop).
 
 ---
 

@@ -29,6 +29,8 @@ It is **greenfield** (D0): names and shapes are designed for the new model, not 
 
 **Reuse vs. rewrite (global), corrected by D7.** _Keep_ the Cloudflare platform (Workers / Queues / Durable Objects / Hyperdrive), the `event_outbox` → `UserEventHub` DO stream, and the LLM provider/model/secret tables (`llm_providers`, `llm_provider_models`, `llm_provider_secrets`, `workspace_provider_secrets` — these are **shared LLM keys**, not OAuth). _Rework_ the run model + executor (the legacy `talk_runs` is thread/channel-entangled). _Do not reuse_ `idempotency_cache` for Forge retries (it's an HTTP-response cache keyed `idempotency_key,user_id,method,path`) and _do not_ route connector/SSR OAuth secrets through `workspace_provider_secrets` (LLM-key store) — both get their own stores below.
 
+**Migration approach (per D0).** The implementing migration script **drops every superseded table from §11 in dependency order, then creates the target schema below.** Local data IS lost — per `CLAUDE.md`, ClawTalk's local users and stored data are disposable by default; the only live user is Joseph and the only live data is dogfood. There is **no shadow-table, dual-write, or backfill phase.** The reused infrastructure (Cloudflare platform, `event_outbox`, LLM provider tables) is left untouched by the drop step. After the migration: Joseph re-OAuths Google/Anthropic providers (the keys in `workspace_provider_secrets` are preserved) and his first signin creates a fresh `workspace` + `owner` `workspace_members` row.
+
 ---
 
 ## 1. Identity & tenancy
@@ -169,6 +171,7 @@ Design notes:
 - **Rounds are derived** — `round int` on messages/runs; a round = the runs sharing `(talk_id, round)`. No `rounds` table.
 - **Run model is clean (D7).** Dropped `thread_id` (threads eliminated), channel/source/transport columns, and the `instruction_review` kind; added `content_improvement`. Kept `response_group_id` + `sequence_index` + `requested_by` + `trigger_message_id` because the ordered/parallel orchestration genuinely uses them.
 - **Single-flight per job.** Partial unique on `runs(job_id)` for `status in ('queued','running','awaiting')` prevents two scheduler/manual races from creating concurrent nonterminal runs for the same job (`12-jobs.md` §5).
+- **Index cost.** The composite-FK pattern adds 7–8 indexes per `runs` insert and 4 per `messages` insert (each `unique` = a B-tree index). Tenant integrity beats write cost at the foreseeable target (personal-only, one workspace), but revisit if write throughput becomes the binding constraint — relaxing the `(workspace_id, talk_id, id)` targets would lose the cross-Talk integrity codex flagged on 2026-05-29.
 - **Unread (P0-2):** derived = messages in a talk newer than the caller's `talk_reads.last_read_at`; workspace badge = sum across the workspace's talks.
 - **Message attribution (P1-5):** points at `talk_agent_snapshots`, so editing an agent later never rewrites historical attribution.
 - Indexes: `talks(workspace_id, folder_id, sort_order) where archived_at is null`; `messages(talk_id, round, created_at)`; `runs(talk_id, round)`, `runs(status) where status in ('queued','running')`, `runs(response_group_id, sequence_index)`.
@@ -267,6 +270,7 @@ Design notes:
 - **Role templates as a DB table (D7):** `agents.role_key` is a real FK. Prompts are **seeded from `03-agents.md`** (still the version-controlled, reviewable, eval-tested source) and changed via versioned rows — feeds the `06` §14 prompt-improvement loop. Fix the "Samira" placeholder + `@strat` handle on seed.
 - **Temperature** lives on the template (default) → `agents.temperature` (editable) → snapshot. Resolves the audit gap.
 - **System agents (`is_system`)** carry Forge's rewriter + critic (D3); filtered from `GET /agents` and the roster at the query layer.
+- **Index cost on snapshots.** `talk_agent_snapshots` carries 6 indexes per row (PK + 3 composite-FK targets + uniqueness on `(snapshot_group_id, source_agent_id)` + the `snapshot_group_id` lookup index). One row per agent per run = 3–6 rows per Talk turn at a typical roster size. Acceptable for the personal-only target; if write rate ever blows past ~10 turns/sec sustained, consider partitioning by month or relaxing the workspace-id-redundant targets.
 - `06` §14.6 loop tables (`agent_audit_results`, `prompt_improvement_proposals`, `prompt_versions`) are deferred until that loop is built.
 
 ---
@@ -683,5 +687,31 @@ Remaining (taste calls + follow-ups, not blockers):
 Remaining (deferred to dedicated reviews — these block parts of the schema):
 
 - **Home tables (§7) — schema-level expansion.** Current shape is the `07` §10 sketch, not migration-ready. Needs explicit columns/FKs/indexes for inbox actions, source events, snooze/resolution, recommendation candidate provenance/action/confidence/expiry, rank/surface/candidate link, interaction metadata, and algorithm rollout/shadow per `07` §3.1, §10.12-10.13. Folding deserves its own pass against `07` §10 to avoid losing fields.
-- **`workspace_provider_secrets` shape (§11).** Currently keyed `(provider_id, credential_kind)` with no `workspace_id` — fine for v1 personal-only BYOK, breaks the moment a second workspace shares an instance. Migrate to `(workspace_id, provider_id, credential_kind)` when multi-workspace LLM keys are needed.
 - **Durable SSR request/result envelope (§9).** Per-round idempotency is recoverable from `(run_id, iteration, candidate_id)` (good for reproducibility), but a full SSR request/response audit table would help debugging — defer until SSR contract details are nailed.
+
+---
+
+## 14. Verification — what proves the schema works
+
+The spec asserts runtime invariants throughout. The migration is "done" only when every invariant below has a passing test. Each row is one negative test (the failure case the constraint is supposed to catch); a positive test for normal usage is implied.
+
+| #   | Invariant                                                         | Section                | Negative test (must fail or be rejected)                                                                                                                                                         |
+| --- | ----------------------------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | Composite FK blocks cross-workspace references                    | §0, §12                | Insert a child row with `workspace_id = A` referencing a parent row in workspace B → FK violation                                                                                                |
+| 2   | Composite FK blocks cross-Talk references on runs/messages        | §3                     | Run in Talk A with `trigger_message_id` from a message in Talk B → FK violation                                                                                                                  |
+| 3   | Composite FK blocks cross-Talk references on snapshot attribution | §3                     | Run in Talk A with `agent_snapshot_id` from a snapshot in Talk B → FK violation                                                                                                                  |
+| 4   | Acting agent snapshot is inside the run's roster group            | §3                     | Run with `snapshot_group_id = G1` and `agent_snapshot_id` from a snapshot in `snapshot_group_id = G2` → FK violation                                                                             |
+| 5   | Composite FK blocks cross-tab block references                    | §5                     | Pending edit with `tab_id = T1` and `block_id` from a block in `tab_id = T2` (same document) → FK violation                                                                                      |
+| 6   | `base_block_version` CAS marks late edits superseded              | §5                     | Two concurrent replace edits for the same block; the second to commit is marked `superseded` rather than overwriting                                                                             |
+| 7   | `base_list_version` CAS for inserts at `after_block_id`           | §5                     | Two concurrent insert edits at the same anchor; one wins, one is `superseded`; tab's `list_version` bumps once                                                                                   |
+| 8   | Single-flight per job                                             | §3 partial unique + §8 | Two scheduler/manual races for the same job → exactly one queued run; second insert violates `runs_one_active_per_job`                                                                           |
+| 9   | Job `agent-delete` flips status atomically                        | §8 trigger             | Delete an agent referenced by an active job → in the same transaction, the job's `status` is `blocked` and `block_reason = 'agent_missing'`                                                      |
+| 10  | RLS membership predicate hides other workspaces                   | §12                    | Caller with `auth.uid()` in workspace A queries workspace B's rows → zero rows returned (not an error)                                                                                           |
+| 11  | `workspace_members` policy avoids recursion                       | §1, §12                | A `workspace_members` read with no infinite-loop / no plan-error; verify with `EXPLAIN` that the policy uses `auth.uid()` directly, not the helper                                               |
+| 12  | Snapshot group reconstruction                                     | §3, §4                 | Given a `runs.snapshot_group_id`, `SELECT * FROM talk_agent_snapshots WHERE snapshot_group_id = ?` returns the historical roster (count matches the live roster at the time the run was created) |
+| 13  | `ON DELETE SET NULL (col)` syntax behaves correctly               | §0, §2, §5, §8, §9     | Delete a folder with linked Talks → talks' `folder_id` nulled, `workspace_id` unchanged (i.e., the per-column SET NULL works, not the default nulling of all FK columns)                         |
+| 14  | Deferrable FK cycles permit multi-row insert                      | §0, §3                 | Within a transaction `SET CONSTRAINTS ALL DEFERRED`, insert a run + a triggering message that reference each other → both succeed; without `DEFERRED`, the second insert violates                |
+
+The test suite lives alongside the migrations (Vitest + `pg-tap` style assertions, or raw SQL test files run against `supabase db reset`). Each migration commit that touches a constraint adds or updates the corresponding row above.
+
+Two test types not in the table because they're integration-level rather than schema-level: **(a)** end-to-end Talk turn → run → message → outbox → DO stream (the queue/DO/Worker contract, not a schema invariant); **(b)** the `12-jobs.md` scheduler stale-lease sweep (claim crash recovery). Both live in `src/clawtalk/talks/*.test.ts` once the executor is reworked.
