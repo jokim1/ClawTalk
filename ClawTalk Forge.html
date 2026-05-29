@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>ClawTalk · Forge (hi-fi prototype)</title>
+
+<!-- Forge flag + demo bootstrap: land on the Pricing Talk with the doc
+     pane open so the "Improve" entry point is one click away. -->
+<script>
+  window.CT_FORGE_ENABLED = true;
+  try {
+    var KEY = 'clawtalk.salon.v2';
+    var raw = JSON.parse(localStorage.getItem(KEY) || '{}');
+    raw.__route = 'talk';
+    raw.activeTalkId = 't-pricing';
+    raw.showDoc = true;
+    localStorage.setItem(KEY, JSON.stringify(raw));
+  } catch (e) {}
+</script>
+
+<!-- Tailwind play CDN, configured before load. -->
+<script>
+  window.tailwind = window.tailwind || {};
+  window.tailwind.config = {
+    darkMode: 'class',
+    theme: {
+      extend: {
+        fontFamily: {
+          serif:   ['"Newsreader"', 'Georgia', 'serif'],
+          display: ['"Instrument Serif"', 'Georgia', 'serif'],
+          sans:    ['"Geist"', '"IBM Plex Sans"', 'system-ui', 'sans-serif'],
+          mono:    ['"Geist Mono"', '"JetBrains Mono"', 'ui-monospace', 'monospace'],
+        },
+      },
+    },
+  };
+</script>
+<script src="https://cdn.tailwindcss.com?plugins=forms,typography"></script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link
+  href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Instrument+Serif:ital@0;1&display=swap"
+  rel="stylesheet"
+>
+
+<style>
+  :root {
+    --salon-accent: #C8643A;
+    --salon-ink:    #1F1B16;
+    --salon-ink-2:  #6B6660;
+    --salon-paper:  #FBF7EF;
+    --salon-paper-2:#F4ECDB;
+    --salon-card:   #FFFFFF;
+    --salon-line:   #E6E0D1;
+  }
+  html, body { background: var(--salon-paper); color: var(--salon-ink); font-family: 'Geist', system-ui, sans-serif; }
+  body { margin: 0; min-height: 100vh; }
+  button { cursor: pointer; }
+
+  .ct-screen-enter { animation: ctFadeIn 220ms ease-out both; }
+  @keyframes ctFadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+  .ct-thin-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+  .ct-thin-scroll::-webkit-scrollbar-thumb { background: rgba(31,27,22,0.14); border-radius: 8px; }
+  .ct-thin-scroll::-webkit-scrollbar-track { background: transparent; }
+
+  .ct-caret { display: inline-block; width: 7px; height: 18px; background: currentColor; margin-left: 2px; vertical-align: text-bottom; animation: ctBlink 800ms steps(1) infinite; }
+  @keyframes ctBlink { 50% { opacity: 0; } }
+
+  .ct-pulse { animation: ctPulse 1.6s ease-in-out infinite; }
+  @keyframes ctPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+  body.density-cozy   { font-size: 14px; }
+  body.density-compact { font-size: 13px; }
+</style>
+
+<!-- React + Babel -->
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js"
+        integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L"
+        crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js"
+        integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm"
+        crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js"
+        integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y"
+        crossorigin="anonymous"></script>
+</head>
+<body class="density-cozy">
+  <div id="root"></div>
+
+  <script type="text/babel" src="shared/data.jsx"></script>
+  <script type="text/babel" src="tweaks-panel.jsx"></script>
+
+  <!-- Prototype modules -->
+  <script type="text/babel" src="prototype/state.jsx"></script>
+  <script type="text/babel" src="prototype/shell.jsx"></script>
+  <script type="text/babel" src="prototype/tools.jsx"></script>
+  <script type="text/babel" src="prototype/home-shared.jsx"></script>
+  <script type="text/babel" src="prototype/home-focus.jsx"></script>
+  <script type="text/babel" src="prototype/agents.jsx"></script>
+  <script type="text/babel" src="prototype/documents.jsx"></script>
+  <script type="text/babel" src="prototype/talk-dialogs.jsx"></script>
+  <script type="text/babel" src="prototype/screens.jsx"></script>
+
+  <!-- Forge modules (must load before app.jsx so window.ForgeMount exists) -->
+  <script type="text/babel" src="prototype/forge-data.jsx"></script>
+  <script type="text/babel" src="prototype/forge-config.jsx"></script>
+  <script type="text/babel" src="prototype/forge-stages.jsx"></script>
+  <script type="text/babel" src="prototype/forge-page.jsx"></script>
+
+  <script type="text/babel" src="prototype/app.jsx"></script>
+</body>
+</html>
