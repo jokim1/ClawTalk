@@ -1,6 +1,6 @@
 # T-new-A2 B-3 — remove the `workspace_provider_secrets` surface (two-PR rollout)
 
-**Status:** Plan, **r3 draft**.
+**Status:** Plan, **r4 draft**.
 **Tracking:** [[project-llm-turn-latency]], [[T-new-A2-enqueue-talk-turn-atomic]] (the C-M4 / C8 deferred work), [[T-new-A2-followup]].
 **Branch (planning):** `docs/t-new-a2-b3-plan` (this doc).
 **Branches (implementation, to be created):** `feature/t-new-a2-b3-pr-a-code-removal`, then `feature/t-new-a2-b3-pr-b-drop-tables`.
@@ -12,7 +12,17 @@
 
 - **r1 (2026-05-29, `6d3e437`)** — Framed B-3 as "collapse 2 SELECTs to 1." Codex consult returned 16 findings, 3 critical, that invalidated the central premise (invalid `owner_id` predicate, inconsistent enqueue/runtime fallback, UNION ALL did not short-circuit). Findings preserved at `.codex-r1-findings.txt`.
 - **r2 (2026-05-29, `0341fc8`)** — Reframed to "coherently remove `workspace_provider_secrets`." Codex consult returned 12 findings (6 critical, 6 advisory), karpathy audit returned 6 findings (3 critical). Critical blockers: (1) `DROP FUNCTION current_user_is_workspace_admin()` would break unrelated workspace_channels / workspace_data_connectors / workspace_slack_installs RLS; (2) deploy.yml runs migrations **before** the Worker deploys — single-PR shape leaves old code reading dropped tables during the window; (3) rollback framing only covered the migration, not the Worker; (4) §4.2 ↔ §4.3 contradicted on `provider_oauth_states.scope`; (5) `TalkDetailPage.tsx:2338-2340` + its test fixture consume `workspaceHasCredential` and `hasWorkspaceSubscription`, missed from §2.4; (6) §4.6 `ON CONFLICT DO NOTHING` discards workspace ciphertext silently. Codex r2 findings preserved at `.codex-r2-findings.txt`.
-- **r3 (this revision)** — Splits the rollout into two PRs to dodge the deploy-window race. PR A removes code only (forward-compatible against the existing schema). PR B ships the destructive migration after PR A is verified in prod. Keeps `current_user_is_workspace_admin` (still referenced by 0019/0020/0023). Resolves the scope contradiction: column and NOT NULL stay; inserts keep `scope: 'user'`; PR B tightens the CHECK. Adds `TalkDetailPage` to the frontend inventory. Pins exact field names against `webapp/src/lib/api.ts:875-883`. Reconciles §7 test plan to live in three files (execution-resolver, agent-management, main-talk-bootstrap), drops the contradiction about asserting against a dropped table.
+- **r3 (2026-05-29, `b400133`)** — Splits the rollout into two PRs to dodge the deploy-window race. PR A removes code only (forward-compatible against the existing schema). PR B ships the destructive migration after PR A is verified in prod. Keeps `current_user_is_workspace_admin` (still referenced by 0019/0020/0023). Resolves the scope contradiction: column and NOT NULL stay; inserts keep `scope: 'user'`; PR B tightens the CHECK. Adds `TalkDetailPage` to the frontend inventory. Reconciles §7 test plan to live in three files (execution-resolver, agent-management, main-talk-bootstrap), drops the contradiction about asserting against a dropped table. Codex r3 returned 4 findings (1 P1, 3 P2); karpathy r3 added 1 CRITICAL + 2 WARNINGS + 1 nit. Raw codex output preserved at `.codex-r3-findings.txt`.
+- **r4 (this revision)** — Tight delta absorbing the r3 review round. Six edits, all confined to §4.1, §4.4, §4.6, §6, §9, and §2.4:
+  - **§4.4 internal contradiction** (codex r3 P1 #1 + karpathy r3 CRITICAL #1). The data-migration fork now INSERTs new rows, then DELETEs both migrated *and* intentionally-discarded source rows from `workspace_provider_secrets`, then re-runs the §4.3 audit which can now actually return `row_count = 0`.
+  - **§4.4 `enc_key_version` omission** (codex r3 P2 #2). Copy SQL now includes `enc_key_version` in both columns and projection.
+  - **§4.1 + §2.4 invented field name** (codex r3 P2 #4 + karpathy r3 CRITICAL #2). `provider.hasSubscription` (does not exist) → `provider.hasPersonalSubscription` (the actual field per `webapp/src/lib/api.ts:880`). §2.4 also adds an explicit "field names verified against `webapp/src/lib/api.ts` at commit-time" line. Same precision-failure class as r2's `workspaceSubscriptionHasCredential` mistake; logged to [[feedback-verify-schema-facts-in-plan-gates]] so it doesn't repeat.
+  - **§6 "no-op redeploy" framing** (codex r3 P2 #3 + karpathy r3 WARNING). PR B's deploy is not literally a no-op — `deploy.yml` still rebuilds SPA, syncs secrets, re-publishes assets / queues / cron / DO bindings via wrangler. Reworded to "no application code changes; still a full Worker + assets redeploy."
+  - **§6 file-count ambiguity + §4.1 list-count discrepancy** (karpathy r3 WARNING). "~13 source files + 4 webapp files" was inconsistent with §2.2's 14 sites + §2.4's 11 rows. r4 picks the "files touched" convention (~9 backend + ~5 webapp) so it matches PR-stat output.
+  - **§4.1 + §4.4 "~24h soak" success criteria** (karpathy r3 WARNING). Now explicit: PR B opens once PR A has been in prod ≥24h with zero `ExecutionResolverError` / `PROVIDER_SECRET_MISSING` events in `wrangler tail` and bench `resolveCredentialKindSnapshot` median ≤140 ms.
+  - **§9 task-time syntax** (karpathy r3 NIT). Uniform `(P1, human: ~X min, CC: ~Y min)` across every task line.
+
+Cross-revision overlap rose sharply on r3: 4 of 6 karpathy findings also surfaced in codex output. Per [[feedback-codex-catches-behavior-karpathy-catches-style]] this is diagnostic of plan health, not reviewer redundancy — the precision-failure class kept re-firing because the plan kept inventing identifiers. r4 closes that channel by pinning field names and adding the source-of-truth verification note.
 
 ---
 
@@ -71,6 +81,8 @@ The provider-card API response (`AgentProviderCard` type in `ai-agents.ts`) expo
 
 ### 2.4 Frontend surface
 
+Field names below were verified against `webapp/src/lib/api.ts` at the r4 commit; the type definition for `AgentProviderCard` lives at lines 875-883.
+
 | File | What it does |
 |---|---|
 | `webapp/src/lib/api.ts:843` | `export type ProviderCredentialScope = 'user' \| 'workspace'`. |
@@ -80,7 +92,7 @@ The provider-card API response (`AgentProviderCard` type in `ai-agents.ts`) expo
 | `webapp/src/pages/SettingsPage.tsx:240-242` | "Configured" computation reads `workspaceHasCredential`. |
 | `webapp/src/pages/SettingsPage.tsx:526-883` | `draftKey`, `ApiKeysSubTab`, `handleSave`/`handleClear`/`handleVerify` taking `scope`, the Personal / Workspace sub-tab UI, and a second `ProviderCredentialCard` rendering for workspace. |
 | `webapp/src/pages/SettingsPage.tsx:1455-1856` | `ProviderCredentialCard` (`scope` prop, scopeLabel, aria), `AnthropicSubscriptionPanel`, `OpenAiCodexSubscriptionPanel` (workspace expiry display, scope arg to OAuth initiate). |
-| `webapp/src/pages/TalkDetailPage.tsx:2338-2340` | "Configured providers" check reads `workspaceHasCredential` and `hasWorkspaceSubscription` alongside personal. PR A simplifies to `provider.hasCredential \|\| provider.hasSubscription`. |
+| `webapp/src/pages/TalkDetailPage.tsx:2338-2340` | "Configured providers" check reads `workspaceHasCredential` and `hasWorkspaceSubscription` alongside personal. PR A simplifies to `provider.hasCredential \|\| provider.hasPersonalSubscription` (the actual personal-OAuth field on `AgentProviderCard`). |
 | `webapp/src/components/RegisteredAgentsPanel.tsx:38-68` | `hasApiKey = provider.hasCredential \|\| provider.workspaceHasCredential`. |
 | `webapp/src/pages/SettingsPage.test.tsx` | Workspace tab test ("saves a Workspace API key with scope=workspace as an admin"); workspace fields in fixtures. |
 | `webapp/src/pages/TalkDetailPage.test.tsx:4862-4870` | Workspace fields in provider fixtures. |
@@ -137,7 +149,7 @@ PR A removes every reader, writer, and UI surface for `workspace_provider_secret
 - `src/clawtalk/web/worker-app.ts` — drop `c.req.query('scope')` parse on the verify route and the body-scope parsing on OAuth routes.
 - `webapp/src/lib/api.ts` — narrow / delete `ProviderCredentialScope`; drop workspace-* fields from the provider card type; remove `scope` argument from credential and OAuth helpers.
 - `webapp/src/pages/SettingsPage.tsx` — collapse Personal/Workspace sub-tabs to a single Personal panel; drop `ApiKeysSubTab`, `subTab`, the `draftKey` keyspace, and the second `ProviderCredentialCard` render path. `AnthropicSubscriptionPanel`, `OpenAiCodexSubscriptionPanel` drop their `scope` prop.
-- `webapp/src/pages/TalkDetailPage.tsx:2338-2340` — "Configured providers" check becomes `provider.hasCredential || provider.hasSubscription`.
+- `webapp/src/pages/TalkDetailPage.tsx:2338-2340` — "Configured providers" check becomes `provider.hasCredential || provider.hasPersonalSubscription`. Field name verified against `webapp/src/lib/api.ts:880`.
 - `webapp/src/components/RegisteredAgentsPanel.tsx` — `hasApiKey = provider.hasCredential`.
 - `webapp/src/pages/SettingsPage.test.tsx` — delete the workspace-tab test; strip workspace fields from fixtures.
 - `webapp/src/pages/TalkDetailPage.test.tsx:4862-4870` — strip workspace fields from provider fixtures.
@@ -203,14 +215,16 @@ Expected: all three `row_count = 0`. If `secrets.row_count > 0`, the §4.4 data-
 
 ### 4.4 PR B gate — final audit and data-migration fork
 
-Re-run the §4.3 query after PR A has been deployed and soaked for ~24h. The `secrets` row count should still match what it was at §4.3 — PR A's writer removal means nothing new can land. If row count is 0, run PR B's migration.
+Re-run the §4.3 query after PR A has been deployed and the §4.6 soak criteria are satisfied (see §4.6 for the specific signals; minimum ≥24h prod soak). The `secrets` row count should still match what it was at §4.3 — PR A's writer removal means nothing new can land. If row count is 0, run PR B's migration.
 
-If `secrets.row_count > 0`, run the data-migration fork before merging PR B:
+If `secrets.row_count > 0`, run the data-migration fork before merging PR B. The fork is three explicit steps — `report` → `copy non-conflicting rows` → `delete migrated and discarded source rows` — so the post-fork audit can actually return zero.
+
+**Step 1 — report (read-only).** Lists every workspace row and whether a personal row already exists for the same `(owner_id, provider_id, credential_kind)`:
 
 ```sql
--- Step 1: report what would be migrated (read-only).
 select wps.provider_id,
        wps.credential_kind,
+       wps.enc_key_version,
        wps.updated_at as workspace_updated_at,
        exists (
          select 1 from public.llm_provider_secrets lps
@@ -221,15 +235,16 @@ select wps.provider_id,
 from public.workspace_provider_secrets wps;
 ```
 
-For each row where `personal_row_exists = false`, copy into `llm_provider_secrets`:
+**Step 2 — copy non-conflicting workspace rows into personal.** Inserts only the workspace rows that have no matching personal row. Preserves `enc_key_version` so ciphertext stays decryptable across all key versions:
 
 ```sql
 insert into public.llm_provider_secrets (
-  owner_id, provider_id, credential_kind, ciphertext,
+  owner_id, provider_id, credential_kind, enc_key_version, ciphertext,
   encrypted_refresh_token, expires_at
 )
 select '<joseph-uuid>'::uuid, wps.provider_id, wps.credential_kind,
-       wps.ciphertext, wps.encrypted_refresh_token, wps.expires_at
+       wps.enc_key_version, wps.ciphertext, wps.encrypted_refresh_token,
+       wps.expires_at
 from public.workspace_provider_secrets wps
 where not exists (
   select 1 from public.llm_provider_secrets lps
@@ -239,9 +254,17 @@ where not exists (
 );
 ```
 
-For each row where `personal_row_exists = true`, the workspace ciphertext is **intentionally discarded** when PR B drops the table — the personal row already wins under the resolver's precedence. Joseph confirms this in the PR B description ("rows X, Y intentionally discarded; personal copy wins"). If he wants to keep the workspace copy instead, he deletes the personal row first and re-runs the INSERT.
+**Step 3 — delete source rows.** Removes both the rows we just migrated AND the rows where a personal row already existed (those workspace copies are intentionally discarded, since the personal row already wins under the resolver's precedence). Joseph confirms the discard in PR B's description: "rows X, Y intentionally discarded; personal copy wins." If he wants to keep a workspace copy instead, he deletes the personal row first and re-runs Step 2 before running Step 3:
 
-Re-run §4.3's audit after the data-migration step. `secrets.row_count` should be 0 before PR B merges.
+```sql
+delete from public.workspace_provider_secrets;
+```
+
+(`delete from ... where true` is implied by the empty `where` clause; an unrestricted delete is intentional here because Step 2's INSERT plus the explicit "discard the rest" decision covers every row.)
+
+**Step 4 — re-audit.** Re-run the §4.3 query. `secrets.row_count` must equal 0 before PR B merges. If non-zero, do not proceed — investigate which row Steps 2/3 missed and update the fork.
+
+If the §4.3 audit at PR A time already returned 0 (the expected path on Joseph's setup), Steps 1-4 are skipped entirely and PR B's migration runs against an empty table.
 
 ### 4.5 Local verification (per PR)
 
@@ -266,15 +289,24 @@ npm run typecheck                                              # no changes, sho
 ### 4.6 Post-deploy verification
 
 PR A:
-- Bench haiku n=10 at N=1 and N=3 (`scripts/latency-bench.ts`, per [[feedback-close-clawtalk-tabs-before-bench]]). Median `agent_loop_iter_*_resolveCredentialKindSnapshot` should drop from ~248 ms to ~125 ms; iteration total drops ~125 ms × N.
-- `wrangler tail` clean for 60 min: no new `ExecutionResolverError`, no `PROVIDER_SECRET_MISSING` from the bench user, no 500s on `/api/v1/agents/providers/:id` routes.
+- Bench haiku n=10 at N=1 and N=3 (`scripts/latency-bench.ts`, per [[feedback-close-clawtalk-tabs-before-bench]]). Median `agent_loop_iter_*_resolveCredentialKindSnapshot` should drop from ~248 ms to ≤140 ms; iteration total drops ~125 ms × N.
+- `wrangler tail` clean for 60 min: zero new `ExecutionResolverError`, zero `PROVIDER_SECRET_MISSING` from the bench user, zero 500s on `/api/v1/agents/providers/:id` routes.
 - Smoke `/api/v1/agents`: response no longer carries `workspace*` fields.
 - SPA: SettingsPage shows only the Personal panel; TalkDetailPage's "Configured providers" still resolves correctly without the workspace branch.
 - Model discovery: providers with only a workspace API key (NVIDIA, Anthropic) fall back to curated rows. **Expected degraded state.** Verify on the AI Agents page that the model dropdown is non-empty for any provider that had a personal key.
 
+**PR A → PR B gate (the "~24h soak" — explicit success criteria):** PR B opens only once **all four** of these hold:
+1. PR A has been deployed to prod for ≥24 hours.
+2. `wrangler tail` shows zero `ExecutionResolverError` events tagged to workspace credentials since PR A's deploy.
+3. `wrangler tail` shows zero `PROVIDER_SECRET_MISSING` events tagged to a provider that had been served by a workspace credential pre-PR-A (Joseph cross-references against the §4.3 audit list).
+4. Bench median `resolveCredentialKindSnapshot` ≤140 ms on a fresh haiku N=1 + N=3 run.
+
+If any of (1)–(4) fails, hold PR B. Investigate before re-arming.
+
 PR B:
-- `wrangler tail` clean for 60 min: same checks as PR A; no new errors from the deployed (no-op) Worker.
+- `wrangler tail` clean for 60 min: same shape as PR A's check; the deployed Worker has no application code changes but the deploy is still a full Worker + assets redeploy (rebuilds SPA, syncs secrets, re-publishes assets / queues / cron / DO bindings via wrangler).
 - `\d workspace_provider_secrets` on prod returns "relation does not exist."
+- `\d+ provider_oauth_states` on prod shows `CHECK (scope = 'user')` only.
 
 ### 4.7 Out of scope (explicit)
 
@@ -302,9 +334,11 @@ PR B:
 
 ## 6. What lands per PR
 
-**PR A** — 13 source files + 4 webapp files. Approximate diff: backend ~+60 / −400, frontend ~+30 / −350. No migration.
+Counts below use the "files touched" convention so the numbers match PR-stat output.
 
-**PR B** — 1 new migration file (`0036_drop_workspace_provider_secrets.sql`). Approximate diff: ~+25 / 0. No code changes; the deploy.yml-triggered Worker deploy is a no-op.
+**PR A** — ~9 backend files (execution-resolver, execution-planner, main-talk-bootstrap, agent-management, ai-agents, agent-oauth, worker-app, plus 2 test files) + ~5 webapp files (lib/api, SettingsPage, SettingsPage.test, TalkDetailPage, TalkDetailPage.test, RegisteredAgentsPanel). Approximate diff: backend ~+60 / −400, frontend ~+30 / −350. No migration.
+
+**PR B** — 1 new migration file (`0036_drop_workspace_provider_secrets.sql`). Approximate diff: ~+25 / 0. No application code changes; the deploy.yml-triggered deploy is still a full Worker + assets redeploy (SPA rebuild, secret sync, asset / queue / cron / DO binding republish via wrangler), so monitor the deploy log even though the application surface is unchanged.
 
 Sequencing is documented in §4. Both PRs squash-merge on green CI.
 
@@ -373,59 +407,61 @@ Frontend tests: `SettingsPage.test.tsx` drops the workspace-tab test. `TalkDetai
 
 ## 9. Implementation tasks
 
+Time annotations: `(P1, human: ~X min, CC: ~Y min)` — `human` is wall-clock time Joseph spends in psql / PR review / tail watching; `CC` is Claude-Code edit time. "CC: instant" marks tasks with no agent work.
+
 ### PR A — code removal
 
-- [ ] **B3-A1 (P1, human: ~5 min)** — Joseph runs §4.3 audit on prod. Records counts in PR A's description.
+- [ ] **B3-A1 (P1, human: ~5 min, CC: instant)** — Joseph runs §4.3 audit on prod. Records counts in PR A's description.
   - Files: none
   - Verify: row counts captured
 
-- [ ] **B3-A2 (P1, CC: ~45 min)** — Remove backend writers: `execution-resolver.ts:462-471`, `ai-agents.ts:674-704`, `ai-agents.ts:797-1078` (workspace branches only), `agent-oauth.ts:89-106`, `agent-oauth.ts:229/288/344/417`, `worker-app.ts:505`.
+- [ ] **B3-A2 (P1, human: ~5 min, CC: ~45 min)** — Remove backend writers: `execution-resolver.ts:462-471`, `ai-agents.ts:674-704`, `ai-agents.ts:797-1078` (workspace branches only), `agent-oauth.ts:89-106`, `agent-oauth.ts:229/288/344/417`, `worker-app.ts:505`.
   - Files: 4 source files
   - Verify: typecheck + format:check pass
 
-- [ ] **B3-A3 (P1, CC: ~30 min)** — Remove backend readers: `execution-resolver.ts:202-208/266-278/336-369`, `execution-planner.ts:164-167`, `agent-management.ts:74-79`, `main-talk-bootstrap.ts:121-124`, `ai-agents.ts:318-401` (list helpers + workspace fields on `AgentProviderCard`).
+- [ ] **B3-A3 (P1, human: ~5 min, CC: ~30 min)** — Remove backend readers: `execution-resolver.ts:202-208/266-278/336-369`, `execution-planner.ts:164-167`, `agent-management.ts:74-79`, `main-talk-bootstrap.ts:121-124`, `ai-agents.ts:318-401` (list helpers + workspace fields on `AgentProviderCard`).
   - Files: 5 source files
   - Verify: typecheck + format:check pass
 
-- [ ] **B3-A4 (P1, CC: ~15 min)** — Drop `ProviderCredentialScope`, `parseScope`. Tighten any `scope` body parsing on OAuth routes to refuse non-`'user'` values (HTTP 400).
+- [ ] **B3-A4 (P1, human: ~2 min, CC: ~15 min)** — Drop `ProviderCredentialScope`, `parseScope`. Tighten any `scope` body parsing on OAuth routes to refuse non-`'user'` values (HTTP 400).
   - Files: 2 source files
   - Verify: typecheck pass
 
-- [ ] **B3-A5 (P1, CC: ~45 min)** — Frontend: collapse SettingsPage to single Personal panel; trim `subTab`/`ApiKeysSubTab`/`draftKey`; remove workspace branches from `AnthropicSubscriptionPanel`, `OpenAiCodexSubscriptionPanel`, `RegisteredAgentsPanel.tsx`. Update `webapp/src/lib/api.ts` (drop type + workspace-* fields + `scope` args). Update `TalkDetailPage.tsx:2338-2340` to drop workspace branches. Strip workspace fields from `SettingsPage.test.tsx`, `TalkDetailPage.test.tsx` fixtures.
+- [ ] **B3-A5 (P1, human: ~5 min, CC: ~45 min)** — Frontend: collapse SettingsPage to single Personal panel; trim `subTab`/`ApiKeysSubTab`/`draftKey`; remove workspace branches from `AnthropicSubscriptionPanel`, `OpenAiCodexSubscriptionPanel`, `RegisteredAgentsPanel.tsx`. Update `webapp/src/lib/api.ts` (drop type + workspace-* fields + `scope` args). Update `TalkDetailPage.tsx:2338-2340` to drop workspace branches. Strip workspace fields from `SettingsPage.test.tsx`, `TalkDetailPage.test.tsx` fixtures.
   - Files: 6 webapp files
   - Verify: webapp typecheck + webapp vitest pass locally
 
-- [ ] **B3-A6 (P1, CC: ~30 min)** — Add Tests 4 / 5 / 6 per §7 in their respective files.
+- [ ] **B3-A6 (P1, human: ~5 min, CC: ~30 min)** — Add Tests 4 / 5 / 6 per §7 in their respective files.
   - Files: 3 test files
   - Verify: full backend vitest pass
 
-- [ ] **B3-A7 (P1, human: ~30 min / CC: ~15 min)** — Push PR A. Run `/codex review` + `/karpathy-audit diff` on the diff. Absorb findings. Squash-merge.
+- [ ] **B3-A7 (P1, human: ~30 min, CC: ~15 min)** — Push PR A. Run `/codex review` + `/karpathy-audit diff` on the diff. Absorb findings. Squash-merge.
   - Files: PR metadata
   - Verify: codex PASS, karpathy PASS, deploy.yml succeeds
 
-- [ ] **B3-A8 (P1, human: ~30 min)** — §4.6 PR A post-deploy verification.
+- [ ] **B3-A8 (P1, human: ~30 min, CC: instant)** — §4.6 PR A post-deploy verification.
   - Files: none (bench + tail)
   - Verify: predicted ~125 ms drop in `resolveCredentialKindSnapshot` p50; no new errors
 
-### PR B — destructive migration (after PR A is verified ~24h in prod)
+### PR B — destructive migration (after PR A meets the §4.6 soak criteria)
 
-- [ ] **B3-B1 (P1, human: ~5 min)** — Joseph re-runs §4.3 audit on prod. Counts unchanged from B3-A1 (writers were already gone after PR A).
+- [ ] **B3-B1 (P1, human: ~5 min, CC: instant)** — Joseph re-runs §4.3 audit on prod. Counts unchanged from B3-A1 (writers were already gone after PR A).
   - Files: none
   - Verify: row counts captured in PR B description
 
-- [ ] **B3-B2 (P1, human: ~10 min, only if `secrets.row_count > 0`)** — Run §4.4 data-migration fork. Re-run §4.3; confirm `secrets.row_count = 0`.
+- [ ] **B3-B2 (P1, human: ~15 min, CC: instant, only if `secrets.row_count > 0`)** — Run §4.4 data-migration fork Steps 1-4 (report → copy → delete → re-audit). Confirm `secrets.row_count = 0` before opening PR B.
   - Files: none
   - Verify: post-fork count = 0
 
-- [ ] **B3-B3 (P1, CC: ~10 min)** — Add migration `0036_drop_workspace_provider_secrets.sql` per §4.2 (confirm next free index at commit time).
+- [ ] **B3-B3 (P1, human: ~2 min, CC: ~10 min)** — Add migration `0036_drop_workspace_provider_secrets.sql` per §4.2 (confirm next free index at commit time).
   - Files: 1 new migration
   - Verify: §4.5 PR B local verification passes
 
-- [ ] **B3-B4 (P1, human: ~20 min / CC: ~10 min)** — Push PR B. Run `/codex review` on the migration diff. Squash-merge.
+- [ ] **B3-B4 (P1, human: ~20 min, CC: ~10 min)** — Push PR B. Run `/codex review` on the migration diff. Squash-merge.
   - Files: PR metadata
   - Verify: codex PASS, deploy.yml succeeds
 
-- [ ] **B3-B5 (P1, human: ~15 min)** — §4.6 PR B post-deploy verification + update [[project-llm-turn-latency]] memory.
+- [ ] **B3-B5 (P1, human: ~15 min, CC: ~5 min)** — §4.6 PR B post-deploy verification + update [[project-llm-turn-latency]] memory + r5 footer on this doc marking B-3 SHIPPED.
   - Files: this doc footer, memory
   - Verify: workspace tables gone from prod; bench results recorded
 
@@ -438,18 +474,21 @@ Frontend tests: `SettingsPage.test.tsx` drops the workspace-tab test. `TalkDetai
 | Eng Review | `/plan-eng-review` | Architecture & tests | 0 | not run | Skipped — codex + karpathy cover the same ground for this scope. |
 | Codex Consult (r1) | `/codex consult` on r1 | Independent 2nd opinion | 1 | ABSORBED | 16 findings (3 critical, 5 high, 7 medium, 1 low). Raw output `.codex-r1-findings.txt`. |
 | Codex Consult (r2) | `/codex consult` on r2 | Independent 2nd opinion | 1 | ABSORBED | 12 findings (6 critical, 6 advisory). Raw output `.codex-r2-findings.txt`. r3 absorbs all 6 P1 + key P2s. |
-| Codex Consult (r3) | `/codex consult` on r3 | Verify staged-deploy framing | 0 | pending | Will run on this commit. |
+| Codex Consult (r3) | `/codex consult` on r3 | Verify staged-deploy framing | 1 | ABSORBED | 4 findings (1 P1, 3 P2): §4.4 INSERT-no-DELETE contradiction, missing `enc_key_version`, "no-op" framing, invented `hasSubscription` field. Raw output `.codex-r3-findings.txt`. r4 fixes all four. |
+| Codex Consult (r4) | `/codex consult` on r4 | Verify §4.4 fork + naming fixes | 0 | pending | Will run on r4 commit. |
 | Karpathy Audit (r1) | manual | Style lens + four principles | 1 | ABSORBED | 1 warning, 2 nits. Reframed §1 in r2 to defer to §4.5. |
 | Karpathy Audit (r2) | manual | Style lens + four principles | 1 | ABSORBED | 6 findings (3 critical, 2 warning, 1 nit). r3 fixes §4.2/§4.3 contradiction, field naming, §6 dup, §7 test reconciliation. |
-| Karpathy Audit (r3) | manual | Style lens + four principles | 0 | pending | Will run alongside codex r3. |
+| Karpathy Audit (r3) | manual | Style lens + four principles | 1 | ABSORBED | 6 findings (2 critical, 3 warning, 1 nit): §4.4 contradiction (overlap with codex P1), invented field name (overlap with codex P2 #4), §6 "no-op" framing (overlap), `enc_key_version` (overlap), file-count ambiguity, missing soak success criteria, §9 task-time syntax. Cross-revision overlap noted in r4 revision-history block. |
+| Karpathy Audit (r4) | manual | Style lens + four principles | 0 | pending | Will run alongside codex r4. |
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | Not run — scope is "remove dead surface in a solo-user product." |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | Not run — UI change is sub-tab removal; low risk. |
 | DX Review | `/plan-devex-review` | DX gaps | 0 | — | Not run. |
 
-**VERDICT (r3):** **DRAFT — pending review.** r3 absorbs the structural rework codex r2 demanded (two-PR rollout, RLS helper preserved, scope contradiction resolved, frontend inventory completed). Critical pre-implementation constraints:
+**VERDICT (r4):** **DRAFT — pending review.** r4 absorbs the four codex r3 findings and the six karpathy r3 findings as tight edits to §1 / §2.4 / §4.1 / §4.4 / §4.6 / §6 / §9. r3's two-PR rollout shape is unchanged; this revision is precision-only. Critical pre-implementation constraints (unchanged from r3):
 
-1. **PR A must merge and deploy cleanly before PR B opens.** §4.4 audit confirms `row_count = 0` (or fork applied) before PR B merges.
+1. **PR A must merge and meet §4.6's soak criteria before PR B opens.** All four conditions (≥24h, zero ExecutionResolverError, zero PROVIDER_SECRET_MISSING from workspace-served providers, bench median ≤140 ms).
 2. **Migration filename re-verified at commit time** against `supabase/migrations/`.
 3. **`current_user_is_workspace_admin()` stays.** Don't add a DROP FUNCTION line to PR B.
 4. **`provider_oauth_states.scope` column and NOT NULL stay.** Only the CHECK tightens.
 5. **`docs/11-data-model.md` workspace references** are deferred to the data-model redesign owner; do not touch in this plan.
+6. **All TypeScript identifiers in §2.4 and §4.1 were verified against `webapp/src/lib/api.ts` at r4 commit-time.** Don't reintroduce invented names; round-trip new ones through the source file before adding them.
