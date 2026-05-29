@@ -30,6 +30,7 @@ import { randomUUID } from 'node:crypto';
 import type postgres from 'postgres';
 
 import { getCurrentUserId, getDbPg, getOutOfBandSql } from '../../db.js';
+import { logger } from '../../logger.js';
 import { resolveCredentialKindSnapshot } from '../agents/execution-resolver.js';
 import { emitOutboxEvent } from '../talks/outbox-emit.js';
 import { getRegisteredAgent } from './agent-accessors.js';
@@ -2614,24 +2615,34 @@ export async function claimQueuedTalkRuns(
 //
 // Replaces claimQueuedTalkRuns's batch-poll for the queue-consumer
 // path. The caller is invoked once per message with a specific runId;
-// markRunRunning does the atomic queued→running flip for that one
-// row. Accepts 'running' as a from-state so a retried message after a
-// consumer crash can re-claim and restart execution.
+// markRunRunning does the atomic queued→running flip for that one row.
+//
+// Claims ONLY from 'queued'. A row already 'running' is owned by another
+// (or an earlier) consumer invocation — re-claiming it would let a
+// duplicate at-least-once delivery double-execute the run (duplicate LLM
+// calls, tool side effects, cost). The queue is at-least-once and active
+// promotion + the stranded-sibling sweep can both enqueue a runId, so
+// duplicate deliveries are expected; they return 'already_running' and the
+// consumer acks. A consumer that crashes mid-run leaves the row 'running';
+// it is reaped by the scheduler's 1h stuck-run sweep (failRun) rather than
+// restarted in place — we trade in-place restart for the much more
+// important guarantee that a healthy run never runs twice.
 //
 // Sequence-index fairness: if the row is part of an ordered response
 // group and a lower-sequence sibling is still active (queued, running,
-// or awaiting_confirmation), returns 'blocked_by_sibling' so the
-// consumer can retry the message later. The cron-trigger sweep (U4)
-// or the queue's own retry backoff are the wake signals.
+// or awaiting_confirmation), returns 'blocked_by_sibling'. The consumer
+// acks (the run waits 'queued'); active promotion re-dispatches it when
+// the predecessor finishes, with the cron stranded-sibling sweep as the
+// lost-dispatch backstop.
 //
-// Emits talk_run_started ONLY on transition from queued → running.
-// Re-claims of an already-running row are silent (the original claim
-// already emitted the start event).
+// Emits talk_run_started on the queued → running transition (the only
+// transition this function performs).
 // ---------------------------------------------------------------------------
 
 export type MarkRunRunningResult =
   | { status: 'claimed'; run: TalkRunRecord }
   | { status: 'blocked_by_sibling' }
+  | { status: 'already_running' }
   | { status: 'terminal' }
   | { status: 'not_found' };
 
@@ -2648,9 +2659,10 @@ export async function markRunRunning(
   `;
   if (rows.length === 0) return { status: 'not_found' };
   const existing = rows[0];
-  if (existing.status !== 'queued' && existing.status !== 'running') {
-    return { status: 'terminal' };
-  }
+  // Owned by another consumer invocation — a duplicate/redelivered message.
+  // Ack it; do not re-claim (would double-execute).
+  if (existing.status === 'running') return { status: 'already_running' };
+  if (existing.status !== 'queued') return { status: 'terminal' };
 
   if (existing.sequence_index !== null && existing.response_group_id) {
     const blocking = await db<{ id: string }[]>`
@@ -2672,13 +2684,23 @@ export async function markRunRunning(
         started_at = ${startedAt}::timestamptz,
         ended_at = null,
         cancel_reason = null
-    where id = ${runId}::uuid and status in ('queued', 'running')
+    where id = ${runId}::uuid and status = 'queued'
     returning ${db.unsafe(TALK_RUN_COLUMNS)}
   `;
-  if (updated.length !== 1) return { status: 'terminal' };
+  // Lost the claim race: another consumer flipped queued→running between
+  // our SELECT and this UPDATE. Treat as a duplicate delivery and ack.
+  if (updated.length !== 1) return { status: 'already_running' };
   const claimed = updated[0];
 
-  if (existing.status === 'queued') {
+  // Best-effort start event. The queued→running claim above is already
+  // committed and is the source of truth. If the nickname lookup or the
+  // outbox emit throws (transient DB/network blip), we MUST still return
+  // 'claimed' so the caller executes the run — otherwise the throw would
+  // propagate, the row would sit 'running' (the claim gate makes it
+  // unre-claimable on redelivery), and it would only resolve via the 1h
+  // stuck sweep. A missing talk_run_started degrades the UI's "running"
+  // badge, not correctness — the terminal event still fires.
+  try {
     const targetAgentNickname = await resolveTargetAgentNickname(
       claimed.talk_id ?? '',
       claimed.target_agent_id ?? null,
@@ -2702,8 +2724,110 @@ export async function markRunRunning(
       },
       ownerIds: [claimed.owner_id],
     });
+  } catch (err) {
+    logger.warn(
+      { err, runId },
+      'markRunRunning: talk_run_started emit failed (best-effort); proceeding with claim so the run still executes',
+    );
   }
   return { status: 'claimed', run: claimed };
+}
+
+// ---------------------------------------------------------------------------
+// findNextRunnableOrderedSibling — active sequencing promotion.
+//
+// Given an ordered response group, return the id of the lowest-sequence
+// run that is still 'queued' AND has no lower-sequence sibling still active
+// (queued / running / awaiting_confirmation). That run is now eligible to
+// claim — the exact inverse of markRunRunning's blocking predicate.
+//
+// The queue consumer calls this the moment a run reaches a terminal state
+// and dispatches the returned run onto TALK_RUN_QUEUE, so the next ordered
+// step starts immediately. Without it, a blocked sibling can only advance
+// via its own queue redelivery, whose retry budget (~30s) is far shorter
+// than a slow step's worst-case time-to-fail (an NVIDIA 524 alone is ~100s),
+// so the whole round dead-letters. Returns null when no sibling is eligible
+// (group finished, next step already running, or not an ordered group).
+// ---------------------------------------------------------------------------
+
+export async function findNextRunnableOrderedSibling(
+  responseGroupId: string,
+): Promise<string | null> {
+  const db = getDbPg();
+  const rows = await db<{ id: string }[]>`
+    select r.id
+    from public.talk_runs r
+    where r.response_group_id = ${responseGroupId}
+      and r.status = 'queued'
+      and r.sequence_index is not null
+      and not exists (
+        select 1 from public.talk_runs prior
+        where prior.response_group_id = r.response_group_id
+          and prior.sequence_index is not null
+          and prior.sequence_index < r.sequence_index
+          and prior.status not in ('completed', 'failed', 'cancelled')
+      )
+    order by r.sequence_index asc
+    limit 1
+  `;
+  return rows[0]?.id ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// listStrandedOrderedSiblings — backstop for lost promotion dispatches.
+//
+// Active promotion (findNextRunnableOrderedSibling + dispatchRun in the
+// queue consumer) is best-effort: if the TALK_RUN_QUEUE.send hiccups, an
+// ordered step is left 'queued' with no in-flight message and would hang
+// forever. This finds eligible-but-stuck rows — 'queued', no active
+// lower-sequence blocker, stuck past the grace window — and the cron sweep
+// re-dispatches them, fulfilling queue-producer.ts's "the sweep picks up
+// anything the queue loses" intent (which the stuck-RUNNING sweep alone
+// never covered for queued rows).
+//
+// Grace anchor = coalesce(newest lower blocker's ended_at, this row's
+// created_at). The blocker time covers a lost *promotion* (later steps); the
+// created_at fallback covers a lost *initial dispatch* of the FIRST step
+// (sequence_index = 0), which has no blocker — without the coalesce its
+// subquery is NULL, `NULL < endedBefore` is false, and a lost seq-0 dispatch
+// would strand the whole round (every later step ack-waits on it forever).
+//
+// `endedBeforeIso` is `now - grace`; the grace keeps the sweep from racing a
+// promotion / initial dispatch still in normal flight.
+// ---------------------------------------------------------------------------
+
+export async function listStrandedOrderedSiblings(
+  endedBeforeIso: string,
+  limit: number,
+): Promise<Array<{ id: string; owner_id: string }>> {
+  const db = getDbPg();
+  const normalizedLimit = Math.max(1, Math.floor(limit));
+  return await db<Array<{ id: string; owner_id: string }>>`
+    select r.id, r.owner_id
+    from public.talk_runs r
+    where r.status = 'queued'
+      and r.sequence_index is not null
+      and r.response_group_id is not null
+      and not exists (
+        select 1 from public.talk_runs blocker
+        where blocker.response_group_id = r.response_group_id
+          and blocker.sequence_index is not null
+          and blocker.sequence_index < r.sequence_index
+          and blocker.status not in ('completed', 'failed', 'cancelled')
+      )
+      and coalesce(
+        (
+          select max(blocker.ended_at)
+          from public.talk_runs blocker
+          where blocker.response_group_id = r.response_group_id
+            and blocker.sequence_index is not null
+            and blocker.sequence_index < r.sequence_index
+        ),
+        r.created_at
+      ) < ${endedBeforeIso}::timestamptz
+    order by r.created_at asc
+    limit ${normalizedLimit}
+  `;
 }
 
 // ---------------------------------------------------------------------------
@@ -2711,9 +2835,10 @@ export async function markRunRunning(
 // message, record the LLM attempt, emit completed event.
 //
 // Channel delivery surface (talk_channel_bindings + channel_delivery_outbox)
-// from sqlite is dropped — chassis removal. The "promote next" in the
-// name is implicit: claimQueuedTalkRuns will pick up the next ordered
-// sibling on its next tick once this run reaches a terminal state.
+// from sqlite is dropped — chassis removal. "Promote next" is no longer
+// implicit: after this commits, the queue consumer calls
+// findNextRunnableOrderedSibling + dispatchRun to wake the next ordered
+// step immediately (see queue-consumer.ts).
 // ---------------------------------------------------------------------------
 
 export async function completeRunAndPromoteNextAtomic(input: {
@@ -2842,8 +2967,9 @@ export async function completeRunAndPromoteNextAtomic(input: {
 
 // ---------------------------------------------------------------------------
 // failRunAndPromoteNextAtomic — mark a run as failed, record the reason,
-// emit failed event. As with complete, the "promote next" semantic is
-// implicit via claimQueuedTalkRuns's next tick.
+// emit failed event. As with complete, the next ordered step is woken
+// actively by the queue consumer (findNextRunnableOrderedSibling +
+// dispatchRun) once this run reaches its terminal state.
 // ---------------------------------------------------------------------------
 
 export async function failRunAndPromoteNextAtomic(input: {

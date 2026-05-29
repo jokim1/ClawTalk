@@ -183,7 +183,7 @@ describe('markRunRunning', () => {
     expect(result.status).toBe('not_found');
   });
 
-  it('re-claims a running row without re-emitting talk_run_started', async () => {
+  it('does not re-claim a running row (duplicate-delivery safety)', async () => {
     const { runId, talkId } = await setupRun();
 
     const first = await markRunRunning(runId);
@@ -192,8 +192,11 @@ describe('markRunRunning', () => {
       await getOutboxEventsForTopics([`talk:${talkId}`], 0)
     ).filter((e) => e.event_type === 'talk_run_started').length;
 
+    // A duplicate / redelivered message for an already-running row must NOT
+    // re-claim — re-claiming would let the run execute twice. It returns
+    // 'already_running' so the consumer acks, and emits no second start.
     const second = await markRunRunning(runId);
-    expect(second.status).toBe('claimed');
+    expect(second.status).toBe('already_running');
     const afterCount = (
       await getOutboxEventsForTopics([`talk:${talkId}`], 0)
     ).filter((e) => e.event_type === 'talk_run_started').length;
@@ -290,6 +293,25 @@ describe('processTalkRunMessage', () => {
     });
   });
 
+  it('acks without executing when the run is already running (duplicate delivery)', async () => {
+    // Simulates a second at-least-once delivery (or sweep + promotion both
+    // enqueuing the same runId) arriving while another invocation owns the
+    // run. The executor must not fire — double-execution is the bug.
+    const { runId } = await setupRun({ status: 'running' });
+    const { ctx } = makeMockCtx();
+    const env: DbScopeEnvBindings = {};
+    await withRequestScopedDb(TEST_DB_URL, ctx, env, async () => {
+      await processTalkRunMessage({
+        runId,
+        executor: makeMockExecutor({
+          throwError: new Error('duplicate delivery must not execute'),
+        }),
+      });
+    });
+    // Untouched — still running, not flipped or failed by the duplicate.
+    expect(await getTalkRunById(runId).then((r) => r?.status)).toBe('running');
+  });
+
   it('aborts execution and ack-returns when status flips to cancelled mid-run', async () => {
     const { runId } = await setupRun();
     const { ctx, drain } = makeMockCtx();
@@ -319,6 +341,124 @@ describe('processTalkRunMessage', () => {
 
     const run = await getTalkRunById(runId);
     expect(run?.status).toBe('cancelled');
+  });
+
+  it('promotes the next ordered sibling after a run completes', async () => {
+    const groupId = '0c999999-1111-1111-1111-111111111111';
+    const first = await setupRun({
+      sequenceIndex: 0,
+      responseGroupId: groupId,
+    });
+    const second = await setupRun({
+      sequenceIndex: 1,
+      responseGroupId: groupId,
+    });
+
+    const dispatched: string[] = [];
+    const { ctx, drain } = makeMockCtx();
+    const env: DbScopeEnvBindings = {};
+    await withRequestScopedDb(TEST_DB_URL, ctx, env, async () => {
+      await processTalkRunMessage({
+        runId: first.runId,
+        executor: makeMockExecutor({ output: { content: 'step 0 done' } }),
+        cancelPollIntervalMs: 50_000,
+        dispatch: async ({ runId }) => {
+          dispatched.push(runId);
+        },
+      });
+    });
+    await drain();
+
+    expect(await getTalkRunById(first.runId).then((r) => r?.status)).toBe(
+      'completed',
+    );
+    expect(dispatched).toEqual([second.runId]);
+  });
+
+  it('promotes the next ordered sibling even when the run FAILS (the bug fix)', async () => {
+    const groupId = '0c999999-2222-2222-2222-222222222222';
+    const first = await setupRun({
+      sequenceIndex: 0,
+      responseGroupId: groupId,
+    });
+    const second = await setupRun({
+      sequenceIndex: 1,
+      responseGroupId: groupId,
+    });
+
+    const dispatched: string[] = [];
+    const { ctx, drain } = makeMockCtx();
+    const env: DbScopeEnvBindings = {};
+    await withRequestScopedDb(TEST_DB_URL, ctx, env, async () => {
+      await processTalkRunMessage({
+        runId: first.runId,
+        executor: makeMockExecutor({
+          throwError: new Error(
+            'provider.nvidia upstream timed out (HTTP 524 <none>)',
+          ),
+        }),
+        cancelPollIntervalMs: 50_000,
+        dispatch: async ({ runId }) => {
+          dispatched.push(runId);
+        },
+      });
+    });
+    await drain();
+
+    // The failed step must not strand its siblings — the next one is woken.
+    expect(await getTalkRunById(first.runId).then((r) => r?.status)).toBe(
+      'failed',
+    );
+    expect(dispatched).toEqual([second.runId]);
+  });
+
+  it('does not promote when the finished run is the last ordered step', async () => {
+    const groupId = '0c999999-3333-3333-3333-333333333333';
+    // Lower sibling already terminal so the last step is claimable.
+    await setupRun({
+      sequenceIndex: 0,
+      responseGroupId: groupId,
+      status: 'completed',
+    });
+    const last = await setupRun({ sequenceIndex: 1, responseGroupId: groupId });
+
+    const dispatched: string[] = [];
+    const { ctx, drain } = makeMockCtx();
+    const env: DbScopeEnvBindings = {};
+    await withRequestScopedDb(TEST_DB_URL, ctx, env, async () => {
+      await processTalkRunMessage({
+        runId: last.runId,
+        executor: makeMockExecutor({ output: { content: 'final step' } }),
+        cancelPollIntervalMs: 50_000,
+        dispatch: async ({ runId }) => {
+          dispatched.push(runId);
+        },
+      });
+    });
+    await drain();
+
+    expect(dispatched).toEqual([]);
+  });
+
+  it('does not promote for a non-ordered (panel/single) run', async () => {
+    const { runId } = await setupRun(); // no responseGroupId, no sequenceIndex
+
+    const dispatched: string[] = [];
+    const { ctx, drain } = makeMockCtx();
+    const env: DbScopeEnvBindings = {};
+    await withRequestScopedDb(TEST_DB_URL, ctx, env, async () => {
+      await processTalkRunMessage({
+        runId,
+        executor: makeMockExecutor({ output: { content: 'solo' } }),
+        cancelPollIntervalMs: 50_000,
+        dispatch: async ({ runId: nextId }) => {
+          dispatched.push(nextId);
+        },
+      });
+    });
+    await drain();
+
+    expect(dispatched).toEqual([]);
   });
 });
 
