@@ -490,6 +490,9 @@ function buildRegisteredAgents(): RegisteredAgent[] {
         message: 'Main will use Anthropic direct HTTP with an API key.',
       },
       supportsVision: true,
+      modelAutoUpgradedFrom: null,
+      modelAutoUpgradedAt: null,
+      modelUpdateAvailable: null,
     },
   ];
 }

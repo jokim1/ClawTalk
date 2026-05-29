@@ -4449,6 +4449,9 @@ function buildRegisteredAgent(
       message: 'Main will use direct HTTP.',
     },
     supportsVision: input.supportsVision ?? false,
+    modelAutoUpgradedFrom: input.modelAutoUpgradedFrom ?? null,
+    modelAutoUpgradedAt: input.modelAutoUpgradedAt ?? null,
+    modelUpdateAvailable: input.modelUpdateAvailable ?? null,
   };
 }
 

@@ -2154,6 +2154,14 @@ export type RegisteredAgent = {
   // composer's image-attachment guard for the Main slot, where the
   // TalkAgent row stores modelId=null.
   supportsVision: boolean;
+  // Model-lifecycle trail (backend PR #487 + run-time net). When
+  // modelAutoUpgradedFrom is set, this agent was auto-moved off a RETIRED
+  // model — the card shows a badge until dismissed. modelUpdateAvailable is a
+  // non-mutating "newer same-family model exists" suggestion (opt-in update,
+  // never auto-applied).
+  modelAutoUpgradedFrom: string | null;
+  modelAutoUpgradedAt: string | null;
+  modelUpdateAvailable: { modelId: string; displayName: string | null } | null;
 };
 
 export async function listRegisteredAgents(): Promise<RegisteredAgent[]> {
@@ -2227,6 +2235,22 @@ export async function deleteRegisteredAgent(agentId: string): Promise<void> {
     `/api/v1/registered-agents/${encodeURIComponent(agentId)}`,
     {
       method: 'DELETE',
+    },
+  );
+}
+
+/**
+ * Dismiss the "model retired — auto-upgraded" badge for an agent. Clears the
+ * persisted trail; the agent's already-upgraded model is untouched. Returns
+ * the refreshed snapshot.
+ */
+export async function dismissAgentModelUpgrade(
+  agentId: string,
+): Promise<RegisteredAgent> {
+  return apiMutationRequest<RegisteredAgent>(
+    `/api/v1/registered-agents/${encodeURIComponent(agentId)}/dismiss-model-upgrade`,
+    {
+      method: 'POST',
     },
   );
 }

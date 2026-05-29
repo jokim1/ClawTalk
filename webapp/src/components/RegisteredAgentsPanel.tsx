@@ -6,6 +6,7 @@ import {
   createRegisteredAgent,
   updateRegisteredAgent,
   deleteRegisteredAgent,
+  dismissAgentModelUpgrade,
   type ExecutorSettings,
   type RegisteredAgent,
   type RegisteredAgentCredentialMode,
@@ -535,6 +536,44 @@ export function RegisteredAgentsPanel(props: Props): JSX.Element {
     }
   }
 
+  function applyAgentUpdate(updated: RegisteredAgent) {
+    const nextAgents = agents.map((a) => (a.id === updated.id ? updated : a));
+    setAgents(nextAgents);
+    onAgentsChanged?.(nextAgents);
+  }
+
+  function handleAgentMutationError(err: unknown, fallback: string) {
+    if (err instanceof UnauthorizedError) {
+      onUnauthorized();
+    } else if (err instanceof ApiError) {
+      setError(err.message);
+    } else {
+      setError(fallback);
+    }
+  }
+
+  // Dismiss the "model retired — auto-upgraded" badge. Clears the trail; the
+  // already-upgraded model is untouched.
+  async function handleDismissModelUpgrade(agentId: string) {
+    try {
+      setError(null);
+      applyAgentUpdate(await dismissAgentModelUpgrade(agentId));
+    } catch (err) {
+      handleAgentMutationError(err, 'Failed to dismiss the model notice');
+    }
+  }
+
+  // Opt into a newer same-family model. A normal model change, so the backend
+  // clears any auto-upgrade badge and re-resolves the lifecycle.
+  async function handleApplyModelUpdate(agentId: string, modelId: string) {
+    try {
+      setError(null);
+      applyAgentUpdate(await updateRegisteredAgent({ agentId, modelId }));
+    } catch (err) {
+      handleAgentMutationError(err, 'Failed to update the model');
+    }
+  }
+
   const createPreview = createDraft
     ? buildDraftExecutionPreview({
         draft: createDraft,
@@ -601,6 +640,12 @@ export function RegisteredAgentsPanel(props: Props): JSX.Element {
                   isMainAgent={agent.id === mainAgentId}
                   onEdit={() => startEdit(agent)}
                   onDelete={() => handleDelete(agent.id)}
+                  onDismissModelUpgrade={() =>
+                    handleDismissModelUpgrade(agent.id)
+                  }
+                  onApplyModelUpdate={(modelId) =>
+                    handleApplyModelUpdate(agent.id, modelId)
+                  }
                   canManage={canManage}
                 />
               )}
@@ -840,6 +885,8 @@ type AgentCardViewProps = {
   isMainAgent: boolean;
   onEdit: () => void;
   onDelete: () => void;
+  onDismissModelUpgrade: () => void;
+  onApplyModelUpdate: (modelId: string) => void;
   canManage: boolean;
 };
 
@@ -849,6 +896,8 @@ function AgentCardView({
   isMainAgent,
   onEdit,
   onDelete,
+  onDismissModelUpgrade,
+  onApplyModelUpdate,
   canManage,
 }: AgentCardViewProps): JSX.Element {
   const toolList = Object.entries(agent.toolPermissions)
@@ -856,6 +905,9 @@ function AgentCardView({
     .map(([toolName]) => TOOL_NAMES[toolName] || toolName);
 
   const credentialModeBadge = credentialModeBadgeLabel(agent.credentialMode);
+  // A const (not the prop directly) so TS keeps the non-null narrowing inside
+  // the Update button's click closure.
+  const updateAvailable = agent.modelUpdateAvailable;
   return (
     <>
       <div className="registered-agent-card-content">
@@ -915,6 +967,40 @@ function AgentCardView({
             </div>
           )}
         </div>
+
+        {agent.modelAutoUpgradedFrom && (
+          <div className="registered-agent-model-notice registered-agent-model-notice-retired">
+            <span>
+              Model retired — auto-upgraded from{' '}
+              <code>{agent.modelAutoUpgradedFrom}</code> to{' '}
+              <code>{agent.modelId}</code>.
+            </span>
+            {canManage && (
+              <button
+                onClick={onDismissModelUpgrade}
+                className="registered-agents-button registered-agents-button-small"
+              >
+                Dismiss
+              </button>
+            )}
+          </div>
+        )}
+
+        {updateAvailable && (
+          <div className="registered-agent-model-notice registered-agent-model-notice-update">
+            <span>
+              {updateAvailable.displayName ?? updateAvailable.modelId} available.
+            </span>
+            {canManage && (
+              <button
+                onClick={() => onApplyModelUpdate(updateAvailable.modelId)}
+                className="registered-agents-button registered-agents-button-small registered-agents-button-primary"
+              >
+                Update
+              </button>
+            )}
+          </div>
+        )}
 
         {toolList.length > 0 && (
           <div className="registered-agent-card-tools">
