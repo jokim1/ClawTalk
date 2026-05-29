@@ -1,10 +1,28 @@
-# T-new-AR — active-round race fix (`enqueueTalkTurnAtomic` + `runTalkJob`)
+# T-new-AR — active-round race fix (`enqueueTalkTurnAtomic` + `createJobTriggerRun`)
 
-**Status:** Plan, **r1 draft**.
+**Status:** Plan, **r2 draft**. r1 cleared by `/karpathy-audit diff` (4/4 coverage, 1 warning + 3 nits); **r1 NOT cleared by `/codex` consult — 20 findings, including a wrong function name and a wrong scheduler-retry premise.** r2 absorbs both.
 **Tracking:** [[project-llm-turn-latency]] (correctness branch — same bug surface, different lens). Carry-over from T-new-A2 codex C-H2 ("Active-round race is preserved by Option A — documented out of scope").
 **Branch (planning):** `docs/t-new-ar-plan` (this doc).
 **Branch (implementation, to be created):** `feature/t-new-ar-active-round-race-fix`.
-**Estimated effort:** ~3 h human / ~30 min CC. (Smaller than T-new-A2 — no measurement gate, single structural change to two callers.)
+**Estimated effort:** ~4 h human / ~40 min CC. (r2 expanded scope: scheduler `next_due_at` refactor + NOWAIT semantics + deterministic race tests.)
+
+### Revision history
+
+- **r1 (2026-05-29):** Initial draft. Picked Option 3 (`SELECT … FOR UPDATE OF th`) over Option 1 (advisory lock) and Option 2 (partial unique index, rejected for fan-out). Karpathy diff audit: 4/4 coverage, 1 warning (verbose Option 2 rejection), 3 nits (Joseph name twice, §5/§7.1 duplication, PR title in plan).
+- **r2 (2026-05-29, this version):** Codex consult on r1 returned 20 findings. Material absorbs:
+  - **#1 / #2 / #6 (function name + manual route):** Job entry is `createJobTriggerRun` (job-accessors.ts:881), not `createJobTriggerRun`. Both `scheduler.ts:81` AND `createJobTriggerRunNowRoute` (talk-jobs.ts:312) are call sites. Plan updated throughout.
+  - **#3 / #7 / #8 (scheduler retry premise wrong):** `claimDueTalkJobs` advances `next_due_at` to the next cron tick BEFORE `createJobTriggerRun` runs. Returning `thread_busy` without further action drops the occurrence entirely. r2 adopts the cleanest fix per Joseph (Option C): move `next_due_at` advance into the scheduler's result handler so only `'enqueued'` results consume the tick. `claimDueTalkJobs` returns due-but-not-yet-claimed jobs; thread_busy jobs naturally retry next tick.
+  - **#12 / #13 / #14 (test correctness):** Test 1 rewritten with deterministic lock-then-second-tx pattern (manual postgres.js tx control). Test 5 rewritten as a real concurrent race (not sequential). Test 4 renamed and reframed — it's "ack after first call commits," not idempotency.
+  - **#17 (lock hold span):** Lock would be held across the full agent loop + credential resolution (~500-1500 ms). r2 adopts `FOR UPDATE NOWAIT` per Joseph: second caller fails immediately with postgres LockNotAvailable; route catches and maps to `TalkActiveRoundError`. Avoids worker-timeout pathological case and is observably equivalent to "round already in progress."
+  - **#4 (SQL clause ordering):** Postgres canonical form is `LIMIT N ... FOR UPDATE`. Plan SQL updated.
+  - **#10 (postgres.js max:1 per request scope):** Documented in §5. Tests use node client (max:5) so race tests work; production same-request nested withUserContext is rare and serializes on the single connection (acceptable).
+  - **#11 (Hyperdrive claim unbacked):** Dropped. Plan references postgres.js direct only.
+  - **#16 (createTalkRun bypass):** Acknowledged in §4.3 — invariant is app-level enforced via the two entry points; DB-level enforcement would need a separate plan.
+  - **#18 (per-thread state row alternative):** Added as Option 4 briefly in §3.
+  - **#19 (deadlock language too strong):** Softened to "low risk today."
+  - **#20 (test the manual run-now route):** Added Test 7 for `createJobTriggerRunNowRoute`'s thread_busy handling.
+  - Plus karpathy nits: §3.2 trimmed; §5 Risk 4 dropped (covered in §7.1); §2.3 "Joseph" → "solo-user app"; §6 PR title removed.
+  - **Non-material acknowledgments:** #5 (`resolveThreadIdForTalk` is outside the lock — true but pre-lock race is benign, that function only validates visibility), #9 (claimDueTalkJobs upstream race between multiple scheduler instances — out of scope for this plan, noted in §5), #15 (other inserters confirmed: only the two entry points).
 
 ---
 
@@ -33,7 +51,7 @@ Both calls return 202 to the client; the SPA renders two response groups; the qu
 
 ### 2.2 Scenario B: scheduler-triggered job races with /chat
 
-`runTalkJob` (`src/clawtalk/db/job-accessors.ts:921`) gates only on `job_id`, NOT on `(talk_id, thread_id)`:
+`createJobTriggerRun` (job-accessors.ts:921) gates only on `job_id`, NOT on `(talk_id, thread_id)`:
 
 ```sql
 select count(*) from public.talk_runs
@@ -41,20 +59,20 @@ where job_id = ${job.id}::uuid
   and status in ('queued', 'running', 'awaiting_confirmation')
 ```
 
-So a scheduler tick (`schedule: * * * * *` per `wrangler deploy` cron) that fires a job on thread T concurrently with a user `/chat` on T:
+Manual run-now via `runTalkJobNowRoute` (talk-jobs.ts:312) calls the same function and shares the same gate. So both scheduler tick (`schedule: * * * * *` per `wrangler.toml` cron) AND manual-run-now races with /chat are in-scope.
 
-| Time | Scheduler → `runTalkJob` | /chat → `enqueueTalkTurnAtomic` | Thread T |
+| Time | Scheduler → `createJobTriggerRun` | /chat → `enqueueTalkTurnAtomic` | Thread T |
 |---|---|---|---|
 | t=0 | job_id check → 0 active for THIS JOB | — | 0 active |
 | t=20 ms | — | `loadEnqueueTurnContext` → activeCount=0 | 0 active |
 | t=200 ms | `createTalkRun` (job's run) | — | 1 active |
 | t=400 ms | — | 3× `createTalkRun` (user's group) | **4 active (BUG)** |
 
-This one is more realistic: the scheduler runs every minute, so any /chat issued during a job-triggered tick window can race.
+The scheduler runs every minute, so any /chat issued during a job-triggered tick window can race.
 
 ### 2.3 Real-world likelihood for clawtalk
 
-Joseph is the sole user, BUT:
+Solo-user app, BUT:
 
 - Cloudflare Workers are stateless — each request gets a fresh isolate, no per-thread mutex possible at the app layer.
 - The scheduler runs `* * * * *` (every minute) and triggers any due jobs.
@@ -75,7 +93,7 @@ A solo user can trigger this by: enabling a recurring job on a thread, then typi
 
 ### 3.1 Option 1 — Postgres advisory lock scoped to (talk_id, thread_id)
 
-Add at the start of `enqueueTalkTurnAtomic` and `runTalkJob`:
+Add at the start of `enqueueTalkTurnAtomic` and `createJobTriggerRun`:
 
 ```sql
 select pg_advisory_xact_lock(
@@ -97,29 +115,11 @@ select pg_advisory_xact_lock(
 
 ### 3.2 Option 2 — Partial unique index on `talk_runs` (REJECTED)
 
-Naive shape:
-```sql
-create unique index talk_runs_one_active_per_thread
-  on public.talk_runs (talk_id, thread_id)
-  where status in ('queued', 'running', 'awaiting_confirmation');
-```
+No natural per-row unique index encodes the invariant. `(talk_id, thread_id)` WHERE status active fails because fan-out legitimately INSERTs N rows per round; adding `response_group_id` doesn't help (same group still has N rows); `DEFERRABLE INITIALLY DEFERRED` defers the check to commit but commit-time still sees N rows. Eliminated.
 
-This **fails on fan-out**: `enqueueTalkTurnAtomic` legitimately INSERTs N rows in one tx (one per agent in the response group), all with the same `(talk_id, thread_id)` and status `'queued'`. The second INSERT in a single tx would violate the unique constraint. `DEFERRABLE INITIALLY DEFERRED` doesn't help — the constraint check at commit still sees N rows.
+### 3.3 Option 3 — `SELECT ... FOR UPDATE OF th NOWAIT` on `talk_threads` (RECOMMENDED)
 
-Refined shape — include `response_group_id`:
-```sql
-create unique index talk_runs_one_active_group_per_thread
-  on public.talk_runs (talk_id, thread_id, response_group_id)
-  where status in ('queued', 'running', 'awaiting_confirmation');
-```
-
-Also fails — same response_group still produces N rows with the same key tuple.
-
-No natural per-row index encodes the "at most one active response_group per thread" invariant. Eliminating this option.
-
-### 3.3 Option 3 — `SELECT ... FOR UPDATE OF th` on `talk_threads` (RECOMMENDED)
-
-Add `for update of th` to the existing `loadEnqueueTurnContext` helper:
+Add `for update of th nowait` to the existing `loadEnqueueTurnContext` helper. Postgres canonical clause order is `LIMIT … FOR UPDATE`:
 
 ```sql
 select
@@ -133,69 +133,90 @@ select
 from public.talks tk
 join public.talk_threads th on th.talk_id = tk.id
 where tk.id = ${talkId}::uuid and th.id = ${threadId}::uuid
-for update of th       -- ← new: locks the thread row for the tx
 limit 1
+for update of th nowait    -- ← new: lock thread row; fail immediately if contended
 ```
 
-The `FOR UPDATE OF th` clause locks ONLY the `talk_threads` row (alias `th`), not `talks`. The locked row is the natural per-thread mutex.
+`FOR UPDATE OF th` scopes the lock to the `talk_threads` row only (alias `th`), not `talks`. `NOWAIT` makes a contended caller fail immediately with Postgres SQLSTATE `55P03` (`lock_not_available`) instead of blocking. The helper catches that and throws `TalkActiveRoundError('thread')` — observably equivalent to "a round is already in progress" (which is exactly what's true if someone else holds the lock).
 
-For `runTalkJob`, add the same lock at the start of the job's tx. Call site:
+For `createJobTriggerRun`, add the same lock at the start of the job's tx:
 
 ```typescript
-await getDbPg()`
-  select 1 from public.talk_threads
-  where id = ${job.threadId}::uuid and talk_id = ${job.talkId}::uuid
-  for update
-`;
+const db = getDbPg();
+try {
+  await db`
+    select 1 from public.talk_threads
+    where id = ${job.threadId}::uuid and talk_id = ${job.talkId}::uuid
+    for update nowait
+  `;
+} catch (err) {
+  if (isLockNotAvailable(err)) {
+    return { status: 'thread_busy', job };
+  }
+  throw err;
+}
 ```
 
 **Pros:**
 - Folds into existing helper for the /chat path — **zero extra round-trips**.
-- One small `FOR UPDATE` query for the job path — same query the consumer would naturally make.
+- One small `FOR UPDATE NOWAIT` query for the job path.
+- `NOWAIT` avoids worker-CPU-budget concern entirely (#17 from codex r1 review).
 - Standard SQL, inspectable via `pg_locks` for debugging.
 - The lock is on `talk_threads.id` (the natural unit of the invariant); no hash collisions possible.
 - Automatic release at tx end (commit or rollback), same as advisory locks.
 
 **Cons:**
-- Locks the `talk_threads` row, which is read by many other queries. Plain `SELECT` from other txs is NOT blocked (Postgres only blocks other row-level write locks). Still, any other writer that touches the same row (e.g., `updateTalkThreadTitle`, `maybePersistTalkThreadTitleFromMessages`) will queue behind our lock.
-  - In `enqueueTalkTurnAtomic` itself, `maybePersistTalkThreadTitleFromMessages` runs AFTER our FOR UPDATE — that's our own lock, so it doesn't wait.
-  - Other txs writing to the same `talk_threads` row (e.g., a rename from settings) block until our tx commits. Latency impact: at most ~3 s in the pathological case where 3 agents are queued.
-- The lock is acquired DURING the read, which is at the start of the function. If the caller has prior locks (e.g., a future `talks.updated_at` write), lock-order discipline matters. Today there is no such caller.
+- Locks the `talk_threads` row. Plain `SELECT` from other txs is not blocked, but other write-lockers (`updateTalkThreadTitle`, `maybePersistTalkThreadTitleFromMessages` from a different tx) hit `lock_not_available` and would have to handle it. Today's other writers don't use NOWAIT — they'd error out. Mitigation: scope of `updateTalkThreadTitle` callers is small (settings UI); if it ever fires concurrently, it'd return a transient 5xx that the SPA retries. Documented in §5.
+- The lock acquires DURING the helper's read at the start of the function — lock order discipline matters for any future caller. Today there is no such caller.
 
-### 3.4 Why Option 3 over Option 1
+### 3.4 Option 4 — Per-thread state row (CONSIDERED, not picked)
 
-Option 1 (advisory lock) is the textbook race-protection pattern. Option 3 (FOR UPDATE) is more elegant here because:
+Introduce a separate table `active_round_locks(talk_id, thread_id PRIMARY KEY, response_group_id, started_at)`. `INSERT … ON CONFLICT DO NOTHING RETURNING` at the start of `enqueueTalkTurnAtomic` and `createJobTriggerRun`; `DELETE` when all runs in the group reach a terminal state.
 
-1. The /chat path's helper ALREADY reads `talk_threads` row. Adding `FOR UPDATE` is a one-clause change, zero extra round-trips.
-2. The job path needs a fresh read anyway (today it reads `talk_jobs` but not `talk_threads`); same one-line add.
-3. The lock is on a real row that maps 1:1 to the invariant ("at most one active round on THIS thread"). Easier to reason about than a hash.
-4. Postgres' lock manager handles wait-queue ordering automatically; no extra application code.
+**Pros:** explicit visibility into "what's holding the lock"; doesn't couple with `talk_threads` writers.
+**Cons:** new table + migration; needs cleanup logic (what if the run is cancelled / errors? need a sweeper); more code; adds a row insert per round to the hot path.
 
-Option 1 wins only if we expect cross-database-engine portability — clawtalk is Postgres-only. Eliminating advisory locks from the recommendation.
+Not picked because the Option 3 cons (other writers contending on `talk_threads`) are manageable in practice, and Option 4's cleanup logic adds operational surface.
+
+### 3.5 Why Option 3 + NOWAIT over Options 1 and 4
+
+Option 1 (advisory lock) is the textbook race-protection pattern but adds an extra round-trip and doesn't fold into the existing helper. Option 4 (per-thread state row) adds a table + cleanup logic.
+
+Option 3 + NOWAIT wins because:
+1. The /chat path's helper ALREADY reads `talk_threads` row. Adding `FOR UPDATE NOWAIT` is one clause, zero extra round-trips.
+2. The job path needs one small `FOR UPDATE NOWAIT` query.
+3. The lock is on a real row that maps 1:1 to the invariant. Easier to reason about than a hash, no migration like Option 4.
+4. `NOWAIT` makes contention fail-fast — no worker-timeout pathological case.
 
 ---
 
-## 4. The fix — Option 3
+## 4. The fix — Option 3 + NOWAIT + scheduler refactor
 
 ### 4.1 What changes
 
-1. **`src/clawtalk/db/accessors.ts` — `loadEnqueueTurnContext`**: add `for update of th` to the existing JOIN-and-subquery. Net +1 line.
-2. **`src/clawtalk/db/job-accessors.ts` — `runTalkJob`**: add a `SELECT 1 FROM talk_threads WHERE id=$1 FOR UPDATE` at the start of the function, BEFORE the `job_id`-scoped active check. Also add a thread-level active check (the same one `enqueueTalkTurnAtomic` does). Net ~+15 lines.
-3. **`src/clawtalk/db/accessors.test.ts`** — add 4 race tests (§7). Net ~+200 lines.
-4. **`src/clawtalk/db/job-accessors.test.ts`** — add 1 race test for the job path. Net ~+50 lines.
+1. **`src/clawtalk/db/accessors.ts` — `loadEnqueueTurnContext`**: add `for update of th nowait` to the existing JOIN-and-subquery; wrap in try/catch and map `lock_not_available` (SQLSTATE `55P03`) to `TalkActiveRoundError('thread')`. Net ~+8 lines.
+2. **`src/clawtalk/db/accessors.ts`** — add `isLockNotAvailable(err)` helper used by both call sites. Net ~+5 lines.
+3. **`src/clawtalk/db/job-accessors.ts` — `createJobTriggerRun`**: add a `SELECT 1 FROM talk_threads … FOR UPDATE NOWAIT` at the start of the function, BEFORE the `job_id`-scoped active check; catch `lock_not_available` → return `{status: 'thread_busy', job}` (new sentinel). Also add a thread-level active check (returns same sentinel when count > 0). Net ~+20 lines.
+4. **`src/clawtalk/db/job-accessors.ts` — `claimDueTalkJobs`**: REMOVE the `update public.talk_jobs set next_due_at = ...` block. The function now returns due-but-not-yet-claimed jobs without advancing the cursor. Net ~-12 lines.
+5. **`src/clawtalk/talks/scheduler.ts` — `processClaimableJobs`**: after `createJobTriggerRun` returns, branch on `result.status`. Only on `'enqueued'` advance `next_due_at` to the next cron-computed time. On `'thread_busy'` (new) or `'job_busy'`, leave `next_due_at` unchanged so next tick retries naturally. On `'paused' | 'not_found' | 'blocked'`, advance to next tick to avoid hot-looping. Net ~+25 lines (including the helper to compute the advanced time, lifted from `claimDueTalkJobs`).
+6. **`src/clawtalk/web/routes/talk-jobs.ts` — `runTalkJobNowRoute`**: branch the new `'thread_busy'` result to a 409 response with `code: 'thread_busy'`. Net ~+10 lines.
+7. **`src/clawtalk/db/accessors.test.ts`** — add Tests 1-4 (§7). Net ~+250 lines.
+8. **`src/clawtalk/db/job-accessors.test.ts`** — add Test 5 (real-race) + Test 6 (scheduler refactor) + Test 7 (manual run-now route). Net ~+150 lines.
 
-No migration. No schema change. No new exports.
+No migration. No schema change. No new exports (the sentinel is a TypeScript discriminated-union member already, just adds a new variant).
 
 ### 4.2 Why this composition
 
-- The `FOR UPDATE` is sufficient for serialization. The thread-level active check in `runTalkJob` enforces the SAME invariant the /chat path enforces. Without it, the job path would still INSERT — the lock serializes but doesn't reject.
-- The existing job-level active check (`where job_id = ...`) stays — it answers a different question ("don't start the same job twice"), independent of the thread invariant.
+- The `FOR UPDATE NOWAIT` is sufficient for serialization. The thread-level active check in `createJobTriggerRun` enforces the SAME invariant the /chat path enforces. Without it, the job path would still INSERT — the lock serializes but doesn't reject.
+- The existing job-level active check (`where job_id = ...`) stays — it answers a different question ("don't start the same job twice").
+- Moving the `next_due_at` advance out of `claimDueTalkJobs` makes the scheduler tick consumption explicit: only successful enqueues consume a tick.
 
 ### 4.3 Out of scope (explicit)
 
-- **`deleteTalkMessagesAtomic`'s `hasActiveTalkRuns` check** (accessors.ts:1334-1339) — also racy, but the failure mode is benign (a history edit completes while a fresh round just started → the edit only touches `talk_runs.trigger_message_id`, not the run's lifecycle). Documented as a separate follow-up.
+- **`deleteTalkMessagesAtomic`'s `hasActiveTalkRuns` check** (accessors.ts:1334-1339) — also racy, but the failure mode is benign (a history edit only touches `talk_runs.trigger_message_id`, not the run's lifecycle). Separate follow-up.
 - **`claimQueuedTalkRuns`** — transitions queued→running. Doesn't change active count. Not in scope.
-- **Hyperdrive connection pinning** — the `FOR UPDATE` lock is tied to the tx, which is tied to one connection. Hyperdrive routes withUserContext txs to pooled connections; race-test reliability depends on each tx getting its own connection. Existing test infra (`accessors.test.ts`) uses postgres.js directly, NOT Hyperdrive — so tests will be reliable. Prod uses Hyperdrive; standard FOR UPDATE semantics apply.
+- **`claimDueTalkJobs` upstream race between multiple scheduler instances** (codex r1 #9) — two concurrent scheduler isolates could claim the same due job. Out of scope for this plan; would need `FOR UPDATE SKIP LOCKED` on the claim SELECT. After this plan, the thread-level NOWAIT catches the downstream symptom (only one of the racing schedulers wins the thread lock); the duplicate-claim work is still wasted but not incorrect.
+- **`createTalkRun` is exported and bypasses the invariant.** Today only the two call sites above use it for active-status writes. The invariant is **app-level enforced**; DB-level enforcement (Option 4 state row + trigger) would be a separate plan. Acknowledged as a regression vector — any new caller of `createTalkRun` with active status must take the thread lock first.
 
 ### 4.4 Pre-deploy measurement
 
@@ -225,79 +246,101 @@ npm run format:check
 
 ## 5. Risks and open questions
 
-1. **`SELECT ... FOR UPDATE` blocks other writers of the same `talk_threads` row.** Today the only other writers are `updateTalkThreadTitle` (rare; user-initiated) and `maybePersistTalkThreadTitleFromMessages` (runs inside the same tx as our lock — no contention). Future writers must be aware: if they add a long-running `talk_threads` mutation, they could queue behind a streaming round (~3 s pathological case).
-2. **Worker timeout interaction.** Cloudflare Workers have a CPU time limit (~30 s on Paid). If the lock-acquire wait exceeds the remaining budget, the worker errors. Predicted likelihood: very low (no path holds the lock more than a few hundred ms). If it ever fires, the user retries — same as a transient 503.
-3. **Hyperdrive connection pool behavior under FOR UPDATE.** Hyperdrive returns connections to the pool when the tx commits/rolls back. If a worker is killed mid-tx (e.g., by CF runtime), the connection is released by Hyperdrive's timeout, releasing the lock. No "stuck lock" scenario.
-4. **Test isolation.** Race tests run two concurrent `withUserContext` blocks. Each gets its own postgres.js tx. Postgres.js's pool is configured with sufficient connections for parallel txs (>= 2). Verified via the existing `enqueueTalkTurnAtomic: fans out N queued runs + outbox events` test at `accessors.test.ts:916` which does sequential ops.
-5. **Deadlock potential with scheduler.** Both `enqueueTalkTurnAtomic` and `runTalkJob` lock the SAME row (`talk_threads.id`). No cross-row locking. No deadlock possible from this fix alone. If a future caller adds a second lock (e.g., on `talks.id`), lock order must match across callers.
-6. **The job path's `runTalkJob` already takes a job_id-scoped check.** The new thread-level check is additive. A job that's blocked by the thread check should NOT mark itself `'blocked'` (that's a different terminal state) — it should return `{status: 'thread_busy'}` (new sentinel) or fall through to the next scheduler tick. The scheduler retries naturally; we don't need to retry inside `runTalkJob`.
+1. **`FOR UPDATE NOWAIT` makes other writers of the same `talk_threads` row fail instead of wait.** Today the other writers are `updateTalkThreadTitle` (rare; user-initiated from settings) and `maybePersistTalkThreadTitleFromMessages` (runs inside the same tx as our lock — no contention). With NOWAIT, a concurrent `updateTalkThreadTitle` during a streaming round would error with `lock_not_available`. The settings route doesn't catch this today → would surface as a 5xx. Mitigation: update `updateTalkThreadTitle` callers to wait briefly (one retry) OR accept the rare 5xx that the SPA can retry. We'll handle this on demand — likely never fires for a solo-user app.
+2. **Worker CPU vs lock.** With NOWAIT, the lock either acquires immediately or fails immediately. No worker-timeout pathological case (codex r1 #17 resolved by NOWAIT).
+3. **Postgres.js connection pool nuance.** db.ts:360 creates a postgres.js client with `max: 1` per request scope in the production Worker path. Two `withUserContext` blocks in the same request scope SERIALIZE on that single connection — they can't actually race with each other (the second BEGIN waits for the first COMMIT). Across separate Worker requests they get separate clients and can race. Tests use a node client with `max: 5` so race tests work. **Documented limitation**: same-request nested withUserContext on a single connection is single-threaded by postgres.js's pool, NOT by our FOR UPDATE. The bug surface is cross-request races (which is the realistic scenario anyway).
+4. **Deadlock with scheduler.** Both `enqueueTalkTurnAtomic` and `createJobTriggerRun` lock the SAME row (`talk_threads.id`). No cross-row locking from this fix. Deadlock risk is **low today**, but cannot be claimed impossible: future callers adding a second lock (e.g., on `talks.id`) must take locks in the same order across all callers.
+5. **`claimDueTalkJobs` upstream race (codex r1 #9).** Two scheduler isolates could claim the same job today; the NOWAIT lock catches the downstream symptom. Fix needs `FOR UPDATE SKIP LOCKED` on the claim — separate plan.
+6. **`thread_busy` observability.** The chosen design leaves `last_run_status` unchanged on `thread_busy` (Joseph picked this — see r2 §3). Frequently busy threads are invisible in the talk_jobs query. Trade: simpler code, less schema; if observability becomes a concern, add a `last_skipped_reason` column in a follow-up.
 
 ---
 
 ## 6. What lands in the PR
 
-1. `src/clawtalk/db/accessors.ts` — `loadEnqueueTurnContext`: add `for update of th`. Net +1 line.
-2. `src/clawtalk/db/job-accessors.ts` — `runTalkJob`: add thread `FOR UPDATE` + thread-level active check (returns `{status: 'thread_busy', job}` if blocked). Net ~+20 lines.
-3. `src/clawtalk/db/accessors.test.ts` — Tests 1-4 below. Net ~+200 lines.
-4. `src/clawtalk/db/job-accessors.test.ts` — Test 5 below. Net ~+50 lines.
-
-Net diff: ~+275 LoC (~25 src, ~250 test).
+Per §4.1 (8 file changes; ~+450 LoC net, ~70 src and ~400 test).
 
 **Sequencing:**
-1. Branch off main, write race tests FIRST (per §7) — confirm they fail on main.
-2. Apply Option 3 fix to both callers.
-3. Re-run race tests — confirm they pass.
+1. Branch off main, write race tests FIRST (per §7) — confirm Tests 1, 4, 5, 6, 7 fail on main; Tests 2, 3 pass (isolation already works).
+2. Apply the §4.1 fix to both callers + scheduler refactor.
+3. Re-run race tests — confirm all pass.
 4. Run full backend suite — zero regressions.
 5. `/codex review` + `/karpathy-audit diff`. Address findings.
 6. Squash-merge. Deploy. No §4.7 perf bench needed.
-
-PR title: `fix(chat): close active-round race in enqueueTalkTurnAtomic + runTalkJob (T-new-AR)`.
 
 ---
 
 ## 7. Tests
 
-5 tests total: 4 in `accessors.test.ts`, 1 in `job-accessors.test.ts`.
+7 tests total: 4 in `accessors.test.ts`, 3 in `job-accessors.test.ts`.
 
 ```
 CODE PATHS                                            USER FLOWS
 [+] enqueueTalkTurnAtomic (accessors.ts)
-  ├── loadEnqueueTurnContext FOR UPDATE OF th
-  │   ├── [★★★ Test 1] two concurrent /chat on same        [+] Same-thread race
-  │   │   thread → exactly one succeeds, one throws         └── [★★★ Test 1]
-  │   │   TalkActiveRoundError. Zero leftover active runs    serializes; one wins
-  │   │   beyond the winner's N runs.
-  │   ├── [★★ Test 2] two concurrent /chat on DIFFERENT    [+] Cross-thread isolation
-  │   │   threads of the same talk → BOTH succeed.          └── [★★ Test 2]
-  │   ├── [★★ Test 3] concurrent /chat on different talks  [+] Cross-talk isolation
-  │   │   → BOTH succeed.                                   └── [★★ Test 3]
-  │   └── [★★★ Test 4] /chat → retries against in-progress [+] Legit-retry non-regression
-  │       (same `idempotencyKey`) — confirm still throws    └── [★★★ Test 4] TalkActiveRoundError,
-  │       TalkActiveRoundError, no double-write.              not double-write
-[+] runTalkJob (job-accessors.ts)
-  └── thread FOR UPDATE + new thread-level active check
-      └── [★★★ Test 5] /chat fires, then scheduler tries    [+] Scheduler-vs-/chat race
-          to runTalkJob on same thread → job returns        └── [★★★ Test 5] thread_busy,
-          {status: 'thread_busy'}, NO new run inserted.       no new run
-COVERAGE: 5 tests for 2 new code paths.
-QUALITY: ★★★:3 ★★:2
+  ├── loadEnqueueTurnContext FOR UPDATE OF th NOWAIT
+  │   ├── [★★★ Test 1] DETERMINISTIC same-thread race:    [+] Same-thread race
+  │   │   tx A acquires FOR UPDATE, holds; tx B            └── [★★★ Test 1] B fails
+  │   │   tries enqueueTalkTurnAtomic → NOWAIT fires        immediately, not by luck
+  │   │   immediately → TalkActiveRoundError. Commit A;
+  │   │   thread now has only A's N runs.
+  │   ├── [★★ Test 2] two concurrent /chat on DIFFERENT   [+] Cross-thread isolation
+  │   │   threads of the same talk → BOTH succeed.         └── [★★ Test 2]
+  │   ├── [★★ Test 3] concurrent /chat on different       [+] Cross-talk isolation
+  │   │   talks → BOTH succeed.                            └── [★★ Test 3]
+  │   └── [★★★ Test 4] sequential /chat after first       [+] Active-round rejection
+  │       commits but before runs drain → throws            └── [★★★ Test 4] no
+  │       TalkActiveRoundError. No second message + no       double-write
+  │       extra runs.
+[+] createJobTriggerRun (job-accessors.ts)
+  ├── thread FOR UPDATE NOWAIT + thread-level active check
+  │   └── [★★★ Test 5] DETERMINISTIC real race:           [+] Job-vs-/chat race
+  │       tx A acquires FOR UPDATE for an /chat;           └── [★★★ Test 5] thread_busy
+  │       concurrent createJobTriggerRun → NOWAIT fires      sentinel, no new run
+  │       → returns {status: 'thread_busy', job}.
+  ├── claimDueTalkJobs no longer advances next_due_at
+  │   └── [★★★ Test 6] claim job; createJobTriggerRun     [+] Scheduler tick consumption
+  │       returns thread_busy; assert next_due_at on       └── [★★★ Test 6] thread_busy
+  │       talk_jobs UNCHANGED. Then drain active runs,      retries next tick;
+  │       call again → advances on success.                 enqueued advances
+  └── runTalkJobNowRoute thread_busy handling
+      └── [★★★ Test 7] manual run-now while /chat active  [+] Run-now route 409
+          → 409 with code 'thread_busy'.                   └── [★★★ Test 7]
+COVERAGE: 7 tests for 3 new code paths.
+QUALITY: ★★★:5 ★★:2
 ```
 
 Legend: ★★★ behavior + edge + error  |  ★★ happy path
 
-**Tests:**
+**Tests (in detail):**
 
-- **Test 1 (★★★) — same-thread concurrent /chat.** Seed talk + thread + 2 agents. Wrap each `enqueueTalkTurnAtomic` in its own `withUserContext` block. Run via `await Promise.all([call1, call2])` (or `Promise.allSettled` if one is expected to throw). Assert exactly one resolves successfully, exactly one rejects with `TalkActiveRoundError`. SELECT `talk_runs WHERE talk_id, thread_id` — assert count = 2 (the winner's N=2 runs, not 4).
-- **Test 2 (★★) — cross-thread isolation.** Seed talk + 2 threads + 1 agent. Two `enqueueTalkTurnAtomic` calls in parallel, one per thread. Assert both succeed; each thread has its own run.
+- **Test 1 (★★★) — DETERMINISTIC same-thread race.** Two-phase pattern using postgres.js's manual `sql.begin` API for tx A:
+  ```typescript
+  await db.begin(async (txA) => {
+    // Acquire FOR UPDATE on talk_threads from txA, leave open.
+    await txA`select 1 from public.talk_threads where id = ${threadId} for update nowait`;
+    // Now run the enqueue from a fresh withUserContext → tries FOR UPDATE → NOWAIT errors.
+    await expect(
+      withUserContext(USER_A_ID, async () => {
+        await enqueueTalkTurnAtomic({/* same talkId, threadId */});
+      }),
+    ).rejects.toBeInstanceOf(TalkActiveRoundError);
+    // Now insert A's runs inside txA so commit produces the same outcome a real /chat would.
+    await txA`insert into public.talk_runs (...) values (...)`;
+  });
+  // After A commits: assert exactly A's N runs exist on the thread, no orphans from B.
+  ```
+  This proves NOWAIT serializes; second caller's failure is deterministic (lock held), not probabilistic.
+- **Test 2 (★★) — cross-thread isolation.** Seed talk + 2 threads + 1 agent. Two `enqueueTalkTurnAtomic` calls via `Promise.all`, one per thread. Assert both succeed; each thread has its own run.
 - **Test 3 (★★) — cross-talk isolation.** Seed 2 talks + their default threads. Concurrent /chat on each. Both succeed.
-- **Test 4 (★★★) — legit-retry non-regression.** Seed talk + thread + agent. First `enqueueTalkTurnAtomic` succeeds. Second call (with same `idempotencyKey` or just a fresh call after first commits but before its runs drain) throws `TalkActiveRoundError`. Assert no second message + no extra runs. (This locks that the FOR UPDATE doesn't accidentally allow same-tx retries.)
-- **Test 5 (★★★) — scheduler-vs-/chat race.** In `job-accessors.test.ts`. Seed a job + talk + thread. /chat fires `enqueueTalkTurnAtomic` (commits, runs queued). Scheduler calls `runTalkJob` on the same thread. Assert `runTalkJob` returns `{status: 'thread_busy', job}` (new sentinel). No new run inserted. No mark on `talk_jobs.last_run_status` (the scheduler will retry on the next tick).
+- **Test 4 (★★★) — sequential active-round rejection.** Renamed from r1's "legit-retry" — current code has no idempotent-replay path, so "retry with same idempotencyKey" framing was wrong. New framing: first `enqueueTalkTurnAtomic` commits; runs are still queued. Second call (different idempotencyKey, simulating the user clicking send twice) throws `TalkActiveRoundError`. No second message + no extra runs. This locks the active-round rejection behaves correctly under the new helper shape (regression test for the path T-new-A2 §7 Test 3 covered for the pre-NOWAIT version).
+- **Test 5 (★★★) — DETERMINISTIC scheduler-vs-/chat race.** In `job-accessors.test.ts`. Same two-phase pattern as Test 1: hold FOR UPDATE on the thread via tx A, then call `createJobTriggerRun` in a fresh tx → NOWAIT fires → returns `{status: 'thread_busy', job}`. No new run inserted.
+- **Test 6 (★★★) — scheduler refactor: `claimDueTalkJobs` does NOT advance `next_due_at`.** Seed a job with `next_due_at = now - 1s`. Call `claimDueTalkJobs`; assert it returns the job AND that `talk_jobs.next_due_at` is unchanged (= `now - 1s`). Then call `createJobTriggerRun` (no thread contention); assert `'enqueued'`. Manually advance `next_due_at` (simulating what `processClaimableJobs` will do after this PR). Assert subsequent claim returns nothing.
+- **Test 7 (★★★) — manual run-now route under thread_busy.** Use the `runTalkJobNowRoute` handler with the two-phase pattern: tx A holds FOR UPDATE; call the route; assert 409 with `error.code: 'thread_busy'`. No new run inserted.
 
 ### 7.1 Test discipline
 
-- Race tests require **two real txs on different connections.** Use `withUserContext` twice; postgres.js's pool returns separate connections per concurrent call. Verified by the existing test infra; `getDbPg()` returns a pooled client.
-- Test 1's "exactly one succeeds, one fails" pattern: `Promise.allSettled` returns `[{status: 'fulfilled', ...}, {status: 'rejected', reason: TalkActiveRoundError}]` in some order. Assert the counts of fulfilled vs rejected, not the order.
-- **Hard requirement for race tests: a real Supabase local instance.** Tests using `getDbPg()` route to `npm run db:start`'s postgres on port 54432. Mock-based tests won't reproduce the lock behavior.
+- Race tests require **deterministic blocker pattern** (postgres.js's `db.begin(async (tx) => ...)`). Tx A acquires the lock and holds it until its callback returns; Tx B's attempt fires inside A's callback so the lock is provably held. After B fails, A's callback completes and commits.
+- **Hard requirement: real Supabase local postgres.** Tests using `getDbPg()` route to `npm run db:start`'s postgres on port 54432. Mock-based tests won't reproduce NOWAIT behavior.
+- Tests use the node-mode postgres.js client (configured with `max: 5` per existing test infra) — enough connections for concurrent `Promise.all` race tests.
 - Use the existing `seedAuthUser` + `purge` helpers. No new helpers needed.
 
 ---
@@ -306,24 +349,25 @@ Legend: ★★★ behavior + edge + error  |  ★★ happy path
 
 | Codepath | Realistic failure mode | Test covers? | Error handling? | User visibility? |
 |---|---|---|---|---|
-| `loadEnqueueTurnContext FOR UPDATE OF th` | Lock wait exceeds Worker CPU budget | No — pathological case | postgres.js raises; outer tx aborts; route catches as generic 500 | User sees error; retries |
-| `loadEnqueueTurnContext FOR UPDATE OF th` | Talk/thread deleted between resolveThreadIdForTalk and the FOR UPDATE | Existing Test 2 (no-row contract) | Throws `EnqueueTurnContextNotFoundError` → 404 talk_not_found | Same as today |
-| `runTalkJob thread-level FOR UPDATE + check` | Job blocked by /chat on the same thread | Test 5 | Returns `{status: 'thread_busy', job}` | None (scheduler retries) |
-| `runTalkJob thread-level FOR UPDATE + check` | Lock wait under sustained burst | No — pathological | postgres.js raises; scheduler retry handles | None |
+| `loadEnqueueTurnContext FOR UPDATE OF th NOWAIT` | Another tx holds the lock | Test 1 | `lock_not_available` → `TalkActiveRoundError` → route maps to 409 talk_round_active | "Wait for current round to finish" message |
+| `loadEnqueueTurnContext FOR UPDATE OF th NOWAIT` | Talk/thread deleted between `resolveThreadIdForTalk` and the FOR UPDATE | Existing T-new-A2 Test 2 (no-row contract) | Throws `EnqueueTurnContextNotFoundError` → 404 talk_not_found | Same as today |
+| `createJobTriggerRun thread FOR UPDATE NOWAIT + check` | Thread locked by /chat | Test 5 | Returns `{status: 'thread_busy', job}` | None (scheduler retries next tick) |
+| `processClaimableJobs` advances `next_due_at` only on `'enqueued'` | Job stuck in `thread_busy` forever (chronic contention) | Test 6 partially | Logs warn after N consecutive thread_busy on the same job; doesn't hot-loop because the lock check is cheap | None today; future: add `last_skipped_reason` column if visibility needed |
+| `runTalkJobNowRoute` 409 on thread_busy | User clicks Run Now during active round | Test 7 | 409 `code: 'thread_busy'` | Toast: "A round is already in progress" |
 
-**Critical gaps:** none — all new code paths have rollback or test coverage. Pathological lock-wait timeouts are not common enough to warrant a test; the worker error path is already exercised by other timeout tests.
+**Critical gaps:** none — all new code paths have rollback or test coverage. Pathological lock-wait timeouts impossible under NOWAIT.
 
 ---
 
 ## 9. Implementation tasks
 
-- [ ] **AR1 (P1, human: ~30 min / CC: ~15 min)** — write Tests 1-5 first (red phase). Run vitest; confirm Tests 1, 4, 5 fail on main; Tests 2, 3 pass (isolation already works).
+- [ ] **AR1 (P1, human: ~45 min / CC: ~20 min)** — write Tests 1-7 first (red phase). Run vitest; confirm Tests 1, 4, 5, 6, 7 fail on main; Tests 2, 3 pass (isolation already works).
   - Files: `accessors.test.ts`, `job-accessors.test.ts`
-  - Verify: `npx vitest run src/clawtalk/db/` — Tests 1, 4, 5 fail with race-condition assertion errors
+  - Verify: `npx vitest run src/clawtalk/db/` — Tests 1, 4, 5, 6, 7 fail with race / no-sentinel assertion errors
 
-- [ ] **AR2 (P1, human: ~30 min / CC: ~10 min)** — apply Option 3 fix: `FOR UPDATE OF th` in `loadEnqueueTurnContext`; thread `FOR UPDATE` + thread-level active check in `runTalkJob` (with `{status: 'thread_busy'}` sentinel).
-  - Files: `accessors.ts`, `job-accessors.ts`
-  - Verify: re-run race tests; all 5 pass (green phase)
+- [ ] **AR2 (P1, human: ~45 min / CC: ~15 min)** — apply the fix per §4.1: `loadEnqueueTurnContext` NOWAIT + error map; `isLockNotAvailable` helper; `createJobTriggerRun` thread lock + thread-level check + new `'thread_busy'` sentinel; `claimDueTalkJobs` next_due_at removal; `processClaimableJobs` advances next_due_at only on `'enqueued'`; `runTalkJobNowRoute` 409 handling.
+  - Files: `accessors.ts`, `job-accessors.ts`, `scheduler.ts`, `talk-jobs.ts`
+  - Verify: re-run race tests; all 7 pass (green phase)
 
 - [ ] **AR3 (P1, human: ~15 min / CC: ~5 min)** — full backend suite + format + typecheck.
   - Files: none
@@ -333,7 +377,7 @@ Legend: ★★★ behavior + edge + error  |  ★★ happy path
   - Files: none
   - Verify: PR green, codex PASS, karpathy PASS, deploy.yml succeeds
 
-- [ ] **AR5 (P2, human: ~15 min)** — docs r2 footer + memory entry update.
+- [ ] **AR5 (P2, human: ~15 min)** — docs r3 footer + memory entry update.
   - Files: `docs/T-new-AR-active-round-race-fix.md` (this doc), `project_llm_turn_latency` memory.
 
 ---
@@ -342,16 +386,25 @@ Legend: ★★★ behavior + edge + error  |  ★★ happy path
 
 | Review | Trigger | Why | Runs | Status | Findings |
 |--------|---------|-----|------|--------|----------|
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 0 | not run | Will run on r1 before locking design. |
-| Codex Consult (plan, r1) | `/codex` consult on r1 | Independent 2nd opinion | 0 | not run | Per [[feedback-codex-review-before-locking-cf-anthropic-decisions]] — run BEFORE Joseph's AskUserQuestion answers lock the design. |
-| Karpathy Audit (diff, r1) | `/karpathy-audit diff` on r1 | Style lens + four principles | 0 | not run | Will run on r1 alongside codex. |
+| Codex Consult (plan, r1) | `/codex` consult on r1 | Independent 2nd opinion | 1 | NOT CLEAR — absorbed via r2 | 20 findings. Critical absorbs: (#1/#2/#6) function name `createJobTriggerRun` + `runTalkJobNowRoute` manual route; (#3/#7/#8) scheduler `next_due_at` refactor — moved advance into result handler so only `'enqueued'` consumes a tick; (#12/#13/#14) test redesign — deterministic blocker pattern (`db.begin(async tx => ...)`) for Tests 1, 5, 7; Test 4 renamed; (#17) NOWAIT replaces wait → no worker timeout risk; (#4) SQL clause order `LIMIT … FOR UPDATE`; (#10) postgres.js `max:1` per request scope acknowledged; (#11) Hyperdrive claim dropped; (#16) `createTalkRun` bypass acknowledged; (#18) Option 4 (state row) added briefly; (#19) softened deadlock language; (#20) Test 7 added for `runTalkJobNowRoute`. |
+| Karpathy Audit (diff, r1) | `/karpathy-audit diff` on r1 | Style lens + four principles | 1 | CLEAR (4/4 coverage) | 1 WARNING (§3.2 Option 2 rejection verbose — trimmed to 3 lines); 3 NITs absorbed (§2.3 "Joseph" → "solo-user", §5/§7.1 dedup'd, §6 PR title removed). |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 0 | not run | Codex consult covered architecture at higher rigor. |
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | not run (correctness fix, scope self-evident) |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | not run (backend-only) |
 | DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | not run |
 
-**VERDICT (r1):** **DRAFT — pending review.** Plan ready for Joseph's review + `/codex` consult + `/karpathy-audit diff`. Critical constraints to remember during implementation:
-1. `loadEnqueueTurnContext` already throws `EnqueueTurnContextNotFoundError` on no-row — adding `FOR UPDATE OF th` does NOT change that contract.
-2. `runTalkJob`'s NEW thread-level check returns `{status: 'thread_busy', job}` — a new sentinel. Scheduler retries naturally on the next tick; do NOT add app-level retry inside `runTalkJob`.
-3. Tests MUST run against real Supabase local postgres; no mocks. Race semantics depend on concurrent real txs.
-4. The job path's existing per-job check stays — it answers a different invariant ("don't double-fire the same job") than the new per-thread check.
-5. `deleteTalkMessagesAtomic`'s `hasActiveTalkRuns` race is OUT OF SCOPE — file as a follow-up if it surfaces.
+**CODEX (r1 → r2):** 20 findings. The wrong-function-name catch (#1) alone would have shipped broken code; codex caught it via direct source-file reads. The scheduler-retry premise (#3/#7) was a hidden incorrectness in r1's narrative — `claimDueTalkJobs` advances `next_due_at` BEFORE the dispatch result, so "thread_busy retries next tick" was false. r2 fixes this by moving the advance into the result handler. NOWAIT (#17) is a clean upgrade that eliminates the lock-hold/worker-CPU pathology. Test determinism (#12/#13) was a real correctness gap — `Promise.allSettled` doesn't guarantee both txs reach the critical section concurrently.
+
+**KARPATHY (r1 → r2):** 1 warning + 3 nits absorbed. Plan trimmed by ~15 lines in §3.2; §5 Risk 4 dropped (covered in §7.1).
+
+**CROSS-MODEL:** Codex caught behavioral correctness (function name, scheduler semantics, test determinism, NOWAIT). Karpathy caught artifact-level bloat and naming. Zero direct finding overlap. Validates [[feedback-codex-catches-behavior-karpathy-catches-style]] at the plan stage AGAIN (third time this session — T-new-A2 r1→r2, T-new-A2 PR-diff, T-new-AR r1→r2).
+
+**UNRESOLVED:** 0.
+
+**VERDICT (r2):** **CLEARED (PLAN, r2)** — material codex findings absorbed; karpathy nits absorbed. Critical constraints to remember during implementation:
+1. Function is `createJobTriggerRun` (job-accessors.ts:881), NOT `runTalkJob`. Manual route is `runTalkJobNowRoute` (talk-jobs.ts:312).
+2. `FOR UPDATE OF th NOWAIT` with `LIMIT 1` placed BEFORE `FOR UPDATE`. Catch `lock_not_available` (SQLSTATE `55P03`) via a shared `isLockNotAvailable` helper.
+3. `claimDueTalkJobs` MUST stop advancing `next_due_at`. `processClaimableJobs` advances only on `result.status === 'enqueued'`.
+4. New `'thread_busy'` sentinel must be handled in both `scheduler.ts` AND `talk-jobs.ts` (manual route).
+5. Race tests MUST use `db.begin(async tx => ...)` to deterministically hold the lock; never rely on `Promise.allSettled` luck.
+6. Existing T-new-A2 `EnqueueTurnContextNotFoundError` contract is UNCHANGED; NOWAIT is an additional throw path in the same helper.
