@@ -1,6 +1,6 @@
 # T-new-A2 B-3 — remove the `workspace_provider_secrets` surface (two-PR rollout)
 
-**Status:** Plan, **r5 draft**.
+**Status:** Plan, **r6 draft**.
 **Tracking:** [[project-llm-turn-latency]], [[T-new-A2-enqueue-talk-turn-atomic]] (the C-M4 / C8 deferred work), [[T-new-A2-followup]].
 **Branch (planning):** `docs/t-new-a2-b3-plan` (this doc).
 **Branches (implementation, to be created):** `feature/t-new-a2-b3-pr-a-code-removal`, then `feature/t-new-a2-b3-pr-b-drop-tables`.
@@ -31,6 +31,13 @@ Cross-revision overlap rose sharply on r3: 4 of 6 karpathy findings also surface
   - **§4.4 `<joseph-uuid>` lookup as Step 0** (codex r4 P2 #4 + karpathy r4 NIT). Adds a one-line lookup query so the fork is self-contained and Joseph doesn't paste the UUID literal four times.
 
 Codex r4 raw output preserved at `.codex-r4-findings.txt`.
+
+- **r6 (this revision)** — Tiny precision pass absorbing the 2 codex r5 + 2 karpathy r5 findings (100 % overlap between the two reviews on r5, per [[feedback-codex-catches-behavior-karpathy-catches-style]]). Three substitutions plus one new audit query block:
+  - **§4.3 provider list query** (codex r5 P2 #1 + karpathy r5 WARNING). The aggregate audit at §4.3 captured `count(*)` + `max(updated_at)` but not the provider IDs that §4.6 criterion (2)/(3) tells Joseph to filter `wrangler tail` against. r6 adds a companion query that emits `provider_id, credential_kind` per row.
+  - **§4.4 step-count prose** (codex r5 P2 #2 + karpathy r5 WARNING). r5's Step 0 insertion left "four explicit steps" and "Run all four steps" as stale labels for what is now a five-step fork. r6 changes both to five.
+  - **§9 B3-B2 task** (same finding as above). "Steps 1-4" → "Steps 0-4."
+
+Codex r5 raw output preserved at `.codex-r5-findings.txt`.
 
 ---
 
@@ -219,15 +226,25 @@ from public.provider_oauth_states
 where scope = 'workspace' and consumed_at is null and expires_at > now();
 ```
 
-Expected: all three `row_count = 0`. If `secrets.row_count > 0`, the §4.4 data-migration fork applies between PR A and PR B.
+If `secrets.row_count > 0`, capture the provider list that the §4.6 soak criteria will filter against:
+
+```sql
+select provider_id, credential_kind, updated_at
+from public.workspace_provider_secrets
+order by provider_id, credential_kind;
+```
+
+Paste both the aggregate audit AND the provider list into PR A's description so the §4.6 cross-reference is auditable later.
+
+Expected: all three `row_count = 0` on the aggregate query. If `secrets.row_count > 0`, the §4.4 data-migration fork applies between PR A and PR B.
 
 ### 4.4 PR B gate — final audit and data-migration fork
 
 Re-run the §4.3 query after PR A has been deployed and the §4.6 soak criteria are satisfied (see §4.6 for the specific signals; minimum ≥24h prod soak). The `secrets` row count should still match what it was at §4.3 — PR A's writer removal means nothing new can land. If row count is 0, run PR B's migration.
 
-If `secrets.row_count > 0`, run the data-migration fork before merging PR B. The fork is four explicit steps — `look up owner` → `report` → `copy non-conflicting rows` → `delete migrated and discarded source rows` → `re-audit` — so the post-fork audit can actually return zero.
+If `secrets.row_count > 0`, run the data-migration fork before merging PR B. The fork is five explicit steps — `look up owner` → `report` → `copy non-conflicting rows` → `delete migrated and discarded source rows` → `re-audit` — so the post-fork audit can actually return zero.
 
-**Run all four steps as the Supabase postgres role** (the same connection `deploy.yml:84` uses for `supabase db push`). Authenticated-user psql sessions will hit RLS on the `llm_provider_secrets` INSERT (requires `owner_id = auth.uid()` per `0002_rls_policies.sql:53`) and on the workspace DELETE (requires `current_user_is_workspace_admin()` per `0008_workspace_provider_secrets.sql:53`).
+**Run all five steps as the Supabase postgres role** (the same connection `deploy.yml:84` uses for `supabase db push`). Authenticated-user psql sessions will hit RLS on the `llm_provider_secrets` INSERT (requires `owner_id = auth.uid()` per `0002_rls_policies.sql:53`) and on the workspace DELETE (requires `current_user_is_workspace_admin()` per `0008_workspace_provider_secrets.sql:53`).
 
 **Step 0 — capture Joseph's owner_id once.** Used as `:joseph_uuid` in Steps 1 / 2:
 
@@ -470,7 +487,7 @@ Time annotations: `(P1, human: ~X min, CC: ~Y min)` — `human` is wall-clock ti
   - Files: none
   - Verify: row counts captured in PR B description
 
-- [ ] **B3-B2 (P1, human: ~15 min, CC: instant, only if `secrets.row_count > 0`)** — Run §4.4 data-migration fork Steps 1-4 (report → copy → delete → re-audit). Confirm `secrets.row_count = 0` before opening PR B.
+- [ ] **B3-B2 (P1, human: ~15 min, CC: instant, only if `secrets.row_count > 0`)** — Run §4.4 data-migration fork Steps 0-4 (look up owner → report → copy → delete → re-audit). Confirm `secrets.row_count = 0` before opening PR B.
   - Files: none
   - Verify: post-fork count = 0
 
@@ -497,17 +514,19 @@ Time annotations: `(P1, human: ~X min, CC: ~Y min)` — `human` is wall-clock ti
 | Codex Consult (r2) | `/codex consult` on r2 | Independent 2nd opinion | 1 | ABSORBED | 12 findings (6 critical, 6 advisory). Raw output `.codex-r2-findings.txt`. r3 absorbs all 6 P1 + key P2s. |
 | Codex Consult (r3) | `/codex consult` on r3 | Verify staged-deploy framing | 1 | ABSORBED | 4 findings (1 P1, 3 P2): §4.4 INSERT-no-DELETE contradiction, missing `enc_key_version`, "no-op" framing, invented `hasSubscription` field. Raw output `.codex-r3-findings.txt`. r4 fixes all four. |
 | Codex Consult (r4) | `/codex consult` on r4 | Verify §4.4 fork + naming fixes | 1 | ABSORBED | 4 findings, all P2: §4.2 "no-op" residue, soak criterion (2) unverifiable, §4.4 DB-role missing, `<joseph-uuid>` lookup needed. Raw output `.codex-r4-findings.txt`. r5 fixes all four. |
-| Codex Consult (r5) | `/codex consult` on r5 | Verify polish-pass fixes | 0 | pending | Will run on r5 commit. |
+| Codex Consult (r5) | `/codex consult` on r5 | Verify polish-pass fixes | 1 | ABSORBED | 2 P2 findings: §4.3 missing provider list, "four steps" prose stale after Step 0 insertion. Raw output `.codex-r5-findings.txt`. r6 fixes both. |
+| Codex Consult (r6) | `/codex consult` on r6 | Final precision verification | 0 | pending | Will run on r6 commit. |
 | Karpathy Audit (r1) | manual | Style lens + four principles | 1 | ABSORBED | 1 warning, 2 nits. Reframed §1 in r2 to defer to §4.5. |
 | Karpathy Audit (r2) | manual | Style lens + four principles | 1 | ABSORBED | 6 findings (3 critical, 2 warning, 1 nit). r3 fixes §4.2/§4.3 contradiction, field naming, §6 dup, §7 test reconciliation. |
 | Karpathy Audit (r3) | manual | Style lens + four principles | 1 | ABSORBED | 6 findings (2 critical, 3 warning, 1 nit): §4.4 contradiction (overlap with codex P1), invented field name (overlap with codex P2 #4), §6 "no-op" framing (overlap), `enc_key_version` (overlap), file-count ambiguity, missing soak success criteria, §9 task-time syntax. Cross-revision overlap noted in r4 revision-history block. |
 | Karpathy Audit (r4) | manual | Style lens + four principles | 1 | ABSORBED | 4 findings (0 critical, 3 warning, 1 nit). 4-of-4 overlap with codex r4 + 1 karpathy-unique observation on long-term revision-history accumulation cost (deferred to r6+). |
-| Karpathy Audit (r5) | manual | Style lens + four principles | 0 | pending | Will run alongside codex r5. |
+| Karpathy Audit (r5) | manual | Style lens + four principles | 1 | ABSORBED | 2 WARNINGS, 100 % overlap with codex r5 (diagnostic of plan health per [[feedback-codex-catches-behavior-karpathy-catches-style]]). r6 fixes both. |
+| Karpathy Audit (r6) | manual | Style lens + four principles | 0 | pending | Will run alongside codex r6. |
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | Not run — scope is "remove dead surface in a solo-user product." |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | Not run — UI change is sub-tab removal; low risk. |
 | DX Review | `/plan-devex-review` | DX gaps | 0 | — | Not run. |
 
-**VERDICT (r5):** **DRAFT — pending review.** r5 absorbs the four codex r4 + four karpathy r4 P2 advisories as a ~10-LoC polish pass on §4.2 / §4.4 / §4.6. The structural shape (two-PR rollout, RLS helper preserved, scope contradiction resolved, four-step fork) has been stable since r3; r4 closed the identifier-precision channel; r5 closes the operational-precision channel (DB role, UUID lookup, verifiable soak criteria, framing parity). Critical pre-implementation constraints (unchanged from r4):
+**VERDICT (r6):** **DRAFT — pending review.** r6 absorbs the 2+2 r5 advisories (100 % cross-model overlap). The §4.3 audit now emits the provider list the §4.6 soak criteria reference, and the §4.4 fork's "four steps" prose now matches the actual five-step (Step 0 through Step 4) shape. Expected next-review verdict: PASS or one trivial finding. Critical pre-implementation constraints (unchanged from r4):
 
 1. **PR A must merge and meet §4.6's soak criteria before PR B opens.** All four conditions (≥24h, zero ExecutionResolverError, zero PROVIDER_SECRET_MISSING from workspace-served providers, bench median ≤140 ms).
 2. **Migration filename re-verified at commit time** against `supabase/migrations/`.

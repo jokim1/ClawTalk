@@ -1,0 +1,53 @@
+codex consult on docs/T-new-A2-B3-credential-resolve.md r4 (commit 30af2e4)
+session id: 019e7511-722a-7ee2-8c5d-6f4f5c8273af
+tokens: 798,202
+verdict: ABSORB findings 1-4 and re-review (all P2, none structural)
+
+Confirmed absorbed from r3:
+  - r3 P1 #1 (§4.4 INSERT-no-DELETE) — four-step fork with Step 3 DELETE works
+  - r3 P2 #2 (enc_key_version) — column exists on both tables, types match
+  - r3 P2 #4 (hasPersonalSubscription) — real field, preserves the TalkDetailPage personal-subscription path
+  - Footer shape correct with r4 row pending
+
+1. [P2] §4.2 still says PR B "redeploys as a no-op," so r3 P2 #3 is not
+   fully absorbed. §6 is fixed, but this adjacent PR B framing still
+   contradicts it. deploy.yml rebuilds webapp, syncs the Worker secret,
+   and runs wrangler deploy, so keep the "no application code changes;
+   full redeploy" wording here too.
+   Citations: docs/T-new-A2-B3-credential-resolve.md:161,
+   .github/workflows/deploy.yml:50, :105, :126.
+
+2. [P2] The new soak gate asks for ExecutionResolverError events
+   "tagged to workspace credentials," but the current error object
+   carries only message and code; no credential origin is attached,
+   and the failure event adds provider/model but not origin. After
+   PR A removes the workspace resolver branch, Joseph can infer from
+   the §4.3 pre-audit provider list, but he cannot literally filter
+   tail events by workspace credential origin. Reword (2) to "zero
+   resolver failures for providers listed in the §4.3 workspace
+   audit," or add explicit instrumentation as part of PR A.
+   Citations: docs/T-new-A2-B3-credential-resolve.md:300,
+   src/clawtalk/agents/execution-resolver.ts:92,
+   src/clawtalk/agents/agent-router.ts:316,
+   src/clawtalk/talks/new-executor.ts:218.
+
+3. [P2] §4.4's manual fork should state the required DB role. The
+   unrestricted DELETE is safe structurally: no FK points into
+   workspace_provider_secrets, and PR B later drops the table. But RLS
+   write policy requires current_user_is_workspace_admin() for
+   authenticated, while the INSERT into llm_provider_secrets requires
+   owner_id = auth.uid(). Running the fork through a normal
+   authenticated psql session can fail or behave unexpectedly; it
+   should explicitly use the Supabase postgres/admin connection, same
+   class of role deploy uses for migrations.
+   Citations: docs/T-new-A2-B3-credential-resolve.md:238, :260;
+   supabase/migrations/0008_workspace_provider_secrets.sql:53;
+   supabase/migrations/0002_rls_policies.sql:53;
+   .github/workflows/deploy.yml:84.
+
+4. [P2] §4.4 still uses <joseph-uuid> without a lookup. Probably
+   intended as a runtime placeholder, but this is exactly the kind
+   of manual migration where the plan should include a one-line
+   lookup from public.users by Joseph's email before Step 1/2.
+   Otherwise the fork depends on out-of-band UUID memory.
+   Citations: docs/T-new-A2-B3-credential-resolve.md:231, :245.

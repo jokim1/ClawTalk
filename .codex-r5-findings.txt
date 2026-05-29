@@ -1,0 +1,28 @@
+codex consult on docs/T-new-A2-B3-credential-resolve.md r5 (commit 4c16031)
+session id: 019e7518-be28-7733-853d-34ed60903a59
+tokens: 378,472
+verdict: ABSORB 2 P2s, then r5 is ready.
+overall: r5 fixed the r4 issues materially; the 2 remaining findings are
+both downstream cleanup of the §4.6/§4.4 edits.
+
+Confirmed absorbed from r4:
+  - r4 P2 #1 (§4.2 "no-op" residue) — §4.2 and §6 now match
+  - r4 P2 #3 (DB-role preamble) — RLS premise holds at policy level
+  - r4 P2 #4 (UUID lookup) — public.users.email exists; \gset and :'var'::uuid syntax valid
+
+1. [P2] The §4.6 provider filter still depends on data §4.3 does not
+   capture. The audit query at line 198 only returns aggregate
+   row_count / last_write, not a provider list. The new soak criterion
+   (2) at line 321 says "provider_id in the §4.3 workspace-audit
+   provider list" — not executable as written. Add a companion audit
+   query like `select provider_id, credential_kind from
+   public.workspace_provider_secrets` to §4.3 so Joseph captures the
+   list at audit time.
+   Citations: docs/T-new-A2-B3-credential-resolve.md:208, :321.
+
+2. [P2] The Step 0 insertion left stale "four steps" prose and task
+   references. §4.4 now has Step 0 through Step 4 (five total), but
+   says "four explicit steps" at line 228, "Run all four steps" at
+   line 230, and B3-B2 task line at :473 still says "Steps 1-4,"
+   which omits the UUID capture step.
+   Citations: docs/T-new-A2-B3-credential-resolve.md:228, :230, :473.
