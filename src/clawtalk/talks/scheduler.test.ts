@@ -306,4 +306,260 @@ describe('runScheduledTick — sweepStuckRunningRuns', () => {
     const run = await getTalkRunById(runId);
     expect(run?.status).toBe('running');
   });
+
+  it('promotes the next ordered sibling after reaping a stuck step', async () => {
+    const { talkId } = await setupTalkWithAgent();
+    const groupId = '0c888888-5555-5555-5555-555555555555';
+    const { firstRunId, secondRunId } = await withUserContext(
+      OWNER_ID,
+      async () => {
+        const threadId = await getOrCreateDefaultThread({
+          talkId,
+          ownerId: OWNER_ID,
+        });
+        const message = await createTalkMessage({
+          ownerId: OWNER_ID,
+          talkId,
+          threadId,
+          role: 'user',
+          content: 'ordered round',
+        });
+        const first = await createTalkRun({
+          ownerId: OWNER_ID,
+          talkId,
+          threadId,
+          requestedBy: OWNER_ID,
+          status: 'running',
+          triggerMessageId: message.id,
+          responseGroupId: groupId,
+          sequenceIndex: 0,
+        });
+        const second = await createTalkRun({
+          ownerId: OWNER_ID,
+          talkId,
+          threadId,
+          requestedBy: OWNER_ID,
+          status: 'queued',
+          triggerMessageId: message.id,
+          responseGroupId: groupId,
+          sequenceIndex: 1,
+        });
+        return { firstRunId: first.id, secondRunId: second.id };
+      },
+    );
+    // Age the running step past the 1h threshold so the sweep reaps it.
+    const db = getDbPg();
+    await db`
+      update public.talk_runs
+      set started_at = now() - interval '2 hours'
+      where id = ${firstRunId}::uuid
+    `;
+
+    const queue = makeQueue();
+    const env: ScheduledTickEnv = {
+      DB: { connectionString: TEST_DB_URL },
+      TALK_RUN_QUEUE: queue,
+    };
+    const { ctx, drain } = makeMockCtx();
+    await runScheduledTick(env, ctx);
+    await drain();
+
+    // Step 0 reaped to failed, and its sibling promoted in the same tick
+    // (not left to the stranded sweep's 2-min grace).
+    expect(await getTalkRunById(firstRunId).then((r) => r?.status)).toBe(
+      'failed',
+    );
+    expect(queue.sends.map((s) => s.runId)).toEqual([secondRunId]);
+  });
+});
+
+describe('runScheduledTick — sweepStrandedOrderedSiblings', () => {
+  // Build an ordered pair (seq 0 + seq 1) in one talk/group. `firstStatus`
+  // + `firstEndedAt` shape how the seq-1 sibling looks to the sweep.
+  async function setupOrderedPair(opts: {
+    groupId: string;
+    firstStatus: 'completed' | 'failed' | 'running';
+    firstEndedAt?: string; // raw SQL expr, e.g. "now() - interval '5 minutes'"
+  }): Promise<{ firstRunId: string; secondRunId: string }> {
+    const { talkId } = await setupTalkWithAgent();
+    const ids = await withUserContext(OWNER_ID, async () => {
+      const threadId = await getOrCreateDefaultThread({
+        talkId,
+        ownerId: OWNER_ID,
+      });
+      const message = await createTalkMessage({
+        ownerId: OWNER_ID,
+        talkId,
+        threadId,
+        role: 'user',
+        content: 'ordered round',
+      });
+      const first = await createTalkRun({
+        ownerId: OWNER_ID,
+        talkId,
+        threadId,
+        requestedBy: OWNER_ID,
+        status: opts.firstStatus,
+        triggerMessageId: message.id,
+        responseGroupId: opts.groupId,
+        sequenceIndex: 0,
+      });
+      const second = await createTalkRun({
+        ownerId: OWNER_ID,
+        talkId,
+        threadId,
+        requestedBy: OWNER_ID,
+        status: 'queued',
+        triggerMessageId: message.id,
+        responseGroupId: opts.groupId,
+        sequenceIndex: 1,
+      });
+      return { firstRunId: first.id, secondRunId: second.id };
+    });
+    if (opts.firstEndedAt) {
+      const db = getDbPg();
+      await db`
+        update public.talk_runs
+        set ended_at = ${db.unsafe(opts.firstEndedAt)}
+        where id = ${ids.firstRunId}::uuid
+      `;
+    }
+    return ids;
+  }
+
+  it('re-dispatches an eligible queued sibling stranded past the grace window', async () => {
+    const { secondRunId } = await setupOrderedPair({
+      groupId: '0c888888-1111-1111-1111-111111111111',
+      firstStatus: 'completed',
+      firstEndedAt: "now() - interval '5 minutes'",
+    });
+
+    const queue = makeQueue();
+    const env: ScheduledTickEnv = {
+      DB: { connectionString: TEST_DB_URL },
+      TALK_RUN_QUEUE: queue,
+    };
+    const { ctx, drain } = makeMockCtx();
+    await runScheduledTick(env, ctx);
+    await drain();
+
+    expect(queue.sends.map((s) => s.runId)).toEqual([secondRunId]);
+  });
+
+  it('also re-dispatches when the predecessor FAILED (the slow-524 round)', async () => {
+    const { secondRunId } = await setupOrderedPair({
+      groupId: '0c888888-2222-2222-2222-222222222222',
+      firstStatus: 'failed',
+      firstEndedAt: "now() - interval '5 minutes'",
+    });
+
+    const queue = makeQueue();
+    const env: ScheduledTickEnv = {
+      DB: { connectionString: TEST_DB_URL },
+      TALK_RUN_QUEUE: queue,
+    };
+    const { ctx, drain } = makeMockCtx();
+    await runScheduledTick(env, ctx);
+    await drain();
+
+    expect(queue.sends.map((s) => s.runId)).toEqual([secondRunId]);
+  });
+
+  it('leaves a sibling alone when its blocker finished within the grace window', async () => {
+    await setupOrderedPair({
+      groupId: '0c888888-3333-3333-3333-333333333333',
+      firstStatus: 'completed',
+      firstEndedAt: "now() - interval '20 seconds'",
+    });
+
+    const queue = makeQueue();
+    const env: ScheduledTickEnv = {
+      DB: { connectionString: TEST_DB_URL },
+      TALK_RUN_QUEUE: queue,
+    };
+    const { ctx, drain } = makeMockCtx();
+    await runScheduledTick(env, ctx);
+    await drain();
+
+    // Promotion may still be in normal flight — the sweep must not race it.
+    expect(queue.sends).toHaveLength(0);
+  });
+
+  it('leaves a sibling alone while its blocker is still active', async () => {
+    await setupOrderedPair({
+      groupId: '0c888888-4444-4444-4444-444444444444',
+      firstStatus: 'running',
+    });
+
+    const queue = makeQueue();
+    const env: ScheduledTickEnv = {
+      DB: { connectionString: TEST_DB_URL },
+      TALK_RUN_QUEUE: queue,
+    };
+    const { ctx, drain } = makeMockCtx();
+    await runScheduledTick(env, ctx);
+    await drain();
+
+    expect(queue.sends).toHaveLength(0);
+  });
+
+  it('re-dispatches a first step (seq 0) stranded by a lost initial dispatch', async () => {
+    const { talkId } = await setupTalkWithAgent();
+    const groupId = '0c888888-6666-6666-6666-666666666666';
+    const firstRunId = await withUserContext(OWNER_ID, async () => {
+      const threadId = await getOrCreateDefaultThread({
+        talkId,
+        ownerId: OWNER_ID,
+      });
+      const message = await createTalkMessage({
+        ownerId: OWNER_ID,
+        talkId,
+        threadId,
+        role: 'user',
+        content: 'ordered round',
+      });
+      const first = await createTalkRun({
+        ownerId: OWNER_ID,
+        talkId,
+        threadId,
+        requestedBy: OWNER_ID,
+        status: 'queued',
+        triggerMessageId: message.id,
+        responseGroupId: groupId,
+        sequenceIndex: 0,
+      });
+      // A later step also queued; it stays blocked behind seq 0.
+      await createTalkRun({
+        ownerId: OWNER_ID,
+        talkId,
+        threadId,
+        requestedBy: OWNER_ID,
+        status: 'queued',
+        triggerMessageId: message.id,
+        responseGroupId: groupId,
+        sequenceIndex: 1,
+      });
+      return first.id;
+    });
+    // seq 0 has no blocker; age its created_at past grace so the coalesce
+    // fallback selects it (simulates a lost initial TALK_RUN_QUEUE.send).
+    const db = getDbPg();
+    await db`
+      update public.talk_runs
+      set created_at = now() - interval '5 minutes'
+      where id = ${firstRunId}::uuid
+    `;
+
+    const queue = makeQueue();
+    const env: ScheduledTickEnv = {
+      DB: { connectionString: TEST_DB_URL },
+      TALK_RUN_QUEUE: queue,
+    };
+    const { ctx, drain } = makeMockCtx();
+    await runScheduledTick(env, ctx);
+    await drain();
+
+    // Only seq 0 is eligible (seq 1 is blocked by still-queued seq 0).
+    expect(queue.sends.map((s) => s.runId)).toEqual([firstRunId]);
+  });
 });

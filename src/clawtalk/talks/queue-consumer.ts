@@ -23,6 +23,7 @@ import {
   appendOutboxEvent,
   completeRunAndPromoteNextAtomic,
   failRunAndPromoteNextAtomic,
+  findNextRunnableOrderedSibling,
   getTalkMessageById,
   getTalkRunById,
   markRunRunning,
@@ -32,6 +33,7 @@ import { markTalkJobRunFinished } from '../db/job-accessors.js';
 import { logger } from '../../logger.js';
 
 import { CleanTalkExecutor } from './new-executor.js';
+import { dispatchRun } from './queue-producer.js';
 import {
   TalkExecutorError,
   type TalkExecutionEvent,
@@ -56,6 +58,10 @@ export interface ProcessTalkRunMessageInput {
   executor?: TalkExecutor;
   // Test seam — cancellation poll interval; production default is 500ms.
   cancelPollIntervalMs?: number;
+  // Test seam — re-enqueue used for active ordered-sibling promotion once
+  // this run reaches a terminal state. Defaults to dispatchRun
+  // (TALK_RUN_QUEUE.send).
+  dispatch?: (input: { runId: string }) => Promise<void>;
 }
 
 export class BlockedBySiblingError extends Error {
@@ -124,6 +130,15 @@ export async function processTalkRunMessage(
         'processTalkRunMessage: run already terminal, acking',
       );
       return;
+    case 'already_running':
+      // A duplicate at-least-once delivery (active promotion + the cron
+      // sweep can both enqueue the same runId). Another invocation owns the
+      // run — ack without executing so we never double-run it.
+      logger.debug(
+        { runId: input.runId },
+        'processTalkRunMessage: run already running (duplicate delivery), acking',
+      );
+      return;
     case 'blocked_by_sibling':
       throw new BlockedBySiblingError(input.runId);
     case 'claimed':
@@ -133,6 +148,7 @@ export async function processTalkRunMessage(
   const run = claim.run;
   const executor = input.executor ?? new CleanTalkExecutor();
   const cancelPollMs = input.cancelPollIntervalMs ?? DEFAULT_CANCEL_POLL_MS;
+  const dispatch = input.dispatch ?? dispatchRun;
 
   await withUserContext(run.owner_id, async () => {
     if (!run.trigger_message_id) {
@@ -277,6 +293,33 @@ export async function processTalkRunMessage(
       await cancelPoller.catch(() => {});
     }
   });
+
+  // Active ordered-sibling promotion. This run is now terminal (completed,
+  // failed, or cancelled). If it was a step in an ordered response group,
+  // wake the next eligible queued sibling NOW rather than leaving it to the
+  // sibling's own queue redelivery — blocked siblings ack their message
+  // (see src/worker.ts) instead of burning the DLQ retry budget, so this is
+  // their wake signal. Best-effort: the run is already finalized, so a
+  // dispatch hiccup must never turn a successful terminal into a thrown
+  // (which would trigger a pointless queue retry). A cancelled round leaves
+  // no queued siblings, so the lookup simply returns null.
+  if (run.response_group_id && run.sequence_index !== null) {
+    try {
+      const nextRunId = await findNextRunnableOrderedSibling(
+        run.response_group_id,
+      );
+      if (nextRunId) await dispatch({ runId: nextRunId });
+    } catch (err) {
+      logger.warn(
+        {
+          err,
+          runId: run.id,
+          responseGroupId: run.response_group_id,
+        },
+        'ordered-sibling promotion failed; next step waits for cron sweep',
+      );
+    }
+  }
 }
 
 async function failRun(

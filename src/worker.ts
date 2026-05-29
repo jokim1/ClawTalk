@@ -190,7 +190,11 @@ export default {
   // Main queue (`clawtalk-talk-runs`): each message goes through
   // processTalkRunMessage in its own withRequestScopedDb scope.
   //   - Returned normally → ack.
-  //   - BlockedBySiblingError → retry in 60s (sibling still active).
+  //   - BlockedBySiblingError → ack. A sequencing wait is not an error, so
+  //     it must NOT burn the DLQ retry budget. The run stays 'queued' and
+  //     is woken by active promotion when its predecessor finishes (see
+  //     findNextRunnableOrderedSibling), with the cron stranded-sibling
+  //     sweep as the lost-dispatch backstop.
   //   - Other throw → retry in 30s. After max_retries=3, Cloudflare
   //     drops the message onto the DLQ.
   //
@@ -264,12 +268,25 @@ export default {
           message.ack();
           continue;
         }
-        // Shorter delay for sibling-sequencing waits (the blocking prior
-        // run typically finishes in seconds, not a minute). The generic-
-        // error path keeps 30s because most other failure modes (cold-
-        // start DB, transient network) take longer to clear.
-        const isSiblingBlock = err instanceof BlockedBySiblingError;
-        const delaySeconds = isSiblingBlock ? 10 : 30;
+        // Sibling-sequencing waits are NOT errors: a higher-sequence
+        // ordered step was delivered before its predecessor finished.
+        // Acking drops this message so the wait never consumes the DLQ
+        // retry budget — the bug that dead-lettered whole ordered rounds
+        // when an early step was slow to fail (e.g. a ~100s NVIDIA 524).
+        // The run stays 'queued'; active promotion re-dispatches it the
+        // moment its predecessor reaches a terminal state.
+        if (err instanceof BlockedBySiblingError) {
+          logger.debug(
+            { messageId: message.id, runId: body.runId },
+            'queue message: blocked by ordered sibling, acking to await promotion',
+          );
+          message.ack();
+          continue;
+        }
+        // Genuine execution error — retry. Most failure modes (cold-start
+        // DB, transient network) take a beat to clear, so 30s. After
+        // max_retries=3, Cloudflare drops the message onto the DLQ.
+        const delaySeconds = 30;
         const errorClass =
           err instanceof Error ? err.constructor.name : 'Unknown';
         const errorMessage = err instanceof Error ? err.message : String(err);
@@ -279,7 +296,7 @@ export default {
             runId: body.runId,
             attempts: message.attempts,
             maxRetries: QUEUE_MAX_RETRIES,
-            reason: isSiblingBlock ? 'blocked_by_sibling' : 'execution_error',
+            reason: 'execution_error',
             errorClass,
             errorMessage,
             delaySeconds,

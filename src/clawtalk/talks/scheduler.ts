@@ -19,7 +19,11 @@ import {
   type DbScopeEnvBindings,
   type RequestExecutionContext,
 } from '../../db.js';
-import { failRunAndPromoteNextAtomic } from '../db/accessors.js';
+import {
+  failRunAndPromoteNextAtomic,
+  findNextRunnableOrderedSibling,
+  listStrandedOrderedSiblings,
+} from '../db/accessors.js';
 import {
   advanceTalkJobNextDueAt,
   claimDueTalkJobs,
@@ -51,6 +55,15 @@ const STUCK_RUN_THRESHOLD_MS = 60 * 60 * 1000;
 // rest.
 const STUCK_RUN_SWEEP_LIMIT = 100;
 
+// Grace window for the stranded-ordered-sibling sweep. A queued ordered
+// step whose blockers are all terminal should be claimed within seconds of
+// the consumer's active promotion dispatch. We only re-dispatch one whose
+// newest blocker finished longer ago than this, so the sweep never races a
+// promotion still in normal flight. 2 min clears Cloudflare Queues'
+// sub-second-to-seconds delivery with wide margin.
+const STRANDED_SIBLING_GRACE_MS = 2 * 60 * 1000;
+const STRANDED_SIBLING_SWEEP_LIMIT = 100;
+
 export interface ScheduledTickEnv extends DbScopeEnvBindings {
   DB: { connectionString: string };
 }
@@ -67,6 +80,7 @@ export async function runScheduledTick(
   return withRequestScopedDb(env.DB.connectionString, ctx, env, async () => {
     await processClaimableJobs();
     await sweepStuckRunningRuns();
+    await sweepStrandedOrderedSiblings();
   });
 }
 
@@ -146,11 +160,17 @@ export async function processClaimableJobs(): Promise<void> {
 
 async function sweepStuckRunningRuns(): Promise<void> {
   const threshold = new Date(Date.now() - STUCK_RUN_THRESHOLD_MS).toISOString();
-  let stuck: Array<{ id: string; owner_id: string }>;
+  let stuck: Array<{
+    id: string;
+    owner_id: string;
+    response_group_id: string | null;
+  }>;
   try {
     const db = getDbPg();
-    stuck = await db<Array<{ id: string; owner_id: string }>>`
-      select id, owner_id from public.talk_runs
+    stuck = await db<
+      Array<{ id: string; owner_id: string; response_group_id: string | null }>
+    >`
+      select id, owner_id, response_group_id from public.talk_runs
       where status = 'running'
         and started_at is not null
         and started_at < ${threshold}::timestamptz
@@ -172,10 +192,22 @@ async function sweepStuckRunningRuns(): Promise<void> {
             'Run exceeded the 1h stuck-running threshold and was reaped by the scheduler',
         });
       });
+      // If the reaped run was an ordered step, wake its next sibling now.
+      // failRunAndPromoteNextAtomic only flips status; it does not dispatch,
+      // and the stranded-sibling sweep won't pick the sibling up until its
+      // 2-min grace elapses (we just set ended_at=now). Promote here so a
+      // swept crash doesn't add a 2-3 min stall on top of the 1h reap. Safe
+      // to overlap the stranded sweep: the claim gate acks any duplicate.
+      if (run.response_group_id) {
+        const nextRunId = await findNextRunnableOrderedSibling(
+          run.response_group_id,
+        );
+        if (nextRunId) await dispatchRun({ runId: nextRunId });
+      }
     } catch (err) {
       logger.warn(
         { err, runId: run.id },
-        'scheduler: failRunAndPromoteNextAtomic threw during sweep',
+        'scheduler: stuck-run reap or sibling promotion failed during sweep',
       );
     }
   }
@@ -184,6 +216,36 @@ async function sweepStuckRunningRuns(): Promise<void> {
     logger.warn(
       { sweptCount: stuck.length },
       'scheduler: stuck-run sweep flipped runs to failed',
+    );
+  }
+}
+
+// Re-dispatch ordered siblings stranded by a lost promotion dispatch (see
+// listStrandedOrderedSiblings). dispatchRun is best-effort and internally
+// catches send failures, so a single bad send just retries next tick.
+async function sweepStrandedOrderedSiblings(): Promise<void> {
+  const endedBefore = new Date(
+    Date.now() - STRANDED_SIBLING_GRACE_MS,
+  ).toISOString();
+  let stranded: Array<{ id: string; owner_id: string }>;
+  try {
+    stranded = await listStrandedOrderedSiblings(
+      endedBefore,
+      STRANDED_SIBLING_SWEEP_LIMIT,
+    );
+  } catch (err) {
+    logger.error({ err }, 'scheduler: stranded-sibling list query failed');
+    return;
+  }
+
+  for (const run of stranded) {
+    await dispatchRun({ runId: run.id });
+  }
+
+  if (stranded.length > 0) {
+    logger.warn(
+      { redispatchedCount: stranded.length },
+      'scheduler: re-dispatched ordered siblings stranded by a lost promotion',
     );
   }
 }
