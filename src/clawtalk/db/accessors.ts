@@ -2345,34 +2345,6 @@ export async function enqueueTalkTurnAtomic(input: {
   const activeToolFamiliesSnapshot =
     activeToolFamiliesRows[0]?.active_tool_families_json ?? {};
 
-  // T-new-A2 §4.5 shadow combined-SELECT. Runs the proposed
-  // loadEnqueueTurnContext query alongside the existing 3 SELECTs so
-  // the §4.5 gate can compare actual measured deltas (sum of old
-  // selectThreadTitle + activeRoundsCount + selectActiveToolFamilies
-  // vs shadowCombinedHelper). Result discarded — the live path still
-  // uses the separate queries above. Revert before shipping A4.
-  await db<
-    {
-      active_tool_families_json: Record<string, boolean> | null;
-      title: string | null;
-      active_count: number;
-    }[]
-  >`
-    select
-      tk.active_tool_families_json,
-      th.title,
-      (
-        select count(*)::int from public.talk_runs
-        where talk_id = tk.id and thread_id = th.id
-          and status in ('queued', 'running', 'awaiting_confirmation')
-      ) as active_count
-    from public.talks tk
-    join public.talk_threads th on th.talk_id = tk.id
-    where tk.id = ${input.talkId}::uuid and th.id = ${threadId}::uuid
-    limit 1
-  `;
-  __turnLogPhase('shadowCombinedHelper');
-
   // Fan out one queued run per target agent. Each run snapshots the
   // credential kind the resolver would pick RIGHT NOW (migration 0032 /
   // PR B). The executor reads from the snapshot, so editing the
