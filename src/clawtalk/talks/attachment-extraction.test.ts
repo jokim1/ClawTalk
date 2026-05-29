@@ -5,6 +5,7 @@ import {
   extractAttachmentText,
   inferSupportedAttachmentMimeType,
   isImageAttachmentMimeType,
+  stripNullBytes,
 } from './attachment-extraction.js';
 
 const XLSX_MIME =
@@ -111,5 +112,30 @@ describe('extractAttachmentText — xlsx', () => {
     const buffer = makeXlsxBuffer([{ name: 'Empty', rows: [] }]);
     const text = await extractAttachmentText(buffer, XLSX_MIME, 'blank.xlsx');
     expect(text).toContain('## Sheet: Empty');
+  });
+});
+
+describe('extractAttachmentText — NUL byte sanitization', () => {
+  // Postgres rejects 0x00 in text columns; unpdf emits it for glyphs it
+  // cannot map (observed on Substack PDFs, where "(" and "-" became NUL).
+  const NUL = String.fromCharCode(0);
+
+  it('strips NUL bytes from extracted text so it can be stored', async () => {
+    const buffer = Buffer.from(
+      `Director ${NUL}Game Design) and AI${NUL}generated`,
+      'utf-8',
+    );
+    const text = await extractAttachmentText(buffer, 'text/plain', 'notes.txt');
+    expect(text).not.toContain(NUL);
+    expect(text).toBe('Director Game Design) and AIgenerated');
+  });
+});
+
+describe('stripNullBytes', () => {
+  const NUL = String.fromCharCode(0);
+
+  it('removes every NUL and leaves clean text untouched', () => {
+    expect(stripNullBytes(`a${NUL}b${NUL}c`)).toBe('abc');
+    expect(stripNullBytes('no nulls here')).toBe('no nulls here');
   });
 });

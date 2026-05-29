@@ -169,6 +169,25 @@ function truncate(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// NUL byte sanitization
+// ---------------------------------------------------------------------------
+
+const NULL_BYTE = String.fromCharCode(0);
+
+/**
+ * Postgres `text`/`varchar` columns reject NUL (U+0000) outright —
+ * `invalid byte sequence for encoding "UTF8": 0x00`. `unpdf` (and other
+ * extractors) can emit NUL where they fail to map a glyph — observed on
+ * Substack-exported PDFs, which encoded "(" and "-" as NUL — so we strip it
+ * from every extraction result before it can reach the DB. Mildly lossy
+ * (the unmapped glyph is dropped) but it's the only safe option for text
+ * storage; the alternative is the hard upload failure we're fixing here.
+ */
+export function stripNullBytes(text: string): string {
+  return text.includes(NULL_BYTE) ? text.split(NULL_BYTE).join('') : text;
+}
+
+// ---------------------------------------------------------------------------
 // Text-based extraction (plain text, markdown, CSV)
 // ---------------------------------------------------------------------------
 
@@ -463,6 +482,19 @@ const CODE_MIME_TYPES = new Set([
 // ---------------------------------------------------------------------------
 
 export async function extractAttachmentText(
+  buffer: Buffer,
+  mimeType: string,
+  fileName: string,
+): Promise<string> {
+  // Single sanitization chokepoint: every branch in the router below
+  // flows through here, so NUL bytes are stripped before extracted text
+  // can reach a Postgres text column (see stripNullBytes).
+  return stripNullBytes(
+    await routeAttachmentExtraction(buffer, mimeType, fileName),
+  );
+}
+
+async function routeAttachmentExtraction(
   buffer: Buffer,
   mimeType: string,
   fileName: string,
