@@ -6,9 +6,18 @@ import {
   buildOpenAiRequest,
   classifyHttpFailure,
   fetchWithUpstreamRetry,
+  isCloudflareBotBlock,
   type LlmMessage,
   type LlmProviderConfig,
 } from './llm-client.js';
+
+// A representative Cloudflare managed-challenge interstitial — the body
+// chatgpt.com/backend-api/codex returns when it bot-blocks a Worker.
+const CLOUDFLARE_CHALLENGE_BODY =
+  '<!DOCTYPE html><!--[if lt IE 7]> <html class="no-js ie6 oldie" ' +
+  'lang="en-US"> <![endif]--><head><title>Attention Required! | ' +
+  'Cloudflare</title><meta name="robots" content="noindex,nofollow" />' +
+  '</head><body>Please enable cookies.</body></html>';
 
 const nvidiaProvider: LlmProviderConfig = {
   providerId: 'provider.nvidia',
@@ -215,6 +224,33 @@ describe('classifyHttpFailure', () => {
     expect(classifyHttpFailure(451, '')).toBe('policy');
     expect(classifyHttpFailure(404, '')).toBe('network');
   });
+
+  it('returns "blocked" for a Cloudflare challenge body (not "auth")', () => {
+    expect(classifyHttpFailure(403, CLOUDFLARE_CHALLENGE_BODY)).toBe('blocked');
+  });
+
+  it('still returns "auth" for a 403 with no Cloudflare markers', () => {
+    expect(classifyHttpFailure(403, '{"error":"invalid token"}')).toBe('auth');
+  });
+});
+
+describe('isCloudflareBotBlock', () => {
+  it('detects the Attention Required challenge page', () => {
+    expect(isCloudflareBotBlock(CLOUDFLARE_CHALLENGE_BODY)).toBe(true);
+  });
+
+  it('detects the CF 1020 "you have been blocked" page', () => {
+    expect(isCloudflareBotBlock('Sorry, you have been blocked')).toBe(true);
+  });
+
+  it('is false for normal JSON error bodies and empty bodies', () => {
+    expect(isCloudflareBotBlock('{"error":"invalid model"}')).toBe(false);
+    expect(isCloudflareBotBlock('')).toBe(false);
+    // A provider that merely mentions cloudflare in prose must not match.
+    expect(
+      isCloudflareBotBlock('Upstream served by Cloudflare returned 500.'),
+    ).toBe(false);
+  });
 });
 
 describe('buildLlmHttpErrorMessage', () => {
@@ -275,6 +311,21 @@ describe('buildLlmHttpErrorMessage', () => {
     });
     // 600-char cap on the body slice.
     expect(msg.length).toBeLessThan(1200);
+  });
+
+  it('returns actionable guidance for a Cloudflare block (no raw HTML)', () => {
+    const msg = buildLlmHttpErrorMessage({
+      providerLabel: 'Codex Responses',
+      status: 403,
+      statusText: 'Forbidden',
+      body: CLOUDFLARE_CHALLENGE_BODY,
+    });
+    expect(msg).toContain('blocked by Cloudflare bot-protection');
+    expect(msg).toContain('OpenAI API key');
+    expect(msg).toContain('AI Agents');
+    // The raw challenge HTML must NOT leak into the message.
+    expect(msg).not.toContain('<!DOCTYPE');
+    expect(msg).not.toContain('Attention Required');
   });
 });
 

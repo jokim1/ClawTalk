@@ -699,6 +699,16 @@ function buildProviderConfig(provider: ProviderRow): LlmProviderConfig {
 
 function mapVerificationFailure(error: unknown): ProviderVerificationResult {
   if (error instanceof LlmClientError) {
+    if (error.failureClass === 'blocked') {
+      return {
+        status: 'unavailable',
+        lastVerifiedAt: null,
+        lastError:
+          'Blocked by Cloudflare bot-protection. This ChatGPT-subscription ' +
+          'endpoint rejects server-side requests — use an OpenAI API key or ' +
+          'another capable model.',
+      };
+    }
     if (error.failureClass === 'auth') {
       return {
         status: 'invalid',

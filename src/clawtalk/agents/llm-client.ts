@@ -1544,12 +1544,48 @@ export async function callLlm(
 // =============================================================================
 
 /**
+ * Detect a Cloudflare bot-management challenge/block response.
+ *
+ * The ChatGPT-subscription inference endpoint
+ * (chatgpt.com/backend-api/codex) sits behind Cloudflare. When the edge
+ * challenges a request — which it does for server-side callers like this
+ * Worker, whose datacenter egress IP + non-browser TLS fingerprint look
+ * non-residential — it returns the "Attention Required! | Cloudflare"
+ * interstitial (HTTP 403) instead of the API's JSON. A Worker cannot
+ * change its TLS fingerprint or egress IP, so this is neither retryable
+ * nor an auth failure: the only fix is switching the agent to a
+ * non-CF-walled credential (an OpenAI API key) or another provider.
+ * Detecting it lets us surface that guidance instead of dumping the raw
+ * challenge HTML into run history.
+ *
+ * Matched on body markers (case-insensitive) rather than status, so a
+ * bare 403 with no body still classifies as plain auth.
+ */
+export function isCloudflareBotBlock(errorText: string): boolean {
+  if (!errorText) return false;
+  const sample = errorText.slice(0, 4000).toLowerCase();
+  return (
+    sample.includes('attention required! | cloudflare') ||
+    sample.includes('sorry, you have been blocked') ||
+    sample.includes('cf-browser-verification') ||
+    sample.includes('_cf_chl_opt') ||
+    (sample.includes('just a moment...') && sample.includes('cloudflare'))
+  );
+}
+
+/**
  * Classify HTTP errors into failure classes for retry logic.
  */
 export function classifyHttpFailure(
   statusCode: number,
   errorText: string,
 ): string {
+  // A Cloudflare bot-block is not an auth failure and is not retryable —
+  // give it its own class so callers (run history, provider verification)
+  // can advise switching credentials/provider instead of "invalid key".
+  if (isCloudflareBotBlock(errorText)) {
+    return 'blocked';
+  }
   if (statusCode === 401 || statusCode === 403) {
     return 'auth';
   }
@@ -1605,6 +1641,21 @@ export function buildLlmHttpErrorMessage(input: {
 }): string {
   const status = input.status;
   const statusText = input.statusText || '<none>';
+
+  // Cloudflare bot-block: don't dump the raw "Attention Required!" HTML
+  // into run history. Tell the user what actually happened and how to
+  // fix it — this endpoint rejects server-side requests and can't be
+  // retried away.
+  if (isCloudflareBotBlock(input.body)) {
+    return (
+      `${input.providerLabel} was blocked by Cloudflare bot-protection ` +
+      `(HTTP ${status}). This endpoint (e.g. a ChatGPT-subscription ` +
+      `connection) rejects automated server-side requests, so it can't ` +
+      `be retried. Switch this agent to an OpenAI API key or another ` +
+      `capable model on the AI Agents page.`
+    );
+  }
+
   const detail = input.body ? `: ${input.body.slice(0, 600).trim()}` : '';
   if (UPSTREAM_TIMEOUT_STATUSES.has(status)) {
     const verb =
