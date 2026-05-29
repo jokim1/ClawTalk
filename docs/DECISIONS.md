@@ -61,6 +61,19 @@ Use clean, direct names — `workspaces`, `workspace_members`, `folders`, `talks
 
 ---
 
+## D7 — Schema pressure-test resolutions — ✅ Decided
+
+From the Codex review + prototype pressure-test of [11-data-model.md](./11-data-model.md) (2026-05-28). All verified against `src/` + migrations. These gate the schema patch and any migration generation.
+
+- **Run model.** Clean greenfield `runs`: **no `thread_id`** (threads eliminated, D4), `run_kind` includes `content_improvement`, retain only the orchestration columns the loop actually needs (sequencing for ordered/parallel, `requested_by`, `trigger_message_id`). The executor/queue-consumer are **reworked** to this shape — salvage their latency/correctness *logic* (engineering-notes), not the legacy schema. Corrects the earlier overstated "reuse the executor as-is."
+- **RLS (rewrites §0/§12).** Identity is `auth.uid()` via `request.jwt.claims->>'sub'` — the existing `withUserContext` plumbing. **There is no `app.*` GUC** (the doc's `app.user_id`/`app.workspace_id` was wrong). Policies are **workspace-membership based**: a row is visible iff `workspace_id in (select workspace_id from workspace_members where user_id = auth.uid())`. Every workspace-owned table — **including join tables** (`talk_tools`, `team_composition_agents`, `document_coeditors`, …) — carries `workspace_id`, with child↔parent integrity via **composite FKs**.
+- **SSR scope.** Forge's Synthetical connection is **per workspace** (shared org binding + token, admin-managed). Resolves `09` §15.
+- **Role templates.** A **DB table** (`agent_role_templates`; `agents.role_key` is a real FK), **seeded from the canonical prompts in `03-agents.md`** and changed via versioned rows (supports the `06` §14 prompt-improvement loop). The canonical prompt source stays version-controlled in `03`/seed so it's reviewable + testable; the table is the runtime source.
+- **Model catalog.** Clean `llm_models(id text pk)` as the single catalog, **seeded from** `llm_provider_models(provider_id, model_id)` (which keeps its composite key as the provider-capability table). Agents/runs FK to `llm_models.id`.
+- **False-reuse corrections.** `idempotency_cache` (HTTP-response cache, keyed `idempotency_key,user_id,method,path`) and `workspace_provider_secrets` (shared LLM keys, keyed by `provider_id`) are **not** reused for Forge batch retries / connector OAuth — each gets its own store.
+
+**Mechanical follow-ons** (fall out of the above; apply during the schema patch): composite FKs + `workspace_id` on all join tables; restore run sequencing columns; add a `talk_agents` current-roster table distinct from `talk_agent_snapshots`; read-state table for unread; folder/Unfiled talk ordering; `forge_audiences` + synced-SSR-asset tables; persist Forge search config + held-out set on runs; document-invariant enforcement (≥1 tab, last-tab guard, `after_block_id` FK, edit CAS/version).
+
 ## How to use this log
 
 - New cross-cutting decisions get an entry (`D<n>`), a status (✅ Decided / 🟡 Provisional / ⏳ Open), and follow-ups.
