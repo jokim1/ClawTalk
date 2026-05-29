@@ -2253,24 +2253,11 @@ export async function enqueueTalkTurnAtomic(input: {
     throw new Error('talk turn requires one sequence index per run');
   }
 
-  // T-new-A2 §4.5 temp instrumentation. Revert after measurement bench.
-  const __turnT0 = Date.now();
-  let __turnPhaseStart = __turnT0;
-  const __turnLogPhase = (subPhase: string) => {
-    const now = Date.now();
-    console.log('[t-new-a2-meta] turn', {
-      sub_phase: subPhase,
-      elapsed_ms: now - __turnPhaseStart,
-    });
-    __turnPhaseStart = now;
-  };
-
   const threadId = await resolveThreadIdForTalk({
     talkId: input.talkId,
     threadId: input.threadId,
     ownerId: input.ownerId,
   });
-  __turnLogPhase('resolveThreadIdForTalk');
 
   // No concurrent rounds — if any run is queued/running/awaiting on the
   // thread, reject before creating new ones.
@@ -2282,7 +2269,6 @@ export async function enqueueTalkTurnAtomic(input: {
       and thread_id = ${threadId}::uuid
       and status in ('queued', 'running', 'awaiting_confirmation')
   `;
-  __turnLogPhase('activeRoundsCount');
   if ((active[0]?.count ?? 0) > 0) {
     throw new TalkActiveRoundError('thread');
   }
@@ -2308,7 +2294,6 @@ export async function enqueueTalkTurnAtomic(input: {
     content: input.content,
     createdBy: input.userId,
   });
-  __turnLogPhase('createTalkMessage');
 
   // Heal thread title from the first user message — runs in the same
   // tx so a rollback drops the title write too.
@@ -2317,13 +2302,11 @@ export async function enqueueTalkTurnAtomic(input: {
     where id = ${threadId}::uuid and talk_id = ${input.talkId}::uuid
     limit 1
   `;
-  __turnLogPhase('selectThreadTitle');
   await maybePersistTalkThreadTitleFromMessages(
     input.talkId,
     threadId,
     threadRows[0]?.title ?? null,
   );
-  __turnLogPhase('maybePersistThreadTitle');
 
   // Snapshot the Talk's active tool families once before the fan-out so
   // every agent in this response group sees the SAME tool set even if
@@ -2341,7 +2324,6 @@ export async function enqueueTalkTurnAtomic(input: {
     where id = ${input.talkId}::uuid
     limit 1
   `;
-  __turnLogPhase('selectActiveToolFamilies');
   const activeToolFamiliesSnapshot =
     activeToolFamiliesRows[0]?.active_tool_families_json ?? {};
 
@@ -2356,11 +2338,9 @@ export async function enqueueTalkTurnAtomic(input: {
   for (let i = 0; i < input.targetAgentIds.length; i++) {
     const agentId = input.targetAgentIds[i];
     const agentRecord = await getRegisteredAgent(agentId);
-    __turnLogPhase(`agent_loop_iter_${i}_getRegisteredAgent`);
     const credentialKindSnapshot = agentRecord
       ? await resolveCredentialKindSnapshot(agentRecord)
       : null;
-    __turnLogPhase(`agent_loop_iter_${i}_resolveCredentialKindSnapshot`);
     const run = await createTalkRun({
       ownerId: input.ownerId,
       id: input.runIds?.[i],
@@ -2376,12 +2356,10 @@ export async function enqueueTalkTurnAtomic(input: {
       activeToolFamiliesSnapshot,
       credentialKindSnapshot,
     });
-    __turnLogPhase(`agent_loop_iter_${i}_createTalkRun`);
     runs.push(run);
   }
 
   await touchTalkUpdatedAt(input.talkId);
-  __turnLogPhase('touchTalkUpdatedAt');
   await emitOutboxEvent({
     topic: `talk:${input.talkId}`,
     eventType: 'message_appended',
@@ -2397,7 +2375,6 @@ export async function enqueueTalkTurnAtomic(input: {
     },
     ownerIds: [input.ownerId],
   });
-  __turnLogPhase('emitMessageAppended');
   for (let i = 0; i < runs.length; i++) {
     const run = runs[i];
     await emitOutboxEvent({
@@ -2419,7 +2396,6 @@ export async function enqueueTalkTurnAtomic(input: {
       },
       ownerIds: [input.ownerId],
     });
-    __turnLogPhase(`emitTalkRunQueued_${i}`);
   }
 
   // Attachments: validate cap + atomically link by message_id. Any
@@ -2454,10 +2430,6 @@ export async function enqueueTalkTurnAtomic(input: {
     }
   }
 
-  console.log('[t-new-a2-meta] turn', {
-    sub_phase: 'enqueueTalkTurnAtomic_total',
-    elapsed_ms: Date.now() - __turnT0,
-  });
   return { message, runs, threadId };
 }
 
