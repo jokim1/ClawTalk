@@ -29,6 +29,9 @@ import {
   MAX_PDF_DOCUMENT_BYTES,
   MAX_AUTO_ATTACH_PDF_COUNT,
   MAX_TOTAL_PDF_PAYLOAD_BYTES,
+  MAX_RASTER_PAGES,
+  MAX_TOTAL_RASTER_PAYLOAD_BYTES,
+  encodedSizeBytes,
 } from '../../shared/attachment-caps.js';
 import type { EffectiveToolAccess } from '../db/agent-accessors.js';
 import {
@@ -127,6 +130,20 @@ export interface ContextPackage {
   contextDocumentSources: ContextDocumentSourceRef[];
 
   /**
+   * Talk-level Context PDF sources surfaced as rasterized page images
+   * (JPEGs) on the current user turn. Populated only for agents whose
+   * model supports vision but NOT native PDF documents
+   * (`agentSupportsVision && !agentSupportsDocuments`) when the user
+   * explicitly `@`-referenced a PDF that has a complete page set. The
+   * executor hydrates each `pageIndices` entry from R2 via
+   * `loadPageImage` and prepends them as image blocks. `extracted_text`
+   * is kept alongside (rendered into `forcedInjectionText`) so the model
+   * still has exact-quote text, not just pixels. `@S`-forced only — there
+   * is no auto-attach for the raster path.
+   */
+  contextPdfPageSources: ContextPdfPageSourceRef[];
+
+  /**
    * Pre-fetched `@-ref` injection block to prepend to the user-role
    * message this turn. Null when the user did not @-reference any
    * sources. Already sanitized + bounded by FORCED_INJECTION_BUDGET_BYTES.
@@ -173,6 +190,22 @@ export interface ContextDocumentSourceRef {
    * obey the per-source size cap and the total-payload budget.
    */
   forceAttached: boolean;
+}
+
+export interface ContextPdfPageSourceRef {
+  ref: string;
+  /** Source row id — used with the Talk id to key page images in R2. */
+  sourceId: string;
+  title: string;
+  /**
+   * Page indices to attach, in ascending order. Already truncated to
+   * `min(pages, maxImages)` and the cumulative
+   * `MAX_TOTAL_RASTER_PAYLOAD_BYTES` encoded budget by loadTalkContext;
+   * the executor loads exactly these via `loadPageImage`.
+   */
+  pageIndices: number[];
+  /** Total rasterized pages available for this source (for "k of N"). */
+  totalPages: number;
 }
 
 export interface TalkRunContextStateEntrySnapshot {
@@ -437,6 +470,13 @@ export async function loadTalkContext(
      * read the `extracted_text` fallback via `read_source`.
      */
     agentSupportsDocuments?: boolean;
+    /**
+     * Max images this model accepts per prompt
+     * (`ModelCapabilities.max_images`). Bounds the rasterized PDF
+     * page-image count to `min(pages, maxImages)` on the
+     * vision-but-not-doc path. Undefined ⇒ no notably-low cap.
+     */
+    maxImages?: number;
   },
 ): Promise<ContextPackage> {
   const db = getDbPg();
@@ -461,6 +501,7 @@ export async function loadTalkContext(
   const sources = await fetchSources(db, talkId);
   const agentSupportsVision = options?.agentSupportsVision ?? false;
   const agentSupportsDocuments = options?.agentSupportsDocuments ?? false;
+  const maxImages = options?.maxImages;
 
   // Auto-attach selection for PDFs: most-recently-updated source under
   // the per-source size cap, capped at N=1. @-ref bypass merges in
@@ -515,6 +556,8 @@ export async function loadTalkContext(
     lowerSlugs,
     {
       agentSupportsDocuments,
+      agentSupportsVision,
+      maxImages,
       perSourceMaxBytes: MAX_PDF_DOCUMENT_BYTES,
     },
   );
@@ -527,25 +570,63 @@ export async function loadTalkContext(
   // body. Tracks the accepted forced refs so the auto-attach selector
   // below can deduct the spent budget.
   let payloadBudgetRemaining = MAX_TOTAL_PDF_PAYLOAD_BYTES;
+  // Separate cumulative budget for rasterized page images, measured on
+  // the base64/JSON-encoded size that actually rides the wire (Codex #6).
+  // A run is either doc-capable (native PDF path) or vision-but-not-doc
+  // (raster path), so only one of these two budgets is ever exercised.
+  let rasterBudgetRemaining = MAX_TOTAL_RASTER_PAYLOAD_BYTES;
   const acceptedForcedRefs = new Set<string>();
   const finalResolutions: ForcedInjectionResolution[] = atRefResolutions.map(
     (res) => {
-      if (res.kind !== 'pdf-document') return res;
-      const size = rowFileSizeBytesAt(res.row);
-      if (size > payloadBudgetRemaining) {
+      if (res.kind === 'pdf-document') {
+        const size = rowFileSizeBytesAt(res.row);
+        if (size > payloadBudgetRemaining) {
+          return {
+            kind: 'pdf-too-large',
+            sourceRef: res.sourceRef,
+            title: res.title,
+            maxBytes: MAX_TOTAL_PDF_PAYLOAD_BYTES,
+            fallbackText: res.row.extracted_text,
+          };
+        }
+        payloadBudgetRemaining -= size;
+        acceptedForcedRefs.add(res.sourceRef);
+        return res;
+      }
+      if (res.kind === 'pdf-page-images') {
+        const att = computeRasterPageAttachment(res.row, {
+          maxImages,
+          budgetRemainingBytes: rasterBudgetRemaining,
+        });
+        rasterBudgetRemaining -= att.bytesUsed;
         return {
-          kind: 'pdf-too-large',
-          sourceRef: res.sourceRef,
-          title: res.title,
-          maxBytes: MAX_TOTAL_PDF_PAYLOAD_BYTES,
-          fallbackText: res.row.extracted_text,
+          ...res,
+          attachment: {
+            pageIndices: att.pageIndices,
+            totalPages: att.totalPages,
+            truncatedReason: att.truncatedReason,
+          },
         };
       }
-      payloadBudgetRemaining -= size;
-      acceptedForcedRefs.add(res.sourceRef);
       return res;
     },
   );
+  const contextPdfPageSources: ContextPdfPageSourceRef[] = [];
+  for (const res of finalResolutions) {
+    if (
+      res.kind === 'pdf-page-images' &&
+      res.attachment &&
+      res.attachment.pageIndices.length > 0
+    ) {
+      contextPdfPageSources.push({
+        ref: res.sourceRef,
+        sourceId: res.row.id,
+        title: res.title,
+        pageIndices: res.attachment.pageIndices,
+        totalPages: res.attachment.totalPages,
+      });
+    }
+  }
   const forcedInjectionText =
     renderForcedInjectionResolutions(finalResolutions);
   const acceptedForcedPdfRows: AtRefCandidateRow[] = [];
@@ -805,6 +886,7 @@ export async function loadTalkContext(
     contextSnapshot,
     contextImageSources,
     contextDocumentSources,
+    contextPdfPageSources,
     forcedInjectionText,
     metadata,
   };
@@ -1055,8 +1137,20 @@ export function buildSourceManifest(
       const displaced = pdfState.displacedByPayloadRefs?.has(ref) ?? false;
       let suffix: string;
       if (!pdfState.agentSupportsDocuments) {
-        suffix =
-          " (PDF — text-only, this agent's model lacks PDF document vision)";
+        // Vision-but-not-doc agents read PDFs as rasterized page images.
+        // Advertise availability + the @-ref to attach them; otherwise
+        // fall back to the text-only note.
+        if (agentSupportsVision && isPageSetComplete(source)) {
+          const n = source.page_image_count;
+          suffix = ` (PDF — ${n} page image${
+            n === 1 ? '' : 's'
+          } available; @${ref} to attach them to a turn)`;
+        } else if (agentSupportsVision) {
+          suffix = ' (PDF — text-only; no rasterized page images for this PDF)';
+        } else {
+          suffix =
+            " (PDF — text-only, this agent's model lacks PDF document vision)";
+        }
       } else if (tooBig) {
         suffix = ` (PDF — too large to attach as document, > ${Math.floor(
           MAX_PDF_DOCUMENT_BYTES / (1024 * 1024),
@@ -1189,9 +1283,18 @@ export interface AtRefCandidateRow {
   source_type: string;
   source_url: string | null;
   updated_at: string;
+  // Rasterized-page metadata (PDF page-image path). Joined from
+  // talk_context_source_pages in fetchAtRefCandidateRows. page_indices
+  // and page_byte_sizes are parallel arrays in ascending page order; the
+  // raster budget guard walks them in order. expected_page_count is null
+  // until the webapp begins uploading pages.
+  expected_page_count: number | null;
+  page_image_count: number;
+  page_indices: number[];
+  page_byte_sizes: number[];
 }
 
-type ForcedInjectionResolution =
+export type ForcedInjectionResolution =
   | { kind: 'resolved'; sourceRef: string; title: string; content: string }
   | { kind: 'pending'; sourceRef: string; title: string }
   | {
@@ -1217,6 +1320,27 @@ type ForcedInjectionResolution =
       title: string;
       maxBytes: number;
       fallbackText: string | null;
+    }
+  | {
+      /**
+       * PDF force-attached as rasterized page images (vision-but-not-PDF
+       * models). The row carries the per-page metadata; `extracted_text`
+       * is kept and rendered as a text fence alongside the manifest note.
+       * `attachment` is filled by the cumulative raster-budget guard in
+       * loadTalkContext (the pure convenience flow leaves it undefined and
+       * renders a generic "page images available" note instead of "k of
+       * N"). The chosen page indices ride back to the executor via
+       * `ContextPdfPageSourceRef`.
+       */
+      kind: 'pdf-page-images';
+      sourceRef: string;
+      title: string;
+      row: AtRefCandidateRow;
+      attachment?: {
+        pageIndices: number[];
+        totalPages: number;
+        truncatedReason: 'image-limit' | 'payload-budget' | null;
+      };
     }
   | { kind: 'missing-ref'; requestedRef: string }
   | { kind: 'missing-slug'; requestedSlug: string }
@@ -1249,6 +1373,41 @@ function renderForcedInjectionResolution(
       }
       return `[${res.sourceRef}] ${res.title} (PDF — exceeds ${mb} MB attach cap; no text available)`;
     }
+    case 'pdf-page-images': {
+      const att = res.attachment;
+      const total = att?.totalPages ?? res.row.page_image_count;
+      const attached = att ? att.pageIndices.length : null;
+      const hasText = !!res.row.extracted_text;
+      const textTail = hasText ? '; extracted text below' : '';
+      let note: string;
+      if (attached === null) {
+        // Convenience flow — no cumulative budget applied.
+        note = `PDF — page images available; attached to this turn via @-ref${textTail}`;
+      } else if (attached > 0) {
+        const pageWord = total === 1 ? 'page image' : 'page images';
+        const truncTail =
+          att?.truncatedReason === 'image-limit'
+            ? " (capped at this model's per-prompt image limit)"
+            : att?.truncatedReason === 'payload-budget'
+              ? ' (capped by the per-turn image payload budget)'
+              : '';
+        note = `PDF — ${attached} of ${total} ${pageWord} attached to this turn via @-ref${truncTail}${textTail}`;
+      } else {
+        note = `PDF — page images omitted (per-turn image payload budget reached)${
+          hasText ? '; extracted text below' : '; no extracted text available'
+        }`;
+      }
+      const header = `[${res.sourceRef}] ${res.title} (${note})`;
+      if (hasText) {
+        return [
+          header,
+          '<<<source',
+          sanitizeBlockForPrompt(res.row.extracted_text!),
+          'source>>>',
+        ].join('\n');
+      }
+      return header;
+    }
     case 'missing-ref':
       return `[${res.requestedRef}] (no such source)`;
     case 'missing-slug':
@@ -1263,6 +1422,20 @@ function renderForcedInjectionResolution(
 interface AtRefResolveOptions {
   agentSupportsDocuments?: boolean;
   perSourceMaxBytes?: number;
+  /**
+   * Whether the active agent's model supports image vision. When true
+   * AND the model does NOT support native PDF documents, an `@`-ref'd
+   * PDF with a complete page set resolves to `pdf-page-images` instead
+   * of text. The per-turn truncation (`maxImages` + the cumulative
+   * raster payload budget) is applied later by loadTalkContext.
+   */
+  agentSupportsVision?: boolean;
+  /**
+   * Max images this model accepts per prompt (`ModelCapabilities.max_images`).
+   * Bounds the rasterized page count to `min(pages, maxImages)`. Undefined
+   * means "no notably-low cap" — bounded only by `MAX_RASTER_PAGES`.
+   */
+  maxImages?: number;
 }
 
 function rowIsPdfWithStorage(row: AtRefCandidateRow): boolean {
@@ -1276,6 +1449,49 @@ function rowIsPdfWithStorage(row: AtRefCandidateRow): boolean {
 function rowFileSizeBytesAt(row: AtRefCandidateRow): number {
   if (typeof row.file_size === 'string') return Number(row.file_size) || 0;
   return row.file_size ?? 0;
+}
+
+/**
+ * Decide which rasterized page images to attach for one `@`-ref'd PDF,
+ * in ascending page order. Stops at `min(pages, maxImages, MAX_RASTER_PAGES)`
+ * or when the cumulative encoded payload budget is exhausted, whichever
+ * comes first. Returns the chosen indices, the total available, the
+ * truncation reason (if any), and the encoded bytes consumed so the
+ * caller can thread one shared budget across multiple @-ref'd PDFs.
+ */
+export function computeRasterPageAttachment(
+  row: Pick<
+    AtRefCandidateRow,
+    'page_indices' | 'page_byte_sizes' | 'page_image_count'
+  >,
+  opts: { maxImages?: number; budgetRemainingBytes: number },
+): {
+  pageIndices: number[];
+  totalPages: number;
+  truncatedReason: 'image-limit' | 'payload-budget' | null;
+  bytesUsed: number;
+} {
+  const total = row.page_image_count;
+  const limit = Math.min(total, opts.maxImages ?? total, MAX_RASTER_PAGES);
+  const pageIndices: number[] = [];
+  let bytesUsed = 0;
+  let reason: 'image-limit' | 'payload-budget' | null = null;
+  for (let i = 0; i < row.page_indices.length; i++) {
+    if (pageIndices.length >= limit) {
+      reason = 'image-limit';
+      break;
+    }
+    const enc = encodedSizeBytes(row.page_byte_sizes[i] ?? 0);
+    if (bytesUsed + enc > opts.budgetRemainingBytes) {
+      reason = 'payload-budget';
+      break;
+    }
+    bytesUsed += enc;
+    pageIndices.push(row.page_indices[i]);
+  }
+  const truncatedReason =
+    pageIndices.length < total ? (reason ?? 'image-limit') : null;
+  return { pageIndices, totalPages: total, truncatedReason, bytesUsed };
 }
 
 function resolveSingleRowForRef(
@@ -1299,6 +1515,25 @@ function resolveSingleRowForRef(
     }
     return {
       kind: 'pdf-document',
+      sourceRef: row.source_ref,
+      title: row.title,
+      row,
+    };
+  }
+
+  // PDF + vision-but-not-doc agent + complete page set → page images.
+  // The cumulative raster-budget guard in loadTalkContext fills
+  // `attachment` (chosen indices + truncation reason); the executor
+  // hydrates the JPEGs. extracted_text is kept and rendered alongside —
+  // raster is pixels-only, suppressing text loses exact quotes (Codex #4).
+  if (
+    options.agentSupportsVision &&
+    !options.agentSupportsDocuments &&
+    rowIsPdfWithStorage(row) &&
+    isPageSetComplete(row)
+  ) {
+    return {
+      kind: 'pdf-page-images',
       sourceRef: row.source_ref,
       title: row.title,
       row,
@@ -1363,6 +1598,16 @@ function resolveAtRefRequests(
     const ready = matches.filter((m) => {
       if (options.agentSupportsDocuments && rowIsPdfWithStorage(m)) {
         return m.status === 'ready';
+      }
+      // vision-but-not-doc: a PDF with a complete page set is "ready" for
+      // the raster path even when text extraction failed (status='failed').
+      if (
+        options.agentSupportsVision &&
+        !options.agentSupportsDocuments &&
+        rowIsPdfWithStorage(m) &&
+        isPageSetComplete(m)
+      ) {
+        return true;
       }
       return m.status === 'ready' && m.extracted_text;
     });
@@ -1555,26 +1800,42 @@ export async function fetchAtRefCandidateRows(
   if (refs.length === 0 && slugs.length === 0) return [];
   const upperRefs = refs.map((r) => r.toUpperCase());
   const lowerSlugs = slugs.map((s) => s.toLowerCase());
+  // LEFT JOIN aggregated page metadata so the raster path can decide
+  // page-image attachment without a second query. page_indices +
+  // page_byte_sizes are parallel arrays in ascending page order; the
+  // budget guard walks them together. Mirrors the fetchSources join.
   return await db<AtRefCandidateRow[]>`
     select
-      id,
-      source_ref,
-      title,
-      title_slug,
-      status,
-      extracted_text,
-      mime_type,
-      storage_key,
-      file_size,
-      file_name,
-      source_type,
-      source_url,
-      updated_at
-    from public.talk_context_sources
-    where talk_id = ${talkId}::uuid
+      s.id,
+      s.source_ref,
+      s.title,
+      s.title_slug,
+      s.status,
+      s.extracted_text,
+      s.mime_type,
+      s.storage_key,
+      s.file_size,
+      s.file_name,
+      s.source_type,
+      s.source_url,
+      s.updated_at,
+      s.expected_page_count,
+      coalesce(p.page_count, 0) as page_image_count,
+      coalesce(p.page_indices, '{}'::int[]) as page_indices,
+      coalesce(p.page_byte_sizes, '{}'::int[]) as page_byte_sizes
+    from public.talk_context_sources s
+    left join (
+      select source_id,
+             count(*)::int as page_count,
+             array_agg(page_index order by page_index) as page_indices,
+             array_agg(byte_size order by page_index) as page_byte_sizes
+      from public.talk_context_source_pages
+      group by source_id
+    ) p on p.source_id = s.id
+    where s.talk_id = ${talkId}::uuid
       and (
-        source_ref = any(${upperRefs}::text[])
-        or title_slug = any(${lowerSlugs}::text[])
+        s.source_ref = any(${upperRefs}::text[])
+        or s.title_slug = any(${lowerSlugs}::text[])
       )
   `;
 }
