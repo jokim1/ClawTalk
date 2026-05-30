@@ -470,7 +470,6 @@ function buildRegisteredAgents(): RegisteredAgent[] {
       name: 'Claude Main',
       providerId: 'provider.anthropic',
       modelId: 'claude-sonnet-4-6',
-      toolPermissions: { web: true },
       personaRole: 'assistant',
       systemPrompt: null,
       description: null,

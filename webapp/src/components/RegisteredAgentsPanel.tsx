@@ -13,7 +13,6 @@ import {
   type AgentProviderCard,
   UnauthorizedError,
 } from '../lib/api';
-import { TOOL_FAMILY_GROUPS, TOOL_NAMES } from '../lib/tool-families';
 
 type Props = {
   providers: AgentProviderCard[];
@@ -34,7 +33,6 @@ type AgentDraft = {
   personaRole: string;
   description: string;
   systemPrompt: string;
-  toolPermissions: Record<string, boolean>;
   enabled: boolean;
   // null = auto (resolver walks personal/workspace × api_key/sub
   // precedence). Non-null pins the agent to one mode.
@@ -139,29 +137,8 @@ function credentialModeBadgeLabel(
   return null;
 }
 
-function buildDefaultRegisteredAgentToolPermissions(): Record<string, boolean> {
-  // Keep in sync with the backend default in agent-accessors.ts.
-  return {
-    web: true,
-    connectors: true,
-    google_read: true,
-    google_write: true,
-    gmail_read: true,
-    gmail_send: true,
-    messaging: true,
-  };
-}
-
 function generateDraftId(): string {
   return 'draft-' + Math.random().toString(36).substring(2, 11);
-}
-
-function hasHeavyTools(toolPermissions: Record<string, boolean>): boolean {
-  return Boolean(
-    toolPermissions.shell ||
-    toolPermissions.filesystem ||
-    toolPermissions.browser,
-  );
 }
 
 function withExecutionPreviewDefaults(
@@ -201,73 +178,8 @@ function buildDraftExecutionPreview(input: {
     return null;
   }
 
-  const heavyToolsEnabled = hasHeavyTools(input.draft.toolPermissions);
   const hasSubscriptionCredential =
     input.executorSettings.hasOauthToken || input.executorSettings.hasAuthToken;
-  const containerRuntimeAvailable =
-    input.containerRuntimeAvailability === 'ready';
-  // Post-PR-#332: Claude OAuth subscriptions run through direct_http
-  // with Bearer + claude-cli headers (see llm-client.ts) — no local
-  // container required. Only heavy tools (shell / filesystem) still
-  // need the container runtime, and that path is stubbed out on the
-  // cloud Worker anyway. So the only thing that genuinely requires
-  // a container is heavyToolsEnabled.
-  const requiresContainerBackend = heavyToolsEnabled;
-
-  if (requiresContainerBackend && !containerRuntimeAvailable) {
-    return withExecutionPreviewDefaults({
-      surface: 'main',
-      backend: null,
-      authPath: null,
-      routeReason: 'no_valid_path',
-      ready: false,
-      message:
-        'Shell, Filesystem, and Browser tools require a container runtime, which is not available in the cloud deployment yet.',
-    });
-  }
-
-  if (heavyToolsEnabled) {
-    if (
-      input.executorSettings.executorAuthMode === 'subscription' &&
-      hasSubscriptionCredential
-    ) {
-      return withExecutionPreviewDefaults({
-        surface: 'main',
-        backend: 'container',
-        authPath: 'subscription',
-        selectedMode: 'subscription',
-        transport: 'subscription',
-        routeReason: 'normal',
-        ready: true,
-        message: 'Main will use Claude subscription via the container runtime.',
-      });
-    }
-    if (
-      input.executorSettings.executorAuthMode === 'api_key' &&
-      input.executorSettings.hasApiKey
-    ) {
-      return withExecutionPreviewDefaults({
-        surface: 'main',
-        backend: 'container',
-        authPath: 'api_key',
-        selectedMode: 'api',
-        transport: 'direct',
-        routeReason: 'normal',
-        ready: true,
-        message:
-          'Main will use the Claude container runtime with an Anthropic API key.',
-      });
-    }
-    return withExecutionPreviewDefaults({
-      surface: 'main',
-      backend: null,
-      authPath: null,
-      routeReason: 'no_valid_path',
-      ready: false,
-      message:
-        'Heavy Claude tools require a valid container auth path. Configure subscription mode with a stored Claude credential, or switch to API key mode with an Anthropic API key.',
-    });
-  }
 
   if (
     input.executorSettings.executorAuthMode === 'subscription' &&
@@ -408,7 +320,6 @@ export function RegisteredAgentsPanel(props: Props): JSX.Element {
       personaRole: '',
       description: '',
       systemPrompt: '',
-      toolPermissions: buildDefaultRegisteredAgentToolPermissions(),
       enabled: true,
       credentialMode: defaultOption?.credentialMode ?? null,
     });
@@ -434,7 +345,6 @@ export function RegisteredAgentsPanel(props: Props): JSX.Element {
         personaRole: createDraft.personaRole || undefined,
         description: createDraft.description || undefined,
         systemPrompt: createDraft.systemPrompt || undefined,
-        toolPermissionsJson: JSON.stringify(createDraft.toolPermissions),
         credentialMode: createDraft.credentialMode,
       };
       const newAgent = await createRegisteredAgent(input);
@@ -464,7 +374,6 @@ export function RegisteredAgentsPanel(props: Props): JSX.Element {
       personaRole: agent.personaRole || '',
       description: agent.description || '',
       systemPrompt: agent.systemPrompt || '',
-      toolPermissions: { ...agent.toolPermissions },
       enabled: agent.enabled,
       credentialMode: agent.credentialMode,
     });
@@ -491,7 +400,6 @@ export function RegisteredAgentsPanel(props: Props): JSX.Element {
         personaRole: editDraft.personaRole || null,
         description: editDraft.description || null,
         systemPrompt: editDraft.systemPrompt || null,
-        toolPermissionsJson: JSON.stringify(editDraft.toolPermissions),
         enabled: editDraft.enabled,
         credentialMode: editDraft.credentialMode,
       };
@@ -697,9 +605,6 @@ function AgentForm({
 }: AgentFormProps): JSX.Element {
   const models = getProviderModels(draft.providerId);
   const selectedProvider = providers.find((p) => p.id === draft.providerId);
-  const heavyToolsEnabled = hasHeavyTools(draft.toolPermissions);
-  const isNonClaudeProvider =
-    selectedProvider?.id !== 'provider.anthropic' && heavyToolsEnabled;
   const saveDisabled = !canManage || executionPreview?.ready === false;
   const providerOptions = buildProviderOptions(providers);
 
@@ -810,15 +715,11 @@ function AgentForm({
         />
       </label>
 
-      <div className="agent-form-field-full agent-form-tools-section">
-        <span className="agent-form-tools-title">Tool capabilities</span>
-
-        {isNonClaudeProvider && (
-          <div className="agent-form-warning">
-            ⚠️ Shell, Filesystem, and Browser tools require the Claude provider.
-          </div>
-        )}
-        {executionPreview ? (
+      {/* Tools are now configured per-Talk on the chip bar, not per-agent.
+          This block keeps only the Main execution-routing feedback (it gates
+          the Save button for Claude agents with no valid credential path). */}
+      {executionPreview ? (
+        <div className="agent-form-field-full">
           <div
             className={
               executionPreview.ready
@@ -830,35 +731,8 @@ function AgentForm({
           >
             {executionPreview.message}
           </div>
-        ) : null}
-
-        {Object.entries(TOOL_FAMILY_GROUPS).map(([groupLabel, toolNames]) => (
-          <div key={groupLabel} className="agent-form-tool-group">
-            <div className="agent-form-tool-group-label">{groupLabel}</div>
-            <div className="agent-form-tool-checkboxes">
-              {toolNames.map((toolName) => (
-                <label key={toolName} className="agent-form-tool-checkbox">
-                  <input
-                    type="checkbox"
-                    checked={draft.toolPermissions[toolName] || false}
-                    onChange={(e) => {
-                      setDraft({
-                        ...draft,
-                        toolPermissions: {
-                          ...draft.toolPermissions,
-                          [toolName]: e.target.checked,
-                        },
-                      });
-                    }}
-                    disabled={!canManage}
-                  />
-                  <span>{TOOL_NAMES[toolName]}</span>
-                </label>
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
+        </div>
+      ) : null}
 
       <div className="agent-editor-actions">
         <button
@@ -900,10 +774,6 @@ function AgentCardView({
   onApplyModelUpdate,
   canManage,
 }: AgentCardViewProps): JSX.Element {
-  const toolList = Object.entries(agent.toolPermissions)
-    .filter(([, enabled]) => enabled)
-    .map(([toolName]) => TOOL_NAMES[toolName] || toolName);
-
   const credentialModeBadge = credentialModeBadgeLabel(agent.credentialMode);
   // A const (not the prop directly) so TS keeps the non-null narrowing inside
   // the Update button's click closure.
@@ -1002,15 +872,6 @@ function AgentCardView({
           </div>
         )}
 
-        {toolList.length > 0 && (
-          <div className="registered-agent-card-tools">
-            {toolList.map((tool) => (
-              <span key={tool} className="registered-agent-tool-pill">
-                {tool}
-              </span>
-            ))}
-          </div>
-        )}
       </div>
     </>
   );

@@ -19,7 +19,7 @@ import {
   updateTalkTool,
   type TalkToolsState,
 } from '../lib/api';
-import { TOOL_FAMILY_ORDER, TOOL_NAMES } from '../lib/tool-families';
+import { TOOL_FAMILY_ORDER, TOOL_HINTS, TOOL_NAMES } from '../lib/tool-families';
 
 export interface ToolChipsBarProps {
   talkId: string;
@@ -114,33 +114,50 @@ export function ToolChipsBar({
 
   if (!state) return null;
   const availableSet = new Set(state.available);
-  // Render in TOOL_FAMILY_ORDER so chips appear in the same order as the
-  // agent-config screen, regardless of how the server returned them.
+  // Render in TOOL_FAMILY_ORDER so chips appear in a stable order regardless
+  // of how the server returned them.
   const familiesToRender = TOOL_FAMILY_ORDER.filter((slug) =>
     availableSet.has(slug),
   );
   if (familiesToRender.length === 0) return null;
+  // Tools default to all-off per Talk. When nothing is active, keep the chips
+  // visible (so the user can turn one on) and surface a discovery hint that
+  // disappears the moment any tool is enabled.
+  const anyActive = familiesToRender.some(
+    (family) => state.active[family] === true,
+  );
 
   return (
-    <div className="tool-chips-bar" role="group" aria-label="Talk tools">
-      {familiesToRender.map((family) => {
-        const enabled = state.active[family] === true;
-        const pending = pendingFamilies.has(family);
-        return (
-          <button
-            key={family}
-            type="button"
-            className={`tool-chip${enabled ? ' tool-chip-on' : ''}${pending ? ' tool-chip-pending' : ''}`}
-            aria-pressed={enabled}
-            disabled={pending}
-            onClick={() => {
-              void onToggle(family);
-            }}
-          >
-            {TOOL_NAMES[family] ?? family}
-          </button>
-        );
-      })}
+    <div className="tool-chips-bar-wrap">
+      <div className="tool-chips-bar" role="group" aria-label="Talk tools">
+        {familiesToRender.map((family) => {
+          const enabled = state.active[family] === true;
+          const pending = pendingFamilies.has(family);
+          return (
+            <button
+              key={family}
+              type="button"
+              className={`tool-chip${enabled ? ' tool-chip-on' : ''}${pending ? ' tool-chip-pending' : ''}`}
+              aria-pressed={enabled}
+              disabled={pending}
+              title={TOOL_HINTS[family]}
+              onClick={() => {
+                void onToggle(family);
+              }}
+            >
+              {TOOL_NAMES[family] ?? family}
+            </button>
+          );
+        })}
+      </div>
+      {!anyActive ? (
+        <p className="tool-chips-hint">
+          Tools are off for this Talk. Turn on <strong>Web</strong> for live
+          search, <strong>Google</strong>/<strong>Gmail</strong> to read &amp;
+          write docs and mail, or <strong>Connectors</strong>/
+          <strong>Messaging</strong> for integrations.
+        </p>
+      ) : null}
     </div>
   );
 }

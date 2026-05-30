@@ -177,7 +177,7 @@ export async function resolvePrimaryAgent(
   const db = getDbPg();
   const rows = await db<RegisteredAgentRecord[]>`
     select ra.id, ra.owner_id, ra.name, ra.provider_id, ra.model_id,
-           ra.tool_permissions_json, ra.persona_role, ra.system_prompt,
+           ra.persona_role, ra.system_prompt,
            ra.description, ra.enabled, ra.created_at, ra.updated_at
     from public.talk_agents ta
     join public.registered_agents ra on ra.id = ta.registered_agent_id
@@ -201,7 +201,7 @@ export async function resolveAgentByName(
   const db = getDbPg();
   const rows = await db<RegisteredAgentRecord[]>`
     select ra.id, ra.owner_id, ra.name, ra.provider_id, ra.model_id,
-           ra.tool_permissions_json, ra.persona_role, ra.system_prompt,
+           ra.persona_role, ra.system_prompt,
            ra.description, ra.enabled, ra.created_at, ra.updated_at
     from public.talk_agents ta
     join public.registered_agents ra on ra.id = ta.registered_agent_id

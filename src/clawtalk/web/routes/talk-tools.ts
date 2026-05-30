@@ -2,8 +2,8 @@
 //
 // GET   returns { active, available }
 //          active     — Record<string, boolean> from talks.active_tool_families_json
-//          available  — string[] of family slugs that some agent in
-//                       this Talk can use (a chip is rendered for each)
+//          available  — string[] of the light tool family slugs shown on
+//                       the chip bar (static; heavy families excluded)
 // PATCH  takes  { family, enabled } — flips one family on/off
 //          400 on unknown family slug
 //          404 when the Talk is not owned by the caller (RLS hides it)
@@ -14,11 +14,10 @@
 // thread-scoped subscriptions (see T7 / codex #5).
 
 import { withUserContext } from '../../../db.js';
-import { TOOL_FAMILY_MAP } from '../../db/agent-accessors.js';
+import { TALK_TOOL_FAMILIES } from '../../db/agent-accessors.js';
 import { getTalkForUser } from '../../db/accessors.js';
 import {
   getTalkActiveTools,
-  getTalkAvailableFamilies,
   setTalkActiveTool,
 } from '../../db/talk-tools-accessors.js';
 import { emitOutboxEvent } from '../../talks/outbox-emit.js';
@@ -48,10 +47,7 @@ export async function getTalkToolsRoute(input: {
         },
       };
     }
-    const [active, available] = await Promise.all([
-      getTalkActiveTools(input.talkId),
-      getTalkAvailableFamilies(input.talkId),
-    ]);
+    const active = await getTalkActiveTools(input.talkId);
     return {
       statusCode: 200,
       body: {
@@ -59,7 +55,9 @@ export async function getTalkToolsRoute(input: {
         data: {
           talkId: input.talkId,
           active,
-          available,
+          // The tool bar shows the static light vocabulary; heavy families
+          // (shell/filesystem/browser) are excluded.
+          available: TALK_TOOL_FAMILIES,
         },
       },
     };
@@ -104,7 +102,6 @@ export async function updateTalkToolRoute(input: {
       };
     }
     const active = await setTalkActiveTool(input.talkId, family, enabled);
-    const available = await getTalkAvailableFamilies(input.talkId);
     await emitOutboxEvent({
       topic: `talk:${input.talkId}`,
       eventType: 'talk_tools_changed',
@@ -121,7 +118,7 @@ export async function updateTalkToolRoute(input: {
         data: {
           talkId: input.talkId,
           active,
-          available,
+          available: TALK_TOOL_FAMILIES,
         },
       },
     };
@@ -145,12 +142,12 @@ function normalizePatchBody(body: unknown): NormalizedPatch {
   if (typeof enabled !== 'boolean') {
     return { ok: false, error: 'enabled must be a boolean' };
   }
-  if (!Object.prototype.hasOwnProperty.call(TOOL_FAMILY_MAP, family)) {
+  if (!TALK_TOOL_FAMILIES.includes(family)) {
     return {
       ok: false,
-      error: `unknown family '${family}' — must be one of ${Object.keys(
-        TOOL_FAMILY_MAP,
-      ).join(', ')}`,
+      error: `unknown family '${family}' — must be one of ${TALK_TOOL_FAMILIES.join(
+        ', ',
+      )}`,
     };
   }
   return { ok: true, family, enabled };

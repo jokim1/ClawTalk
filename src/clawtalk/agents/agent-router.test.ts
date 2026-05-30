@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../db/agent-accessors.js', () => ({
   getRegisteredAgent: vi.fn(),
-  TOOL_FAMILY_MAP: {},
 }));
 vi.mock('./execution-resolver.js', () => ({
   resolveExecution: vi.fn(),
@@ -44,7 +43,6 @@ describe('agent-router', () => {
       enabled: 1,
       provider_id: 'provider.openai',
       model_id: 'gpt-5-mini',
-      tool_permissions_json: '{}',
       system_prompt: 'Be useful.',
     } as never);
     vi.mocked(resolveExecution).mockReturnValue({
@@ -65,8 +63,8 @@ describe('agent-router', () => {
   });
 
   it('always permits apply_content_edit (Talk-internal Content edits)', () => {
-    // The Content tool never appears in tool_permissions_json — no
-    // tool family covers it. Without ALWAYS_ALLOWED inclusion it gets
+    // The Content tool belongs to no tool family, so the Talk effective
+    // set never enables it. Without ALWAYS_ALLOWED inclusion it gets
     // silently filtered for every agent, breaking the feature.
     expect(ALWAYS_ALLOWED_CONTEXT_TOOLS.has('apply_content_edit')).toBe(true);
   });
@@ -193,5 +191,77 @@ describe('agent-router', () => {
     });
 
     expect(result.content).toBe('Ready.');
+  });
+
+  it('gates context-tool DEFINITIONS on the Talk effective set (effectiveTools drives the tool list)', async () => {
+    let capturedToolNames: string[] = [];
+    vi.mocked(streamLlmResponse).mockImplementation(async function* (
+      _provider,
+      _secret,
+      _modelId,
+      _messages,
+      options,
+    ) {
+      capturedToolNames = (
+        (options?.tools ?? []) as Array<{ name: string }>
+      ).map((t) => t.name);
+      yield { type: 'text_delta', text: 'ok' };
+      yield { type: 'done', stopReason: 'stop' };
+    } as typeof streamLlmResponse);
+
+    const context = {
+      systemPrompt: 'Talk system prompt',
+      contextTools: [{ name: 'web_search' }],
+      connectorTools: [],
+      history: [],
+    };
+
+    await executeWithAgent('agent-1', context as never, 'search please', {
+      runId: 'run-tools-on',
+      userId: 'owner-1',
+      effectiveTools: [
+        {
+          toolFamily: 'web',
+          runtimeTools: ['web_search'],
+          enabled: true,
+          requiresApproval: false,
+        },
+      ],
+    });
+
+    expect(capturedToolNames).toContain('web_search');
+  });
+
+  it('defaults to NO tools when effectiveTools is absent (D8 fail-safe — never silently all-light)', async () => {
+    let capturedToolNames: string[] = [];
+    vi.mocked(streamLlmResponse).mockImplementation(async function* (
+      _provider,
+      _secret,
+      _modelId,
+      _messages,
+      options,
+    ) {
+      capturedToolNames = (
+        (options?.tools ?? []) as Array<{ name: string }>
+      ).map((t) => t.name);
+      yield { type: 'text_delta', text: 'ok' };
+      yield { type: 'done', stopReason: 'stop' };
+    } as typeof streamLlmResponse);
+
+    const context = {
+      systemPrompt: 'Talk system prompt',
+      contextTools: [{ name: 'web_search' }],
+      connectorTools: [],
+      history: [],
+    };
+
+    // No effectiveTools passed → web_search (not an always-allowed context
+    // tool) must be filtered out of the tool definitions.
+    await executeWithAgent('agent-1', context as never, 'search please', {
+      runId: 'run-tools-absent',
+      userId: 'owner-1',
+    });
+
+    expect(capturedToolNames).not.toContain('web_search');
   });
 });

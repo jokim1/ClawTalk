@@ -356,20 +356,6 @@ export async function createAgentRoute(
     return envelopeError(400, 'invalid_input', 'modelId is required.');
   }
 
-  let toolPermissions: Record<string, boolean> | undefined;
-  if (typeof body?.toolPermissionsJson === 'string') {
-    try {
-      toolPermissions = JSON.parse(body.toolPermissionsJson);
-    } catch (err) {
-      return envelopeError(
-        400,
-        'invalid_input',
-        err instanceof Error
-          ? `toolPermissionsJson must be valid JSON: ${err.message}`
-          : 'toolPermissionsJson must be valid JSON.',
-      );
-    }
-  }
   const personaRole =
     typeof body?.personaRole === 'string' ? body.personaRole : undefined;
   const systemPrompt =
@@ -394,7 +380,6 @@ export async function createAgentRoute(
         name,
         providerId,
         modelId,
-        toolPermissions,
         personaRole,
         systemPrompt,
         description,
@@ -432,19 +417,6 @@ export async function updateAgentRoute(
   if (typeof body?.providerId === 'string')
     updates.providerId = body.providerId.trim();
   if (typeof body?.modelId === 'string') updates.modelId = body.modelId.trim();
-  if (typeof body?.toolPermissionsJson === 'string') {
-    try {
-      updates.toolPermissions = JSON.parse(body.toolPermissionsJson);
-    } catch (err) {
-      return envelopeError(
-        400,
-        'invalid_input',
-        err instanceof Error
-          ? `toolPermissionsJson must be valid JSON: ${err.message}`
-          : 'toolPermissionsJson must be valid JSON.',
-      );
-    }
-  }
   const personaRole = readStringField(body, 'personaRole');
   if (personaRole !== undefined) updates.personaRole = personaRole;
   const systemPrompt = readStringField(body, 'systemPrompt');

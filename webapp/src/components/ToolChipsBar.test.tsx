@@ -26,7 +26,7 @@ describe('ToolChipsBar', () => {
       talkId: TALK_ID,
       active: { web: true, google_read: false },
       // Server may return out-of-order — chip render order is locked to
-      // TOOL_FAMILY_ORDER (Heavy → Web → Connectors → Google → Messaging).
+      // TOOL_FAMILY_ORDER (Web → Connectors → Google → Messaging).
       available: ['google_read', 'web'],
     });
     render(<ToolChipsBar talkId={TALK_ID} />);
@@ -51,6 +51,30 @@ describe('ToolChipsBar', () => {
       expect(api.getTalkTools).toHaveBeenCalled();
     });
     expect(container.firstChild).toBeNull();
+  });
+
+  it('renders chips + the discovery hint when nothing is active', async () => {
+    vi.spyOn(api, 'getTalkTools').mockResolvedValueOnce({
+      talkId: TALK_ID,
+      active: {},
+      available: ['web', 'gmail_read'],
+    });
+    const { container } = render(<ToolChipsBar talkId={TALK_ID} />);
+    // With all tools off, the chips still render so the user can turn one on...
+    await screen.findByRole('button', { name: 'Web' });
+    // ...and the discovery hint is shown.
+    expect(container.querySelector('.tool-chips-hint')).not.toBeNull();
+  });
+
+  it('hides the discovery hint once a tool is active', async () => {
+    vi.spyOn(api, 'getTalkTools').mockResolvedValueOnce({
+      talkId: TALK_ID,
+      active: { web: true },
+      available: ['web', 'gmail_read'],
+    });
+    const { container } = render(<ToolChipsBar talkId={TALK_ID} />);
+    await screen.findByRole('button', { name: 'Web' });
+    expect(container.querySelector('.tool-chips-hint')).toBeNull();
   });
 
   it('shows web chip as on (aria-pressed=true) when active.web is true', async () => {
