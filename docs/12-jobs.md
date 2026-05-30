@@ -149,7 +149,7 @@ Driven by the existing every-minute cron tick (`scheduler.ts` mechanism is kept;
    - Every entry in `source_scope_json.tool_ids` has a matching enabled `talk_tools(workspace_id, talk_id, tool_id, enabled=true)` row.
    - For each tool that the static `tool_id → required_service` catalog (`11` §6) says depends on a connector, the corresponding `connectors(workspace_id, service, authorized=true)` row exists. A tool that's toggled on in `talk_tools` but whose service connector is unauthorized would fail at executor time with no actionable signal; checking it here turns the failure into a deterministic block.
 
-   ANY failure → `UPDATE jobs SET status='blocked', block_reason=<the specific reason>, next_due_at=NULL, claimed_at=NULL` + `INSERT INTO inbox_items (workspace_id, type, ref_id, ...) VALUES (..., 'job_blocked', NULL, ...)` — both in the SAME transaction. COMMIT. No snapshots, no `runs` row, no queue dispatch. Path A ends for this job. The next tick will see `status='blocked'` and skip claim entirely.
+   ANY failure → `UPDATE jobs SET status='blocked', block_reason=<the specific reason>, next_due_at=NULL, claimed_at=NULL` + `INSERT INTO home_inbox_items (workspace_id, type, ref_id, ...) VALUES (..., 'job_blocked', NULL, ...)` — both in the SAME transaction. COMMIT. No snapshots, no `runs` row, no queue dispatch. Path A ends for this job. The next tick will see `status='blocked'` and skip claim entirely.
 
    `block_reason` values: `agent_missing`, `model_disabled`, `no_primary_document`, `tool_not_enabled`, `connector_not_authorized`.
 
@@ -265,7 +265,7 @@ This doc owns behavior; `11` owns the DDL. Key column-deltas from the shipped `t
 - **Tighten `source_scope_json`** to the typed shape `{ allow_web: bool, tool_ids: text[] }`. `tool_ids` validates against `talk_tools.tool_id text` at fire time (§5 Path A step 2).
 - **`block_reason text`** — known values documented: `agent_missing`, `model_disabled`, `no_primary_document`, `tool_not_enabled`, `connector_not_authorized`. Free text allows future reasons without migration; the documented set is the UI contract.
 - **Add to `runs`** (`11` §3): `scheduled_for timestamptz`, the CHECK invariant for scheduler/manual runs, and a partial unique `(job_id, scheduled_for) where job_id is not null and scheduled_for is not null` for slot dedup. Change `runs.job_id` FK from `on delete set null (job_id)` to `on delete restrict` so history survives job archive.
-- **Add to `inbox_items`** (`11` §7): `ref_id uuid` + partial unique `(workspace_id, type, ref_id) where ref_id is not null`.
+- **Add to `home_inbox_items`** (`11` §7): `ref_id uuid` + partial unique `(workspace_id, type, ref_id) where ref_id is not null`.
 
 `run_prompt_snapshots` (`11` §4) and `documents.primary_talk_id` (`11` §5) are **reused unchanged**. There is no new `talks.primary_document_id` column — the existing reverse FK + unique partial index in `11` §5 is the source of truth.
 
@@ -300,7 +300,7 @@ This doc owns behavior; `11` owns the DDL. Key column-deltas from the shipped `t
 9. **Multi-target all-or-nothing.** Unset `documents.primary_talk_id` for the Talk; next fire blocks with `block_reason='no_primary_document'`; no message posts.
 10. **Manual Run-now respects single-flight.** While a non-terminal run exists, `run-now` returns 409 busy without creating a second run.
 11. **Archive semantics.** Archived job excluded from `jobs_active` view and from the scheduler's claim query; past runs queryable by `job_id`; lifecycle invariant CHECK passes (`archived_at` populated → invariant satisfied regardless of status/next_due_at).
-12. **Inbox idempotency for `job_output_ready`.** Replay the consumer's completion path; second `inbox_items` INSERT hits the unique `(workspace_id, type, ref_id)` index; no duplicate.
+12. **Inbox idempotency for `job_output_ready`.** Replay the consumer's completion path; second `home_inbox_items` INSERT hits the unique `(workspace_id, type, ref_id)` index; no duplicate.
 13. **`block_reason='no_primary_document'` specifically.** Delete the primary doc; verify the exact `block_reason` value (not just a generic block).
 14. **Prompt snapshot immutability.** Insert a scheduler run with a snapshot; edit `jobs.prompt`; let the run execute; the executor reads the snapshot's `prompt_text_redacted`, not the new `jobs.prompt`.
 15. **Tool-id validation.** Configure a job with `source_scope_json.tool_ids` containing an entry not enabled in `talk_tools`; next fire blocks with `block_reason='tool_not_enabled'`.

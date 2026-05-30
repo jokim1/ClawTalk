@@ -332,7 +332,9 @@ run_prompt_snapshots (                        -- exact prompt provenance per run
 
 agent_feedback_events (
   id uuid pk, workspace_id uuid not null, agent_id uuid, talk_id uuid, message_id uuid,
-  kind text not null, actor_user_id uuid references users(id) on delete set null, created_at,
+  kind text not null
+    check (kind in ('useful','not_useful','too_verbose','off_role','missed_evidence','wrong_model','accepted_doc_edit','rejected_doc_edit','user_referenced_agent')),
+  actor_user_id uuid references users(id) on delete set null, created_at,
   foreign key (workspace_id, agent_id)   references agents(workspace_id, id)   on delete cascade,
   foreign key (workspace_id, talk_id)    references talks(workspace_id, id)    on delete cascade,
   foreign key (workspace_id, message_id) references messages(workspace_id, id) on delete cascade
@@ -618,7 +620,10 @@ create index on home_inbox_items (workspace_id, status, created_at desc);
 
 home_recommendation_candidates (
   id uuid pk, workspace_id uuid not null references workspaces(id) on delete cascade,
-  kind text not null,                                         -- mirrors home_recommendations.kind set; see CHECK there
+  kind text not null check (kind in (
+    'setup','failed-run','unresolved','synthesis','pending-edit','doc','cross-link','tool',
+    'news-context','agent-change','recap','archive-cleanup','forge-suggestion','job','prompt-suggestion'
+  )),                                                         -- mirrors home_recommendations.kind
   state_fingerprint text not null,                            -- hash of the input state for idempotent re-generation
   provenance_json jsonb not null default '{}',
   action_json jsonb not null default '{}',
@@ -1168,7 +1173,7 @@ Member-write applies to: `folders`, `talks`, `talk_agents`, `talk_tools`, `talk_
 
 ### 12.2 Admin-only write exceptions
 
-Six tables replace the member-write policy with an admin-write policy. The read policy stays `is_workspace_member`.
+Eight tables replace the member-write policy with an admin-write policy. The read policy stays `is_workspace_member`.
 
 ```sql
 -- Replaces talks_write style for the six admin-managed tables.

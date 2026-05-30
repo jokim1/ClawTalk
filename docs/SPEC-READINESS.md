@@ -1,7 +1,14 @@
-> **Status:** active · **Generated:** 2026-05-29 · **Last updated:** 2026-05-30
+> **Status:** active · **Generated:** 2026-05-29 · **Last updated:** 2026-05-30 (post-verification pass)
 > Every spec-readiness gap found in the 2026-05-29 audit (8 parallel cross-doc audits + DOC-AUDIT.md closure check). Stable IDs so we can walk through them one-by-one.
 >
-> **Verdict (after 2026-05-29 / 2026-05-30 close pass): READY.** All P0 blockers (~38) AND all P1 concerns (~72) closed across §01/§04/§05/§06/§07/§08/§09/§10/§11/§12/README/roadmap/GLOSSARY. New SECURITY.md written. Remaining: ~37 P2 polish items (cosmetic naming, ID prefix tables, deferred admin paths). Spec corpus is implementation-ready — the §11 greenfield migration script is writable and the downstream code paths have specs to match.
+> **Verdict (post-verification-pass 2026-05-30): READY — VERIFIED.** All P0 blockers (~38) AND all P1 concerns (~72) closed across §01/§04/§05/§06/§07/§08/§09/§10/§11/§12/README/roadmap/GLOSSARY. New SECURITY.md written. A second wave of 8 verification audits caught 5 small drifts (all fixed inline). Remaining: ~37 P2 polish items (cosmetic naming, ID prefix tables, deferred admin paths). Spec corpus is implementation-ready — the §11 greenfield migration script is writable and the downstream code paths have specs to match.
+>
+> **Verification pass (2026-05-30):** 8 parallel verification agents re-read each doc and confirmed the gap closures landed in the body (not just marked closed). Drifts caught + fixed inline:
+> 1. §12 `inbox_items` → `home_inbox_items` (3 spots).
+> 2. §08 §5.6 phantom `pending` + `pending_by_agent_id` columns on `doc_blocks` (preexisting; pending state lives in `document_edits`).
+> 3. §11 §12.2 prose said "Six tables" but actually listed 8 admin-write exceptions.
+> 4. SECURITY.md L12 cookie names listed legacy `cr_access_token`/`cr_refresh_token` (SQLite era) instead of actual `eb_at`/`eb_rt`/`eb_csrf`; SameSite for `eb_rt` corrected to `Strict` with scoped `Path=/api/v1/auth/refresh`.
+> 5. §11 `agent_feedback_events.kind` + `home_recommendation_candidates.kind` had comment-only constraints; added explicit CHECK enums.
 
 # ClawTalk — Spec Readiness Punch List
 

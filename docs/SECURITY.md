@@ -9,7 +9,10 @@ Cross-refs: [§11 §12](./11-data-model.md) (RLS), [engineering-notes.md](./engi
 - **OAuth (Google)** — primary signin. Implementation: `src/clawtalk/identity/google-oauth-service.ts`.
 - **Email magic-link** — planned, not shipped.
 - **Device-code** auth for CLI/terminal — `src/clawtalk/identity/device-auth.ts`.
-- **Cookies** — `cr_access_token` + `cr_refresh_token` (both `HttpOnly`, `Secure`, `SameSite=Lax`). CSRF cookie `eb_csrf` is non-HttpOnly so the SPA can echo it. See `src/clawtalk/identity/session.ts`, `src/clawtalk/web/cookies.ts`.
+- **Cookies** — three cookies (locked at CLOUD_TARGET §3.1, single source of truth `src/clawtalk/web/cookies.ts`):
+  - `eb_at` — access token. `HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`.
+  - `eb_rt` — refresh token. `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/api/v1/auth/refresh` (scoped to the refresh endpoint so it never leaks to other requests).
+  - `eb_csrf` — CSRF token, non-`HttpOnly` so the SPA can echo it. `Secure`, `SameSite=Lax`, `Path=/`.
 - **Workspace-scoped sessions.** Access token carries the active `workspace_id`; switching workspaces issues a new access token.
 - **Rotation.** Refresh on every access-token expiry; refresh token rotates on use.
 

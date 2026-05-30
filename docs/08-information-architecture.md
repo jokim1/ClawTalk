@@ -592,11 +592,10 @@ workspace_id
 document_id
 tab_id
 sort_order
+version
 kind
 text
 attrs_json
-pending
-pending_by_agent_id nullable
 created_at
 updated_at
 ```
