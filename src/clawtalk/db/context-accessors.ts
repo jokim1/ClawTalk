@@ -998,6 +998,85 @@ export async function deleteTalkContextSource(
 }
 
 // ---------------------------------------------------------------------------
+// PDF page images (rasterization feature)
+//
+// One row per rasterized PDF page (table talk_context_source_pages); the
+// JPEG bytes live in R2 (attachment-storage.ts). A source's page set is
+// COMPLETE when count(*) of its page rows equals
+// talk_context_sources.expected_page_count. All calls must run inside
+// `withUserContext(userId, ...)` — RLS is owner_id = auth.uid().
+// ---------------------------------------------------------------------------
+
+/**
+ * Idempotently record one persisted page image. Re-POSTing the same page
+ * (double-submit) is a no-op via the (source_id, page_index) PK. owner_id
+ * is pinned to the source's owner by a DB trigger.
+ */
+export async function insertSourcePageImage(input: {
+  ownerId: string;
+  sourceId: string;
+  pageIndex: number;
+  byteSize: number;
+}): Promise<void> {
+  const db = getDbPg();
+  await db`
+    insert into public.talk_context_source_pages
+      (source_id, page_index, byte_size, owner_id)
+    values
+      (${input.sourceId}::uuid, ${input.pageIndex}, ${input.byteSize},
+       ${input.ownerId}::uuid)
+    on conflict (source_id, page_index) do nothing
+  `;
+}
+
+/**
+ * Record the expected total page count N for a source's rasterization.
+ * Completeness is `count(*) == expected_page_count`. Written only when it
+ * changes (no `updated_at` churn across the N page POSTs of one upload).
+ */
+export async function setSourceExpectedPageCount(
+  sourceId: string,
+  talkId: string,
+  expectedPageCount: number,
+): Promise<void> {
+  const db = getDbPg();
+  await db`
+    update public.talk_context_sources
+    set expected_page_count = ${expectedPageCount}
+    where id = ${sourceId}::uuid and talk_id = ${talkId}::uuid
+      and expected_page_count is distinct from ${expectedPageCount}
+  `;
+}
+
+/** Number of page rows recorded for a source. */
+export async function countSourcePageImages(sourceId: string): Promise<number> {
+  const db = getDbPg();
+  const rows = await db<{ count: number }[]>`
+    select count(*)::int as count
+    from public.talk_context_source_pages
+    where source_id = ${sourceId}::uuid
+  `;
+  return rows[0]?.count ?? 0;
+}
+
+/**
+ * Page indices recorded for a source, ascending. Used to delete the
+ * matching R2 page objects by known key on source delete (no R2 list).
+ */
+export async function listSourcePageIndices(
+  sourceId: string,
+): Promise<number[]> {
+  const db = getDbPg();
+  const rows = await db<{ page_index: number }[]>`
+    select page_index
+    from public.talk_context_source_pages
+    where source_id = ${sourceId}::uuid
+    order by page_index asc
+  `;
+  return rows.map((r) => r.page_index);
+}
+
+// ---------------------------------------------------------------------------
 // Message attachments
 // ---------------------------------------------------------------------------
 

@@ -13,6 +13,7 @@ import {
   buildContentOutline,
   buildSourceManifest,
   buildSourcePreview,
+  isPageSetComplete,
   renderForcedInjectionResolutions,
   resolveAtRefRequestsForRender,
   MAX_TOTAL_PDF_PAYLOAD_BYTES,
@@ -44,6 +45,9 @@ function makeSource(
     extracted_text: input.extracted_text ?? null,
     status: input.status ?? 'ready',
     updated_at: input.updated_at ?? '2026-05-26T00:00:00Z',
+    expected_page_count: input.expected_page_count ?? null,
+    page_image_count: input.page_image_count ?? 0,
+    page_image_total_bytes: input.page_image_total_bytes ?? 0,
   };
 }
 
@@ -770,5 +774,32 @@ describe('cumulative-payload guard (resolveAtRefRequestsForRender + render)', ()
     // S3 should have <<<source.
     const fenceCount = text!.split('<<<source').length - 1;
     expect(fenceCount).toBe(1);
+  });
+});
+
+describe('isPageSetComplete', () => {
+  it('is complete only when every expected page landed', () => {
+    expect(
+      isPageSetComplete({ expected_page_count: 3, page_image_count: 3 }),
+    ).toBe(true);
+  });
+
+  it('is incomplete when fewer pages landed than expected', () => {
+    expect(
+      isPageSetComplete({ expected_page_count: 3, page_image_count: 2 }),
+    ).toBe(false);
+  });
+
+  it('is not complete when no expected count is recorded', () => {
+    // PDF never rasterized, or pre-feature upload.
+    expect(
+      isPageSetComplete({ expected_page_count: null, page_image_count: 0 }),
+    ).toBe(false);
+  });
+
+  it('treats a zero expected count as not complete', () => {
+    expect(
+      isPageSetComplete({ expected_page_count: 0, page_image_count: 0 }),
+    ).toBe(false);
   });
 });
