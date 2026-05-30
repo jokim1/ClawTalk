@@ -1,0 +1,53 @@
+CODEX CONSULT r1 — T-new-C ensureTalkUsesUsableDefaultAgent
+Date: 2026-05-29
+Session: 019e7614-0b63-7a60-b359-da5599cbb94d
+Tokens used: 330347
+
+P1 — `activeCount > 0 && primaryCount = 1` is not equivalent to the existing chain.
+  Counterexamples:
+    (a) 1 active primary row + 1 null-FK non-primary row: snapshot returns healthy,
+        existing prune deletes the null-FK row.
+    (b) 1 active non-primary row + 1 null-FK primary row: snapshot returns
+        activeCount=1, primaryCount=1 → healthy. Existing code deletes the null row,
+        then UPDATEs the surviving row to be primary.
+  Edge-case claim in plan §4.1 is false.
+
+P1 — If "active" means usable, the snapshot is wrong. It counts non-null
+  registered_agent_id, but listTalkAgents / resolvePrimaryAgent only join enabled
+  registered_agents. Existing code shares this weakness so it may be equivalent in
+  practice, but plan overstates "usable default agent" correctness.
+
+P2 — Number(rows[0]?.active_count) is fine for typical postgres.js COUNT/SUM
+  string returns. Overflow not realistic for per-talk agent counts.
+
+P2 — Race claim too broad. Heal-path race largely preserved because heal still
+  re-reads getTalkAgentRows before setTalkAgents. But the new healthy early-exit
+  can skip a prune/heal that current code would have performed if mutation happens
+  between snapshot and where current getTalkAgentRows would have run. Best-effort
+  contract likely tolerates this; not strictly "same race."
+
+P2 — RLS is owner-scoped, not talk-scoped: `talk_agents_owner using (owner_id =
+  auth.uid())`. Snapshot filtered by talk_id is fine inside withUserContext
+  because existing reads do the same and RLS filters by owner. Plan should cite
+  migration 0002, not "0001."
+
+P2 — ~625 ms prediction is shaky. Hyperdrive pooling doesn't remove awaited
+  query RTT, and postgres.js won't pipeline sequential awaits inside the tx,
+  so fewer RTs should help. But route-level savings won't cleanly equal
+  5 × 125 ms: some call sites do more talk_agents reads, GET /talks/:id/agents
+  appears to call ensureTalkUsesUsableDefaultAgent TWICE, transaction setup
+  queries are unchanged. Measure function-level and route-level separately.
+
+P2 — Failure-mode table is wrong. Today getDefaultTalkAgentId() failures are
+  swallowed before touching talk_agents; proposed snapshot failures happen
+  BEFORE that try and will 500 the route. New failure surface, not
+  "same as today."
+
+VERDICT: 2 P1 + 5 P2 — do not ship as-is. r2 needs to:
+- widen the gate to orphanCount = 0 (resolves both P1 counterexamples)
+- clarify "assigned" vs "usable" terminology (P1 #2)
+- decide failure-mode behavior: swallow snapshot errors like getDefaultTalkAgentId
+  OR explicitly mark the new throw surface
+- fix RLS reference (P2 #3)
+- update §7 to measure function-level + route-level separately AND note the
+  double-call on listTalkAgentsRoute (P2 #4)
