@@ -946,11 +946,15 @@ forge_audiences (
   id uuid pk, workspace_id uuid not null references workspaces(id) on delete cascade,
   name text not null, note text,
   reference_set_id uuid, question_id uuid,
+  is_default boolean not null default false,                  -- workspace-level default audience (`09` §15 Q1)
   created_at, updated_at,
   unique (workspace_id, id),
   foreign key (workspace_id, reference_set_id) references forge_reference_sets(workspace_id, id) on delete set null (reference_set_id),
   foreign key (workspace_id, question_id)      references forge_questions(workspace_id, id)      on delete set null (question_id)
 )
+-- At most one default audience per workspace.
+create unique index forge_audiences_one_default_per_workspace
+  on forge_audiences (workspace_id) where is_default;
 
 -- Audience ↔ personas as a real join table (uuid[] can't FK — P1)
 forge_audience_personas (
@@ -1232,9 +1236,9 @@ Resolved: D6 (§8 jobs finalized via `12-jobs.md`); D7 (run model, RLS plumbing,
 
 Remaining (taste calls + follow-ups, not blockers):
 
-- **Score scale** — confirm composite 0–10 vs Likert 1–5 with SSR (assumed here; §9).
-- **Per-tab vs per-document co-editors** — defaulted **per-tab** (§5); confirm or simplify.
-- **SSR asset freshness** — defaulted **cache + sync** (§9); alternatively fetch-live each session.
+- ~~**Score scale**~~ **RESOLVED 2026-05-30.** Composite 0–10 for UI surfaces (gallery/leaderboard sort key) + 1–5 per-persona Likert in the trust panel. `per_persona_json` stores the raw 1–5 values; `composite_score numeric` is the canonical 0–10 sort number (already projected on the SSR side). Matches §9 design notes at L1021.
+- ~~**Per-tab vs per-document co-editors**~~ **RESOLVED 2026-05-30: per-tab.** `doc_tab_coeditors` is canonical (§5). Matches the prototype's Draft-vs-Comp distinct-editors UX. `§01.1.5 DocTab.coEditorIds` already aligned (G-01.P1.7).
+- ~~**SSR asset freshness**~~ **RESOLVED 2026-05-30: cache + manual sync.** `forge_personas`/`forge_reference_sets`/`forge_questions` stay as the read-through cache. Admin clicks "Refresh" on the Audiences page to re-sync via SSR MCP (§09 §9.1). `synced_at` exposes last-refresh time in the UI. Fast page loads, no MCP latency on every browse.
 - **API + 03 follow-ons** — add Forge endpoints + move-block endpoint to `04`, drop SSE; point `04` §14 at `llm_models`; seed role templates from `03` with the "Samira"/handle fixes.
 
 Remaining (deferred to dedicated reviews — these block parts of the schema):

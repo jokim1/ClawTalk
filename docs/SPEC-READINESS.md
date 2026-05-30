@@ -1,7 +1,7 @@
-> **Status:** active · **Generated:** 2026-05-29 · **Last updated:** 2026-05-30 (post-verification pass)
+> **Status:** active · **Generated:** 2026-05-29 · **Last updated:** 2026-05-30 (design-debt resolution pass)
 > Every spec-readiness gap found in the 2026-05-29 audit (8 parallel cross-doc audits + DOC-AUDIT.md closure check). Stable IDs so we can walk through them one-by-one.
 >
-> **Verdict (post-verification-pass 2026-05-30): READY — VERIFIED.** All P0 blockers (~38) AND all P1 concerns (~72) closed across §01/§04/§05/§06/§07/§08/§09/§10/§11/§12/README/roadmap/GLOSSARY. New SECURITY.md written. A second wave of 8 verification audits caught 5 small drifts (all fixed inline). Remaining: ~37 P2 polish items (cosmetic naming, ID prefix tables, deferred admin paths). Spec corpus is implementation-ready — the §11 greenfield migration script is writable and the downstream code paths have specs to match.
+> **Verdict (post-design-debt-pass 2026-05-30): READY — VERIFIED + DESIGN-DEBT RESOLVED.** All P0 + all P1 + the 10 design-debt items I'd flagged as "deferred to impl time" all resolved. Spec corpus is implementation-ready. Migration is `0038_clawtalk_greenfield.sql` (PR #499 already used 0037).
 >
 > **Verification pass (2026-05-30):** 8 parallel verification agents re-read each doc and confirmed the gap closures landed in the body (not just marked closed). Drifts caught + fixed inline:
 > 1. §12 `inbox_items` → `home_inbox_items` (3 spots).
