@@ -8,12 +8,22 @@ import {
 import {
   createTalkContextSource,
   deleteTalkContextSource,
+  getContextSourceContentUrl,
   patchTalkContextSource,
   retryTalkContextSource,
   uploadTalkContextSource,
   UnauthorizedError,
   type ContextSource,
 } from '../lib/api';
+import { isRasterizablePdf, renderAndUploadPdfPages } from '../lib/pdf-raster';
+
+// Per-source client-side PDF rasterization progress (this session only).
+// A PDF is rasterized on upload so vision-but-not-PDF agents can read its
+// pages; render runs in the browser (the Worker has no canvas).
+type RenderState =
+  | { phase: 'rendering'; done: number; total: number }
+  | { phase: 'done'; total: number }
+  | { phase: 'failed' };
 
 type UploadingFile = {
   localId: string;
@@ -61,6 +71,62 @@ export function SavedSourcesPanel({
   const [addSourceText, setAddSourceText] = useState('');
   const [addSourceTitle, setAddSourceTitle] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [renderStates, setRenderStates] = useState<Record<string, RenderState>>(
+    {},
+  );
+
+  // Rasterize a PDF source's pages in the browser and upload them one per
+  // request. Runs fire-and-forget after upload (and on manual retry). A
+  // failure leaves the source text-only — the page set stays incomplete
+  // (count < N) so the server never serves a truncated page run — and a
+  // visible notice is shown.
+  const rasterizePdfSource = async (
+    sourceId: string,
+    loadBytes: () => Promise<ArrayBuffer>,
+  ): Promise<void> => {
+    setRenderStates((prev) => ({
+      ...prev,
+      [sourceId]: { phase: 'rendering', done: 0, total: 0 },
+    }));
+    try {
+      const data = await loadBytes();
+      const result = await renderAndUploadPdfPages({
+        talkId,
+        sourceId,
+        data,
+        onProgress: (done, total) =>
+          setRenderStates((prev) => ({
+            ...prev,
+            [sourceId]: { phase: 'rendering', done, total },
+          })),
+      });
+      setRenderStates((prev) => ({
+        ...prev,
+        [sourceId]:
+          result.pagesTotal > 0
+            ? { phase: 'done', total: result.pagesTotal }
+            : { phase: 'failed' },
+      }));
+    } catch {
+      setRenderStates((prev) => ({
+        ...prev,
+        [sourceId]: { phase: 'failed' },
+      }));
+    }
+  };
+
+  // Manual re-render: re-fetch the stored PDF bytes from R2 (the original
+  // File is gone after a reload) and rasterize again.
+  const handleRetryRender = (sourceId: string): void => {
+    void rasterizePdfSource(sourceId, () =>
+      fetch(getContextSourceContentUrl(talkId, sourceId), {
+        credentials: 'include',
+      }).then((res) => {
+        if (!res.ok) throw new Error(`Failed to load PDF (${res.status})`);
+        return res.arrayBuffer();
+      }),
+    );
+  };
 
   function handleApiError(err: unknown, fallback: string): void {
     if (err instanceof UnauthorizedError) {
@@ -146,8 +212,16 @@ export function SavedSourcesPanel({
           ),
         );
         setTimeout(() => {
-          setUploadingFiles((prev) => prev.filter((f) => f.localId !== localId));
+          setUploadingFiles((prev) =>
+            prev.filter((f) => f.localId !== localId),
+          );
         }, 1500);
+        // Every uploaded PDF is rasterized so vision-but-not-PDF agents
+        // (gpt-5-mini, gemini, kimi) can read its pages. Fire-and-forget;
+        // the source is already usable as text while pages render.
+        if (isRasterizablePdf(file.type)) {
+          void rasterizePdfSource(source.id, () => file.arrayBuffer());
+        }
       } catch (err) {
         if (err instanceof UnauthorizedError) {
           onUnauthorized();
@@ -234,9 +308,9 @@ export function SavedSourcesPanel({
           <h3>Saved Sources</h3>
           <p className="talk-llm-meta">
             Files, URLs, and text snippets agents can reference. Each source
-            contributes a one-line preview to every turn. Use{' '}
-            <code>@S1</code> or <code>@title-slug</code> in a message to inline
-            a source's full content for one turn.
+            contributes a one-line preview to every turn. Use <code>@S1</code>{' '}
+            or <code>@title-slug</code> in a message to inline a source's full
+            content for one turn.
           </p>
         </div>
       </div>
@@ -341,9 +415,11 @@ export function SavedSourcesPanel({
               key={source.id}
               source={source}
               canEdit={canEdit}
+              renderState={renderStates[source.id]}
               onPatchTitle={handlePatchTitle}
               onPatchNote={handlePatchNote}
               onRetry={handleRetry}
+              onRetryRender={handleRetryRender}
               onDelete={handleDelete}
             />
           ))}
@@ -424,18 +500,22 @@ export function SavedSourcesPanel({
 type SavedSourceRowProps = {
   source: ContextSource;
   canEdit: boolean;
+  renderState: RenderState | undefined;
   onPatchTitle: (sourceId: string, nextTitle: string) => Promise<void>;
   onPatchNote: (sourceId: string, nextNote: string) => Promise<void>;
   onRetry: (sourceId: string) => Promise<void>;
+  onRetryRender: (sourceId: string) => void;
   onDelete: (sourceId: string) => Promise<void>;
 };
 
 function SavedSourceRow({
   source,
   canEdit,
+  renderState,
   onPatchTitle,
   onPatchNote,
   onRetry,
+  onRetryRender,
   onDelete,
 }: SavedSourceRowProps): JSX.Element {
   const fileSizeLabel = formatFileSize(source.fileSize);
@@ -564,6 +644,45 @@ function SavedSourceRow({
           }}
         >
           Last fetched {new Date(source.lastFetchedAt).toLocaleString()}
+        </p>
+      ) : null}
+      {renderState ? (
+        <p
+          style={{
+            margin: '0.3rem 0 0 0.25rem',
+            fontSize: '0.7rem',
+            opacity: renderState.phase === 'failed' ? 0.85 : 0.55,
+            color:
+              renderState.phase === 'failed'
+                ? 'var(--warning-text, #8a6d00)'
+                : undefined,
+          }}
+        >
+          {renderState.phase === 'rendering'
+            ? `Rendering pages for vision agents…${
+                renderState.total > 0
+                  ? ` ${renderState.done}/${renderState.total}`
+                  : ''
+              }`
+            : renderState.phase === 'done'
+              ? `${renderState.total} page${
+                  renderState.total === 1 ? '' : 's'
+                } rendered for image-only vision agents.`
+              : "Couldn't render this PDF's pages — it stays text-only for image-only vision agents."}
+          {renderState.phase === 'failed' && canEdit ? (
+            <button
+              type="button"
+              className="secondary-btn"
+              style={{
+                marginLeft: '0.5rem',
+                padding: '0.1rem 0.4rem',
+                fontSize: '0.7rem',
+              }}
+              onClick={() => onRetryRender(source.id)}
+            >
+              Retry
+            </button>
+          ) : null}
         </p>
       ) : null}
     </li>

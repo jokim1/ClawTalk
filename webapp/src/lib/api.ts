@@ -3436,6 +3436,38 @@ export function getContextSourceContentUrl(
   return `/api/v1/talks/${encodeURIComponent(talkId)}/context/sources/${encodeURIComponent(sourceId)}/content`;
 }
 
+export type PageImageUploadResult = {
+  uploaded: number;
+  expected: number;
+  complete: boolean;
+};
+
+/**
+ * Upload one rasterized PDF page JPEG to a saved source. One page per
+ * request (the Worker isolate can't buffer ~20 JPEGs in one multipart);
+ * `?total` records the expected page count N so the server can mark the
+ * set complete at `count == N`. Raw `image/jpeg` body, not multipart.
+ */
+export async function uploadSourcePageImage(input: {
+  talkId: string;
+  sourceId: string;
+  pageIndex: number;
+  totalPages: number;
+  jpeg: Blob;
+}): Promise<PageImageUploadResult> {
+  const envelope = await apiMutationRequest<PageImageUploadResult>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/context/sources/${encodeURIComponent(
+      input.sourceId,
+    )}/page-images/${input.pageIndex}?total=${input.totalPages}`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'image/jpeg' },
+      body: input.jpeg,
+    },
+  );
+  return envelope;
+}
+
 export async function updateDefaultClaudeModel(
   modelId: string,
 ): Promise<AiAgentsPageData> {
