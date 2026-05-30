@@ -1270,7 +1270,7 @@ Note: `provider` is an open string because `llm_providers` is extensible (live m
 
 On workspace creation, in one txn the API inserts:
 
-1. **Five default `agents` rows** — Strategist, Critic, Researcher, Quant, Editor. Seeded from `agent_role_templates` (§11 §4) for `model_id`, `temperature`, `role_template_version`; prompts and methodology from `03-agents.md`; display fields (accents, initials, icons, sort_order) from `shared/data.jsx`. Mark each `is_default = true`, `is_custom = false`, `is_system = false`. Store `created_from_template_version`.
+1. **Five default `agents` rows** — Strategist, Critic, Researcher, Quant, Editor. Seeded from `agent_role_templates` (§11 §4) for `model_id`, `temperature`, `role_template_version`; prompts and methodology from `03-agents.md`; display fields (accents, initials, icons, sort_order) from `shared/data.jsx`. Mark each `is_default = true`, `is_custom = false`, `is_system = false`. Store `created_from_template_version`. **Prompt template variables** (e.g., `{{user_name}}` in the Strategist prompt) are interpolated at runtime by the prompt-assembly path (§7), NOT at seed time — so the same `agent_role_templates.system_prompt` row serves every user. The runtime substitutes `{{user_name}}` with `users.name` of the active asker at prompt-assembly step 4 (§7 step 4).
 2. **Two system Forge agents** — `forge_rewriter` and `forge_critic`, both with `is_system = true` (RLS-hidden from `GET /agents` per §11 §12; see §11.3.6 / §11 API contract).
 3. **Three default `team_compositions` rows** — Pricing crew, Research crew, Hiring crew (§6). `default_tools_json` materializes per-Talk via the §6 contract.
 

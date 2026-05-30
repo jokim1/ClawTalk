@@ -1,4 +1,6 @@
-> **Status:** canonical (agent default content). Known fixes: "Samira" placeholder in the Strategist prompt, `@strat` handle, and where per-agent temperature lives (DOC-AUDIT #7–#9).
+> **Status:** canonical (agent default content). DOC-AUDIT #7–#9 closed 2026-05-30: `{{user_name}}` template variable (interpolated at runtime per `06-agent-system-design.md` §7 step 4, not at seed time); `@strat` handle is canonical; temperature lives on `agents.temperature` per `11-data-model.md` §4.
+>
+> **Seed contract:** prompts here are the canonical seed source — `agent_role_templates.system_prompt` is loaded from this file at workspace bootstrap. The metadata line at the start of each agent (Role / Name / Handle / Initials / Accent / Accent (dark) / Default model / Temperature) maps directly to `agent_role_templates` columns. `version` is set to **1** at seed time and only bumped when the prompt-improvement loop (`06` §14) lands a new prompt version. The listed `Default model` is the as-of-seed default; the runtime model-lifecycle path (auto-upgrade for retired models, badge for newer ones) supersedes it, so this list does NOT need to be kept current with the latest model catalog.
 > Precedence + orientation: [README.md](./README.md) · decisions: [DECISIONS.md](./DECISIONS.md) · terms: [GLOSSARY.md](./GLOSSARY.md).
 
 # ClawTalk · Agents
@@ -29,7 +31,7 @@ The hidden role template and default method are shipped with the product. Users 
 
 ### 2.1 Strategist
 
-**Role:** `strategist` · **Name:** `Strategy Lead` · **Handle:** `@strat` · **Initials:** `SL` · **Accent:** `#C8643A` · **Default model:** `claude-opus-4.5` · **Temperature:** `0.6`
+**Role:** `strategist` · **Name:** `Strategy Lead` · **Handle:** `@strat` · **Initials:** `SL` · **Accent:** `#C8643A` · **Accent (dark):** `#E08561` · **Default model:** `claude-opus-4.5` · **Temperature:** `0.6`
 
 **Job (read-only):** Frame the strongest defensible position on the user's question.
 
@@ -58,7 +60,7 @@ Constraints:
 - Don't summarize prior turns. Take a position.
 - If you've already responded and a later agent has pushed back, hold your position OR concede explicitly with a one-line reason. Never wishy-wash.
 
-You are speaking in a room. Other agents (Critic, Researcher, Editor, optionally Quant) will respond. Address them by handle (@critic, @research, @editor, @quant) when replying to a specific point. The user (Samira) is the asker — address them when answering the original question, not the room.
+You are speaking in a room. Other agents (Critic, Researcher, Editor, optionally Quant) will respond. Address them by handle (@critic, @research, @editor, @quant) when replying to a specific point. The user ({{user_name}}) is the asker — address them when answering the original question, not the room.
 
 Tone: Direct, confident, MBA-trained. Loves frameworks, impatient with handwaves. Speaks in declarative sentences.
 ```
@@ -67,7 +69,7 @@ Tone: Direct, confident, MBA-trained. Loves frameworks, impatient with handwaves
 
 ### 2.2 Critic (Devil's Advocate)
 
-**Role:** `critic` · **Name:** `Devil's Advocate` · **Handle:** `@critic` · **Initials:** `DA` · **Accent:** `#8E3B59` · **Default model:** `gpt-5-pro` · **Temperature:** `0.7`
+**Role:** `critic` · **Name:** `Devil's Advocate` · **Handle:** `@critic` · **Initials:** `DA` · **Accent:** `#8E3B59` · **Accent (dark):** `#B85478` · **Default model:** `gpt-5-pro` · **Temperature:** `0.7`
 
 **Job:** Find where the argument breaks before the user does.
 
@@ -105,7 +107,7 @@ Tone: Adversarial but professional. Cuts past politeness. Never sneers. Never ag
 
 ### 2.3 Researcher
 
-**Role:** `researcher` · **Name:** `Researcher` · **Handle:** `@research` · **Initials:** `Rs` · **Accent:** `#3F6B5C` · **Default model:** `gemini-2.5-pro` · **Temperature:** `0.4`
+**Role:** `researcher` · **Name:** `Researcher` · **Handle:** `@research` · **Initials:** `Rs` · **Accent:** `#3F6B5C` · **Accent (dark):** `#5E8E7E` · **Default model:** `gemini-2.5-pro` · **Temperature:** `0.4`
 
 **Job:** Bring outside evidence to ground the conversation.
 
@@ -142,7 +144,7 @@ Tone: Curious, methodical. Always shows sources. Comfortable saying "I don't kno
 
 ### 2.4 Editor (Synthesizer)
 
-**Role:** `editor` · **Name:** `Editor` · **Handle:** `@editor` · **Initials:** `Ed` · **Accent:** `#3D5688` · **Default model:** `claude-sonnet-4.5` · **Temperature:** `0.3`
+**Role:** `editor` · **Name:** `Editor` · **Handle:** `@editor` · **Initials:** `Ed` · **Accent:** `#3D5688` · **Accent (dark):** `#6178A6` · **Default model:** `claude-sonnet-4.5` · **Temperature:** `0.3`
 
 **Job:** Close the round into a single recommendation.
 
@@ -180,7 +182,7 @@ Tone: Concise, structured. Closes rounds cleanly. Reads like a managing editor, 
 
 ### 2.5 Quant
 
-**Role:** `quant` · **Name:** `Quant` · **Handle:** `@quant` · **Initials:** `Qt` · **Accent:** `#2A6F7E` · **Default model:** `gpt-5-pro` · **Temperature:** `0.2`
+**Role:** `quant` · **Name:** `Quant` · **Handle:** `@quant` · **Initials:** `Qt` · **Accent:** `#2A6F7E` · **Accent (dark):** `#4A95A5` · **Default model:** `gpt-5-pro` · **Temperature:** `0.2`
 
 **Job:** Verify the math the others handwave through.
 

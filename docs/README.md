@@ -10,9 +10,11 @@ You're reading this because you're an AI coding agent (or engineer) about to wor
 
 | Doc | Why |
 |---|---|
+| **[REFACTOR-OVERVIEW.md](./REFACTOR-OVERVIEW.md)** | **The single-page narrative for the greenfield rebuild.** If you've never seen this work, read this first. What it is, why now, what changes, the model in a diagram, the runtime architecture, the phasing, what's locked / open, doc navigation. |
 | **[DECISIONS.md](./DECISIONS.md)** | Resolved cross-cutting decisions (stack, naming, Forge agents). **When a spec doc conflicts with a decision here, this wins.** |
 | **[GLOSSARY.md](./GLOSSARY.md)** | Canonical terms + the shipped-DB-name ↔ spec-name mapping. Read it to avoid the vocabulary forks. |
-| **[DOC-AUDIT.md](./DOC-AUDIT.md)** | The audit behind the current cleanup: open inconsistencies + gaps, prioritized. |
+| **[SPEC-READINESS.md](./SPEC-READINESS.md)** | Gap-closure punch list with stable IDs (G-XX.PY.Z). Verdict + history. |
+| **[DOC-AUDIT.md](./DOC-AUDIT.md)** | The original audit behind the cleanup: open inconsistencies + gaps, prioritized. (Closed items tracked in SPEC-READINESS.) |
 | **[engineering-notes.md](./engineering-notes.md)** | Durable engineering knowledge (architectural commitments, latency hotspots, eval gate). |
 | **[archive/](./archive/)** | Retired "ClawRocket"-era docs. **Not current** — do not implement from them. |
 
