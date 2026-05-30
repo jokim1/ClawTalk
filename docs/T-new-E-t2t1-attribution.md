@@ -1,6 +1,6 @@
 # T-new-E — t2-t1 attribution (measurement-only plan)
 
-**Status:** Plan, **r4 draft**.
+**Status:** Plan, **r5 draft**.
 **Tracking:** [[project-llm-turn-latency]].
 **Branch (planning):** `docs/t-new-e-t2t1-attribution` (this doc).
 **Branch (implementation, to be created):** `feature/t-new-e-instrumentation`.
@@ -40,7 +40,7 @@ Pinned against current origin/main `696302d`. Path from `ctx.waitUntil(dispatchR
 | Phase | Code | Likely cost |
 |---|---|---|
 | E0 | `ctx.waitUntil` schedules `dispatchRunInProcess` (worker-app.ts:~2382) | scheduling delay (~ms) |
-| E1 | `withRequestScopedDb` opens a fresh DB scope (`dispatch-in-process.ts:55`) | Hyperdrive cold-connect possible (~50-300 ms) |
+| E1 | `withRequestScopedDb` opens a fresh DB scope (`dispatch-in-process.ts:55`). **Codex r4 P2-B:** `withRequestScopedDb` builds the postgres client synchronously (db.ts:362); the first awaited DB I/O is later (E3 or E5). So a naked phase-boundary probe attributes Hyperdrive cold-connect cost to the first SQL phase, not E1. **Mitigation:** at E1 entry, fire a `select 1` ping via the new sql instance and time it (`E1.cold_connect_ms` sub-metric) — that's the cold-connect attribution. | scope build (~0 ms); cold-connect via ping (~50-300 ms) |
 | E2 | `processTalkRunMessage` retry-emit branch (queue-consumer.ts:99-117) | 0 ms on first attempt (skipped) |
 | E3 | `markRunRunning(runId)` (queue-consumer.ts:119) | **Multiple stmts** (codex r3 P2-D): initial SELECT + optional sibling SELECT + UPDATE + nickname lookup + best-effort `talk_run_started` outbox INSERT — see accessors.ts:2654-2708. Treat E3 as a single phase but tag the `stmts` column with the actual observed count, not the prior "1". |
 | E4 | `withUserContext` open (queue-consumer.ts:153) | **3 stmts: BEGIN + `set local role authenticated` + `select set_config(...)` for the JWT claim** (codex P2-F caught this — not 1 stmt). |
@@ -59,7 +59,7 @@ Pinned against current origin/main `696302d`. Path from `ctx.waitUntil(dispatchR
 | E16.5 | `setTalkRunMetadata(...)` (new-executor.ts:2460) — codex r3 P1-B caught r3 missing this | 1 UPDATE on `talk_runs` via accessors.ts:1691-1700. Without a probe here, the await silently joins E16 or E17 in the attribution. |
 | E17 | Prompt assembly (system + user) | sync (~ms-100 ms) |
 | E18 | **Direct-path pre-LLM prep:** attachment DB reads + history attachment hydration + `buildDirectHistoryMessages` (new-executor.ts:2630) + PDF/page prep + PDF diagnostics + edit-intent checks + possible content-edit emits. **Was conflated with E19 in r1 (codex P1-A).** | Unknown — may be hundreds of ms. |
-| E19 | `executeWithAgent(...)` call (new-executor.ts:2766) → LLM streaming connection open → provider emits 'started' | LLM connect (~50-300 ms typical) |
+| E19 | `executeWithAgent(...)` call (new-executor.ts:2766) → LLM streaming connection open → provider emits 'started'. **Probe placement matters (codex r4 P1-A):** `await executeWithAgent(...)` resolves only after the entire turn (deltas + completion), so the standard `Date.now() - tEx` wrapper would measure the whole stream, not the start. The E19 timer must **latch and stop inside the `emit` callback when `event.type === 'started'`** (queue-consumer.ts:198 region), so E19 reports `time from invocation to first provider 'started' event` and excludes the rest of the stream. | LLM connect (~50-300 ms typical) |
 | E20 | Mapper produces `talk_response_started` (new-executor.ts:233) → fire-and-forget `emit(...)` at queue-consumer.ts:212 → `emitOutboxEventOutsideTx(...)` → INSERT into event_outbox + notify push | **emit() returns instantly (codex P1-B).** Actual outbox INSERT + notify push happen async; instrument inside `outbox-emit.ts:79` and `streaming-notify.ts` to capture. |
 | E21 | UserEventHub DO drain → WebSocket frame → client receipt (= t2 on the client) | **NOT directly observable from Worker logs (codex P1-C).** T-new-B prior: ~50-500 ms drain p95. Treated as a derived residual in §4. |
 
@@ -141,7 +141,7 @@ After the bench runs (cold + warm cohorts), the two tables below fill in. Once f
 ```
 | Phase | p50 ms | p90 ms | stmts | Notes |
 |---|---|---|---|---|
-| E1 withRequestScopedDb | ? | ? | 0 | Hyperdrive cold-connect dominates here |
+| E1 withRequestScopedDb + cold-connect ping | ? | ? | 1 | scope build is sync; `select 1` ping captures cold-connect cost separately |
 | E3 markRunRunning | ? | ? | 1 | |
 | E4 withUserContext open | ? | ? | 3 | BEGIN + set role + set_config |
 | E5 getTalkMessageById | ? | ? | 1 | |
@@ -237,21 +237,24 @@ No production code lands. The PR's main-vs-PR diff is **identical to pre-merge m
   - **§4 cold-cohort table** (codex r2 P2-E) — labeled p90 as "max-ish (n=5)" so it's not compared apples-to-apples with warm p90.
   - **§4 reconciliation rule** (karpathy r2 W4) — per-cohort: ± 5 % warm, ± 10 % cold.
   - **§6 D8 PR commits clarified** (karpathy r2 W5) — branch already has r1/r2/r3 doc commits + findings artifacts; D8's three NEW commits are instrumentation + revert + filled-table.
-- **r4 (this revision)** — absorbs codex consult r3 (2 P1 + 3 P2) + karpathy r3 (1 warning):
+- **r4** — absorbs codex consult r3 (2 P1 + 3 P2) + karpathy r3 (1 warning):
   - **§6 D0 grep command fixed** (codex r3 P1-A) — §3's `rg -U` fix didn't propagate to the §6 task table; D0 still had the broken single-line grep. Now uses `rg -U` consistently.
   - **§2 E16.5 added** (codex r3 P1-B) — `setTalkRunMetadata` runs between `loadTalkContext` and prompt assembly (new-executor.ts:2460, accessors.ts:1691-1700). Without an explicit probe, the await silently rolled into E16 or E17 medians.
   - **§6 D4 cohort spec re-synced** (codex r3 P2-C) — task table still said `60s gap` and didn't mention fresh-talk-per-run. Now matches §3.
   - **§2 E3 stmt count corrected** (codex r3 P2-D) — `markRunRunning` is not 1 stmt; it's a SELECT + optional sibling SELECT + UPDATE + nickname lookup + best-effort outbox INSERT. Inventory now flags the multi-stmt nature.
   - **§4 E20 row probe-site list** (codex r3 P2-E) — was "probed in outbox-emit.ts" only; now lists all three sites (outbox-emit, streaming-notify, db.ts).
   - **§6 D4 fresh-talk mechanism specified** (karpathy r3 W6) — explicitly names `--reset-talk` flag extension on `latency-bench.ts` or a pre-seed script; AND adds bench-client receipt-check on `talk_response_started` events to the verify column.
+- **r5 (this revision)** — absorbs codex consult r4 (1 P1 + 1 P2); karpathy r4 PASS clean (no new findings):
+  - **§2 E19 probe placement** (codex r4 P1-A) — `await executeWithAgent(...)` resolves after the WHOLE turn (deltas + completion), so the standard wrapper measures the full stream not just `time to first started event`. E19 probe must latch and stop inside the `emit` callback when `event.type === 'started'` (queue-consumer.ts:198 region).
+  - **§2 E1 cold-connect attribution** (codex r4 P2-B) — `withRequestScopedDb` builds the postgres client synchronously (db.ts:362); cold-connect cost only fires on the first actual SQL I/O. Without an explicit ping at E1 entry, Hyperdrive cold-connect cost attributes to E3 or E5. Mitigation: fire `select 1` at E1 entry as a sub-metric `E1.cold_connect_ms`. §4 table E1 row updated accordingly.
 
 ## GSTACK REVIEW REPORT
 
 | Review | Trigger | Why | Runs | Status | Findings |
 |--------|---------|-----|------|--------|----------|
-| Codex Consult | `/codex consult` | Plan-stage behavior + framework catches | 3 | **r3: NOT CLEAR → r4** | r1: 3 P1 + 5 P2 → r2. r2: 1 P1 + 4 P2 → r3. r3: 2 P1 + 3 P2 → r4 (§6 grep stale, missing E16.5 setTalkRunMetadata phase, §6 cold cohort stale, E3 stmt undercount, §4 E20 probe-site list stale) |
-| Karpathy Audit | `/karpathy-audit` (file mode, by hand) | Plan-stage style + four principles | 3 | **r3: NOT CLEAR → r4** | r1: 3 → r2. r2: 3 → r3. r3: 1 warning (W6 fresh-talk mechanism) absorbed in r4 |
+| Codex Consult | `/codex consult` | Plan-stage behavior + framework catches | 4 | **r4: NOT CLEAR → r5** | r1: 3 P1 + 5 P2 → r2. r2: 1 P1 + 4 P2 → r3. r3: 2 P1 + 3 P2 → r4. r4: 1 P1 + 1 P2 → r5 (E19 probe must latch in `emit` callback not at `await executeWithAgent`; E1 needs cold-connect ping because withRequestScopedDb is sync) |
+| Karpathy Audit | `/karpathy-audit` (file mode, by hand) | Plan-stage style + four principles | 4 | **r4: CLEAR** | r1: 3 → r2. r2: 3 → r3. r3: 1 → r4. r4: PASS clean |
 
-- **CROSS-MODEL:** Codex r3 caught task-table-vs-prose drift (the r2 fixes propagated to §3/§4 but I missed copying them to §6 D0/D4) plus a static-analysis miss (setTalkRunMetadata between E16 and E17). Karpathy caught the fresh-talk-mechanism gap. Consistent split.
-- **UNRESOLVED:** 0. r4 needs r4 verification pass before deploying.
-- **VERDICT:** r4 draft. Three review cycles done; r3 verification surfaced task-table drift the prose-level absorptions missed. Recommend r4 verification; high probability of PASS clean given r4 corrects pure drift items.
+- **CROSS-MODEL:** Codex still finding precision issues (this round: probe placement subtleties — E19 latch + E1 cold-connect attribution). Karpathy reached PASS at r4 (the structural shape is good; only codex's domain-specific catches remain). Convergence trend: 8 → 5 → 5 → 2 findings, on track for 0 at r5.
+- **UNRESOLVED:** 0. r5 needs r5 verification pass before deploying.
+- **VERDICT:** r5 draft. Trending toward PASS clean (r4 codex returned 2 vs r3's 5; karpathy was clean at r4). Recommend r5 verification; high probability of clean.
