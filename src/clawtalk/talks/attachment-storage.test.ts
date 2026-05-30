@@ -9,8 +9,12 @@ import {
 import {
   attachmentFileExists,
   deleteAttachmentFile,
+  deletePageImages,
   loadAttachmentFile,
+  loadPageImage,
+  pageImageStorageKey,
   saveAttachmentFile,
+  savePageImage,
 } from './attachment-storage.js';
 
 const TEST_DB_URL = 'postgresql://postgres:postgres@127.0.0.1:54432/postgres';
@@ -152,5 +156,74 @@ describe('attachment-storage (R2)', () => {
         saveAttachmentFile('x', 'y', Buffer.from(''), 'z.txt'),
       ).rejects.toThrow(/ATTACHMENTS R2 binding missing/);
     });
+  });
+});
+
+describe('attachment-storage — PDF page images', () => {
+  it('builds a deterministic 0-based page key', () => {
+    expect(pageImageStorageKey('talk-1', 'src-9', 0)).toBe(
+      'attachments/talk-1/src-9/page-0.jpg',
+    );
+    expect(pageImageStorageKey('talk-1', 'src-9', 12)).toBe(
+      'attachments/talk-1/src-9/page-12.jpg',
+    );
+  });
+
+  it('round-trips a page image as image/jpeg', async () => {
+    const bucket = makeMockBucket();
+    // Minimal JPEG SOI + EOI marker bytes.
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+    await withRequestScopedDb(
+      TEST_DB_URL,
+      null,
+      envWithBucket(bucket),
+      async () => {
+        const key = await savePageImage('talk-1', 'src-9', 3, jpeg);
+        expect(key).toBe('attachments/talk-1/src-9/page-3.jpg');
+        expect(bucket.store.get(key)?.contentType).toBe('image/jpeg');
+
+        const loaded = await loadPageImage('talk-1', 'src-9', 3);
+        expect(Buffer.compare(loaded, jpeg)).toBe(0);
+      },
+    );
+  });
+
+  it('throws on load of a missing page', async () => {
+    const bucket = makeMockBucket();
+    await withRequestScopedDb(
+      TEST_DB_URL,
+      null,
+      envWithBucket(bucket),
+      async () => {
+        await expect(loadPageImage('talk-1', 'src-9', 99)).rejects.toThrow(
+          /page image not found/,
+        );
+      },
+    );
+  });
+
+  it('deletes page images by known indices and is idempotent', async () => {
+    const bucket = makeMockBucket();
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+    await withRequestScopedDb(
+      TEST_DB_URL,
+      null,
+      envWithBucket(bucket),
+      async () => {
+        await savePageImage('talk-1', 'src-9', 0, jpeg);
+        await savePageImage('talk-1', 'src-9', 1, jpeg);
+        expect(bucket.store.size).toBe(2);
+
+        // Delete a set that includes one never-written index (page 5) —
+        // must not throw.
+        await deletePageImages('talk-1', 'src-9', [0, 1, 5]);
+        expect(bucket.store.size).toBe(0);
+
+        // Empty list is a no-op.
+        await expect(
+          deletePageImages('talk-1', 'src-9', []),
+        ).resolves.toBeUndefined();
+      },
+    );
   });
 });

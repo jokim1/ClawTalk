@@ -164,6 +164,7 @@ import {
   patchTalkContextSourceRoute,
   retryTalkContextSourceRoute,
   setTalkGoalRoute,
+  uploadTalkContextSourcePageImageRoute,
   uploadTalkContextSourceRoute,
 } from './routes/talk-context.js';
 import {
@@ -1920,6 +1921,29 @@ function buildApp(): Hono<{ Variables: Variables }> {
     });
     return jsonResponse(result);
   });
+
+  // One rasterized PDF page per request (raw JPEG body). `?total=N` is
+  // the expected page count; the set is complete when count(*) == N.
+  app.post(
+    '/api/v1/talks/:talkId/context/sources/:sourceId/page-images/:index',
+    async (c) => {
+      const auth = c.get('auth');
+      const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+      if (!rl.allowed) return rateLimitedResponse(c, rl);
+      const csrfFail = checkCsrf(c, auth);
+      if (csrfFail) return csrfFail;
+      const arrayBuffer = await c.req.arrayBuffer();
+      const result = await uploadTalkContextSourcePageImageRoute({
+        auth,
+        talkId: c.req.param('talkId'),
+        sourceId: c.req.param('sourceId'),
+        index: c.req.param('index'),
+        total: c.req.query('total'),
+        data: Buffer.from(arrayBuffer),
+      });
+      return jsonResponse(result);
+    },
+  );
 
   app.get(
     '/api/v1/talks/:talkId/context/sources/:sourceId/content',

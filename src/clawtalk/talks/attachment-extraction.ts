@@ -111,9 +111,15 @@ const SUPPORTED_ATTACHMENT_EXTENSION_MIME_MAP: Record<string, string> = {
   '.webp': 'image/webp',
 };
 
-export const MAX_ATTACHMENT_SIZE = 25 * 1024 * 1024; // 25 MB
-export const MAX_IMAGE_ATTACHMENT_SIZE = 10 * 1024 * 1024; // 10 MB
-export const MAX_ATTACHMENTS_PER_MESSAGE = 5;
+// Upload size caps live in the shared single-source module
+// (src/shared/attachment-caps.ts) so the Worker and webapp agree.
+// Re-exported here to preserve existing `from
+// '../talks/attachment-extraction.js'` import paths.
+export {
+  MAX_ATTACHMENT_SIZE,
+  MAX_IMAGE_ATTACHMENT_SIZE,
+  MAX_ATTACHMENTS_PER_MESSAGE,
+} from '../../shared/attachment-caps.js';
 
 function normalizeMimeType(mimeType: string | null | undefined): string | null {
   const trimmed = mimeType?.trim().toLowerCase();

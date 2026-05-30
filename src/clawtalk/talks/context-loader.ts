@@ -25,6 +25,11 @@ import {
   plainTextOf,
   sanitizeRichTextDocument,
 } from '../../shared/rich-text/index.js';
+import {
+  MAX_PDF_DOCUMENT_BYTES,
+  MAX_AUTO_ATTACH_PDF_COUNT,
+  MAX_TOTAL_PDF_PAYLOAD_BYTES,
+} from '../../shared/attachment-caps.js';
 import type { EffectiveToolAccess } from '../db/agent-accessors.js';
 import {
   type LlmToolDefinition,
@@ -247,29 +252,15 @@ const TOOL_SCHEMA_RESERVE = 2000; // Tokens to reserve for tool definitions
 const STATE_SNAPSHOT_RESERVE = 2000; // Tokens reserved for bounded Talk state
 const RETRIEVAL_SECTION_RESERVE = 1200; // Tokens reserved for targeted retrieval
 
-// Per-source raw byte cap on PDF documents auto-attached or @-ref'd
-// onto a user turn. 12 MiB raw expands to ~16 MB base64 string + ~16 MB
-// JSON.stringify materialization, leaving headroom against the Anthropic
-// 32 MB total-request-payload cap and the Cloudflare Workers 128 MB
-// per-isolate heap (shared across concurrent requests). Codex review
-// flagged the prior 16 MB plan as too aggressive — see
-// ~/.claude/plans/pdf-vision-plan.md D3.
-export const MAX_PDF_DOCUMENT_BYTES = 12 * 1024 * 1024;
-
-// Maximum number of PDFs auto-attached per turn before @-ref bypass.
-// Start conservative at 1 to keep cost + heap predictable; lift later
-// once production telemetry confirms safe room.
-export const MAX_AUTO_ATTACH_PDF_COUNT = 1;
-
-// Cumulative cap across ALL PDF document blocks attached on one turn
-// (auto + @-ref forced). Hard ceiling against the Anthropic 32 MB
-// total-request-payload limit and the Cloudflare Workers 128 MB
-// per-isolate heap. PR #439 shipped the per-source cap but missed this
-// cumulative one — @-ref'd second PDF could push 2 × 12 MiB raw to
-// ~32 MiB base64 + JSON.stringify materialization → isolate killed →
-// queue retry-storm. PDFs that don't fit fall back to text injection
-// (with a manifest note explaining why) instead of attaching.
-export const MAX_TOTAL_PDF_PAYLOAD_BYTES = 24 * 1024 * 1024;
+// Native-PDF document caps now live in the shared single-source module
+// (src/shared/attachment-caps.ts, with their full rationale). Imported
+// at the top of this file for local use and re-exported here to preserve
+// existing `from './context-loader.js'` import paths (e.g. new-executor.ts).
+export {
+  MAX_PDF_DOCUMENT_BYTES,
+  MAX_AUTO_ATTACH_PDF_COUNT,
+  MAX_TOTAL_PDF_PAYLOAD_BYTES,
+};
 // 20KB budget for the inlined doc — large enough to give the agent the
 // actual prose it's being asked to edit, while truncating from the
 // bottom on really long docs. Read-block tool is the v2 escape hatch.
@@ -872,28 +863,77 @@ export interface SourceRow {
   extracted_text: string | null;
   status: string;
   updated_at: string;
+  // Rasterized-page metadata (PDF page-image feature). expected_page_count
+  // is null until the webapp begins uploading pages; the set is complete
+  // when page_image_count === expected_page_count (see isPageSetComplete).
+  expected_page_count: number | null;
+  page_image_count: number;
+  page_image_total_bytes: number;
 }
 
-async function fetchSources(db: Sql, talkId: string): Promise<SourceRow[]> {
+/**
+ * Whether a PDF source's rasterized page set is complete — every page the
+ * webapp committed to uploading actually landed. The SQL readiness filter
+ * in fetchSources mirrors this predicate; keep the two in sync.
+ */
+export function isPageSetComplete(row: {
+  expected_page_count: number | null;
+  page_image_count: number;
+}): boolean {
+  return (
+    row.expected_page_count !== null &&
+    row.expected_page_count > 0 &&
+    row.page_image_count === row.expected_page_count
+  );
+}
+
+export async function fetchSources(
+  db: Sql,
+  talkId: string,
+): Promise<SourceRow[]> {
+  // Readiness = has extracted text (status='ready') OR a complete page
+  // set. The page-set arm keeps a raster-only PDF visible even when text
+  // extraction failed (status='failed') — a text failure must not hide a
+  // PDF the model can still read via page images (Codex #12). The join
+  // surfaces page_image_count + total bytes so the consumer can budget
+  // the model payload without a second query.
   return await db<SourceRow[]>`
     select
-      id,
-      source_ref,
-      source_type,
-      title,
-      title_slug,
-      note,
-      source_url,
-      file_name,
-      file_size,
-      mime_type,
-      storage_key,
-      extracted_text,
-      status,
-      updated_at
-    from public.talk_context_sources
-    where talk_id = ${talkId}::uuid and status = 'ready'
-    order by sort_order asc
+      s.id,
+      s.source_ref,
+      s.source_type,
+      s.title,
+      s.title_slug,
+      s.note,
+      s.source_url,
+      s.file_name,
+      s.file_size,
+      s.mime_type,
+      s.storage_key,
+      s.extracted_text,
+      s.status,
+      s.updated_at,
+      s.expected_page_count,
+      coalesce(p.page_count, 0) as page_image_count,
+      coalesce(p.total_bytes, 0) as page_image_total_bytes
+    from public.talk_context_sources s
+    left join (
+      select source_id,
+             count(*)::int as page_count,
+             sum(byte_size)::int as total_bytes
+      from public.talk_context_source_pages
+      group by source_id
+    ) p on p.source_id = s.id
+    where s.talk_id = ${talkId}::uuid
+      and (
+        s.status = 'ready'
+        or (
+          s.mime_type = 'application/pdf'
+          and s.expected_page_count is not null
+          and coalesce(p.page_count, 0) = s.expected_page_count
+        )
+      )
+    order by s.sort_order asc
   `;
 }
 

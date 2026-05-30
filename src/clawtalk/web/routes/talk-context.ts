@@ -2,6 +2,11 @@ import { randomUUID } from 'crypto';
 
 import { withUserContext } from '../../../db.js';
 import {
+  MAX_RASTER_IMAGE_BYTES,
+  MAX_RASTER_PAGES,
+} from '../../../shared/attachment-caps.js';
+import {
+  countSourcePageImages,
   createTalkContextRule,
   createTalkContextSource,
   deleteTalkContextRule,
@@ -13,11 +18,14 @@ import {
   getTalkContextSourceById,
   getTalkContextSourceCount,
   getTalkForUser,
+  insertSourcePageImage,
+  listSourcePageIndices,
   listTalkContextRules,
   listTalkStateEntries,
   markTalkContextSourcePending,
   patchTalkContextRule,
   patchTalkContextSource,
+  setSourceExpectedPageCount,
   setTalkGoal,
   validateStateKey,
   type ContextRuleSnapshot,
@@ -25,6 +33,7 @@ import {
   type TalkContextSnapshot,
   type TalkStateEntrySnapshot,
 } from '../../db/index.js';
+import { detectMime } from '../../r2/content-images.js';
 import {
   extractAttachmentText,
   inferSupportedAttachmentMimeType,
@@ -34,7 +43,9 @@ import {
 } from '../../talks/attachment-extraction.js';
 import {
   deleteAttachmentFile,
+  deletePageImages,
   loadAttachmentFile,
+  savePageImage,
   saveAttachmentFile,
 } from '../../talks/attachment-storage.js';
 import { createDefaultTalkContextSourceIngestionService } from '../../talks/source-ingestion.js';
@@ -514,19 +525,23 @@ export async function deleteTalkContextSourceRoute(input: {
     const denied = await requireEditAccess(input.talkId);
     if (denied) return denied;
 
-    // Fetch storage key before deleting so we can clean up the file
+    // Fetch storage key + page-image indices BEFORE deleting — the row
+    // delete cascades the page rows away, after which we can no longer
+    // learn which R2 page objects to remove (no R2 list-by-prefix).
     const storageKey = await getContextSourceStorageKey(
       input.sourceId,
       input.talkId,
     );
+    const pageIndices = await listSourcePageIndices(input.sourceId);
 
     const deleted = await deleteTalkContextSource(input.sourceId, input.talkId);
     if (!deleted) return notFoundResponse('Source not found.');
 
-    // Clean up file from disk if present
+    // Clean up R2 objects: the original file + any rasterized page images.
     if (storageKey) {
       await deleteAttachmentFile(storageKey);
     }
+    await deletePageImages(input.talkId, input.sourceId, pageIndices);
 
     return {
       statusCode: 200,
@@ -682,6 +697,110 @@ export async function uploadTalkContextSourceRoute(input: {
     return {
       statusCode: 201,
       body: { ok: true, data: { source } },
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// POST /talks/:talkId/context/sources/:sourceId/page-images/:index
+//
+// Two-phase upload (phase 2): after /upload creates a PDF source, the
+// webapp rasterizes each page with pdf.js and POSTs the page JPEGs ONE
+// PER REQUEST (the 128MB isolate can't buffer ~20 JPEGs in one multipart).
+// `total` (= min(pdf.numPages, MAX_RASTER_PAGES)) is recorded so the set
+// is complete when count(*) == total. Body is the raw JPEG bytes.
+// ---------------------------------------------------------------------------
+
+export async function uploadTalkContextSourcePageImageRoute(input: {
+  auth: AuthContext;
+  talkId: string;
+  sourceId: string;
+  index: string;
+  total: string | undefined;
+  data: Buffer;
+}): Promise<{
+  statusCode: number;
+  body: ApiEnvelope<{ uploaded: number; expected: number; complete: boolean }>;
+}> {
+  return await withUserContext(input.auth.userId, async () => {
+    const talk = await talkOrNull(input.talkId);
+    if (!talk) return notFoundResponse('Talk not found.');
+    const denied = await requireEditAccess(input.talkId);
+    if (denied) return denied;
+
+    // Validate index + total before touching storage.
+    const pageIndex = Number(input.index);
+    const total = Number(input.total);
+    if (
+      !Number.isInteger(pageIndex) ||
+      pageIndex < 0 ||
+      pageIndex >= MAX_RASTER_PAGES
+    ) {
+      return badRequest(
+        'invalid_page_index',
+        `Page index must be an integer in [0, ${MAX_RASTER_PAGES}).`,
+      );
+    }
+    if (!Number.isInteger(total) || total < 1 || total > MAX_RASTER_PAGES) {
+      return badRequest(
+        'invalid_total',
+        `total must be an integer in [1, ${MAX_RASTER_PAGES}].`,
+      );
+    }
+    if (pageIndex >= total) {
+      return badRequest(
+        'page_index_out_of_range',
+        `Page index ${pageIndex} must be less than total ${total}.`,
+      );
+    }
+
+    // Validate the body: non-empty, within the per-image cap, and an
+    // actual JPEG by magic bytes (defends against a spoofed content-type).
+    if (input.data.length === 0) {
+      return badRequest('empty_page', 'Page image body is empty.');
+    }
+    if (input.data.length > MAX_RASTER_IMAGE_BYTES) {
+      return badRequest(
+        'page_too_large',
+        `Page image exceeds the maximum size of ${
+          MAX_RASTER_IMAGE_BYTES / (1024 * 1024)
+        } MB.`,
+      );
+    }
+    if (detectMime(input.data) !== 'image/jpeg') {
+      return badRequest('invalid_page_format', 'Page image must be a JPEG.');
+    }
+
+    // The source must exist, be owned (RLS via withUserContext), and be a
+    // PDF. getTalkContextSourceById returns undefined for unowned rows.
+    const source = await getTalkContextSourceById(input.sourceId, input.talkId);
+    if (!source) return notFoundResponse('Source not found.');
+    if (source.mimeType !== 'application/pdf') {
+      return badRequest(
+        'source_not_pdf',
+        'Page images can only be attached to PDF sources.',
+      );
+    }
+
+    // Record N, store the bytes, then the row. R2 first so a committed
+    // page row implies its bytes exist; INSERT is idempotent on
+    // double-submit via the (source_id, page_index) PK.
+    await setSourceExpectedPageCount(input.sourceId, input.talkId, total);
+    await savePageImage(input.talkId, input.sourceId, pageIndex, input.data);
+    await insertSourcePageImage({
+      ownerId: input.auth.userId,
+      sourceId: input.sourceId,
+      pageIndex,
+      byteSize: input.data.length,
+    });
+
+    const uploaded = await countSourcePageImages(input.sourceId);
+    return {
+      statusCode: 201,
+      body: {
+        ok: true,
+        data: { uploaded, expected: total, complete: uploaded === total },
+      },
     };
   });
 }

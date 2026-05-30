@@ -19,6 +19,19 @@ export interface BuiltinAdditionalProviderModel {
   defaultMaxOutputTokens: number;
   defaultTtftTimeoutMs: number;
   supportsVision?: boolean;
+  /**
+   * Per-prompt image cap, surfaced as `ModelCapabilities.max_images`.
+   * Only meaningful for vision-but-not-PDF models consumed via the PDF
+   * page-image path (gpt-5-mini, gemini-2.5-flash, kimi-k2.6); omit for
+   * native-PDF models (Claude/Codex), which never take page images.
+   */
+  maxImages?: number;
+  /**
+   * Image MIME types this model accepts, surfaced as
+   * `ModelCapabilities.accepted_image_formats`. The rasterizer emits
+   * only `image/jpeg`; this records the safe set.
+   */
+  acceptedImageFormats?: string[];
 }
 
 export interface BuiltinAdditionalProvider {
@@ -101,6 +114,11 @@ export const BUILTIN_ADDITIONAL_PROVIDERS: BuiltinAdditionalProvider[] = [
         defaultMaxOutputTokens: 4_096,
         defaultTtftTimeoutMs: 30_000,
         supportsVision: true,
+        // OpenAI accepts far more images per prompt than we rasterize;
+        // any value above MAX_RASTER_PAGES makes min(pages, maxImages)
+        // resolve to all rendered pages. The binding low cap is Kimi's.
+        maxImages: 64,
+        acceptedImageFormats: ['image/jpeg', 'image/png'],
       },
     ],
   },
@@ -161,6 +179,10 @@ export const BUILTIN_ADDITIONAL_PROVIDERS: BuiltinAdditionalProvider[] = [
         defaultMaxOutputTokens: 8_192,
         defaultTtftTimeoutMs: 45_000,
         supportsVision: true,
+        // Gemini 2.5 accepts thousands of images per request; like
+        // gpt-5-mini this only needs to exceed MAX_RASTER_PAGES.
+        maxImages: 64,
+        acceptedImageFormats: ['image/jpeg', 'image/png'],
       },
     ],
   },
@@ -189,6 +211,13 @@ export const BUILTIN_ADDITIONAL_PROVIDERS: BuiltinAdditionalProvider[] = [
         defaultMaxOutputTokens: 16_384,
         defaultTtftTimeoutMs: 60_000,
         supportsVision: true,
+        // NVIDIA NIM serving Kimi rejects prompts with more than ~4
+        // images (Codex-found). VERIFY against the live
+        // integrate.api.nvidia.com endpoint before raising this — a 5th
+        // image may hard-400 the whole request. NIM also rejects WebP,
+        // so we keep the page-rasterizer JPEG-only.
+        maxImages: 4,
+        acceptedImageFormats: ['image/jpeg', 'image/png'],
       },
     ],
   },

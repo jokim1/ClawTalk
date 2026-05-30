@@ -17,6 +17,23 @@ export interface ModelCapabilities {
   supports_pdf_documents: boolean;
   supports_json_schema: boolean;
   supports_long_context: boolean;
+  /**
+   * Maximum number of images this model accepts in a single prompt.
+   * Used by the PDF page-image path (vision-but-not-PDF models) to
+   * attach `min(pages, max_images)` rasterized page JPEGs. Unset means
+   * "no notably-low cap" — the consumer treats it as effectively
+   * unbounded and is gated only by `MAX_RASTER_PAGES`. NVIDIA NIM
+   * serving Kimi rejects more than ~4 images/prompt, which a boolean
+   * `supports_vision` cannot express (Codex #1).
+   */
+  max_images?: number;
+  /**
+   * Image MIME types this model is known to accept. The page-rasterizer
+   * only ever emits `image/jpeg`, so the consumer asserts JPEG is in
+   * this set; the field exists so a future non-JPEG path cannot
+   * silently send a format a provider rejects (Kimi rejects WebP).
+   */
+  accepted_image_formats?: string[];
   extra?: Record<string, unknown>;
 }
 
@@ -44,6 +61,8 @@ const BUILTIN_PROVIDER_MODEL_CAPABILITIES = new Map(
       `${provider.id}:${model.modelId}`,
       normalizeCapabilities({
         supports_vision: model.supportsVision === true,
+        max_images: model.maxImages,
+        accepted_image_formats: model.acceptedImageFormats,
       }),
     ]),
   ),
