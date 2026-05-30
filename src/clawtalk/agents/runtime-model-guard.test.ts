@@ -18,7 +18,6 @@ function makeAgent(
     name: 'Test',
     provider_id: ANTHROPIC,
     model_id: 'claude-opus-4-7',
-    tool_permissions_json: {},
     persona_role: null,
     system_prompt: null,
     description: null,

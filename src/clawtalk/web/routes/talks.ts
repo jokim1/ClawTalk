@@ -55,7 +55,6 @@ import {
   getEffectiveToolsForAgent,
   getRegisteredAgent,
 } from '../../db/agent-accessors.js';
-import { mergeAgentToolsIntoTalkActive } from '../../db/talk-tools-accessors.js';
 import {
   ExecutionPlannerError,
   planExecution,
@@ -950,10 +949,8 @@ export async function createTalkRoute(input: {
           },
         ],
       });
-      // Seed `active_tool_families_json` with the default agent's
-      // capability so a brand-new Talk's chip bar matches D2 in the
-      // plan (union of assigned agents' permissions).
-      await mergeAgentToolsIntoTalkActive(talkId, [defaultTalkAgentId]);
+      // New Talks keep the `'{}'` default — all tools off. The chip bar is
+      // the single opt-in surface; tools are no longer seeded from agents.
     } catch {
       // If main agent isn't configured yet, create the talk without agents.
       // The user can assign one later via the talk settings.
@@ -1348,33 +1345,12 @@ export async function updateTalkAgentsRoute(input: {
       sortOrder: a.displayOrder,
     }));
 
-    // Compute newly-added agent IDs BEFORE the full-replace so we can
-    // OR-in just-added agents' capabilities into the Talk's active set
-    // without re-OR'ing the user's deliberate toggle-offs on every save.
-    // Removed agents leave `active_tool_families_json` untouched —
-    // the family disappears from `available` but the toggle state is
-    // preserved for re-add. See plan task T6.
-    const db = getDbPg();
-    const prevRows = await db<{ id: string }[]>`
-      select registered_agent_id as id
-      from public.talk_agents
-      where talk_id = ${input.talkId}::uuid
-        and registered_agent_id is not null
-    `;
-    const prevIds = new Set(prevRows.map((r) => r.id));
-    const newlyAddedIds = agentInputs
-      .map((a) => a.id)
-      .filter((id) => !prevIds.has(id));
-
     try {
       await setTalkAgents({
         talkId: input.talkId,
         ownerId: talk.owner_id,
         agents: agentInputs,
       });
-      if (newlyAddedIds.length > 0) {
-        await mergeAgentToolsIntoTalkActive(input.talkId, newlyAddedIds);
-      }
     } catch (err) {
       return {
         statusCode: 500,

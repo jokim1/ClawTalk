@@ -28,6 +28,7 @@ import {
   getEffectiveToolsForAgent,
 } from '../db/agent-accessors.js';
 import { createContent } from '../db/content-accessors.js';
+import { planExecution } from '../agents/execution-planner.js';
 import { loadTalkContext } from './context-loader.js';
 
 const USER_ID = '0c222222-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
@@ -60,15 +61,6 @@ async function purge(): Promise<void> {
   await db`delete from public.registered_agents where owner_id = ${USER_ID}::uuid`;
 }
 
-const FULL_CAPABILITY = {
-  web: true,
-  google_read: true,
-  google_write: true,
-  shell: true,
-  filesystem: true,
-  connectors: true,
-};
-
 describe('talk-scoped tool toggles — effective-tools pipeline', () => {
   beforeAll(async () => {
     await initPgDatabase();
@@ -99,7 +91,6 @@ describe('talk-scoped tool toggles — effective-tools pipeline', () => {
         name: 'Capable Researcher',
         providerId: 'provider.anthropic',
         modelId: 'claude-opus-4-7',
-        toolPermissions: FULL_CAPABILITY,
       });
 
       const effectiveTools = await getEffectiveToolsForAgent(agent.id, {
@@ -133,7 +124,6 @@ describe('talk-scoped tool toggles — effective-tools pipeline', () => {
         name: 'Capable',
         providerId: 'provider.anthropic',
         modelId: 'claude-opus-4-7',
-        toolPermissions: FULL_CAPABILITY,
       });
 
       const effectiveTools = await getEffectiveToolsForAgent(agent.id, {
@@ -169,7 +159,6 @@ describe('talk-scoped tool toggles — effective-tools pipeline', () => {
         name: 'No-tools Agent',
         providerId: 'provider.anthropic',
         modelId: 'claude-opus-4-7',
-        toolPermissions: FULL_CAPABILITY,
       });
       await createContent({
         ownerId: USER_ID,
@@ -208,7 +197,6 @@ describe('talk-scoped tool toggles — effective-tools pipeline', () => {
         name: 'Full agent',
         providerId: 'provider.anthropic',
         modelId: 'claude-opus-4-7',
-        toolPermissions: FULL_CAPABILITY,
       });
 
       const effectiveTools = await getEffectiveToolsForAgent(agent.id, {
@@ -234,7 +222,6 @@ describe('talk-scoped tool toggles — effective-tools pipeline', () => {
         name: 'Snapshot agent',
         providerId: 'provider.anthropic',
         modelId: 'claude-opus-4-7',
-        toolPermissions: FULL_CAPABILITY,
       });
       const effectiveTools = await getEffectiveToolsForAgent(agent.id, {
         talkId: TALK_ID,
@@ -302,12 +289,53 @@ describe('talk-scoped tool toggles — effective-tools pipeline', () => {
         name: 'Mid-flight agent',
         providerId: 'provider.anthropic',
         modelId: 'claude-opus-4-7',
-        toolPermissions: FULL_CAPABILITY,
       });
       const eff = await getEffectiveToolsForAgent(agent.id, {
         activeFamilies: refetched?.active_tool_families_snapshot ?? {},
       });
       expect(eff.find((t) => t.toolFamily === 'web')?.enabled).toBe(true);
+    });
+  });
+
+  it('non-Claude provider: light tools resolve via the Talk set, heavy never does, planner no longer throws CONTAINER_PROVIDER_INCOMPATIBLE', async () => {
+    // Heavy families forced ON in the Talk set. Pre-change, a non-container
+    // provider + heavy tools threw CONTAINER_PROVIDER_INCOMPATIBLE; now heavy
+    // families never resolve (getEffectiveToolsForAgent forces them off), so
+    // that planner path is unreachable.
+    await seedTalk({ web: true, shell: true, filesystem: true, browser: true });
+
+    await withUserContext(USER_ID, async () => {
+      const agent = await createRegisteredAgent({
+        ownerId: USER_ID,
+        name: 'NVIDIA agent',
+        providerId: 'provider.nvidia',
+        modelId: 'moonshotai/kimi-k2-instruct',
+      });
+
+      const effectiveTools = await getEffectiveToolsForAgent(agent.id, {
+        talkId: TALK_ID,
+      });
+      // Light tool resolves for a non-Claude provider (provider-agnostic).
+      expect(effectiveTools.find((t) => t.toolFamily === 'web')?.enabled).toBe(
+        true,
+      );
+      // Heavy families never resolve, regardless of the Talk set or provider.
+      for (const heavy of ['shell', 'filesystem', 'browser']) {
+        expect(
+          effectiveTools.find((t) => t.toolFamily === heavy)?.enabled,
+        ).toBe(false);
+      }
+
+      // §3: the planner's container-incompatible throw is gone. It may still
+      // throw DIRECT_EXECUTION_UNAVAILABLE (no credential seeded for this
+      // provider in the test) — a different, expected path.
+      let thrownCode: string | undefined;
+      try {
+        await planExecution(agent, USER_ID, { talkId: TALK_ID });
+      } catch (err) {
+        thrownCode = (err as { code?: string }).code;
+      }
+      expect(thrownCode).not.toBe('CONTAINER_PROVIDER_INCOMPATIBLE');
     });
   });
 });

@@ -20,12 +20,12 @@ import {
   initPgDatabase,
   withUserContext,
 } from '../../../db.js';
+import { TALK_TOOL_FAMILIES } from '../../db/agent-accessors.js';
 import { createTalkRun } from '../../db/accessors.js';
 import { getTalkActiveTools } from '../../db/talk-tools-accessors.js';
 import type { AuthContext } from '../types.js';
 
 import { getTalkToolsRoute, updateTalkToolRoute } from './talk-tools.js';
-import { updateTalkAgentsRoute } from './talks.js';
 
 const USER_A_ID = '0c777701-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const USER_B_ID = '0c777701-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
@@ -75,27 +75,6 @@ async function seedTalk(
   `;
 }
 
-async function seedAgent(
-  agentId: string,
-  ownerId: string,
-  toolPermissions: Record<string, boolean>,
-): Promise<void> {
-  const db = getDbPg();
-  await db`
-    insert into public.registered_agents
-      (id, owner_id, name, provider_id, model_id, tool_permissions_json)
-    values
-      (${agentId}::uuid, ${ownerId}::uuid, 'route-test-agent',
-       'provider.anthropic', 'claude-opus-4-7',
-       ${db.json(toolPermissions as never)})
-    on conflict (id) do nothing
-  `;
-  await db`
-    insert into public.talk_agents (talk_id, owner_id, registered_agent_id)
-    values (${TALK_A_ID}::uuid, ${ownerId}::uuid, ${agentId}::uuid)
-  `;
-}
-
 async function purge(): Promise<void> {
   const db = getDbPg();
   await db`delete from public.talks where id = ${TALK_A_ID}::uuid`;
@@ -123,15 +102,8 @@ describe('talk-tools route', () => {
     await purge();
   });
 
-  it('GET returns active + available for the caller-owned Talk', async () => {
+  it('GET returns active + the static light tool vocabulary for the caller-owned Talk', async () => {
     await seedTalk(TALK_A_ID, USER_A_ID, { web: true });
-    await withUserContext(USER_A_ID, async () => {
-      await seedAgent('0c777701-1111-1111-1111-111111111111', USER_A_ID, {
-        web: true,
-        google_read: true,
-        filesystem: false,
-      });
-    });
 
     const result = await getTalkToolsRoute({
       auth: AUTH_A,
@@ -141,7 +113,8 @@ describe('talk-tools route', () => {
     expect(result.body.ok).toBe(true);
     if (!result.body.ok) return;
     expect(result.body.data.active).toEqual({ web: true });
-    expect(result.body.data.available).toEqual(['google_read', 'web']);
+    // `available` is the static light vocabulary now — no agent union, no heavy.
+    expect(result.body.data.available).toEqual(TALK_TOOL_FAMILIES);
   });
 
   it('PATCH flips a single family + emits talk_tools_changed outbox event', async () => {
@@ -206,6 +179,19 @@ describe('talk-tools route', () => {
     expect(result.body.error.code).toBe('invalid_tool_toggle');
   });
 
+  it('PATCH 400 on a heavy family slug (shell is not on the Talk bar)', async () => {
+    await seedTalk(TALK_A_ID, USER_A_ID, {});
+    const result = await updateTalkToolRoute({
+      auth: AUTH_A,
+      talkId: TALK_A_ID,
+      body: { family: 'shell', enabled: true },
+    });
+    expect(result.statusCode).toBe(400);
+    expect(result.body.ok).toBe(false);
+    if (result.body.ok) return;
+    expect(result.body.error.code).toBe('invalid_tool_toggle');
+  });
+
   it('PATCH 400 on missing/invalid body shape', async () => {
     await seedTalk(TALK_A_ID, USER_A_ID, {});
     const noFamily = await updateTalkToolRoute({
@@ -248,136 +234,6 @@ describe('talk-tools route', () => {
       talkId: '0c777701-eeee-eeee-eeee-eeeeeeeeeeee',
     });
     expect(result.statusCode).toBe(404);
-  });
-
-  describe('Talk-agents diff (T6: OR-in newly added)', () => {
-    const EDITOR_AGENT_ID = '0c777701-1111-1111-1111-eeeeeeeeeeee';
-    const RESEARCHER_AGENT_ID = '0c777701-1111-1111-1111-rrrrrrrrrrrr'.replace(
-      /[r]/g,
-      '2',
-    );
-
-    async function buildAgentInput(input: {
-      id: string;
-      isLead: boolean;
-    }): Promise<Record<string, unknown>> {
-      return {
-        id: input.id,
-        sourceKind: 'provider',
-        providerId: 'provider.anthropic',
-        modelId: 'claude-opus-4-7',
-        role: 'assistant',
-        isLead: input.isLead,
-        displayOrder: 0,
-      };
-    }
-
-    async function seedRegisteredAgent(
-      id: string,
-      tools: Record<string, boolean>,
-    ): Promise<void> {
-      const db = getDbPg();
-      await db`
-        insert into public.registered_agents
-          (id, owner_id, name, provider_id, model_id, tool_permissions_json)
-        values
-          (${id}::uuid, ${USER_A_ID}::uuid, 'agent', 'provider.anthropic',
-           'claude-opus-4-7', ${db.json(tools as never)})
-        on conflict (id) do update set tool_permissions_json = excluded.tool_permissions_json
-      `;
-    }
-
-    it('adding a Researcher OR-s their tools into the active set, preserving user toggle-offs', async () => {
-      // Pre-state: Editor agent is on the Talk. Editor has gmail_read.
-      // The user has explicitly disabled web (a toggle-off the route
-      // must preserve).
-      await seedTalk(TALK_A_ID, USER_A_ID, {
-        gmail_read: true,
-        web: false,
-      });
-      await seedRegisteredAgent(EDITOR_AGENT_ID, { gmail_read: true });
-      await seedRegisteredAgent(RESEARCHER_AGENT_ID, { web: true });
-      const db = getDbPg();
-      await db`
-        insert into public.talk_agents (talk_id, owner_id, registered_agent_id, is_primary, source_kind)
-        values (${TALK_A_ID}::uuid, ${USER_A_ID}::uuid, ${EDITOR_AGENT_ID}::uuid, true, 'provider')
-      `;
-
-      // Send next agent set: keep Editor, add Researcher.
-      const result = await updateTalkAgentsRoute({
-        auth: AUTH_A,
-        talkId: TALK_A_ID,
-        agents: [
-          await buildAgentInput({ id: EDITOR_AGENT_ID, isLead: true }),
-          await buildAgentInput({
-            id: RESEARCHER_AGENT_ID,
-            isLead: false,
-          }),
-        ],
-      });
-      expect(result.statusCode).toBe(200);
-
-      const active = await withUserContext(USER_A_ID, async () => {
-        return await getTalkActiveTools(TALK_A_ID);
-      });
-      // web is OR'd in by Researcher (flipping the explicit false).
-      // Editor's gmail_read was already in the active set — unchanged.
-      expect(active).toEqual({ gmail_read: true, web: true });
-    });
-
-    it('resaving the same agent set does NOT re-OR-in (preserves deliberate toggle-offs)', async () => {
-      await seedTalk(TALK_A_ID, USER_A_ID, { web: false });
-      await seedRegisteredAgent(EDITOR_AGENT_ID, { web: true });
-      const db = getDbPg();
-      await db`
-        insert into public.talk_agents (talk_id, owner_id, registered_agent_id, is_primary, source_kind)
-        values (${TALK_A_ID}::uuid, ${USER_A_ID}::uuid, ${EDITOR_AGENT_ID}::uuid, true, 'provider')
-      `;
-
-      const result = await updateTalkAgentsRoute({
-        auth: AUTH_A,
-        talkId: TALK_A_ID,
-        agents: [await buildAgentInput({ id: EDITOR_AGENT_ID, isLead: true })],
-      });
-      expect(result.statusCode).toBe(200);
-
-      const active = await withUserContext(USER_A_ID, async () => {
-        return await getTalkActiveTools(TALK_A_ID);
-      });
-      // Re-saving the same agent set — diff = no new agents — no OR-in.
-      // The user's explicit `web: false` toggle-off is preserved.
-      expect(active).toEqual({ web: false });
-    });
-
-    it('removing an agent leaves active_tool_families_json unchanged', async () => {
-      await seedTalk(TALK_A_ID, USER_A_ID, {
-        web: true,
-        gmail_read: true,
-      });
-      await seedRegisteredAgent(EDITOR_AGENT_ID, { gmail_read: true });
-      await seedRegisteredAgent(RESEARCHER_AGENT_ID, { web: true });
-      const db = getDbPg();
-      await db`
-        insert into public.talk_agents (talk_id, owner_id, registered_agent_id, is_primary, source_kind)
-        values
-          (${TALK_A_ID}::uuid, ${USER_A_ID}::uuid, ${EDITOR_AGENT_ID}::uuid, true, 'provider'),
-          (${TALK_A_ID}::uuid, ${USER_A_ID}::uuid, ${RESEARCHER_AGENT_ID}::uuid, false, 'provider')
-      `;
-
-      const result = await updateTalkAgentsRoute({
-        auth: AUTH_A,
-        talkId: TALK_A_ID,
-        agents: [await buildAgentInput({ id: EDITOR_AGENT_ID, isLead: true })],
-      });
-      expect(result.statusCode).toBe(200);
-
-      const active = await withUserContext(USER_A_ID, async () => {
-        return await getTalkActiveTools(TALK_A_ID);
-      });
-      // The removed agent's capability stays in the active set so a
-      // later re-add preserves the user's toggle state.
-      expect(active).toEqual({ web: true, gmail_read: true });
-    });
   });
 
   it('after PATCH, a subsequently-created talk_run snapshots the post-toggle active set (codex #10 sanity)', async () => {

@@ -79,7 +79,6 @@ export class ExecutionPlannerError extends Error {
     message: string,
     public readonly code:
       | 'CONTAINER_BROWSER_REQUIRES_SHELL'
-      | 'CONTAINER_PROVIDER_INCOMPATIBLE'
       | 'CONTAINER_CREDENTIAL_MISSING'
       | 'DIRECT_EXECUTION_UNAVAILABLE',
     public readonly details?: Record<string, unknown>,
@@ -405,17 +404,9 @@ async function tryResolveContainerExecutionPlan(input: {
   configuredAuthMode: Awaited<ReturnType<typeof getConfiguredExecutorAuthMode>>;
 }): Promise<ContainerExecutionPlan | null> {
   if (!isContainerCompatibleProvider(input.provider)) {
-    if (input.heavyToolFamilies.length > 0) {
-      throw new ExecutionPlannerError(
-        `Agent ${input.agent.name} requires heavy tools, but provider ${input.agent.provider_id} is not compatible with the Claude container runtime.`,
-        'CONTAINER_PROVIDER_INCOMPATIBLE',
-        {
-          providerId: input.agent.provider_id,
-          apiFormat: input.provider?.api_format ?? null,
-          coreCompatibility: input.provider?.core_compatibility ?? null,
-        },
-      );
-    }
+    // Heavy tool families always resolve to [] now (the Claude container is
+    // gone and getEffectiveToolsForAgent forces heavy families off), so an
+    // incompatible provider simply has no container plan to build.
     return null;
   }
 

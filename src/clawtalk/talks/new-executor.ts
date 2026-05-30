@@ -2694,6 +2694,10 @@ export class CleanTalkExecutor implements TalkExecutor {
             executeToolCall: wrappedToolExecutor,
             forceToolUseOnFirstIteration,
             credentialKindSnapshot: runRecord?.credential_kind_snapshot,
+            // Tools are Talk-scoped: the router builds the model's tool
+            // DEFINITIONS from this same effective set the executor uses to
+            // gate execution, so shown tools and runnable tools stay aligned.
+            effectiveTools: scopedEffectiveTools,
           },
         );
       } finally {

@@ -2416,6 +2416,24 @@ a {
   cursor: default;
 }
 
+.tool-chips-bar-wrap {
+  display: flex;
+  flex-direction: column;
+}
+
+.tool-chips-hint {
+  margin: 0 0 0.3rem;
+  padding: 0 0.1rem;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: #8a93a8;
+}
+
+.tool-chips-hint strong {
+  font-weight: 600;
+  color: #6b7591;
+}
+
 .message-live {
   border-style: dashed;
 }

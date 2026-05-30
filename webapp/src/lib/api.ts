@@ -2124,7 +2124,6 @@ export type RegisteredAgent = {
   name: string;
   providerId: string;
   modelId: string;
-  toolPermissions: Record<string, boolean>;
   personaRole: string | null;
   systemPrompt: string | null;
   description: string | null;
@@ -2194,7 +2193,6 @@ export async function createRegisteredAgent(input: {
   name: string;
   providerId: string;
   modelId: string;
-  toolPermissionsJson?: string;
   personaRole?: string;
   systemPrompt?: string;
   description?: string;
@@ -2212,7 +2210,6 @@ export async function updateRegisteredAgent(input: {
   name?: string;
   providerId?: string;
   modelId?: string;
-  toolPermissionsJson?: string;
   personaRole?: string | null;
   systemPrompt?: string | null;
   description?: string | null;

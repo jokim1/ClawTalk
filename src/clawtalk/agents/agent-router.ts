@@ -1,4 +1,7 @@
-import { getRegisteredAgent, TOOL_FAMILY_MAP } from '../db/agent-accessors.js';
+import {
+  getRegisteredAgent,
+  type EffectiveToolAccess,
+} from '../db/agent-accessors.js';
 import { ensureRunnableModel } from './runtime-model-guard.js';
 import {
   resolveExecution,
@@ -142,7 +145,7 @@ export const ALWAYS_ALLOWED_CONTEXT_TOOLS = new Set([
   'read_state',
   // Content-feature edit tool — registered by context-loader only when
   // the Talk has an attached Content doc (`hasContent === true`). Never
-  // appears in tool_permissions_json (no tool family covers it), so
+  // appears in any tool family, so
   // without this allowlist it gets silently filtered out for every
   // agent. Talk-internal context tools by category — always allowed
   // alongside read_state / list_state.
@@ -273,6 +276,15 @@ export async function executeWithAgent(
      * to the live agent value.
      */
     credentialKindSnapshot?: 'api_key' | 'subscription' | null;
+    /**
+     * The Talk's effective tool set for this turn (talkActive ∩ light ∩
+     * userPermission), computed by getEffectiveToolsForAgent and passed by the
+     * executor. Drives which tool DEFINITIONS the model sees. Absent =>
+     * default to NO tools (D8): executeWithAgent is exported + test-called, so
+     * the fallback is explicit and safe rather than a crash or silently
+     * all-light.
+     */
+    effectiveTools?: EffectiveToolAccess[];
   },
 ): Promise<AgentExecutionResult> {
   const emit = options.emit || (() => {});
@@ -336,25 +348,27 @@ export async function executeWithAgent(
   }
 
   // -----------
-  // Step 3: Filter tools by agent permissions
+  // Step 3: Filter tools by the Talk's effective tool set
   // -----------
-  // tool_permissions_json is jsonb in postgres — round-trips as a parsed
-  // object, not a string. No JSON.parse needed in the cloud path.
-  const agentPermissions: Record<string, boolean> = agent.tool_permissions_json;
+  // Tools are a property of the Talk, resolved upstream by
+  // getEffectiveToolsForAgent (talkActive ∩ light ∩ userPermission) and passed
+  // in as `effectiveTools`. When absent (ad-hoc/direct callers, tests) default
+  // to NO tools — fail safe, never silently all-light. This is the single
+  // source of truth for which tool DEFINITIONS the model sees, matching the
+  // executor's execution-time gate so we never show a tool we'd then block.
+  const effectiveTools = options.effectiveTools ?? [];
 
-  // Resolve enabled tools from TOOL_FAMILY_MAP
   const enabledToolNames = new Set<string>();
   const alwaysAllowedToolNames = new Set(ALWAYS_ALLOWED_CONTEXT_TOOLS);
   for (const toolName of options.alwaysAllowedContextToolNames || []) {
     alwaysAllowedToolNames.add(toolName);
   }
-  const connectorsEnabled = agentPermissions['connectors'] === true;
-  for (const [family, enabled] of Object.entries(agentPermissions)) {
-    if (enabled === true) {
-      const familyTools = TOOL_FAMILY_MAP[family] || [];
-      for (const tool of familyTools) {
-        enabledToolNames.add(tool);
-      }
+  let connectorsEnabled = false;
+  for (const access of effectiveTools) {
+    if (!access.enabled) continue;
+    if (access.toolFamily === 'connectors') connectorsEnabled = true;
+    for (const tool of access.runtimeTools) {
+      enabledToolNames.add(tool);
     }
   }
 

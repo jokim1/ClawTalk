@@ -168,10 +168,6 @@ describe('agent-accessors-pg (postgres + RLS)', () => {
     expect(agent.owner_id).toBe(USER_A_ID);
     expect(agent.name).toBe('Growth Analyst');
     expect(agent.enabled).toBe(true);
-    expect(agent.tool_permissions_json).toMatchObject({
-      web: true,
-      connectors: true,
-    });
   });
 
   it('round-trips create → get → list → updates → delete inside withUserContext', async () => {
@@ -190,7 +186,6 @@ describe('agent-accessors-pg (postgres + RLS)', () => {
 
       const snapshot = await getRegisteredAgentSnapshot(agent.id);
       expect(snapshot?.personaRole).toBe('researcher');
-      expect(snapshot?.toolPermissions.web).toBe(true);
 
       const list = await listRegisteredAgents();
       expect(list.map((a) => a.id)).toContain(agent.id);
@@ -201,17 +196,9 @@ describe('agent-accessors-pg (postgres + RLS)', () => {
       const updated = await updateRegisteredAgent(agent.id, {
         name: 'Researcher (renamed)',
         description: null,
-        toolPermissions: {
-          web: false,
-          gmail_send: true,
-        },
       });
       expect(updated?.name).toBe('Researcher (renamed)');
       expect(updated?.description).toBeNull();
-      expect(updated?.tool_permissions_json.web).toBe(false);
-      // gmail_send true implies gmail_read true (auto-dependency).
-      expect(updated?.tool_permissions_json.gmail_read).toBe(true);
-      expect(updated?.tool_permissions_json.gmail_send).toBe(true);
 
       return agent;
     });
@@ -400,14 +387,13 @@ describe('agent-accessors-pg (postgres + RLS)', () => {
     });
   });
 
-  it('getEffectiveToolsForAgent composes agent + user permissions', async () => {
+  it('getEffectiveToolsForAgent: light families on, user denial wins, heavy off', async () => {
     await withUserContext(USER_A_ID, async () => {
       const agent = await createRegisteredAgent({
         ownerId: USER_A_ID,
         name: 'Tool Composer',
         providerId: 'provider.anthropic',
         modelId: 'claude-opus-4-7',
-        toolPermissions: { web: true, gmail_read: true },
       });
       await upsertUserToolPermission({
         userId: USER_A_ID,
@@ -416,12 +402,14 @@ describe('agent-accessors-pg (postgres + RLS)', () => {
         requiresApproval: false,
       });
 
+      // No talkId → settings-side view: light families resolve to the
+      // user-permission gate only (no per-agent layer anymore).
       const eff = await getEffectiveToolsForAgent(agent.id);
       // Sanity: every family in the catalog shows up.
       expect(eff.length).toBe(Object.keys(TOOL_FAMILY_MAP).length);
 
       const web = eff.find((e) => e.toolFamily === 'web');
-      // Agent allows web, but the user denies web_fetch — overall disabled.
+      // Light family, but the user denies web_fetch — overall disabled.
       expect(web?.enabled).toBe(false);
 
       const gmailRead = eff.find((e) => e.toolFamily === 'gmail_read');
@@ -429,7 +417,7 @@ describe('agent-accessors-pg (postgres + RLS)', () => {
       expect(gmailRead?.runtimeTools).toContain('gmail_read');
 
       const shell = eff.find((e) => e.toolFamily === 'shell');
-      expect(shell?.enabled).toBe(false); // not in the agent's permission map
+      expect(shell?.enabled).toBe(false); // heavy family — never enabled
     });
   });
 
@@ -496,12 +484,12 @@ describe('agent-accessors-pg (postgres + RLS)', () => {
 });
 
 // ----------------------------------------------------------------------------
-// getEffectiveToolsForAgent — talk-aware behavior (migration 0031)
+// getEffectiveToolsForAgent — talk-aware behavior
 //
-// The Talk active set intersects with the agent capability and user
-// permission, layered as: agent_capability ∩ talk_active ∩ user_permission.
-// The ALWAYS_ALLOWED bypass (agent-router.ts) is applied DOWNSTREAM of the
-// family-level enabled flag this function returns — never inside this fn.
+// Tools are a property of the Talk only. The effective set is
+// talk_active ∩ (family is light) ∩ user_permission — there is no per-agent
+// layer. The ALWAYS_ALLOWED bypass (agent-router.ts) is applied DOWNSTREAM of
+// the family-level enabled flag this function returns — never inside this fn.
 // ----------------------------------------------------------------------------
 
 const TALK_A_ID_AGENT = '0c111111-cccc-cccc-cccc-ccccccccc001';
@@ -539,34 +527,79 @@ describe('getEffectiveToolsForAgent talk-aware (migration 0031)', () => {
     `;
   }
 
-  it('no opts → behavior unchanged (agent ∩ user view)', async () => {
+  it('no opts (settings-side) → light families on, heavy off', async () => {
     await withUserContext(USER_A_ID, async () => {
       const agent = await createRegisteredAgent({
         ownerId: USER_A_ID,
         name: 'Researcher',
         providerId: 'provider.anthropic',
         modelId: 'claude-opus-4-7',
-        toolPermissions: { web: true, gmail_read: true },
       });
 
-      // Even with the Talk's active set empty, omitting talkId leaves the
-      // talk intersection inactive and the result mirrors the agent map.
+      // Omitting talkId leaves the talk intersection inactive, so light
+      // families resolve to the user-permission gate (here: all allowed).
       const eff = await getEffectiveToolsForAgent(agent.id);
       expect(eff.find((e) => e.toolFamily === 'web')?.enabled).toBe(true);
       expect(eff.find((e) => e.toolFamily === 'gmail_read')?.enabled).toBe(
         true,
       );
+      // Heavy families are never enabled, even settings-side.
+      expect(eff.find((e) => e.toolFamily === 'shell')?.enabled).toBe(false);
     });
   });
 
-  it('talkId={web:false} → web disabled regardless of agent capability', async () => {
+  it('talk-active {web:true} enables web for a non-Claude provider (provider-agnostic)', async () => {
+    await withUserContext(USER_A_ID, async () => {
+      const agent = await createRegisteredAgent({
+        ownerId: USER_A_ID,
+        name: 'NVIDIA agent',
+        providerId: 'provider.nvidia',
+        modelId: 'moonshotai/kimi-k2-instruct',
+      });
+      await setActive({ web: true });
+
+      const eff = await getEffectiveToolsForAgent(agent.id, {
+        talkId: TALK_A_ID_AGENT,
+      });
+      expect(eff.find((e) => e.toolFamily === 'web')?.enabled).toBe(true);
+    });
+  });
+
+  it('heavy family forced on in the Talk set is still never enabled', async () => {
     await withUserContext(USER_A_ID, async () => {
       const agent = await createRegisteredAgent({
         ownerId: USER_A_ID,
         name: 'Researcher',
         providerId: 'provider.anthropic',
         modelId: 'claude-opus-4-7',
-        toolPermissions: { web: true, gmail_read: true },
+      });
+      await setActive({
+        shell: true,
+        filesystem: true,
+        browser: true,
+        web: true,
+      });
+
+      const eff = await getEffectiveToolsForAgent(agent.id, {
+        talkId: TALK_A_ID_AGENT,
+      });
+      expect(eff.find((e) => e.toolFamily === 'shell')?.enabled).toBe(false);
+      expect(eff.find((e) => e.toolFamily === 'filesystem')?.enabled).toBe(
+        false,
+      );
+      expect(eff.find((e) => e.toolFamily === 'browser')?.enabled).toBe(false);
+      // A light family in the same set still resolves normally.
+      expect(eff.find((e) => e.toolFamily === 'web')?.enabled).toBe(true);
+    });
+  });
+
+  it('talkId with {web:false} → web off, gmail_read on (talk-driven)', async () => {
+    await withUserContext(USER_A_ID, async () => {
+      const agent = await createRegisteredAgent({
+        ownerId: USER_A_ID,
+        name: 'Researcher',
+        providerId: 'provider.anthropic',
+        modelId: 'claude-opus-4-7',
       });
       await setActive({ web: false, gmail_read: true });
 
@@ -587,7 +620,6 @@ describe('getEffectiveToolsForAgent talk-aware (migration 0031)', () => {
         name: 'Researcher',
         providerId: 'provider.anthropic',
         modelId: 'claude-opus-4-7',
-        toolPermissions: { web: true },
       });
       // Live state has web on, snapshot has it off → snapshot wins.
       await setActive({ web: true });
@@ -600,35 +632,32 @@ describe('getEffectiveToolsForAgent talk-aware (migration 0031)', () => {
     });
   });
 
-  it('talkId missing in DB → empty active set, intersection drops everything except connectors-style families', async () => {
+  it('talkId missing in DB → empty active set disables every family', async () => {
     await withUserContext(USER_A_ID, async () => {
       const agent = await createRegisteredAgent({
         ownerId: USER_A_ID,
         name: 'Researcher',
         providerId: 'provider.anthropic',
         modelId: 'claude-opus-4-7',
-        toolPermissions: { web: true, gmail_read: true },
       });
 
       const eff = await getEffectiveToolsForAgent(agent.id, {
         talkId: '0c111111-9999-9999-9999-999999999999',
       });
-      // Missing Talk resolves to {} active set — every family becomes disabled
-      // by the intersection, including connectors (no special-casing).
+      // Missing Talk resolves to {} active set — every family disabled.
       for (const family of eff) {
         expect(family.enabled).toBe(false);
       }
     });
   });
 
-  it('connectors: gated only on agent ∩ talk-active (no per-tool user check exists)', async () => {
+  it('connectors: gated only on talk-active (no per-tool user check exists)', async () => {
     await withUserContext(USER_A_ID, async () => {
       const agent = await createRegisteredAgent({
         ownerId: USER_A_ID,
         name: 'Connectors agent',
         providerId: 'provider.anthropic',
         modelId: 'claude-opus-4-7',
-        toolPermissions: { connectors: true },
       });
       await setActive({ connectors: true });
 

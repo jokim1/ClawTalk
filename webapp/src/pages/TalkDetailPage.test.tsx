@@ -4429,7 +4429,6 @@ function buildRegisteredAgent(
     name: input.name,
     providerId: input.providerId,
     modelId: input.modelId,
-    toolPermissions: input.toolPermissions ?? { web: true, connectors: true },
     personaRole: input.personaRole ?? 'assistant',
     systemPrompt: input.systemPrompt ?? null,
     description: input.description ?? null,

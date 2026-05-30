@@ -16,9 +16,6 @@
 //   - Reads, UPDATEs, and DELETEs filtered by RLS USING drop the
 //     redundant userId param the old API carried (sqlite single-tenant
 //     era).
-//   - tool_permissions_json is now jsonb — postgres.js returns it as a
-//     parsed object, so the record shape carries Record<string, boolean>
-//     instead of a JSON string.
 //   - `enabled` is boolean (not 0/1).
 //
 // This file is the proof-of-concept landing in the first commit of PR 2.
@@ -68,66 +65,15 @@ export const TOOL_FAMILY_MAP: Record<string, string[]> = {
   messaging: ['DiscordSend', 'SlackSend'],
 };
 
-export function buildDefaultTalkToolPermissions(): Record<string, boolean> {
-  return {
-    web: true,
-    connectors: true,
-    google_read: true,
-    google_write: true,
-    gmail_read: true,
-    gmail_send: true,
-    messaging: true,
-  };
-}
+// Heavy families need the (now-removed) Claude container to execute; they are
+// never enabled and don't appear on the Talk tool bar. Kept in TOOL_FAMILY_MAP
+// so they're trivially restorable when the container story returns.
+export const HEAVY_FAMILIES = new Set(['shell', 'filesystem', 'browser']);
 
-export const AUTO_IMPLIED_DEPENDENCIES: Array<[string, string]> = [
-  ['shell', 'filesystem'],
-  ['gmail_send', 'gmail_read'],
-];
-
-export function validateToolPermissions(value: unknown): {
-  valid: boolean;
-  error?: string;
-} {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return {
-      valid: false,
-      error: 'tool_permissions must be a JSON object',
-    };
-  }
-  const obj = value as Record<string, unknown>;
-  const knownFamilies = Object.keys(TOOL_FAMILY_MAP);
-  for (const key of Object.keys(obj)) {
-    if (!knownFamilies.includes(key)) {
-      return {
-        valid: false,
-        error: `Unknown tool family: ${key}. Valid families are: ${knownFamilies.join(', ')}`,
-      };
-    }
-    if (typeof obj[key] !== 'boolean') {
-      return {
-        valid: false,
-        error: `Value for ${key} must be boolean, got ${typeof obj[key]}`,
-      };
-    }
-  }
-  return { valid: true };
-}
-
-export function applyToolDependencies(
-  permissions: Record<string, boolean>,
-): Record<string, boolean> {
-  const result = { ...permissions };
-  for (const [left, right] of AUTO_IMPLIED_DEPENDENCIES) {
-    if (result[left] === true && result[right] !== true) {
-      result[right] = true;
-    }
-    if (result[right] === false && result[left] !== false) {
-      result[left] = false;
-    }
-  }
-  return result;
-}
+// The families that appear on the Talk tool bar (light only), in display order.
+export const TALK_TOOL_FAMILIES = Object.keys(TOOL_FAMILY_MAP).filter(
+  (f) => !HEAVY_FAMILIES.has(f),
+);
 
 // ---------------------------------------------------------------------------
 // Record + snapshot types
@@ -141,7 +87,6 @@ export interface RegisteredAgentRecord {
   name: string;
   provider_id: string;
   model_id: string;
-  tool_permissions_json: Record<string, boolean>;
   persona_role: string | null;
   system_prompt: string | null;
   description: string | null;
@@ -179,7 +124,6 @@ export interface RegisteredAgentSnapshot {
   name: string;
   providerId: string;
   modelId: string;
-  toolPermissions: Record<string, boolean>;
   personaRole: string | null;
   systemPrompt: string | null;
   description: string | null;
@@ -211,7 +155,6 @@ export function toAgentSnapshot(
     name: record.name,
     providerId: record.provider_id,
     modelId: record.model_id,
-    toolPermissions: record.tool_permissions_json,
     personaRole: record.persona_role,
     systemPrompt: record.system_prompt,
     description: record.description,
@@ -251,7 +194,7 @@ export async function getRegisteredAgent(
   const db: Sql = getDbPg();
   const rows = await db<RegisteredAgentRecord[]>`
     select id, owner_id, name, provider_id, model_id,
-           tool_permissions_json, persona_role, system_prompt,
+           persona_role, system_prompt,
            description, enabled, credential_mode,
            model_auto_upgraded_from, model_auto_upgraded_at,
            created_at, updated_at
@@ -273,7 +216,7 @@ export async function listRegisteredAgents(): Promise<RegisteredAgentRecord[]> {
   const db = getDbPg();
   return await db<RegisteredAgentRecord[]>`
     select id, owner_id, name, provider_id, model_id,
-           tool_permissions_json, persona_role, system_prompt,
+           persona_role, system_prompt,
            description, enabled, credential_mode,
            model_auto_upgraded_from, model_auto_upgraded_at,
            created_at, updated_at
@@ -286,7 +229,7 @@ export async function listEnabledAgents(): Promise<RegisteredAgentRecord[]> {
   const db = getDbPg();
   return await db<RegisteredAgentRecord[]>`
     select id, owner_id, name, provider_id, model_id,
-           tool_permissions_json, persona_role, system_prompt,
+           persona_role, system_prompt,
            description, enabled, credential_mode,
            model_auto_upgraded_from, model_auto_upgraded_at,
            created_at, updated_at
@@ -301,33 +244,24 @@ export async function createRegisteredAgent(params: {
   name: string;
   providerId: string;
   modelId: string;
-  toolPermissions?: Record<string, boolean>;
   personaRole?: string | null;
   systemPrompt?: string | null;
   description?: string | null;
   credentialMode?: RegisteredAgentCredentialMode | null;
 }): Promise<RegisteredAgentRecord> {
-  const toolPermissions =
-    params.toolPermissions ?? buildDefaultTalkToolPermissions();
-  const validation = validateToolPermissions(toolPermissions);
-  if (!validation.valid) {
-    throw new Error(`Invalid tool permissions: ${validation.error}`);
-  }
-  const normalized = applyToolDependencies(toolPermissions);
-
   const db = getDbPg();
   const rows = await db<RegisteredAgentRecord[]>`
     insert into public.registered_agents
-      (owner_id, name, provider_id, model_id, tool_permissions_json,
+      (owner_id, name, provider_id, model_id,
        persona_role, system_prompt, description, enabled, credential_mode)
     values
       (${params.ownerId}::uuid, ${params.name}, ${params.providerId},
-       ${params.modelId}, ${db.json(normalized as never)},
+       ${params.modelId},
        ${params.personaRole ?? null}, ${params.systemPrompt ?? null},
        ${params.description ?? null}, true,
        ${params.credentialMode ?? null})
     returning id, owner_id, name, provider_id, model_id,
-              tool_permissions_json, persona_role, system_prompt,
+              persona_role, system_prompt,
               description, enabled, credential_mode,
               model_auto_upgraded_from, model_auto_upgraded_at,
               created_at, updated_at
@@ -344,7 +278,6 @@ export async function updateRegisteredAgent(
     name: string;
     providerId: string;
     modelId: string;
-    toolPermissions: Record<string, boolean>;
     personaRole: string | null;
     systemPrompt: string | null;
     description: string | null;
@@ -352,15 +285,6 @@ export async function updateRegisteredAgent(
     credentialMode: RegisteredAgentCredentialMode | null;
   }>,
 ): Promise<RegisteredAgentRecord | undefined> {
-  let normalizedToolPermissions: Record<string, boolean> | undefined;
-  if (updates.toolPermissions !== undefined) {
-    const validation = validateToolPermissions(updates.toolPermissions);
-    if (!validation.valid) {
-      throw new Error(`Invalid tool permissions: ${validation.error}`);
-    }
-    normalizedToolPermissions = applyToolDependencies(updates.toolPermissions);
-  }
-
   // postgres.js doesn't have an Edit-clauses-as-array builder, so each
   // optional update is its own COALESCE column expression. Passing
   // `null`-tagged placeholder values means "leave unchanged" — the
@@ -373,14 +297,6 @@ export async function updateRegisteredAgent(
       name = coalesce(${updates.name ?? null}, name),
       provider_id = coalesce(${updates.providerId ?? null}, provider_id),
       model_id = coalesce(${updates.modelId ?? null}, model_id),
-      tool_permissions_json = coalesce(
-        ${
-          normalizedToolPermissions !== undefined
-            ? db.json(normalizedToolPermissions as never)
-            : null
-        },
-        tool_permissions_json
-      ),
       persona_role = case when ${updates.personaRole !== undefined}::boolean
         then ${updates.personaRole ?? null} else persona_role end,
       system_prompt = case when ${updates.systemPrompt !== undefined}::boolean
@@ -399,7 +315,7 @@ export async function updateRegisteredAgent(
       updated_at = now()
     where id = ${agentId}::uuid
     returning id, owner_id, name, provider_id, model_id,
-              tool_permissions_json, persona_role, system_prompt,
+              persona_role, system_prompt,
               description, enabled, credential_mode,
               model_auto_upgraded_from, model_auto_upgraded_at,
               created_at, updated_at
@@ -430,7 +346,7 @@ export async function autoUpgradeAgentModel(
       updated_at = now()
     where id = ${agentId}::uuid and model_id = ${fromModel}
     returning id, owner_id, name, provider_id, model_id,
-              tool_permissions_json, persona_role, system_prompt,
+              persona_role, system_prompt,
               description, enabled, credential_mode,
               model_auto_upgraded_from, model_auto_upgraded_at,
               created_at, updated_at
@@ -484,7 +400,7 @@ export async function autoUpgradeAgentModelOutsideTx(
       and provider_id = ${expectedProviderId}
       and model_id = ${fromModel}
     returning id, owner_id, name, provider_id, model_id,
-              tool_permissions_json, persona_role, system_prompt,
+              persona_role, system_prompt,
               description, enabled, credential_mode,
               model_auto_upgraded_from, model_auto_upgraded_at,
               created_at, updated_at
@@ -632,17 +548,21 @@ export interface EffectiveToolAccess {
  * Inside withUserContext the auth.uid() bound to the tx is implicitly the
  * permissions owner — no userId param needed.
  *
- * `opts.talkId` adds the Talk-active intersection: a tool family is enabled
- * only if the agent has the capability AND the Talk currently has the family
- * toggled on. Live read from `talks.active_tool_families_json`. Pass
+ * Tools are a property of the Talk only — there is no per-agent tool list.
+ * `opts.talkId` enables a light family iff the Talk currently has it toggled
+ * on. Live read from `talks.active_tool_families_json`. Pass
  * `opts.activeFamilies` instead to use an explicit snapshot (e.g. queue
  * consumer reading from the enqueued message — keeps a multi-agent response
  * group on a frozen tool set even if the user toggles mid-stream). Pass
- * neither for settings-side calls that just want the agent ∩ user view.
+ * neither for settings-side calls (no Talk context) — light families then
+ * resolve to the user-permission gate only; heavy families stay off.
+ *
+ * Heavy families (shell/filesystem/browser) need the removed Claude container
+ * and are NEVER enabled here, regardless of the Talk set.
  *
  * Connectors note: the `connectors` family has no runtime tool ids, so the
  * user-permission per-tool loop is a no-op for it. Connector access is
- * effectively gated only on agent ∩ talk-active (no per-tool user check).
+ * effectively gated only on talk-active (no per-tool user check).
  *
  * The ALWAYS_ALLOWED bypass (agent-router.ts:137) layers ABOVE this result —
  * tools in that set are NEVER filtered out by this function, since this
@@ -659,7 +579,6 @@ export async function getEffectiveToolsForAgent(
   const agent = await getRegisteredAgent(agentId);
   if (!agent) return [];
 
-  const agentPermissions = agent.tool_permissions_json;
   const userPermissions = await listUserToolPermissions();
   const userPermissionMap = new Map(userPermissions.map((p) => [p.toolId, p]));
 
@@ -667,14 +586,16 @@ export async function getEffectiveToolsForAgent(
 
   const result: EffectiveToolAccess[] = [];
   for (const [family, tools] of Object.entries(TOOL_FAMILY_MAP)) {
-    const agentEnabled = agentPermissions[family] === true;
     const runtimeTools = tools.length > 0 ? [...tools] : [];
 
-    // Agent ∩ talk active. When talkActive is null the call is settings-side
-    // (no Talk context) and the intersection collapses to agentEnabled.
+    // Talk-active only. When talkActive is null the call is settings-side
+    // (no Talk context) and light families collapse to the user-permission
+    // gate below.
     const talkEnabled =
       talkActive === null ? true : talkActive[family] === true;
-    let enabled = agentEnabled && talkEnabled;
+    // Heavy families (shell/filesystem/browser) need the removed Claude
+    // container; they are never enabled. Light families follow the Talk set.
+    let enabled = !HEAVY_FAMILIES.has(family) && talkEnabled;
     let requiresApproval = false;
     if (enabled && runtimeTools.length > 0) {
       for (const tool of runtimeTools) {
