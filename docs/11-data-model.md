@@ -512,6 +512,7 @@ context_sources (
   kind text not null check (kind in ('document','url','file','past_talk','rule','news')),  -- primary doc is projected, not stored
   name text not null, source_document_id uuid, source_talk_id uuid,
   payload_ref text, extracted_text text, summary text, meta_json jsonb not null default '{}',
+  expected_page_count int,                     -- PDF page-rasterization: # page images expected; page set complete when count(context_source_pages)=this (null = non-PDF / not rasterized)
   include_in_prompt boolean not null default true, sort_order int,
   added_by_user_id uuid references users(id) on delete set null,
   created_at, updated_at,
@@ -523,6 +524,15 @@ context_sources (
   foreign key (workspace_id, talk_id)            references talks(workspace_id, id) on delete cascade,
   foreign key (workspace_id, source_document_id) references documents(workspace_id, id) on delete cascade,
   foreign key (workspace_id, source_talk_id)     references talks(workspace_id, id)     on delete cascade
+)
+
+context_source_pages (                        -- rasterized PDF page JPEGs for vision-but-not-PDF models (gpt-5-mini, gemini-2.5-flash, kimi-k2.6); attached alongside extracted_text, never replacing it
+  workspace_id uuid not null, source_id uuid not null,
+  page_index int not null check (page_index >= 0), byte_size int not null check (byte_size >= 0),
+  payload_ref text not null,                   -- R2 key for the page JPEG (deterministic: …/{source_id}/page-{page_index}.jpg)
+  created_at,
+  primary key (source_id, page_index),         -- idempotent per-page upload; count(*) vs context_sources.expected_page_count = completeness
+  foreign key (workspace_id, source_id) references context_sources(workspace_id, id) on delete cascade
 )
 
 talk_tools (                                  -- per-Talk tool toggles; workspace_id for RLS (D7)
@@ -560,6 +570,7 @@ connector_bindings (
 - **Jobs' `source_scope_json.tool_ids` (`12-jobs.md` §3 / §7) validates against `talk_tools` at fire time.** The `tool_id text` shape is the contract: `source_scope_json` is `{ allow_web: bool, tool_ids: text[] }`. The scheduler's fire-time dependency check (`12-jobs.md` §5 Path A step 2) verifies every `tool_ids` entry has a matching row in `talk_tools(workspace_id, talk_id, tool_id)` with `enabled = true`; any missing/disabled tool → `jobs.status='blocked', block_reason='tool_not_enabled'`. Validation is at fire time (not create time) because the Talk's tool roster can change after the job is created.
 - **Connector/SSR secrets get their own store** (`connector_secrets`) — D7 corrected the false reuse of `workspace_provider_secrets` (which is LLM provider keys). Same encrypt-at-rest + JIT-decrypt pattern (engineering-notes §1).
 - Primary document is projected into Context from `documents.primary_talk_id`, not stored as a `context_sources` row (`08` §3.9).
+- **PDF page-rasterization (`context_source_pages`):** for models that accept image vision but **not** native PDF documents (`gpt-5-mini`, `gemini-2.5-flash`, `moonshotai/kimi-k2.6`), the webapp rasterizes each PDF page to a JPEG client-side (pdf.js) at upload and POSTs them one-per-request. The consumer attaches `min(pages, model.max_images)` page images **plus** `extracted_text` (raster is pixels-only — keeping the text preserves exact quotes), bounded by an encoded-payload cap. A source is consumable when it has `extracted_text` **OR** a complete page set (`count(context_source_pages) = expected_page_count`), so a text-extraction failure cannot hide a raster-only PDF. `model.max_images` is a per-model capability (NVIDIA NIM caps Kimi at ~4 images/prompt). Shipped on the legacy `talk_context_sources` schema (PR #501, Lane A); this is its place in the greenfield model.
 
 ---
 
@@ -1169,7 +1180,7 @@ create policy talks_write on public.talks
   with check  ( is_workspace_member(workspace_id) );
 ```
 
-Member-write applies to: `folders`, `talks`, `talk_agents`, `talk_tools`, `talk_reads`, `messages`, `runs`, `talk_agent_snapshots`, `run_prompt_snapshots`, `context_sources`, `agents` (non-system), `agent_feedback_events`, `team_compositions`, `team_composition_agents`, `documents`, `doc_tabs`, `doc_blocks`, `document_edits`, `doc_tab_coeditors`, `jobs`, `improvement_runs`, `document_versions`, `improvement_run_held_out_personas`, `forge_audiences`, `forge_audience_personas`, `home_inbox_items`, `home_recommendations`, `home_recommendation_candidates`, `home_recommendation_events`, `home_news_topics`, `home_news_matches`, `home_interaction_events`, `home_activation_state`, `activity_events`.
+Member-write applies to: `folders`, `talks`, `talk_agents`, `talk_tools`, `talk_reads`, `messages`, `runs`, `talk_agent_snapshots`, `run_prompt_snapshots`, `context_sources`, `context_source_pages`, `agents` (non-system), `agent_feedback_events`, `team_compositions`, `team_composition_agents`, `documents`, `doc_tabs`, `doc_blocks`, `document_edits`, `doc_tab_coeditors`, `jobs`, `improvement_runs`, `document_versions`, `improvement_run_held_out_personas`, `forge_audiences`, `forge_audience_personas`, `home_inbox_items`, `home_recommendations`, `home_recommendation_candidates`, `home_recommendation_events`, `home_news_topics`, `home_news_matches`, `home_interaction_events`, `home_activation_state`, `activity_events`.
 
 ### 12.2 Admin-only write exceptions
 
