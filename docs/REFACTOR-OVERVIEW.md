@@ -21,14 +21,20 @@ This is not "evolve the schema." This is "the schema we have constrains every fe
 |---|---|---|
 | ✅ Merged | Spec corpus close pass (all P0 + P1 gaps closed across 14 docs) | PR [#497](https://github.com/jokim1/clawtalk/pull/497) → main `05e3a15` |
 | ✅ Merged | Talk-scoped tools refactor (removed per-agent `tool_permissions_json`) | PR [#499](https://github.com/jokim1/clawtalk/pull/499) → main `82641ed`, used migration **0037** |
-| 🟢 Open PR | 10 deferred design-debt items resolved | PR [#500](https://github.com/jokim1/clawtalk/pull/500) |
-| 🟢 Open PR | The greenfield migration — `0038_clawtalk_greenfield.sql` (1421 lines, locally validated) | PR [#502](https://github.com/jokim1/clawtalk/pull/502) |
+| ✅ Merged | 10 deferred design-debt items resolved + REFACTOR-OVERVIEW.md | PR [#500](https://github.com/jokim1/clawtalk/pull/500) → main `d75550c` |
+| ✅ Merged | PDF page rasterization Lane A (backend contract) | PR [#501](https://github.com/jokim1/clawtalk/pull/501) used migration **0038** |
+| ✅ Merged | §11 spec addition: `context_source_pages` + `context_sources.expected_page_count` | PR [#503](https://github.com/jokim1/clawtalk/pull/503) |
+| ✅ Merged | PDF rasterization Lane B + Lane C T9 (consume page images + client render/upload) | PRs [#504](https://github.com/jokim1/clawtalk/pull/504) + [#505](https://github.com/jokim1/clawtalk/pull/505) |
+| 🅿️ Parked | The greenfield migration — written, locally validated, held at [`docs/canonical-greenfield-migration.sql`](./canonical-greenfield-migration.sql) | PR #502 closed; lands as `0040+` in `supabase/migrations/` when src/ rewrite ready |
+| 🟢 Open PR | PDF rasterization Lane C T10 (render-pages affordance + capability surfacing) | PR [#506](https://github.com/jokim1/clawtalk/pull/506) |
 | ⏭️ Next | `agent_role_templates` seed migration (Phase 1 Step 2) | TBD |
 | ⏭️ Next | Cutover plan doc (one-page) | TBD |
 | ⏭️ Next | src/ rewrite per §05 Phases 2–12 (executor, scheduler, queue consumer, accessors, routes) | Phased |
 | ⏭️ Next | webapp/ rewrite per §05 Phases (every page touches new tables) | Phased |
 | ⏭️ Next | §14 verification test suite (24 invariants) | Phased |
 | ⏭️ Next | Phase 13 eval gate (harness contract done; scenarios + grader prompts TBD) | Phased |
+
+**Why the migration is parked, not landed.** The migration SQL is structurally complete and locally validated against `supabase db reset`. But shipping it on `main` without the matching src/ rewrite breaks every accessor + route + test — 38/38 accessor tests + 21/30 google-drive tests fail because they target the dropped legacy tables (CI run on PR #502 confirmed this exactly as §14 predicted). Per Joseph's docs-only posture: the SQL lives at [`docs/canonical-greenfield-migration.sql`](./canonical-greenfield-migration.sql) as the canonical reference; the executable copy lands in `supabase/migrations/` only when the src/ rewrite catches up. See §14 (Cutover risk) for strategy options.
 
 For the full gap-by-gap close history, see [SPEC-READINESS.md](./SPEC-READINESS.md). For the canonical decisions, see [DECISIONS.md](./DECISIONS.md). For the phased build sequence, see [05-build-plan.md](./05-build-plan.md).
 
@@ -341,7 +347,9 @@ If you're about to write code, here's where to start by task type:
 
 ---
 
-## 14. Cutover risk: the moment 0038 lands
+## 14. Cutover risk: the moment the migration lands
+
+> **Status (2026-05-30):** Confirmed empirically. PR #502 attempted to land the migration as `0039_clawtalk_greenfield.sql`. CI ran and **38/38 accessor tests + 21/30 google-drive tests failed** because they target the dropped legacy tables — exactly as this section predicted. PR #502 was closed; the migration SQL is now parked at [`docs/canonical-greenfield-migration.sql`](./canonical-greenfield-migration.sql) until the src/ rewrite is ready. The cutover-strategy choice below is the gating decision.
 
 The greenfield migration is **destructive**. The moment it lands on `main`:
 
@@ -355,7 +363,7 @@ This is why [SPEC-READINESS.md](./SPEC-READINESS.md) flags **cutover sequencing 
 - **Big-bang cutover.** One coordinated PR that lands the migration + every src/ + webapp/ rewrite + the seed in a single squash-merge. Maximum carnage, single transition window, simplest mental model. Joseph has zero downstream users; downtime is "ClawTalk doesn't work for an hour."
 - **Feature-flag cutover.** Branch the code paths behind `CT_GREENFIELD` (or similar). Old paths read the legacy tables, new paths read the greenfield tables. Migrate per Phase. Higher complexity (dual-path code; runtime forks; double the test surface) for the benefit of "the prod webapp keeps working for the human while I'm migrating."
 
-Both are valid. The right choice depends on whether Joseph wants to keep dogfooding the shipped app during the rewrite. **Resolve this before 0038 merges.**
+Both are valid. The right choice depends on whether Joseph wants to keep dogfooding the shipped app during the rewrite. **The migration stays parked at [`canonical-greenfield-migration.sql`](./canonical-greenfield-migration.sql) until this decision lands; it moves to `supabase/migrations/0040+_*.sql` only at cutover.**
 
 ---
 

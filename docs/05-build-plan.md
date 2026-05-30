@@ -33,7 +33,9 @@ Build the locked schema from `11-data-model.md` in a single migration before any
 
 Multi-workspace tenancy (`workspaces` + `workspace_members`) is in this phase because [DECISIONS](./DECISIONS.md) D5 makes Workspace the tenant root from day one — workspaces are the RLS keystone every other policy joins through, so they must exist before any workspace-scoped table can be policed.
 
-### Step 1 · Write the single greenfield migration `0038_clawtalk_greenfield.sql`
+### Step 1 · Write the single greenfield migration (parked at `docs/canonical-greenfield-migration.sql`; lands as `0040_*.sql` at cutover)
+
+> **Migration status (2026-05-30):** the SQL is written and locally validated; see [`docs/canonical-greenfield-migration.sql`](./canonical-greenfield-migration.sql). It is **parked in docs/** rather than `supabase/migrations/` because landing it on `main` without the matching src/ rewrite breaks the existing test suite (38/38 accessor tests + 21/30 google-drive tests fail — they target the dropped legacy tables). The executable copy lands in `supabase/migrations/0040_*.sql` (or higher, depending on intervening work) when the §05 Phases 2–12 rewrites have caught up. See [REFACTOR-OVERVIEW.md §14](./REFACTOR-OVERVIEW.md) for the cutover strategy.
 
 One migration file, executed top-to-bottom in a transaction. Steps inside the migration:
 
@@ -256,7 +258,8 @@ Schema is already in §11 §9 (`ssr_connections`, `forge_personas`/`reference_se
 |---|---|
 | **LLM streaming reliability across 3 providers.** | Build the provider adapter abstraction in week 3 before UI work. Test with chaos: dropped connections, partial responses, tool-use errors. |
 | **Run orchestrator.** | Cloudflare Queues + the `scheduler.ts` cron tick + queue-consumer atomic claim (`update runs set status='running' where id=$1 and status='queued' returning *`) handle dispatch; the §12 stuck-`queued` (5min) + stuck-`running` (1h) sweep is the safety net. State machine lives in code, not in DB triggers. |
-| **Schema migration size.** | The single `0038_clawtalk_greenfield.sql` is large but executes against disposable local data per D0. Verify with the §11 §14 invariant suite before deploying to staging; a green suite is the gate, not "looks OK." |
+| **Schema migration size.** | The single greenfield migration ([`docs/canonical-greenfield-migration.sql`](./canonical-greenfield-migration.sql), parked) is large but executes against disposable local data per D0. Verify with the §11 §14 invariant suite before deploying to staging; a green suite is the gate, not "looks OK." |
+| **Cutover gap.** | The parked migration drops 37 legacy tables that current `src/` and tests target. Landing the migration without the matching src/ rewrite breaks main. Resolved by holding the migration in `docs/` until §05 Phases 2–12 rewrites are ready — at which point the migration moves to `supabase/migrations/0040+_*.sql` as the cutover commit. See REFACTOR-OVERVIEW §14. |
 | **Curator quality.** | Phase 11 is behind a flag for model polish only. Deterministic recommendations must work without Curator output. |
 | **News feed privacy.** | Bake the topic-summary-only contract into the matcher service. `home_news_items` is a shared global pool with no `workspace_id` per §07 §8.4 — never log message bodies in that pipeline. Document for security review. |
 | **Home auto-optimization.** | Tune only bounded `home_ranking_profiles` weights automatically. Structural algorithm changes require `home_optimization_proposals` → admin review → new `home_algorithm_versions` row → `home_algorithm_assignments` flip. |
