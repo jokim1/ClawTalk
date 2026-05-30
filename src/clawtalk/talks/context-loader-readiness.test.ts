@@ -19,7 +19,11 @@ import {
   withUserContext,
 } from '../db/test-helpers.js';
 
-import { fetchSources, isPageSetComplete } from './context-loader.js';
+import {
+  fetchAtRefCandidateRows,
+  fetchSources,
+  isPageSetComplete,
+} from './context-loader.js';
 
 const USER = '0c333355-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const TALK = '0c333355-cccc-cccc-cccc-ccccccccc0a1';
@@ -158,6 +162,30 @@ describe('fetchSources readiness with page images', () => {
       expect(s1?.page_image_count).toBe(0);
       expect(s1?.page_image_total_bytes).toBe(0);
       expect(isPageSetComplete(s1!)).toBe(false);
+    });
+  });
+
+  // The raster consumer (Lane B) resolves @-ref'd PDFs via
+  // fetchAtRefCandidateRows, which array_aggs the page indices + byte
+  // sizes so the budget guard can pick pages without a second query.
+  it('fetchAtRefCandidateRows joins page indices + byte sizes in page order', async () => {
+    await withUserContext(USER, async () => {
+      const rows = await fetchAtRefCandidateRows(getDbPg(), TALK, ['S3'], []);
+      const s3 = rows.find((r) => r.source_ref === 'S3');
+      expect(s3?.page_image_count).toBe(2);
+      expect(s3?.page_indices).toEqual([0, 1]);
+      expect(s3?.page_byte_sizes).toEqual([100, 200]);
+      expect(s3?.expected_page_count).toBe(2);
+    });
+  });
+
+  it('fetchAtRefCandidateRows returns empty page arrays for an un-rasterized PDF', async () => {
+    await withUserContext(USER, async () => {
+      const rows = await fetchAtRefCandidateRows(getDbPg(), TALK, ['S1'], []);
+      const s1 = rows.find((r) => r.source_ref === 'S1');
+      expect(s1?.page_image_count).toBe(0);
+      expect(s1?.page_indices).toEqual([]);
+      expect(s1?.page_byte_sizes).toEqual([]);
     });
   });
 });

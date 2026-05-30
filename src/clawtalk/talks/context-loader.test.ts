@@ -13,13 +13,19 @@ import {
   buildContentOutline,
   buildSourceManifest,
   buildSourcePreview,
+  computeRasterPageAttachment,
   isPageSetComplete,
   renderForcedInjectionResolutions,
   resolveAtRefRequestsForRender,
   MAX_TOTAL_PDF_PAYLOAD_BYTES,
   type AtRefCandidateRow,
+  type ForcedInjectionResolution,
   type SourceRow,
 } from './context-loader.js';
+import {
+  MAX_TOTAL_RASTER_PAYLOAD_BYTES,
+  encodedSizeBytes,
+} from '../../shared/attachment-caps.js';
 import type { Content } from '../db/content-accessors.js';
 import type { AnchorMap } from '../../shared/rich-text/index.js';
 
@@ -412,6 +418,10 @@ describe('buildAtRefForcedInjectionFromRows', () => {
       source_type: input.source_type ?? 'text',
       source_url: input.source_url ?? null,
       updated_at: input.updated_at ?? '2026-05-26T00:00:00Z',
+      expected_page_count: input.expected_page_count ?? null,
+      page_image_count: input.page_image_count ?? 0,
+      page_indices: input.page_indices ?? [],
+      page_byte_sizes: input.page_byte_sizes ?? [],
     };
   }
 
@@ -697,6 +707,10 @@ describe('cumulative-payload guard (resolveAtRefRequestsForRender + render)', ()
       source_type: 'file',
       source_url: null,
       updated_at: '2026-05-26T00:00:00Z',
+      expected_page_count: null,
+      page_image_count: 0,
+      page_indices: [],
+      page_byte_sizes: [],
     };
   }
 
@@ -801,5 +815,333 @@ describe('isPageSetComplete', () => {
     expect(
       isPageSetComplete({ expected_page_count: 0, page_image_count: 0 }),
     ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PDF page-image (raster) consumption — Lane B (T7/T8/T11/T12)
+// ---------------------------------------------------------------------------
+
+function makeRasterRow(
+  input: Partial<AtRefCandidateRow> & { source_ref: string; title: string },
+): AtRefCandidateRow {
+  const pageCount = input.page_image_count ?? 3;
+  return {
+    id: input.id ?? `id-${input.source_ref}`,
+    source_ref: input.source_ref,
+    title: input.title,
+    title_slug: input.title_slug ?? null,
+    status: input.status ?? 'ready',
+    extracted_text: input.extracted_text ?? 'chart and figure text',
+    mime_type: input.mime_type ?? 'application/pdf',
+    storage_key:
+      input.storage_key ?? `attachments/talk-1/${input.source_ref}.pdf`,
+    file_size: input.file_size ?? 2 * 1024 * 1024,
+    file_name: input.file_name ?? `${input.source_ref}.pdf`,
+    source_type: input.source_type ?? 'file',
+    source_url: input.source_url ?? null,
+    updated_at: input.updated_at ?? '2026-05-30T00:00:00Z',
+    expected_page_count: input.expected_page_count ?? pageCount,
+    page_image_count: pageCount,
+    page_indices:
+      input.page_indices ?? Array.from({ length: pageCount }, (_, i) => i),
+    page_byte_sizes:
+      input.page_byte_sizes ?? Array.from({ length: pageCount }, () => 100_000),
+  };
+}
+
+describe('resolveAtRefRequestsForRender — pdf-page-images (vision-but-not-doc)', () => {
+  it('resolves an @S<n> ref to pdf-page-images for a complete-page PDF', () => {
+    const rows = [makeRasterRow({ source_ref: 'S1', title: 'Charts Deck' })];
+    const res = resolveAtRefRequestsForRender(rows, ['S1'], [], {
+      agentSupportsVision: true,
+      maxImages: 4,
+    });
+    expect(res).toHaveLength(1);
+    expect(res[0].kind).toBe('pdf-page-images');
+  });
+
+  it('resolves an @<slug> to pdf-page-images (parity with @S)', () => {
+    const rows = [
+      makeRasterRow({
+        source_ref: 'S1',
+        title: 'Charts Deck',
+        title_slug: 'charts-deck',
+      }),
+    ];
+    const res = resolveAtRefRequestsForRender(rows, [], ['charts-deck'], {
+      agentSupportsVision: true,
+      maxImages: 4,
+    });
+    expect(res).toHaveLength(1);
+    expect(res[0].kind).toBe('pdf-page-images');
+  });
+
+  it('resolves a raster-only PDF (text extraction failed) to pdf-page-images', () => {
+    const rows = [
+      makeRasterRow({
+        source_ref: 'S1',
+        title: 'Scan',
+        status: 'failed',
+        extracted_text: null,
+      }),
+    ];
+    const res = resolveAtRefRequestsForRender(rows, ['S1'], [], {
+      agentSupportsVision: true,
+    });
+    expect(res[0].kind).toBe('pdf-page-images');
+  });
+
+  it('resolves a raster-only PDF via @<slug> even when status=failed', () => {
+    const rows = [
+      makeRasterRow({
+        source_ref: 'S1',
+        title: 'Scan',
+        title_slug: 'scan',
+        status: 'failed',
+        extracted_text: null,
+      }),
+    ];
+    const res = resolveAtRefRequestsForRender(rows, [], ['scan'], {
+      agentSupportsVision: true,
+    });
+    expect(res[0].kind).toBe('pdf-page-images');
+  });
+
+  it('REGRESSION: a doc-capable agent still gets pdf-document, not page images', () => {
+    const rows = [makeRasterRow({ source_ref: 'S1', title: 'Charts Deck' })];
+    const res = resolveAtRefRequestsForRender(rows, ['S1'], [], {
+      agentSupportsDocuments: true,
+      agentSupportsVision: true,
+      perSourceMaxBytes: 12 * 1024 * 1024,
+    });
+    expect(res[0].kind).toBe('pdf-document');
+  });
+
+  it('REGRESSION: a text-only agent (no vision) gets the extracted text', () => {
+    const rows = [
+      makeRasterRow({
+        source_ref: 'S1',
+        title: 'Charts Deck',
+        extracted_text: 'the deck text',
+      }),
+    ];
+    const res = resolveAtRefRequestsForRender(rows, ['S1'], [], {});
+    expect(res[0].kind).toBe('resolved');
+  });
+
+  it('falls back to text when the page set is incomplete', () => {
+    const rows = [
+      makeRasterRow({
+        source_ref: 'S1',
+        title: 'Half-rendered',
+        expected_page_count: 4,
+        page_image_count: 2,
+        page_indices: [0, 1],
+        page_byte_sizes: [100_000, 100_000],
+        extracted_text: 'fallback text',
+      }),
+    ];
+    const res = resolveAtRefRequestsForRender(rows, ['S1'], [], {
+      agentSupportsVision: true,
+    });
+    expect(res[0].kind).toBe('resolved');
+  });
+});
+
+describe('computeRasterPageAttachment', () => {
+  const row = {
+    page_indices: [0, 1, 2, 3],
+    page_byte_sizes: [100_000, 100_000, 100_000, 100_000],
+    page_image_count: 4,
+  };
+
+  it('attaches every page when under maxImages and budget', () => {
+    const att = computeRasterPageAttachment(row, {
+      budgetRemainingBytes: MAX_TOTAL_RASTER_PAYLOAD_BYTES,
+    });
+    expect(att.pageIndices).toEqual([0, 1, 2, 3]);
+    expect(att.totalPages).toBe(4);
+    expect(att.truncatedReason).toBeNull();
+    expect(att.bytesUsed).toBe(4 * encodedSizeBytes(100_000));
+  });
+
+  it('caps at maxImages with an image-limit truncation reason', () => {
+    const att = computeRasterPageAttachment(row, {
+      maxImages: 2,
+      budgetRemainingBytes: MAX_TOTAL_RASTER_PAYLOAD_BYTES,
+    });
+    expect(att.pageIndices).toEqual([0, 1]);
+    expect(att.truncatedReason).toBe('image-limit');
+  });
+
+  it('caps on the encoded payload budget with a payload-budget reason', () => {
+    // Budget fits exactly one encoded page.
+    const oneEncoded = encodedSizeBytes(100_000);
+    const att = computeRasterPageAttachment(row, {
+      budgetRemainingBytes: oneEncoded,
+    });
+    expect(att.pageIndices).toEqual([0]);
+    expect(att.truncatedReason).toBe('payload-budget');
+    expect(att.bytesUsed).toBe(oneEncoded);
+  });
+
+  it('threads a shared budget across two sources (cumulative)', () => {
+    let remaining = encodedSizeBytes(100_000) * 5; // room for 5 pages total
+    const a = computeRasterPageAttachment(row, {
+      budgetRemainingBytes: remaining,
+    });
+    remaining -= a.bytesUsed;
+    const b = computeRasterPageAttachment(row, {
+      budgetRemainingBytes: remaining,
+    });
+    expect(a.pageIndices).toEqual([0, 1, 2, 3]); // first source takes 4
+    expect(b.pageIndices).toEqual([0]); // only 1 page of budget left
+    expect(b.truncatedReason).toBe('payload-budget');
+  });
+
+  it('preserves the actual (possibly non-contiguous) page indices', () => {
+    const att = computeRasterPageAttachment(
+      {
+        page_indices: [0, 2, 5],
+        page_byte_sizes: [100, 100, 100],
+        page_image_count: 3,
+      },
+      { maxImages: 2, budgetRemainingBytes: MAX_TOTAL_RASTER_PAYLOAD_BYTES },
+    );
+    expect(att.pageIndices).toEqual([0, 2]);
+  });
+});
+
+describe('renderForcedInjectionResolutions — pdf-page-images', () => {
+  const baseRow = makeRasterRow({ source_ref: 'S1', title: 'Charts Deck' });
+
+  it('renders an honest "k of N" note, the truncation cause, and keeps the text', () => {
+    const resolutions: ForcedInjectionResolution[] = [
+      {
+        kind: 'pdf-page-images',
+        sourceRef: 'S1',
+        title: 'Charts Deck',
+        row: { ...baseRow, extracted_text: 'exact quotable text' },
+        attachment: {
+          pageIndices: [0, 1],
+          totalPages: 5,
+          truncatedReason: 'image-limit',
+        },
+      },
+    ];
+    const text = renderForcedInjectionResolutions(resolutions);
+    expect(text).toContain(
+      '2 of 5 page images attached to this turn via @-ref',
+    );
+    expect(text).toContain('per-prompt image limit');
+    expect(text).toContain('<<<source');
+    expect(text).toContain('exact quotable text');
+    expect(text).toContain('source>>>');
+  });
+
+  it('renders no truncation phrase when all pages fit', () => {
+    const text = renderForcedInjectionResolutions([
+      {
+        kind: 'pdf-page-images',
+        sourceRef: 'S1',
+        title: 'Charts Deck',
+        row: baseRow,
+        attachment: {
+          pageIndices: [0, 1, 2],
+          totalPages: 3,
+          truncatedReason: null,
+        },
+      },
+    ]);
+    expect(text).toContain('3 of 3 page images attached');
+    expect(text).not.toContain('capped');
+  });
+
+  it('renders a raster-only PDF (no text) without a source fence', () => {
+    const text = renderForcedInjectionResolutions([
+      {
+        kind: 'pdf-page-images',
+        sourceRef: 'S1',
+        title: 'Scan',
+        row: { ...baseRow, extracted_text: null },
+        attachment: {
+          pageIndices: [0],
+          totalPages: 1,
+          truncatedReason: null,
+        },
+      },
+    ]);
+    expect(text).toContain('1 of 1 page image attached');
+    expect(text).not.toContain('<<<source');
+  });
+
+  it('honestly reports when the budget left zero pages but keeps the text', () => {
+    const text = renderForcedInjectionResolutions([
+      {
+        kind: 'pdf-page-images',
+        sourceRef: 'S1',
+        title: 'Charts Deck',
+        row: { ...baseRow, extracted_text: 'still have the text' },
+        attachment: {
+          pageIndices: [],
+          totalPages: 3,
+          truncatedReason: 'payload-budget',
+        },
+      },
+    ]);
+    expect(text).toContain('page images omitted');
+    expect(text).toContain('still have the text');
+  });
+});
+
+describe('buildSourceManifest — PDF raster-awareness', () => {
+  function makePdf(input: Partial<SourceRow>): SourceRow {
+    return makeSource({
+      source_ref: 'S1',
+      source_type: 'file',
+      title: 'Charts Deck',
+      file_name: 'deck.pdf',
+      mime_type: 'application/pdf',
+      storage_key: 'attachments/talk-1/s1.pdf',
+      extracted_text: 'deck text',
+      ...input,
+    });
+  }
+
+  it('advertises page images + the @-ref for a vision-but-not-doc agent with a complete set', () => {
+    const source = makePdf({ expected_page_count: 3, page_image_count: 3 });
+    const [line] = buildSourceManifest([source], true).map((m) => m.line);
+    expect(line).toContain('3 page images available');
+    expect(line).toContain('@S1 to attach them');
+  });
+
+  it('singularizes "page image" for a one-page PDF', () => {
+    const source = makePdf({ expected_page_count: 1, page_image_count: 1 });
+    const [line] = buildSourceManifest([source], true).map((m) => m.line);
+    expect(line).toContain('1 page image available');
+  });
+
+  it('says text-only for a vision agent when the PDF has no page set', () => {
+    const source = makePdf({ expected_page_count: null, page_image_count: 0 });
+    const [line] = buildSourceManifest([source], true).map((m) => m.line);
+    expect(line).toContain('text-only; no rasterized page images');
+  });
+
+  it('REGRESSION: a non-vision agent still sees the lacks-PDF-vision note', () => {
+    const source = makePdf({ expected_page_count: 3, page_image_count: 3 });
+    const [line] = buildSourceManifest([source], false).map((m) => m.line);
+    expect(line).toContain("this agent's model lacks PDF document vision");
+  });
+
+  it('REGRESSION: a doc-capable agent still sees the native-attach note', () => {
+    const source = makePdf({ expected_page_count: 3, page_image_count: 3 });
+    const [line] = buildSourceManifest([source], true, {
+      agentSupportsDocuments: true,
+      autoAttachedRefs: new Set(['S1']),
+      forceAttachedRefs: new Set(),
+    }).map((m) => m.line);
+    expect(line).toContain('pages attached to this turn');
+    expect(line).not.toContain('page images available');
   });
 });

@@ -50,6 +50,7 @@ import {
 import {
   modelSupportsPdfDocuments,
   modelSupportsVision,
+  resolveModelCapabilities,
 } from '../llm/capabilities.js';
 import type { TalkPersonaRole } from '../llm/types.js';
 import {
@@ -57,6 +58,7 @@ import {
   MAX_PDF_DOCUMENT_BYTES,
   type ContextDocumentSourceRef,
   type ContextImageSourceRef,
+  type ContextPdfPageSourceRef,
 } from './context-loader.js';
 import { isImageAttachmentMimeType } from './attachment-extraction.js';
 
@@ -196,7 +198,7 @@ async function executeContainerAgentTurn(
 ): Promise<ContainerTurnResultStub> {
   throw new Error('Container agent execution is disabled (chassis removed).');
 }
-import { loadAttachmentFile } from './attachment-storage.js';
+import { loadAttachmentFile, loadPageImage } from './attachment-storage.js';
 import {
   TalkExecutorError,
   type TalkJobExecutionPolicy,
@@ -1928,6 +1930,26 @@ function messageContentToPlainText(content: LlmMessage['content']): string {
     .join('\n');
 }
 
+/**
+ * Prepend a flat list of pre-built content blocks behind a leading
+ * header text block onto a user-message payload. Shared by the
+ * Talk-context image-source and PDF-page-image injectors so both produce
+ * the same `[header, ...blocks, ...base]` shape. Returns `base`
+ * unchanged when there are no blocks (no empty header is emitted).
+ */
+export function prependImageBlocks(
+  base: LlmMessage['content'],
+  blocks: LlmContentBlock[],
+  header: string,
+): LlmMessage['content'] {
+  if (blocks.length === 0) return base;
+  const headerBlock: LlmContentBlock = { type: 'text', text: header };
+  if (typeof base === 'string') {
+    return [headerBlock, ...blocks, { type: 'text', text: base }];
+  }
+  return [headerBlock, ...blocks, ...base];
+}
+
 async function prependTalkContextImages(
   base: LlmMessage['content'],
   contextImageSources: ContextImageSourceRef[],
@@ -1959,17 +1981,70 @@ async function prependTalkContextImages(
     });
   }
 
-  if (imageBlocks.length === 0) return base;
+  return prependImageBlocks(
+    base,
+    imageBlocks,
+    'Talk-level Context images (persisted across this Talk, available to you on every turn):',
+  );
+}
 
-  const headerBlock: LlmContentBlock = {
-    type: 'text',
-    text: 'Talk-level Context images (persisted across this Talk, available to you on every turn):',
-  };
+/**
+ * Prepend rasterized PDF page images for vision-but-not-doc agents. The
+ * resolver already chose `pageIndices` (truncated to `min(pages,
+ * maxImages)` within the encoded raster budget); here we hydrate each
+ * from R2 via `loadPageImage` and emit `[label, image]` block pairs,
+ * mirroring the image-source injector. A missing page is skipped +
+ * logged — one R2 gap must not fail the whole turn, and the kept
+ * `extracted_text` (rendered into the prompt's forced-injection block)
+ * still carries the content. The "k of N pages attached" manifest note
+ * lives in that text block.
+ */
+async function prependTalkContextPdfPages(
+  base: LlmMessage['content'],
+  contextPdfPageSources: ContextPdfPageSourceRef[],
+  talkId: string,
+): Promise<LlmMessage['content']> {
+  if (contextPdfPageSources.length === 0) return base;
 
-  if (typeof base === 'string') {
-    return [headerBlock, ...imageBlocks, { type: 'text', text: base }];
+  const pageBlocks: LlmContentBlock[] = [];
+  for (const source of contextPdfPageSources) {
+    for (const pageIndex of source.pageIndices) {
+      let base64: string;
+      try {
+        const buffer = await loadPageImage(talkId, source.sourceId, pageIndex);
+        base64 = buffer.toString('base64');
+      } catch (err) {
+        logger.warn(
+          {
+            err,
+            sourceRef: source.ref,
+            sourceId: source.sourceId,
+            pageIndex,
+          },
+          'Failed to load Talk context PDF page image — skipping',
+        );
+        continue;
+      }
+      pageBlocks.push({
+        type: 'text',
+        text: `PDF [${source.ref}] "${source.title}" — page ${
+          pageIndex + 1
+        } of ${source.totalPages}:`,
+      });
+      pageBlocks.push({
+        type: 'image',
+        mimeType: 'image/jpeg',
+        data: base64,
+        detail: 'auto',
+      });
+    }
   }
-  return [headerBlock, ...imageBlocks, ...base];
+
+  return prependImageBlocks(
+    base,
+    pageBlocks,
+    'Talk-level Context PDF page images (rasterized pages of @-referenced PDFs — read these alongside the extracted text in your prompt):',
+  );
 }
 
 async function prependTalkContextDocuments(
@@ -2361,6 +2436,10 @@ export class CleanTalkExecutor implements TalkExecutor {
         activeAgent.provider_id,
         activeAgent.model_id,
       );
+      const agentMaxImages = resolveModelCapabilities({
+        providerId: activeAgent.provider_id,
+        modelId: activeAgent.model_id,
+      }).max_images;
       const contextPackage = await loadTalkContext(
         input.talkId,
         modelContextWindow,
@@ -2375,6 +2454,7 @@ export class CleanTalkExecutor implements TalkExecutor {
           channelContextSection: channelExecutionContext.channelContextSection,
           agentSupportsVision,
           agentSupportsDocuments,
+          maxImages: agentMaxImages,
         },
       );
       await setTalkRunMetadata(input.runId, {
@@ -2568,9 +2648,18 @@ export class CleanTalkExecutor implements TalkExecutor {
         directUserMessageBase,
         contextPackage.contextDocumentSources,
       );
-      const directUserMessage = await prependTalkContextImages(
+      const directUserMessageWithImages = await prependTalkContextImages(
         directUserMessageWithDocs,
         contextPackage.contextImageSources,
+      );
+      // Rasterized PDF page images for vision-but-not-doc agents ride on
+      // the same user turn (alongside the kept extracted_text rendered
+      // into the forced-injection block). Empty for doc-capable / text-
+      // only agents, so this is a no-op outside the raster path.
+      const directUserMessage = await prependTalkContextPdfPages(
+        directUserMessageWithImages,
+        contextPackage.contextPdfPageSources,
+        input.talkId,
       );
 
       // Diagnostic: log the PDF document blocks attached to this user
