@@ -1,6 +1,6 @@
 # T-new-E — t2-t1 attribution (measurement-only plan)
 
-**Status:** Plan, **r3 draft**.
+**Status:** Plan, **r4 draft**.
 **Tracking:** [[project-llm-turn-latency]].
 **Branch (planning):** `docs/t-new-e-t2t1-attribution` (this doc).
 **Branch (implementation, to be created):** `feature/t-new-e-instrumentation`.
@@ -42,7 +42,7 @@ Pinned against current origin/main `696302d`. Path from `ctx.waitUntil(dispatchR
 | E0 | `ctx.waitUntil` schedules `dispatchRunInProcess` (worker-app.ts:~2382) | scheduling delay (~ms) |
 | E1 | `withRequestScopedDb` opens a fresh DB scope (`dispatch-in-process.ts:55`) | Hyperdrive cold-connect possible (~50-300 ms) |
 | E2 | `processTalkRunMessage` retry-emit branch (queue-consumer.ts:99-117) | 0 ms on first attempt (skipped) |
-| E3 | `markRunRunning(runId)` (queue-consumer.ts:119) | 1 DB write (~125 ms) |
+| E3 | `markRunRunning(runId)` (queue-consumer.ts:119) | **Multiple stmts** (codex r3 P2-D): initial SELECT + optional sibling SELECT + UPDATE + nickname lookup + best-effort `talk_run_started` outbox INSERT — see accessors.ts:2654-2708. Treat E3 as a single phase but tag the `stmts` column with the actual observed count, not the prior "1". |
 | E4 | `withUserContext` open (queue-consumer.ts:153) | **3 stmts: BEGIN + `set local role authenticated` + `select set_config(...)` for the JWT claim** (codex P2-F caught this — not 1 stmt). |
 | E5 | `getTalkMessageById(trigger_message_id)` (queue-consumer.ts:163) | 1 DB read (~125 ms) |
 | E6 | Cancel-poller setup (queue-consumer.ts:173-193) | sync (~ms) |
@@ -56,6 +56,7 @@ Pinned against current origin/main `696302d`. Path from `ctx.waitUntil(dispatchR
 | E14 | `planExecution(agent, requestedBy, planOpts)` (new-executor.ts:2414) | Effective-tools graph — codex C2 prior: ~435 ms/agent. |
 | E15 | `loadChannelExecutionContext({ trigger, binding })` (new-executor.ts:2423) | DB reads |
 | E16 | `loadTalkContext(talkId, ...)` (new-executor.ts:2443) | **Many DB reads (message history, threads, tools, content) — likely the fattest single phase.** |
+| E16.5 | `setTalkRunMetadata(...)` (new-executor.ts:2460) — codex r3 P1-B caught r3 missing this | 1 UPDATE on `talk_runs` via accessors.ts:1691-1700. Without a probe here, the await silently joins E16 or E17 in the attribution. |
 | E17 | Prompt assembly (system + user) | sync (~ms-100 ms) |
 | E18 | **Direct-path pre-LLM prep:** attachment DB reads + history attachment hydration + `buildDirectHistoryMessages` (new-executor.ts:2630) + PDF/page prep + PDF diagnostics + edit-intent checks + possible content-edit emits. **Was conflated with E19 in r1 (codex P1-A).** | Unknown — may be hundreds of ms. |
 | E19 | `executeWithAgent(...)` call (new-executor.ts:2766) → LLM streaming connection open → provider emits 'started' | LLM connect (~50-300 ms typical) |
@@ -153,10 +154,11 @@ After the bench runs (cold + warm cohorts), the two tables below fill in. Once f
 | E14 planExecution | ? | ? | ? | codex C2 prior: ~435 ms |
 | E15 loadChannelExecutionContext | ? | ? | ? | |
 | E16 loadTalkContext | ? | ? | ? | suspect: fattest single phase |
+| E16.5 setTalkRunMetadata | ? | ? | 1 | UPDATE on talk_runs (codex r3 P1-B) |
 | E17 prompt assembly | ? | ? | 0 | sync |
 | E18 direct-path pre-LLM prep | ? | ? | ? | codex P1-A: attachment + history + PDF prep |
 | E19 executeWithAgent → LLM connect → 'started' | ? | ? | 0 | provider-side |
-| E20 outbox INSERT + notify push (probed in outbox-emit.ts) | ? | ? | 1 | |
+| E20 outbox INSERT + coalescer flush + DO fetch (probed in outbox-emit.ts + streaming-notify.ts:52 + db.ts:580/377) | ? | ? | 1+ | three probe sites, codex r3 P2-E |
 | **Worker subtotal** | **?** | **?** | **?** | Sum E1..E20 |
 | **E21 DO + WS + client receipt (residual)** | bench t2-t1 - Worker subtotal | derived | n/a | not directly observable from Worker logs (codex P1-C); bounded by T-new-B's ~50-500 ms drain p95 |
 | **Bench t2-t1** | (observed) | (observed) | n/a | from latency-bench.ts |
@@ -193,11 +195,11 @@ After the tables are filled, the **dominant phase becomes the next T-new-E1 plan
 
 | Task | Files | Verify |
 |---|---|---|
-| **E-D0** Pre-deploy grep verifies T7 inline path is still wired (karpathy W2) | `grep ctx.waitUntil.*dispatchRunInProcess src/clawtalk/web/worker-app.ts` | non-zero hits |
+| **E-D0** Pre-deploy verifies T7 inline path is still wired (karpathy W2 + codex r3 P1-A — single-line grep returns 0 because `ctx.waitUntil` and `dispatchRunInProcess` are on adjacent lines). Run: `rg -U 'waitUntil\(\s*\n\s*dispatchRunInProcess' src/clawtalk/web/worker-app.ts` | rg command above | non-zero hits |
 | **E-D1** Add `[t-new-e-meta]` probes to dispatch-in-process.ts + queue-consumer.ts + new-executor.ts + outbox-emit.ts + streaming-notify.ts + **db.ts** (6 files, codex r2 P1-A — db.ts hosts the Proxy-wrap for `getDbPg`/`getOutOfBandSql` AND the DO `.fetch` callsite at db.ts:580 AND the scope-exit flush at db.ts:377) | 6 src files | typecheck passes |
 | **E-D2** Single-purpose commit on `feature/t-new-e-instrumentation`; record commit SHA in this plan | n/a | one commit, src-only |
 | **E-D3** Push; deploy succeeds; confirm logs visible via `wrangler tail` | n/a | `[t-new-e-meta]` entries appearing for normal traffic |
-| **E-D4** Run cold cohort (n=5, 60s gap); then warm cohort (n=10, back-to-back); all SPA tabs closed | n/a | 15 runs captured, no `falling back to TALK_RUN_QUEUE.send` lines |
+| **E-D4** Run cold cohort (n=5, 90s gap, **fresh talk per run** via pre-seed script or extended `latency-bench.ts --reset-talk` flag — karpathy W6); then warm cohort (n=10, back-to-back, fresh talk per run); all SPA tabs closed | n/a | 15 runs captured; no `falling back to TALK_RUN_QUEUE.send` lines AND every bench client received a `talk_response_started` event |
 | **E-D5** Tail logs into JSON; compute p50 + p90 per phase per cohort; fill §4 tables; commit | docs/T-new-E-t2t1-attribution.md | both tables reconcile to bench t2-t1 ±5 %, with E21 residual ≤ 500 ms |
 | **E-D6** Revert the instrumentation commit (single-purpose revert); verify `git diff origin/main -- src/` empty | n/a | empty diff |
 | **E-D7** Deploy the reverted build | n/a | prod has no instrumentation |
@@ -235,14 +237,21 @@ No production code lands. The PR's main-vs-PR diff is **identical to pre-merge m
   - **§4 cold-cohort table** (codex r2 P2-E) — labeled p90 as "max-ish (n=5)" so it's not compared apples-to-apples with warm p90.
   - **§4 reconciliation rule** (karpathy r2 W4) — per-cohort: ± 5 % warm, ± 10 % cold.
   - **§6 D8 PR commits clarified** (karpathy r2 W5) — branch already has r1/r2/r3 doc commits + findings artifacts; D8's three NEW commits are instrumentation + revert + filled-table.
+- **r4 (this revision)** — absorbs codex consult r3 (2 P1 + 3 P2) + karpathy r3 (1 warning):
+  - **§6 D0 grep command fixed** (codex r3 P1-A) — §3's `rg -U` fix didn't propagate to the §6 task table; D0 still had the broken single-line grep. Now uses `rg -U` consistently.
+  - **§2 E16.5 added** (codex r3 P1-B) — `setTalkRunMetadata` runs between `loadTalkContext` and prompt assembly (new-executor.ts:2460, accessors.ts:1691-1700). Without an explicit probe, the await silently rolled into E16 or E17 medians.
+  - **§6 D4 cohort spec re-synced** (codex r3 P2-C) — task table still said `60s gap` and didn't mention fresh-talk-per-run. Now matches §3.
+  - **§2 E3 stmt count corrected** (codex r3 P2-D) — `markRunRunning` is not 1 stmt; it's a SELECT + optional sibling SELECT + UPDATE + nickname lookup + best-effort outbox INSERT. Inventory now flags the multi-stmt nature.
+  - **§4 E20 row probe-site list** (codex r3 P2-E) — was "probed in outbox-emit.ts" only; now lists all three sites (outbox-emit, streaming-notify, db.ts).
+  - **§6 D4 fresh-talk mechanism specified** (karpathy r3 W6) — explicitly names `--reset-talk` flag extension on `latency-bench.ts` or a pre-seed script; AND adds bench-client receipt-check on `talk_response_started` events to the verify column.
 
 ## GSTACK REVIEW REPORT
 
 | Review | Trigger | Why | Runs | Status | Findings |
 |--------|---------|-----|------|--------|----------|
-| Codex Consult | `/codex consult` | Plan-stage behavior + framework catches | 2 | **r2: NOT CLEAR → r3** | r1: 3 P1 + 5 P2 absorbed in r2. r2: 1 P1 + 4 P2 absorbed in r3 (db.ts scope, broken grep, E20 undercount, cohort fixture state, cold-p90 framing) |
-| Karpathy Audit | `/karpathy-audit` (file mode, by hand) | Plan-stage style + four principles | 2 | **r2: NOT CLEAR → r3** | r1: 3 warnings absorbed in r2. r2: 3 warnings absorbed in r3 (per-cohort reconciliation, PR commit clarification, 60s cold gap → 90s) |
+| Codex Consult | `/codex consult` | Plan-stage behavior + framework catches | 3 | **r3: NOT CLEAR → r4** | r1: 3 P1 + 5 P2 → r2. r2: 1 P1 + 4 P2 → r3. r3: 2 P1 + 3 P2 → r4 (§6 grep stale, missing E16.5 setTalkRunMetadata phase, §6 cold cohort stale, E3 stmt undercount, §4 E20 probe-site list stale) |
+| Karpathy Audit | `/karpathy-audit` (file mode, by hand) | Plan-stage style + four principles | 3 | **r3: NOT CLEAR → r4** | r1: 3 → r2. r2: 3 → r3. r3: 1 warning (W6 fresh-talk mechanism) absorbed in r4 |
 
-- **CROSS-MODEL:** Codex still catching the framework-specific traps (this round: db.ts scope contradiction, multi-line grep, coalescer/DO instrumentation gaps). Karpathy caught the process/precision items (per-cohort reconciliation, commit count clarity). Consistent split per [[feedback-codex-catches-behavior-karpathy-catches-style]].
-- **UNRESOLVED:** 0. r3 needs r3 verification pass before the measurement is run.
-- **VERDICT:** r3 draft. Tightened on every codex r2 finding. Recommend r3 verification pass; if clean, proceed to instrumentation deploy.
+- **CROSS-MODEL:** Codex r3 caught task-table-vs-prose drift (the r2 fixes propagated to §3/§4 but I missed copying them to §6 D0/D4) plus a static-analysis miss (setTalkRunMetadata between E16 and E17). Karpathy caught the fresh-talk-mechanism gap. Consistent split.
+- **UNRESOLVED:** 0. r4 needs r4 verification pass before deploying.
+- **VERDICT:** r4 draft. Three review cycles done; r3 verification surfaced task-table drift the prose-level absorptions missed. Recommend r4 verification; high probability of PASS clean given r4 corrects pure drift items.
