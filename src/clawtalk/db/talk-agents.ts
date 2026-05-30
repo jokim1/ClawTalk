@@ -252,6 +252,48 @@ export async function getTalkAgentRows(
   }));
 }
 
+/**
+ * Aggregate row counts on `talk_agents` for a Talk in a single SELECT.
+ *
+ * Lets callers decide whether the post-prune invariant
+ * (≥1 assigned row, exactly one primary, no null-FK orphans) already
+ * holds without re-running the prune + select chain. Pure read — the
+ * gate decision lives at the caller.
+ *
+ *  - `activeCount`: rows with non-null `registered_agent_id`. Does NOT
+ *    verify the referenced `registered_agents` row is `enabled`.
+ *  - `primaryCount`: rows where `is_primary = true` (across all rows,
+ *    including null-FK orphans).
+ *  - `orphanCount`: rows with null `registered_agent_id` (the prune
+ *    target in `pruneDeletedTalkAgentAssignments`).
+ */
+export async function getTalkAgentsHealthSnapshot(talkId: string): Promise<{
+  activeCount: number;
+  primaryCount: number;
+  orphanCount: number;
+}> {
+  const db = getDbPg();
+  const rows = await db<
+    {
+      active_count: string;
+      primary_count: string;
+      orphan_count: string;
+    }[]
+  >`
+    select
+      count(*) filter (where registered_agent_id is not null) as active_count,
+      coalesce(sum((is_primary)::int), 0)                     as primary_count,
+      count(*) filter (where registered_agent_id is null)     as orphan_count
+    from public.talk_agents
+    where talk_id = ${talkId}::uuid
+  `;
+  return {
+    activeCount: Number(rows[0]?.active_count ?? 0),
+    primaryCount: Number(rows[0]?.primary_count ?? 0),
+    orphanCount: Number(rows[0]?.orphan_count ?? 0),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Writes
 // ---------------------------------------------------------------------------

@@ -40,6 +40,7 @@ import {
   resolveAgentByName,
   setTalkAgents,
   getTalkAgentRows,
+  getTalkAgentsHealthSnapshot,
   type TalkAgentAssignment,
   type TalkAgentInput,
   type TalkAgentRow,
@@ -256,6 +257,32 @@ export async function ensureTalkUsesUsableDefaultAgent(
   talkId: string,
   ownerId: string,
 ): Promise<void> {
+  // Cheap shape check: 1 RT instead of 6 in steady state. The conditions
+  // match the post-prune invariant in talk-agents.ts:303-332:
+  //   - activeCount > 0: at least one assigned row (non-null FK; does NOT
+  //     verify the referenced registered_agent is enabled — out of scope)
+  //   - primaryCount = 1: post-prune primary invariant holds
+  //   - orphanCount = 0: prune would have been a no-op
+  // On snapshot error, fall through to the heal path's existing swallow on
+  // getDefaultTalkAgentId — preserves the function's best-effort contract.
+  let health: {
+    activeCount: number;
+    primaryCount: number;
+    orphanCount: number;
+  };
+  try {
+    health = await getTalkAgentsHealthSnapshot(talkId);
+  } catch {
+    health = { activeCount: 0, primaryCount: 0, orphanCount: 1 };
+  }
+  if (
+    health.activeCount > 0 &&
+    health.primaryCount === 1 &&
+    health.orphanCount === 0
+  ) {
+    return;
+  }
+
   // Fresh installs may have neither a default Talk agent nor a main
   // agent configured — getDefaultTalkAgentId() throws in that case.
   // Healing is a best-effort fixup, not a hard requirement, so swallow

@@ -1,4 +1,7 @@
 // T-new-A: enqueueTalkChat dedupe — route-level tests.
+// T-new-C: ensureTalkUsesUsableDefaultAgent route-boundary gating (bottom
+// describe). Verifies the snapshot gate fires the expected number of times
+// per route under §2.3 multiplicity, with no extra heal-path queries.
 //
 // Pin the input-validation paths (no DB), the 404 visibility-gated
 // path (RLS, no row), the happy-path 202 (dedupe-relevant), and the
@@ -20,7 +23,46 @@
 //   └── ensureTalkUsesUsableDefaultAgent (untouched)
 //       └── [★★★ Test 9] empty → heal write, then list sees it
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
+
+// T-new-C: same Proxy-wrap query counter strategy as agent-registry.test.ts.
+// Wraps the tagged-template call boundary on getDbPg's return value so route
+// tests can assert snapshot-call multiplicity under §2.3.
+const mockState = vi.hoisted(() => {
+  const queryLog: string[] = [];
+  function wrapDb<T extends object>(realDb: T): T {
+    return new Proxy(realDb as object, {
+      apply(target, thisArg, args) {
+        const first = args[0];
+        if (Array.isArray(first)) {
+          queryLog.push(first.join('?'));
+        }
+        return Reflect.apply(
+          target as (...a: unknown[]) => unknown,
+          thisArg,
+          args,
+        );
+      },
+    }) as T;
+  }
+  return { queryLog, wrapDb };
+});
+
+vi.mock('../../../db.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../db.js')>();
+  return {
+    ...actual,
+    getDbPg: () => mockState.wrapDb(actual.getDbPg()),
+  };
+});
 
 import {
   closePgDatabase,
@@ -36,8 +78,18 @@ import {
   getSettingValue,
   upsertSettingValue,
 } from '../../db/accessors.js';
-import { enqueueTalkChat } from './talks.js';
+import {
+  enqueueTalkChat,
+  getTalkRoute,
+  listTalkAgentsRoute,
+  listTalksRoute,
+} from './talks.js';
 import type { AuthContext } from '../types.js';
+
+// Snapshot SELECT signature unique to getTalkAgentsHealthSnapshot — used
+// by the gating route tests to count gate-fires distinct from other reads.
+const SNAPSHOT_SIGNATURE =
+  'filter (where registered_agent_id is not null) as active_count';
 
 const TEST_DB_URL = 'postgresql://postgres:postgres@127.0.0.1:54432/postgres';
 const OWNER_ID = '0c999999-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
@@ -335,3 +387,217 @@ async function seedHappyPath(opts?: { withTwoAgents?: boolean }): Promise<{
     };
   });
 }
+
+// ---------------------------------------------------------------------------
+// T-new-C — route-boundary gating tests
+// ---------------------------------------------------------------------------
+//
+// Each route exercise asserts:
+//   1. response shape OK (no 500)
+//   2. snapshot SELECT fires the §2.3-expected number of times
+//   3. DB-state unchanged (no inserts/updates on talk_agents)
+//
+// (1)+(3) prove the route returns and writes nothing on a healthy talk;
+// (2) proves the gate fired (snapshot SELECT count == ensureCall count)
+// rather than the full 6-RT heal chain running per call.
+
+async function seedHealthyTalk(opts?: {
+  topicTitle?: string;
+}): Promise<{ talkId: string; agentId: string }> {
+  return withUserContext(OWNER_ID, async () => {
+    const agent = await createRegisteredAgent({
+      ownerId: OWNER_ID,
+      name: `Healthy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      providerId: 'provider.openai',
+      modelId: 'gpt-5-mini',
+    });
+    const talk = await createTalk({
+      ownerId: OWNER_ID,
+      topicTitle: opts?.topicTitle ?? 'gating route fixture',
+    });
+    await setTalkAgents({
+      talkId: talk.id,
+      ownerId: OWNER_ID,
+      agents: [
+        {
+          id: agent.id,
+          sourceKind: 'provider',
+          providerId: 'provider.openai',
+          modelId: 'gpt-5-mini',
+          nickname: 'healthy',
+          nicknameMode: 'custom',
+          personaRole: 'assistant',
+          isPrimary: true,
+          sortOrder: 0,
+        },
+      ],
+    });
+    return { talkId: talk.id, agentId: agent.id };
+  });
+}
+
+async function countTalkAgentMutations(talkIds: string[]): Promise<number> {
+  // Detect inserts/updates/deletes via a simple post-condition: snapshot
+  // talk_agents row state before+after the route call and compare. Caller
+  // is responsible for picking matching points in time.
+  // (Single-row helpers below use direct query equality instead.)
+  if (talkIds.length === 0) return 0;
+  const db = getDbPg();
+  const rows = await db<{ count: string }[]>`
+    select count(*)::text as count
+    from public.talk_agents
+    where talk_id = any(${talkIds}::uuid[])
+  `;
+  return Number(rows[0]?.count ?? 0);
+}
+
+async function snapshotTalkAgentRows(
+  talkId: string,
+): Promise<
+  { isPrimary: boolean; registeredAgentId: string | null; sortOrder: number }[]
+> {
+  const db = getDbPg();
+  const rows = await db<
+    {
+      is_primary: boolean;
+      registered_agent_id: string | null;
+      sort_order: number;
+    }[]
+  >`
+    select is_primary, registered_agent_id, sort_order
+    from public.talk_agents
+    where talk_id = ${talkId}::uuid
+    order by sort_order asc
+  `;
+  return rows.map((row) => ({
+    isPrimary: row.is_primary,
+    registeredAgentId: row.registered_agent_id,
+    sortOrder: row.sort_order,
+  }));
+}
+
+describe('ensureTalkUsesUsableDefaultAgent route gating (T-new-C)', () => {
+  beforeAll(async () => {
+    await initPgDatabase({ url: TEST_DB_URL });
+    await seedAuthUser(OWNER_ID, 'talks-route-test@clawtalk.test');
+  });
+
+  afterAll(async () => {
+    await purge();
+    await closePgDatabase();
+  });
+
+  beforeEach(async () => {
+    await purge();
+    mockState.queryLog.length = 0;
+  });
+
+  it('sendChatRoute: healthy talk → 1 snapshot fire, no writes', async () => {
+    const { talkId } = await seedHealthyTalk();
+    const before = await snapshotTalkAgentRows(talkId);
+    mockState.queryLog.length = 0;
+
+    const result = await enqueueTalkChat({
+      talkId,
+      auth: makeAuth(),
+      content: 'gating happy path',
+    });
+
+    expect(result.statusCode).toBe(202);
+    const snapshotFires = mockState.queryLog.filter((q) =>
+      q.includes(SNAPSHOT_SIGNATURE),
+    );
+    expect(snapshotFires).toHaveLength(1);
+
+    const after = await snapshotTalkAgentRows(talkId);
+    expect(after).toEqual(before);
+  });
+
+  it('getTalkRoute: healthy talk → 2 snapshot fires (direct + toTalkApiRecord), no writes', async () => {
+    const { talkId } = await seedHealthyTalk();
+    const before = await snapshotTalkAgentRows(talkId);
+    mockState.queryLog.length = 0;
+
+    const result = await getTalkRoute({ talkId, auth: makeAuth() });
+
+    expect(result.statusCode).toBe(200);
+    if (!result.body.ok) {
+      throw new Error(
+        `expected 200 ok body, got: ${JSON.stringify(result.body)}`,
+      );
+    }
+    expect(result.body.data.talk.id).toBe(talkId);
+
+    const snapshotFires = mockState.queryLog.filter((q) =>
+      q.includes(SNAPSHOT_SIGNATURE),
+    );
+    expect(snapshotFires).toHaveLength(2);
+
+    const after = await snapshotTalkAgentRows(talkId);
+    expect(after).toEqual(before);
+  });
+
+  it('listTalkAgentsRoute: healthy talk → 2 snapshot fires (direct + listEffectiveTalkAgents), no writes', async () => {
+    const { talkId } = await seedHealthyTalk();
+    const before = await snapshotTalkAgentRows(talkId);
+    mockState.queryLog.length = 0;
+
+    const result = await listTalkAgentsRoute({ talkId, auth: makeAuth() });
+
+    expect(result.statusCode).toBe(200);
+    if (!result.body.ok) {
+      throw new Error(
+        `expected 200 ok body, got: ${JSON.stringify(result.body)}`,
+      );
+    }
+    expect(result.body.data.talkId).toBe(talkId);
+    expect(result.body.data.agents.length).toBeGreaterThanOrEqual(1);
+
+    const snapshotFires = mockState.queryLog.filter((q) =>
+      q.includes(SNAPSHOT_SIGNATURE),
+    );
+    expect(snapshotFires).toHaveLength(2);
+
+    const after = await snapshotTalkAgentRows(talkId);
+    expect(after).toEqual(before);
+  });
+
+  it('listTalksRoute: N=3 healthy talks → 3 snapshot fires (one per toTalkApiRecord), no writes', async () => {
+    const t1 = await seedHealthyTalk({ topicTitle: 'gating list 1' });
+    const t2 = await seedHealthyTalk({ topicTitle: 'gating list 2' });
+    const t3 = await seedHealthyTalk({ topicTitle: 'gating list 3' });
+    const beforeCount = await countTalkAgentMutations([
+      t1.talkId,
+      t2.talkId,
+      t3.talkId,
+    ]);
+    mockState.queryLog.length = 0;
+
+    const result = await listTalksRoute({ auth: makeAuth(), limit: 10 });
+
+    expect(result.statusCode).toBe(200);
+    if (!result.body.ok) {
+      throw new Error(
+        `expected 200 ok body, got: ${JSON.stringify(result.body)}`,
+      );
+    }
+    // Our 3 talks should be in the list; other tests in the file may have
+    // left talks under OWNER_ID — assert the count is at least 3.
+    expect(result.body.data.talks.length).toBeGreaterThanOrEqual(3);
+
+    const snapshotFires = mockState.queryLog.filter((q) =>
+      q.includes(SNAPSHOT_SIGNATURE),
+    );
+    // listTalksRoute calls toTalkApiRecord per talk in the list — N
+    // snapshot fires, where N is the number of talks under OWNER_ID. We
+    // seeded exactly 3 this test (purge runs in beforeEach), so N == 3.
+    expect(snapshotFires).toHaveLength(3);
+
+    const afterCount = await countTalkAgentMutations([
+      t1.talkId,
+      t2.talkId,
+      t3.talkId,
+    ]);
+    expect(afterCount).toBe(beforeCount);
+  });
+});
