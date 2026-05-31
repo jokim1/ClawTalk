@@ -1,53 +1,24 @@
-CODEX CONSULT r1 — T-new-C ensureTalkUsesUsableDefaultAgent
-Date: 2026-05-29
-Session: 019e7614-0b63-7a60-b359-da5599cbb94d
-Tokens used: 330347
+codex consult r1 — T-new-E plan
+================================
 
-P1 — `activeCount > 0 && primaryCount = 1` is not equivalent to the existing chain.
-  Counterexamples:
-    (a) 1 active primary row + 1 null-FK non-primary row: snapshot returns healthy,
-        existing prune deletes the null-FK row.
-    (b) 1 active non-primary row + 1 null-FK primary row: snapshot returns
-        activeCount=1, primaryCount=1 → healthy. Existing code deletes the null row,
-        then UPDATEs the surviving row to be primary.
-  Edge-case claim in plan §4.1 is false.
+Run: 2026-05-30
+Session: 019e7b05-a5f2-7210-8912-4db86cf8b524
+Reasoning: medium
 
-P1 — If "active" means usable, the snapshot is wrong. It counts non-null
-  registered_agent_id, but listTalkAgents / resolvePrimaryAgent only join enabled
-  registered_agents. Existing code shares this weakness so it may be equivalent in
-  practice, but plan overstates "usable default agent" correctness.
+FINDINGS
 
-P2 — Number(rows[0]?.active_count) is fine for typical postgres.js COUNT/SUM
-  string returns. Overflow not realistic for per-talk agent counts.
+[P1] The E17→E18 boundary is wrong for the direct provider path. After prompt assembly, direct runs still do attachment DB reads/building, history attachment hydration, direct history construction, PDF/page prep, PDF diagnostic logging, edit-intent checks, and possible content-edit emits before executeWithAgent starts. See new-executor.ts:2600 and provider-start mapping at new-executor.ts:233. The plan will misattribute that whole block to "E18 LLM connect".
 
-P2 — Race claim too broad. Heal-path race largely preserved because heal still
-  re-reads getTalkAgentRows before setTalkAgents. But the new healthy early-exit
-  can skip a prune/heal that current code would have performed if mutation happens
-  between snapshot and where current getTalkAgentRows would have run. Best-effort
-  contract likely tolerates this; not strictly "same race."
+[P1] E19 as proposed will not measure the actual outbox write. emit is fire-and-forget: queue-consumer.ts:196 calls emitOutboxEventOutsideTx(...).catch(...) and returns immediately. Timing around emitTalkEvent only measures promise creation, not appendOutboxEventOutsideTx, notify enqueue, or DO delivery. Instrument inside outbox-emit.ts:76 and streaming-notify.ts:52 instead, keyed by runId/event id.
 
-P2 — RLS is owner-scoped, not talk-scoped: `talk_agents_owner using (owner_id =
-  auth.uid())`. Snapshot filtered by talk_id is fine inside withUserContext
-  because existing reads do the same and RLS filters by owner. Plan should cite
-  migration 0002, not "0001."
+[P1] The table cannot honestly reconcile to client t2-t1 with only Worker logs. E20 includes DO drain, WebSocket send, and browser receipt, but the proposed probes stop before client arrival. Also do not subtract client Date.now() from Worker Date.now(); clock skew makes that garbage. Use one monotonic server timeline plus a separate client-observed residual, or instrument the DO with event ids.
 
-P2 — ~625 ms prediction is shaky. Hyperdrive pooling doesn't remove awaited
-  query RTT, and postgres.js won't pipeline sequential awaits inside the tx,
-  so fewer RTs should help. But route-level savings won't cleanly equal
-  5 × 125 ms: some call sites do more talk_agents reads, GET /talks/:id/agents
-  appears to call ensureTalkUsesUsableDefaultAgent TWICE, transaction setup
-  queries are unchanged. Measure function-level and route-level separately.
+[P2] ctx.waitUntil is a real measurement hazard. The route schedules dispatchRunInProcess via worker-app.ts:2382, and later code schedules more waitUntils for streaming notify and DB closes. CF documents a 30-second waitUntil limit shared across all waitUntil calls for a request. Slow/canceled tails can disappear from the sample, biasing attribution toward successful fast runs. Track fallback logs, terminal run status, missing-start events, and waitUntil cutoff symptoms.
 
-P2 — Failure-mode table is wrong. Today getDefaultTalkAgentId() failures are
-  swallowed before touching talk_agents; proposed snapshot failures happen
-  BEFORE that try and will 500 the route. New failure surface, not
-  "same as today."
+[P2] Statement counter design is under-specified and likely wrong. getDbPg() returns the user transaction inside withUserContext, request SQL outside it, and getOutOfBandSql() for streaming emits is a separate path: db.ts:147 and db.ts:171. A one-time Proxy around getDbPg() can miss tx statements, out-of-band streaming inserts, and withUserContext setup statements unless it wraps every SQL function actually placed into ALS.
 
-VERDICT: 2 P1 + 5 P2 — do not ship as-is. r2 needs to:
-- widen the gate to orphanCount = 0 (resolves both P1 counterexamples)
-- clarify "assigned" vs "usable" terminology (P1 #2)
-- decide failure-mode behavior: swallow snapshot errors like getDefaultTalkAgentId
-  OR explicitly mark the new throw surface
-- fix RLS reference (P2 #3)
-- update §7 to measure function-level + route-level separately AND note the
-  double-call on listTalkAgentsRoute (P2 #4)
+[P2] withUserContext is not "tx open = 1 stmt". It runs BEGIN plus set local role authenticated and select set_config(...) before user code: db.ts:266. Counting it as one statement will distort E4 and downstream "stmts" attribution.
+
+[P2] n=10 is thin for p90. With ten runs, p90 is basically the second-worst run. Acceptable for triage, not for deciding between close phases. Run cold and warm cohorts separately. Also randomize or reset conversation state, because loadTalkContext cost depends on history, attachments, and cached connection state.
+
+[P2] Revert safety is weaker than stated. Reverting a temp commit on the same feature branch is clean only if the doc/table commit does not touch the same files and no deploy-only config changes ride along. Make the instrumentation commit single-purpose, tag its SHA in the plan, verify git diff origin/main -- src/ is empty after revert, and deploy the reverted build before opening the docs-only PR.

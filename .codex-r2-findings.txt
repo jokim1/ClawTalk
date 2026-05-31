@@ -1,30 +1,25 @@
-CODEX CONSULT r2 — T-new-C ensureTalkUsesUsableDefaultAgent
-Date: 2026-05-29
-Tokens used: 633406
+codex consult r2 — T-new-E plan
+================================
 
-VERDICT: 0 r2-P1 + 3 r2-P2. No blockers; r3 polish.
+Run: 2026-05-30
+Reasoning: medium
 
-r2-P2 — §7 bench commands invalid.
-  scripts/latency-bench.ts only parses --provider and --agents. The proposed
-  --route=chat and --route=get-talk flags are ignored. Verification commands
-  as written are not runnable. Also: baseline "3920 ms post-T-new-A" is stale;
-  the actual pre-T-new-C baseline (post-T-new-A2 ship) is ~3520 ms.
+FINDINGS
 
-r2-P2 — §4.2 "accept the more honest failure" framing is too casual for a
-  hard-coded behavior change.
-  Talks routes have no local try/catch around ensureTalkUsesUsableDefaultAgent
-  (worker-app.ts:1220, talks.ts:1952), so a snapshot SELECT throw becomes a
-  500 on every talk-related route. Single-user lowers blast radius, but for a
-  perf-only change, the recommendation is: wrap snapshot in try/catch matching
-  existing getDefaultTalkAgentId swallow OR explicitly mark as accepted
-  behavior change with a regression test.
+[P1] The "5-file instrumentation scope" is not enough. The statement counter has to wrap getDbPg(), getOutOfBandSql(), and withUserContext setup in src/db.ts:147. The plan still says D1 touches only 5 files, excluding db.ts, so the stmts column cannot be implemented honestly. r1 P2-E is not actually absorbed.
 
-r2-P2 — §4.1 equivalence table incomplete + "strictly tighter" claim wrong.
-  Missing row: "N active rows, exactly 1 primary, 0 orphans" — common multi-
-  agent healthy case. Gate handles it correctly but it should be in the table
-  for test coverage. Also: claim that gate is "strictly tighter" looks false;
-  the table proves equivalence, not tightness.
+[P2] The pre-deploy grep gate is broken as written. ctx.waitUntil and dispatchRunInProcess are on separate lines in worker-app.ts:2382, and grep -n 'ctx.waitUntil.*dispatchRunInProcess' returns 0. Use rg -U or two-step grep.
 
-KARPATHY r2 OVERLAP: 100% (W1 invalid-bench, W2 strictly-tighter, NIT framing
-— all match codex r2-P2 #1, #3, #2 respectively). Rising overlap per
-[[feedback-codex-catches-behavior-karpathy-catches-style]] — plan converging.
+[P2] E20 is still underspecified. emitOutboxEventOutsideTx only awaits the INSERT; notify delivery is delayed by 50ms coalescer in streaming-notify.ts:52 and actual DO fetch is in db.ts:580. Must log enqueue, flush start/end, eventIds, and scope-exit flush in db.ts:377.
+
+[P2] Cohort split absorbed only half of r1 P2-G. Adds cold/warm but does not reset or randomize conversation state. Reusing one talk for 15 runs grows history/attachments, so warm cohort measures "larger conversation" not "warm isolate". Pin fixed fixture OR create-fresh-talk-per-run.
+
+[P2] Cold p90 with n=5 is noise. Plan presents cold p90 beside warm p90 as if comparable. Label "max-ish" or increase cold n.
+
+ABSORPTION CHECK
+- E18/E19/E20/E21 split: mostly absorbed
+- 5-file instrumentation scope: NOT absorbed (needs db.ts)
+- Cold+warm split: partially absorbed (missing fixture reset)
+- Revert-then-deploy shape: absorbed
+
+VERDICT: r2 is better, but not clear. Fix db.ts scope contradiction and broken grep gate before instrumentation deploy.

@@ -1,0 +1,19 @@
+codex consult r3 — T-new-E plan
+================================
+
+Run: 2026-05-30
+Reasoning: medium
+
+FINDINGS
+
+[P1] docs/T-new-E-t2t1-attribution.md:196 still has the broken single-line gate: `grep ctx.waitUntil.*dispatchRunInProcess ...`. Source has `waitUntil(` and `dispatchRunInProcess` on separate lines at src/clawtalk/web/worker-app.ts:2382-2383, so this command returns 0. r3 fixed §3 but not the executable task table.
+
+[P1] Missing phase between E16 and E17: setTalkRunMetadata runs after loadTalkContext and before prompt assembly at src/clawtalk/talks/new-executor.ts:2460, backed by a DB update at src/clawtalk/db/accessors.ts:1691-1700. If probes only wrap listed E-phases, this awaited DB write falls through the attribution and can break subtotal reconciliation.
+
+[P2] docs/T-new-E-t2t1-attribution.md:200 still says cold cohort 60s gap and does not say fresh talk per run. §3/§4 say 90 sec + fresh talk per run, so r2 cohort-state absorption is incomplete in the task table.
+
+[P2] E3 stmt framing is wrong. markRunRunning is not "1 DB write": current code does an initial select, optional sibling select, update, nickname lookup, and best-effort talk_run_started outbox insert (src/clawtalk/db/accessors.ts:2654-2708). Timing the whole function is fine, but the plan/table note stmts: 1 will mislead attribution.
+
+[P2] E20 table note still says "probed in outbox-emit.ts" only. §3 correctly adds streaming-notify.ts and db.ts, but the output table at docs/T-new-E-t2t1-attribution.md:158 should reflect all three probe sites or implementers may undercount again.
+
+ABSORPTIONS VERIFIED: db.ts file scope (§3/§6 D1), multi-line grep fix (§3 only), E20 expansion (§3), fresh-talk/90s (§3/§4 only), cold-p90 framing.

@@ -1,0 +1,13 @@
+codex consult r4 — T-new-E plan
+================================
+
+Run: 2026-05-30
+Reasoning: medium
+
+VERIFIED r3 absorptions: §6 grep, E16.5, §6 cohort spec, E3 stmt framing, §4 E20 probe-site list — all updated in r4.
+
+NEW FINDINGS
+
+[P1] E19 needs a special probe, not the standard `await someAwait(...)` wrapper. In new-executor.ts:2747, `await executeWithAgent(...)` resolves after the whole turn, while the t2-t1 boundary is the inner `started` event callback. If implemented with the §3 standard probe, E19 includes post-start delta/completion time and breaks reconciliation. Plan should explicitly latch/stop E19 inside the `emit` callback when `event.type === 'started'`.
+
+[P2] E1's "Hyperdrive cold-connect dominates here" premise is stale. withRequestScopedDb (db.ts:362) builds a postgres client synchronously; the first actual awaited DB I/O is later, likely markRunRunning via queue-consumer.ts:119. Without an explicit ping/connect probe, cold-connect cost will be attributed to E3 or the first SQL phase, not E1.
